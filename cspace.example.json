@@ -1,0 +1,36 @@
+{
+  "project": {
+    "name": "my-project",
+    "repo": "owner/my-project",
+    "prefix": "mp"
+  },
+  "container": {
+    "ports": {
+      "3000": "dev server",
+      "4173": "preview server"
+    },
+    "environment": {
+      "VITE_HOST": "0.0.0.0"
+    }
+  },
+  "firewall": {
+    "enabled": true,
+    "domains": [
+      "api.example.com",
+      "cdn.example.com"
+    ]
+  },
+  "claude": {
+    "model": "claude-opus-4-6[1m]",
+    "effort": "max"
+  },
+  "verify": {
+    "all": "npm run lint && npm run typecheck && npm run test",
+    "e2e": "npm run e2e"
+  },
+  "agent": {
+    "issue_label": "ready"
+  },
+  "services": ".cspace/docker-compose.yml",
+  "post_setup": ".cspace/post-setup.sh"
+}

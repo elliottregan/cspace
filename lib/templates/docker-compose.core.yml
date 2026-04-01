@@ -1,0 +1,70 @@
+# Core devcontainer service — used by all cspace projects.
+# Project-specific services are added via compose file layering (-f).
+
+services:
+  devcontainer:
+    image: ${CSPACE_IMAGE:-cspace-dev}
+    container_name: ${CSPACE_PREFIX:-cs}.${COMPOSE_PROJECT_NAME}
+    hostname: ${COMPOSE_PROJECT_NAME}
+    build:
+      context: ${CSPACE_HOME}/lib
+      dockerfile: ${CSPACE_DOCKERFILE:-${CSPACE_HOME}/lib/templates/Dockerfile}
+
+    # Required for iptables firewall (init-firewall.sh)
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    # Used by cspace list/down to discover instances
+    labels:
+      - "cspace.instance=true"
+      - "cspace.project=${CSPACE_PROJECT_NAME}"
+
+    volumes:
+      - workspace:/workspace
+      - claude-home:/home/dev/.claude
+      - cspace-memory:/home/dev/.claude/projects/-workspace/memory
+      - gh-config:/home/dev/.config/gh
+      - cspace-logs:/logs
+      - /var/run/docker.sock:/var/run/docker.sock
+
+    env_file:
+      - path: ${PROJECT_ROOT:-.}/.env
+        required: false
+
+    environment:
+      - USE_BUILTIN_RIPGREP=0
+      - PW_TEST_CONNECT_WS_ENDPOINT=ws://playwright:3000/
+      - CSPACE_HOME=${CSPACE_HOME}
+      - CSPACE_FIREWALL_DOMAINS=${CSPACE_FIREWALL_DOMAINS:-}
+      - CSPACE_CLAUDE_MODEL=${CSPACE_CLAUDE_MODEL:-claude-opus-4-6[1m]}
+      - CSPACE_CLAUDE_EFFORT=${CSPACE_CLAUDE_EFFORT:-max}
+      - TERM_PROGRAM=${TERM_PROGRAM:-}
+      - COLORTERM=${COLORTERM:-}
+
+    networks:
+      - default
+      - cspace-shared
+
+    ports:
+      - "${HOST_PORT_DEV:-0}:5173"
+      - "${HOST_PORT_PREVIEW:-0}:4173"
+
+    tty: true
+    stdin_open: true
+
+volumes:
+  workspace:
+  claude-home:
+  cspace-memory:
+    name: ${CSPACE_MEMORY_VOLUME:-cspace-memory}
+    external: true
+  gh-config:
+  cspace-logs:
+    name: ${CSPACE_LOGS_VOLUME:-cspace-logs}
+    external: true
+
+networks:
+  cspace-shared:
+    name: ${CSPACE_SHARED_NETWORK:-cspace-shared}
+    external: true

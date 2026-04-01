@@ -1,0 +1,709 @@
+#!/usr/bin/env bash
+# cspace — Portable CLI for managing Claude Code devcontainer instances
+set -euo pipefail
+
+# Resolve CSPACE_HOME from symlinks
+CSPACE_HOME="${CSPACE_HOME:-$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)}"
+export CSPACE_HOME
+
+# Source core libraries
+# shellcheck source=../lib/core/config.sh
+source "$CSPACE_HOME/lib/core/config.sh"
+# shellcheck source=../lib/core/ports.sh
+source "$CSPACE_HOME/lib/core/ports.sh"
+# shellcheck source=../lib/core/instance.sh
+source "$CSPACE_HOME/lib/core/instance.sh"
+# shellcheck source=../lib/core/compose.sh
+source "$CSPACE_HOME/lib/core/compose.sh"
+
+VERSION="0.1.0"
+
+# ─── Helpers ────────────────────────────────────────────────────────
+
+usage() {
+    cat <<'EOF'
+cspace — Portable CLI for managing Claude Code devcontainer instances
+
+USAGE:
+  cspace                              Interactive TUI menu
+  cspace <command> [args] [flags]
+
+INSTANCE MANAGEMENT:
+  cspace up [name|branch]             Create/reconnect instance + launch Claude
+  cspace up --no-claude [name]        Create instance without launching Claude
+  cspace ssh <name>                   Shell into running instance
+  cspace list                         List running instances
+  cspace ports <name>                 Show port mappings
+  cspace down <name>                  Destroy instance + volumes
+  cspace down --all                   Destroy all instances + shared services
+  cspace warm <name...>               Pre-provision containers
+  cspace rebuild                      Rebuild container image
+
+AUTONOMOUS AGENTS:
+  cspace issue <num> [name] [--base branch] [--prompt "..."]
+  cspace resume <name> <session-id> [--prompt "..."]
+
+SHARED SERVICES:
+  cspace shared up                    Start browser sidecars
+  cspace shared down                  Stop browser sidecars
+
+PROJECT SETUP:
+  cspace init                         Scaffold .cspace.json + .cspace/
+  cspace init --full                  Also copy all templates for customization
+
+OTHER:
+  cspace sync-context                 Generate milestone context doc
+  cspace self-update                  Update cspace to latest version
+  cspace version                      Show version
+  cspace help                         Show this help
+EOF
+}
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+# ─── Commands ───────────────────────────────────────────────────────
+
+cmd_version() {
+    echo "cspace $VERSION"
+}
+
+cmd_init() {
+    local full=false
+    [ "${1:-}" = "--full" ] && full=true
+
+    local project_root
+    project_root=$(find_project_root) || die "Not in a git repository."
+    export PROJECT_ROOT="$project_root"
+
+    if [ -f "$project_root/.cspace.json" ]; then
+        echo "Project already initialized (.cspace.json exists)."
+        echo "Edit .cspace.json directly to update configuration."
+        return 0
+    fi
+
+    # Auto-detect project info
+    local name repo prefix
+    name=$(basename "$project_root")
+    repo=$(git -C "$project_root" remote get-url origin 2>/dev/null | sed 's|.*github.com[:/]||; s|\.git$||' || true)
+    prefix=$(echo "$name" | head -c 2)
+
+    # Interactive config if gum is available
+    if command -v gum &>/dev/null; then
+        name=$(gum input --value "$name" --header "Project name") || true
+        repo=$(gum input --value "$repo" --header "GitHub repo (owner/repo)") || true
+        prefix=$(gum input --value "$prefix" --header "Label prefix (2-3 chars)") || true
+
+        local firewall_domains=""
+        firewall_domains=$(gum input --placeholder "api.example.com, cdn.example.com" --header "Extra firewall domains (comma-separated, optional)") || true
+
+        local verify_all=""
+        verify_all=$(gum input --placeholder "npm run lint && npm run test" --header "Verification command") || true
+
+        local verify_e2e=""
+        verify_e2e=$(gum input --placeholder "npm run e2e" --header "E2E test command (optional)") || true
+    else
+        echo "Tip: Install gum (https://github.com/charmbracelet/gum) for interactive setup."
+        echo "Using auto-detected defaults..."
+        local firewall_domains="" verify_all="" verify_e2e=""
+    fi
+
+    # Build domains array
+    local domains_json="[]"
+    if [ -n "$firewall_domains" ]; then
+        domains_json=$(echo "$firewall_domains" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | jq -R . | jq -s .)
+    fi
+
+    # Write .cspace.json
+    jq -n \
+        --arg name "$name" \
+        --arg repo "$repo" \
+        --arg prefix "$prefix" \
+        --argjson domains "$domains_json" \
+        --arg verify_all "$verify_all" \
+        --arg verify_e2e "$verify_e2e" \
+        '{
+            project: { name: $name, repo: $repo, prefix: $prefix },
+            container: { ports: {}, environment: {} },
+            firewall: { enabled: true, domains: $domains },
+            claude: { model: "claude-opus-4-6[1m]", effort: "max" },
+            verify: { all: $verify_all, e2e: $verify_e2e },
+            agent: { issue_label: "ready" },
+            services: "",
+            post_setup: ""
+        }' > "$project_root/.cspace.json"
+
+    echo "Created .cspace.json"
+
+    # Create .cspace/ directory
+    mkdir -p "$project_root/.cspace"
+    echo "Created .cspace/"
+
+    # Add .cspace.local.json to gitignore
+    if [ -f "$project_root/.gitignore" ]; then
+        if ! grep -q '.cspace.local.json' "$project_root/.gitignore"; then
+            echo '.cspace.local.json' >> "$project_root/.gitignore"
+            echo "Added .cspace.local.json to .gitignore"
+        fi
+    fi
+
+    # If --full, copy all templates
+    if [ "$full" = true ]; then
+        echo "Copying templates for customization..."
+        cp "$CSPACE_HOME/lib/templates/Dockerfile" "$project_root/.cspace/Dockerfile"
+        cp "$CSPACE_HOME/lib/templates/docker-compose.core.yml" "$project_root/.cspace/docker-compose.core.yml"
+        cp "$CSPACE_HOME/lib/templates/docker-compose.shared.yml" "$project_root/.cspace/docker-compose.shared.yml"
+        mkdir -p "$project_root/.cspace/agents"
+        cp "$CSPACE_HOME/lib/agents/implementer.md" "$project_root/.cspace/agents/implementer.md"
+        cp "$CSPACE_HOME/lib/agents/coordinator.md" "$project_root/.cspace/agents/coordinator.md"
+        echo "Templates copied to .cspace/ — edit them to customize."
+    fi
+
+    echo ""
+    echo "Project initialized! Next steps:"
+    echo "  1. Edit .cspace.json to configure ports, verify commands, etc."
+    echo "  2. (Optional) Add project services in .cspace/docker-compose.yml"
+    echo "  3. (Optional) Add post-setup script in .cspace/post-setup.sh"
+    echo "  4. Run 'cspace up' to launch an instance"
+}
+
+cmd_up() {
+    local no_claude=false
+    local arg=""
+    local prompt=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --no-claude) no_claude=true; shift ;;
+            --prompt) prompt="$2"; shift 2 ;;
+            *) arg="$1"; shift ;;
+        esac
+    done
+
+    load_config
+    require_initialized
+
+    local name="" branch=""
+
+    if [ -z "$arg" ]; then
+        name=$(next_planet)
+        echo "Instance name: $name"
+    elif [[ "$arg" == */* ]]; then
+        branch="$arg"
+        name=$(echo "$arg" | tr '/' '-')
+        echo "Branch: $branch -> instance: $name"
+    else
+        name="$arg"
+    fi
+
+    # Provision the instance
+    CSPACE_INSTANCE_NAME="$name" CSPACE_INSTANCE_BRANCH="${branch:-}" \
+        bash "$(resolve_script setup-instance.sh)"
+
+    skip_onboarding "$name"
+    show_ports "$name"
+
+    # Git operations
+    dc_exec "$name" git fetch --prune --quiet 2>/dev/null || true
+    if [ -n "$branch" ]; then
+        dc_exec "$name" git checkout "$branch" 2>/dev/null \
+            || dc_exec "$name" git checkout -b "$branch" "origin/$branch" 2>/dev/null || true
+        dc_exec "$name" git reset --hard "origin/$branch" 2>/dev/null || true
+    else
+        dc_exec "$name" git pull --ff-only --quiet 2>/dev/null || true
+    fi
+
+    if [ "$no_claude" = true ]; then
+        echo "Instance '$name' is ready. Run 'cspace ssh $name' to connect."
+        return 0
+    fi
+
+    # Launch Claude
+    local DC="docker compose -p $name"
+    if [ -n "$prompt" ]; then
+        printf '%s' "$prompt" | $DC exec -T -u dev devcontainer bash -c 'cat > /tmp/claude-prompt.txt'
+        exec $DC exec -u dev -w /workspace devcontainer \
+            bash -c 'claude -p "$(cat /tmp/claude-prompt.txt)" --dangerously-skip-permissions'
+    else
+        exec $DC exec -u dev -w /workspace devcontainer claude --dangerously-skip-permissions
+    fi
+}
+
+cmd_issue() {
+    local number="" name="" prompt="" base="main"
+
+    # Parse args
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --base) base="$2"; shift 2 ;;
+            --prompt) prompt="$2"; shift 2 ;;
+            --*) die "Unknown flag: $1" ;;
+            *)
+                if [ -z "$number" ]; then
+                    number="$1"
+                elif [ -z "$name" ]; then
+                    name="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    [ -z "$number" ] && die "Usage: cspace issue <number> [name] [--base branch] [--prompt '...']"
+
+    load_config
+    require_initialized
+
+    if [ -z "$name" ]; then
+        name="issue-${number}"
+    fi
+
+    # Provision the instance
+    CSPACE_INSTANCE_NAME="$name" CSPACE_INSTANCE_BRANCH="" \
+        bash "$(resolve_script setup-instance.sh)"
+
+    skip_onboarding "$name"
+
+    local DC="docker compose -p $name"
+
+    # Re-copy host .env into container
+    if [ -f "$PROJECT_ROOT/.env" ]; then
+        $DC cp "$PROJECT_ROOT/.env" devcontainer:/workspace/.env
+        $DC exec -T devcontainer chown dev:dev /workspace/.env </dev/null
+    fi
+
+    # Strategic context
+    local STRATEGIC_CONTEXT STRATEGIC_CONTEXT_PREAMBLE="" MILESTONE_FLAG=""
+    STRATEGIC_CONTEXT=$($DC exec -T -u dev devcontainer cat /workspace/docs/milestone-context.md 2>/dev/null || echo "")
+
+    if [ -n "$STRATEGIC_CONTEXT" ]; then
+        local MILESTONE_NAME
+        MILESTONE_NAME=$(echo "$STRATEGIC_CONTEXT" | head -1 | sed 's/^# Active Milestone: //')
+        MILESTONE_FLAG=" --milestone \"${MILESTONE_NAME}\""
+        STRATEGIC_CONTEXT_PREAMBLE=$(printf 'STRATEGIC CONTEXT — READ THIS FIRST:\n\n%s\n\nYour assigned issue is #%s. Check the dependency graph above:\n- If other issues depend on yours, build shared abstractions (not narrow solutions).\n- If yours depends on others, check their branches/PRs for interfaces to consume.\n- Follow the milestone'"'"'s architectural principles.\n\n---\n\n' "$STRATEGIC_CONTEXT" "$number")
+    fi
+
+    # Load and template agent prompt
+    local agent_file
+    agent_file=$(resolve_agent "implementer.md")
+    local AGENT_PROMPT
+    AGENT_PROMPT=$(cat "$agent_file")
+
+    # Substitute template variables
+    local verify_cmd e2e_cmd
+    verify_cmd=$(cfg '.verify.all')
+    e2e_cmd=$(cfg '.verify.e2e')
+
+    AGENT_PROMPT="${AGENT_PROMPT//\$\{STRATEGIC_CONTEXT_PREAMBLE\}/$STRATEGIC_CONTEXT_PREAMBLE}"
+    AGENT_PROMPT="${AGENT_PROMPT//\$\{NUMBER\}/$number}"
+    AGENT_PROMPT="${AGENT_PROMPT//\$\{MILESTONE_FLAG\}/$MILESTONE_FLAG}"
+    AGENT_PROMPT="${AGENT_PROMPT//\$\{BASE_BRANCH\}/$base}"
+    AGENT_PROMPT="${AGENT_PROMPT//\$\{VERIFY_COMMAND\}/$verify_cmd}"
+    AGENT_PROMPT="${AGENT_PROMPT//\$\{E2E_COMMAND\}/$e2e_cmd}"
+
+    if [ -n "$prompt" ]; then
+        AGENT_PROMPT="$AGENT_PROMPT"$'\n\n'"ADDITIONAL INSTRUCTIONS FROM THE USER:"$'\n\n'"$prompt"
+    fi
+
+    # Pass prompt into container
+    printf '%s' "$AGENT_PROMPT" | $DC exec -T -u dev devcontainer bash -c 'cat > /tmp/claude-prompt.txt'
+
+    # Sync to base branch
+    echo "Syncing repo to latest origin/${base}..."
+    $DC exec -T -u dev -w /workspace devcontainer git fetch --prune --quiet </dev/null
+    $DC exec -T -u dev -w /workspace devcontainer git stash --quiet </dev/null 2>/dev/null || true
+    $DC exec -T -u dev -w /workspace devcontainer git checkout "${base}" </dev/null 2>/dev/null \
+        || $DC exec -T -u dev -w /workspace devcontainer git checkout -b "${base}" "origin/${base}" </dev/null
+    $DC exec -T -u dev -w /workspace devcontainer git reset --hard "origin/${base}" </dev/null
+
+    local model effort
+    model=$(cfg '.claude.model')
+    effort=$(cfg '.claude.effort')
+
+    # Launch autonomous Claude
+    local EXIT_CODE=0
+    $DC exec -u dev -w /workspace \
+        -e CLAUDE_AUTONOMOUS=1 \
+        -e CLAUDE_INSTANCE="$name" \
+        -e CLAUDE_ISSUE="$number" \
+        devcontainer \
+        bash -c "set -o pipefail; trap '' PIPE; trap '[ -x /workspace/.cspace/hooks/copy-transcript-on-exit.sh ] && /workspace/.cspace/hooks/copy-transcript-on-exit.sh || [ -x $CSPACE_HOME/lib/hooks/copy-transcript-on-exit.sh ] && $CSPACE_HOME/lib/hooks/copy-transcript-on-exit.sh' EXIT; claude --print --verbose --model ${model:-claude-opus-4-6} --effort ${effort:-max} --output-format stream-json --dangerously-skip-permissions \
+            -p \"\$(cat /tmp/claude-prompt.txt)\" 2>/tmp/claude-stderr.log \
+            | $CSPACE_HOME/lib/scripts/stream-status.sh" || EXIT_CODE=$?
+
+    if [ $EXIT_CODE -eq 0 ] || [ $EXIT_CODE -eq 141 ]; then
+        exit 0
+    fi
+
+    echo "" >&2
+    echo "FAILED — Claude exited with code $EXIT_CODE" >&2
+    local SESSION_ID
+    SESSION_ID=$($DC exec -T -u dev devcontainer cat /tmp/claude-session-id.txt 2>/dev/null || true)
+    [ -n "$SESSION_ID" ] && echo "  Resume:  cspace resume $name $SESSION_ID" >&2
+    echo "  Shell:   cspace ssh $name" >&2
+    exit $EXIT_CODE
+}
+
+cmd_resume() {
+    local name="${1:-}" session_id="${2:-}" prompt=""
+    shift 2 2>/dev/null || true
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --prompt) prompt="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    [ -z "$name" ] || [ -z "$session_id" ] && die "Usage: cspace resume <name> <session-id> [--prompt '...']"
+
+    load_config
+    require_running "$name"
+
+    local DC="docker compose -p $name"
+    $DC exec -T -u dev -w /workspace devcontainer git fetch --prune --quiet 2>/dev/null || true
+
+    local model effort
+    model=$(cfg '.claude.model')
+    effort=$(cfg '.claude.effort')
+
+    if [ -n "$prompt" ]; then
+        exec $DC exec -u dev -w /workspace devcontainer claude --print --verbose \
+            --model "${model:-claude-opus-4-6}" --effort "${effort:-max}" \
+            --output-format stream-json --dangerously-skip-permissions \
+            --resume "$session_id" -p "$prompt" 2>/tmp/claude-stderr.log \
+            | "$CSPACE_HOME/lib/scripts/stream-status.sh"
+    else
+        exec $DC exec -u dev -w /workspace devcontainer claude \
+            --resume "$session_id" --dangerously-skip-permissions
+    fi
+}
+
+cmd_ssh() {
+    local name="${1:-}"
+    [ -z "$name" ] && die "Usage: cspace ssh <name>"
+
+    load_config
+    require_running "$name"
+    exec docker compose -p "$name" exec -u dev -w /workspace devcontainer bash
+}
+
+cmd_list() {
+    load_config
+
+    local projects
+    projects=$(get_instances)
+    if [ -z "$projects" ]; then
+        echo "(no instances found)"
+        return 0
+    fi
+
+    printf "%-20s %-30s %s\n" "INSTANCE" "BRANCH" "AGE"
+    printf "%-20s %-30s %s\n" "--------" "------" "---"
+    get_instance_details
+    echo ""
+    echo "Run 'cspace ports <name>' for port mappings."
+}
+
+cmd_ports() {
+    local name="${1:-}"
+    [ -z "$name" ] && die "Usage: cspace ports <name>"
+
+    load_config
+    require_running "$name"
+    show_ports "$name"
+}
+
+cmd_down() {
+    if [ "${1:-}" = "--all" ]; then
+        cmd_down_all
+        return
+    fi
+
+    local name="${1:-}"
+    [ -z "$name" ] && die "Usage: cspace down <name>"
+
+    load_config
+    dc_compose "$name" down --volumes
+    echo "Instance '$name' removed."
+}
+
+cmd_down_all() {
+    load_config
+
+    local projects
+    projects=$(get_instances)
+    if [ -n "$projects" ]; then
+        while read -r project; do
+            [ -z "$project" ] && continue
+            echo "Tearing down instance: $project"
+            dc_compose "$project" down --volumes
+        done <<< "$projects"
+    else
+        echo "No instances found."
+    fi
+    echo "Stopping shared services..."
+    dc_shared down
+}
+
+cmd_warm() {
+    [ $# -eq 0 ] && die "Usage: cspace warm <name> [name...]"
+
+    load_config
+    require_initialized
+
+    local names=("$@")
+    local failed=0
+    local results=()
+
+    echo "Warming ${#names[@]} containers..."
+    echo ""
+
+    for name in "${names[@]}"; do
+        echo "--- Setting up $name ---"
+
+        if ! CSPACE_INSTANCE_NAME="$name" CSPACE_INSTANCE_BRANCH="" \
+            bash "$(resolve_script setup-instance.sh)"; then
+            echo "ERROR: setup failed for $name"
+            results+=("$name|FAILED|setup failed")
+            failed=$((failed + 1))
+            continue
+        fi
+
+        skip_onboarding "$name"
+
+        # Validate firewall
+        if ! dc_exec_root "$name" test -f /tmp/.firewall-init-done 2>/dev/null; then
+            echo "WARNING: Firewall not initialized — reinitializing..."
+            if dc_exec_root "$name" init-firewall.sh 2>/dev/null; then
+                dc_exec_root "$name" touch /tmp/.firewall-init-done
+            else
+                results+=("$name|FAILED|firewall init failed")
+                failed=$((failed + 1))
+                continue
+            fi
+        fi
+
+        results+=("$name|ready")
+        echo ""
+    done
+
+    # Summary
+    echo "========================================="
+    printf "%-20s %-10s\n" "INSTANCE" "STATUS"
+    printf "%-20s %-10s\n" "--------" "------"
+    for row in "${results[@]}"; do
+        IFS='|' read -r rname rstatus _ <<< "$row"
+        printf "%-20s %-10s\n" "$rname" "$rstatus"
+    done
+
+    if [ "$failed" -gt 0 ]; then
+        echo "$failed container(s) failed validation."
+        exit 1
+    else
+        echo "All ${#names[@]} containers ready."
+    fi
+}
+
+cmd_shared() {
+    local action="${1:-}"
+    load_config
+
+    case "$action" in
+        up) ensure_shared ;;
+        down) dc_shared down ;;
+        *) die "Usage: cspace shared up|down" ;;
+    esac
+}
+
+cmd_rebuild() {
+    load_config
+    require_initialized
+
+    local dockerfile
+    dockerfile=$(resolve_template "Dockerfile")
+
+    docker build --no-cache -t "$(image_name)" -f "$dockerfile" \
+        "$(dirname "$dockerfile")"
+    echo "Image '$(image_name)' rebuilt."
+}
+
+cmd_sync_context() {
+    load_config
+    local script
+    script=$(resolve_script "sync-context.sh")
+    if [ -f "$script" ]; then
+        bash "$script"
+    else
+        echo "No sync-context.sh found."
+    fi
+}
+
+cmd_self_update() {
+    if [ -d "$CSPACE_HOME/.git" ]; then
+        echo "Updating cspace..."
+        git -C "$CSPACE_HOME" pull --ff-only
+        echo "Updated to $(git -C "$CSPACE_HOME" describe --tags 2>/dev/null || git -C "$CSPACE_HOME" rev-parse --short HEAD)"
+    else
+        die "cspace was not installed via git clone. Cannot self-update."
+    fi
+}
+
+cmd_tui() {
+    load_config
+
+    if ! command -v gum &>/dev/null; then
+        die "TUI requires gum (https://github.com/charmbracelet/gum). Install it or use subcommands directly."
+    fi
+
+    local instances has_instances=false
+    instances=$(get_instances)
+    [ -n "$instances" ] && has_instances=true
+
+    local options=()
+    options+=("New instance        Launch a new Claude instance")
+    if [ "$has_instances" = true ]; then
+        options+=("Connect             Attach to a running instance")
+        options+=("SSH                 Shell into an instance")
+        options+=("Ports               Show port mappings")
+        options+=("Down                Tear down an instance")
+    fi
+    options+=("Issue               Autonomous agent for a GitHub issue")
+    if [ "$has_instances" = true ]; then
+        options+=("Down all            Tear down all instances")
+        options+=("List                Show all running instances")
+    fi
+    options+=("Rebuild             Rebuild the container image")
+
+    local project_display
+    project_display=$(project_name 2>/dev/null || basename "$PWD")
+    gum style --bold --border rounded --padding "0 1" --border-foreground 99 "cspace: $project_display"
+    echo ""
+
+    if [ "$has_instances" = true ]; then
+        get_instance_details | while IFS= read -r line; do
+            echo "  $line"
+        done
+        echo ""
+    fi
+
+    local choice
+    choice=$(printf '%s\n' "${options[@]}" | gum choose --header "What do you want to do?") || exit 0
+
+    case "$choice" in
+        New*)       tui_new ;;
+        Connect*)   tui_connect ;;
+        SSH*)       local n; n=$(tui_pick_instance); cmd_ssh "$n" ;;
+        Ports*)     local n; n=$(tui_pick_instance); cmd_ports "$n" ;;
+        "Down all"*) cmd_down_all ;;
+        Down*)      tui_down ;;
+        Issue*)     tui_issue ;;
+        List*)      cmd_list ;;
+        Rebuild*)   gum confirm "Rebuild the container image?" && cmd_rebuild ;;
+    esac
+}
+
+tui_pick_instance() {
+    local instances
+    instances=$(get_instances)
+    [ -z "$instances" ] && { gum style --foreground 208 "No running instances."; exit 0; }
+
+    local details header selected
+    details=$(get_instance_details)
+    header=$(printf "%-16s %-30s %s" "INSTANCE" "BRANCH" "AGE")
+    selected=$(echo "$details" | gum choose --header "$header") || exit 0
+    echo "$selected" | awk '{print $1}'
+}
+
+tui_new() {
+    local name
+    name=$(gum input --placeholder "Instance name (leave empty for auto planet name)") || exit 0
+    if [ -z "$name" ]; then
+        cmd_up
+    else
+        cmd_up "$name"
+    fi
+}
+
+tui_connect() {
+    local name
+    name=$(tui_pick_instance)
+    local action
+    action=$(gum choose --header "Connect to $name" \
+        "Claude       Open Claude Code" \
+        "SSH          Shell into container" \
+        "Ports        Show port mappings") || exit 0
+
+    case "$(echo "$action" | awk '{print tolower($1)}')" in
+        claude) cmd_up "$name" ;;
+        ssh)    cmd_ssh "$name" ;;
+        ports)  cmd_ports "$name" ;;
+    esac
+}
+
+tui_down() {
+    local name
+    name=$(tui_pick_instance)
+    gum confirm "Tear down instance '$name' and delete its volumes?" || exit 0
+    cmd_down "$name"
+    gum style --foreground 78 "Instance '$name' removed."
+}
+
+tui_issue() {
+    local number repo
+    repo=$(project_repo)
+    local issue_label
+    issue_label=$(cfg '.agent.issue_label')
+
+    # Fetch ready issues
+    local issues=""
+    if [ -n "$repo" ] && [ -n "$issue_label" ]; then
+        issues=$(gh issue list --repo "$repo" --label "$issue_label" --state open \
+            --json number,title --limit 20 2>/dev/null | \
+            jq -r '.[] | "#\(.number)  \(.title)"' 2>/dev/null || true)
+    fi
+
+    if [ -n "$issues" ]; then
+        local selected
+        selected=$(printf '%s\n%s' "$issues" "(enter manually)" | \
+            gum choose --header "Ready issues") || exit 0
+        if [[ "$selected" == "(enter manually)" ]]; then
+            number=$(gum input --placeholder "GitHub issue number") || exit 0
+        else
+            number=$(echo "$selected" | grep -o '^#[0-9]*' | tr -d '#')
+        fi
+    else
+        number=$(gum input --placeholder "GitHub issue number") || exit 0
+    fi
+
+    [ -z "$number" ] && die "Issue number required."
+
+    local name
+    name=$(gum input --placeholder "Instance name (leave empty for issue-$number)") || exit 0
+    if [ -z "$name" ]; then
+        cmd_issue "$number"
+    else
+        cmd_issue "$number" "$name"
+    fi
+}
+
+# ─── Main Dispatch ──────────────────────────────────────────────────
+
+case "${1:-}" in
+    "")             cmd_tui ;;
+    help|--help|-h) usage ;;
+    version|--version|-v) cmd_version ;;
+    init)           shift; cmd_init "$@" ;;
+    up)             shift; cmd_up "$@" ;;
+    issue)          shift; cmd_issue "$@" ;;
+    resume)         shift; cmd_resume "$@" ;;
+    ssh)            shift; cmd_ssh "$@" ;;
+    list|ls)        cmd_list ;;
+    ports)          shift; cmd_ports "$@" ;;
+    down)           shift; cmd_down "$@" ;;
+    warm)           shift; cmd_warm "$@" ;;
+    shared)         shift; cmd_shared "$@" ;;
+    rebuild)        cmd_rebuild ;;
+    sync-context)   cmd_sync_context ;;
+    self-update)    cmd_self_update ;;
+    *)              die "Unknown command: $1. Run 'cspace help' for usage." ;;
+esac
