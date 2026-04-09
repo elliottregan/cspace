@@ -32,16 +32,27 @@ INSTANCE MANAGEMENT:
   cspace up [name|branch]             Create/reconnect instance + launch Claude
   cspace up --no-claude [name]        Create instance without launching Claude
   cspace ssh <name>                   Shell into running instance
-  cspace list                         List running instances
+  cspace list                         List running instances for this project
+  cspace list --all                   List instances across ALL projects
   cspace ports <name>                 Show port mappings
   cspace down <name>                  Destroy instance + volumes
-  cspace down --all                   Destroy all instances + shared services
+  cspace down --all                   Destroy this project's instances + shared services
+  cspace down --everywhere            Destroy ALL cspace instances across ALL projects
   cspace warm <name...>               Pre-provision containers
   cspace rebuild                      Rebuild container image
 
 AUTONOMOUS AGENTS:
   cspace issue <num> [name] [--base branch] [--prompt "..."]
   cspace resume <name> <session-id> [--prompt "..."]
+
+SUPERVISOR (host-side dispatch to running agents):
+  cspace send <instance> "text"           Inject a user turn into a session
+  cspace respond <instance> <qid> "text"  Reply to an agent's question
+  cspace ask                              List pending agent questions
+  cspace ask <instance>                   List pending questions for one instance
+  cspace watch [instance]                 Stream agent notifications/questions
+  cspace interrupt <instance>             Interrupt a running session
+  cspace agent-status <instance>          Show supervisor status JSON
 
 SHARED SERVICES:
   cspace shared up                    Start browser sidecars
@@ -319,15 +330,28 @@ cmd_issue() {
     model=$(cfg '.claude.model')
     effort=$(cfg '.claude.effort')
 
-    # Launch autonomous Claude
+    # Per-project system prompt override (optional)
+    local system_prompt_flag=""
+    if dc_exec "$name" test -f /workspace/.cspace/agent-supervisor/agent-system-prompt.txt 2>/dev/null; then
+        system_prompt_flag="--system-prompt-file /workspace/.cspace/agent-supervisor/agent-system-prompt.txt"
+    fi
+
+    # effort=max is the supervisor default; opt out only if config says otherwise
+    local effort_flag=""
+    if [ -n "$effort" ] && [ "$effort" != "max" ]; then
+        effort_flag="--no-effort-max"
+    fi
+
+    # Launch autonomous Claude via the agent-supervisor (Claude Agent SDK
+    # streaming-input mode). The supervisor exposes a Unix socket so
+    # `cspace send/respond/interrupt` can inject mid-session user turns.
     local EXIT_CODE=0
     $DC exec -u dev -w /workspace \
         -e CLAUDE_AUTONOMOUS=1 \
         -e CLAUDE_INSTANCE="$name" \
         -e CLAUDE_ISSUE="$number" \
         devcontainer \
-        bash -c "set -o pipefail; trap '' PIPE; trap '[ -x /workspace/.cspace/hooks/copy-transcript-on-exit.sh ] && /workspace/.cspace/hooks/copy-transcript-on-exit.sh || [ -x $CSPACE_HOME/lib/hooks/copy-transcript-on-exit.sh ] && $CSPACE_HOME/lib/hooks/copy-transcript-on-exit.sh' EXIT; claude --print --verbose --model ${model:-claude-opus-4-6} --effort ${effort:-max} --output-format stream-json --dangerously-skip-permissions \
-            -p \"\$(cat /tmp/claude-prompt.txt)\" 2>/tmp/claude-stderr.log \
+        bash -c "set -o pipefail; trap '' PIPE; trap '[ -x /workspace/.cspace/hooks/copy-transcript-on-exit.sh ] && /workspace/.cspace/hooks/copy-transcript-on-exit.sh || [ -x $CSPACE_HOME/lib/hooks/copy-transcript-on-exit.sh ] && $CSPACE_HOME/lib/hooks/copy-transcript-on-exit.sh' EXIT; node /opt/agent-supervisor/supervisor.mjs --role agent --instance \"$name\" --prompt-file /tmp/claude-prompt.txt --model ${model:-claude-opus-4-6} $effort_flag $system_prompt_flag 2>/tmp/claude-stderr.log \
             | $CSPACE_HOME/lib/scripts/stream-status.sh" || EXIT_CODE=$?
 
     if [ $EXIT_CODE -eq 0 ] || [ $EXIT_CODE -eq 141 ]; then
@@ -388,12 +412,30 @@ cmd_ssh() {
 }
 
 cmd_list() {
+    local all=false
+    [ "${1:-}" = "--all" ] && all=true
+
     load_config
+
+    if [ "$all" = true ]; then
+        local rows
+        rows=$(get_all_instances)
+        if [ -z "$rows" ]; then
+            echo "(no instances found across any project)"
+            return 0
+        fi
+        printf "%-16s %-20s %-30s %s\n" "INSTANCE" "PROJECT" "BRANCH" "AGE"
+        printf "%-16s %-20s %-30s %s\n" "--------" "-------" "------" "---"
+        get_all_instance_details
+        echo ""
+        echo "Run 'cspace ports <name>' for port mappings."
+        return 0
+    fi
 
     local projects
     projects=$(get_instances)
     if [ -z "$projects" ]; then
-        echo "(no instances found)"
+        echo "(no instances found for this project — try 'cspace list --all')"
         return 0
     fi
 
@@ -418,9 +460,13 @@ cmd_down() {
         cmd_down_all
         return
     fi
+    if [ "${1:-}" = "--everywhere" ]; then
+        cmd_down_everywhere
+        return
+    fi
 
     local name="${1:-}"
-    [ -z "$name" ] && die "Usage: cspace down <name>"
+    [ -z "$name" ] && die "Usage: cspace down <name> | --all | --everywhere"
 
     load_config
     dc_compose "$name" down --volumes
@@ -439,10 +485,66 @@ cmd_down_all() {
             dc_compose "$project" down --volumes
         done <<< "$projects"
     else
-        echo "No instances found."
+        echo "No instances found for this project."
     fi
-    echo "Stopping shared services..."
+    echo "Stopping shared services for this project..."
     dc_shared down
+}
+
+cmd_down_everywhere() {
+    load_config
+
+    local rows
+    rows=$(get_all_instances)
+    if [ -z "$rows" ]; then
+        echo "No cspace instances running anywhere."
+        return 0
+    fi
+
+    # Show what's about to be destroyed and confirm
+    echo "About to tear down ALL cspace instances across ALL projects:"
+    echo ""
+    printf "  %-16s %-20s\n" "INSTANCE" "PROJECT"
+    printf "  %-16s %-20s\n" "--------" "-------"
+    echo "$rows" | while IFS=$'\t' read -r instance project; do
+        printf "  %-16s %-20s\n" "$instance" "${project:-?}"
+    done
+    echo ""
+
+    if command -v gum &>/dev/null; then
+        gum confirm "Destroy all instances and their volumes?" || { echo "Aborted."; return 0; }
+    else
+        printf "Type 'yes' to continue: "
+        read -r reply
+        [ "$reply" = "yes" ] || { echo "Aborted."; return 0; }
+    fi
+
+    echo "$rows" | while IFS=$'\t' read -r instance _; do
+        [ -z "$instance" ] && continue
+        echo "Tearing down instance: $instance"
+        docker compose -p "$instance" down --volumes 2>&1 | sed 's/^/  /'
+    done
+
+    # Tear down shared sidecars by enumerating cspace-*-shared networks.
+    # The sidecars (playwright, chromium-cdp) attach to one shared network
+    # per project, so removing those networks + their containers cleans up.
+    echo "Stopping shared services across all projects..."
+    docker network ls --format '{{.Name}}' 2>/dev/null \
+        | grep -E '^cspace-.*-shared$' \
+        | while read -r net; do
+            [ -z "$net" ] && continue
+            # Remove every container still attached to this network
+            local attached
+            attached=$(docker network inspect "$net" \
+                --format '{{range .Containers}}{{.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -v '^$' || true)
+            if [ -n "$attached" ]; then
+                echo "  network $net: removing $(echo "$attached" | wc -l | tr -d ' ') container(s)"
+                echo "$attached" | xargs -r docker rm -f >/dev/null 2>&1 || true
+            fi
+            docker network rm "$net" >/dev/null 2>&1 || true
+        done
+
+    echo "Done."
 }
 
 cmd_warm() {
@@ -536,6 +638,58 @@ cmd_sync_context() {
     else
         echo "No sync-context.sh found."
     fi
+}
+
+# ─── Supervisor dispatch ────────────────────────────────────────────
+#
+# All supervisor host-side commands run cli.mjs inside a running cspace
+# container. The shared cspace-logs volume is mounted in every container,
+# so any running instance can dispatch to any other instance's socket.
+
+supervisor_dispatch() {
+    load_config
+    local target
+    target=$(get_instances | head -1) || true
+    [ -z "$target" ] && die "No running cspace instances. Start one with 'cspace up' first."
+    docker compose -p "$target" exec -u dev -T devcontainer \
+        node /opt/agent-supervisor/cli.mjs "$@"
+}
+
+supervisor_dispatch_interactive() {
+    load_config
+    local target
+    target=$(get_instances | head -1) || true
+    [ -z "$target" ] && die "No running cspace instances. Start one with 'cspace up' first."
+    exec docker compose -p "$target" exec -u dev devcontainer \
+        node /opt/agent-supervisor/cli.mjs "$@"
+}
+
+cmd_send() {
+    [ $# -lt 2 ] && die "Usage: cspace send <instance> \"text\""
+    supervisor_dispatch send "$@"
+}
+
+cmd_respond() {
+    [ $# -lt 3 ] && die "Usage: cspace respond <instance> <question-id> \"text\""
+    supervisor_dispatch respond "$@"
+}
+
+cmd_ask() {
+    supervisor_dispatch list "$@"
+}
+
+cmd_watch() {
+    supervisor_dispatch_interactive watch "$@"
+}
+
+cmd_interrupt() {
+    [ $# -lt 1 ] && die "Usage: cspace interrupt <instance>"
+    supervisor_dispatch interrupt "$@"
+}
+
+cmd_agent_status() {
+    [ $# -lt 1 ] && die "Usage: cspace agent-status <instance>"
+    supervisor_dispatch status "$@"
 }
 
 cmd_self_update() {
@@ -697,12 +851,18 @@ case "${1:-}" in
     issue)          shift; cmd_issue "$@" ;;
     resume)         shift; cmd_resume "$@" ;;
     ssh)            shift; cmd_ssh "$@" ;;
-    list|ls)        cmd_list ;;
+    list|ls)        shift; cmd_list "$@" ;;
     ports)          shift; cmd_ports "$@" ;;
     down)           shift; cmd_down "$@" ;;
     warm)           shift; cmd_warm "$@" ;;
     shared)         shift; cmd_shared "$@" ;;
     rebuild)        cmd_rebuild ;;
+    send)           shift; cmd_send "$@" ;;
+    respond)        shift; cmd_respond "$@" ;;
+    ask)            shift; cmd_ask "$@" ;;
+    watch)          shift; cmd_watch "$@" ;;
+    interrupt)      shift; cmd_interrupt "$@" ;;
+    agent-status)   shift; cmd_agent_status "$@" ;;
     sync-context)   cmd_sync_context ;;
     self-update)    cmd_self_update ;;
     *)              die "Unknown command: $1. Run 'cspace help' for usage." ;;

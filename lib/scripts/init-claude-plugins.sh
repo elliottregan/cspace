@@ -80,6 +80,57 @@ if [ -f "$HOST_PLUGINS_DIR/config.json" ]; then
     echo "Copied config.json"
 fi
 
+# Register MCP servers declared in .cspace.json (mcpServers map).
+# Schema per server: { command, args[], env{}, scope, requiredEnv[] }
+# - ${VAR} in env values is expanded from container env at registration time.
+# - If any var in requiredEnv is unset, the server is silently skipped.
+# - scope maps to `claude mcp add --scope`; defaults to "user".
+if [ -n "${CSPACE_MCP_SERVERS:-}" ] && [ "$CSPACE_MCP_SERVERS" != "{}" ] && [ "$CSPACE_MCP_SERVERS" != "null" ]; then
+    echo "Registering MCP servers from cspace config..."
+    # shellcheck disable=SC2016
+    echo "$CSPACE_MCP_SERVERS" | jq -c 'to_entries[]' | while read -r entry; do
+        name=$(echo "$entry" | jq -r '.key')
+        spec=$(echo "$entry" | jq -c '.value')
+
+        # requiredEnv check — skip silently if any are missing
+        skip=0
+        while read -r req; do
+            [ -z "$req" ] && continue
+            if [ -z "$(eval echo "\${$req:-}")" ]; then
+                echo "  - $name: skipping (missing $req)"
+                skip=1
+                break
+            fi
+        done < <(echo "$spec" | jq -r '.requiredEnv // [] | .[]')
+        [ "$skip" = "1" ] && continue
+
+        scope=$(echo "$spec" | jq -r '.scope // "user"')
+        command=$(echo "$spec" | jq -r '.command')
+
+        # Build -e KEY=VAL args, expanding ${VAR} from container env
+        env_args=()
+        while IFS=$'\t' read -r key val; do
+            [ -z "$key" ] && continue
+            # Expand ${VAR} references — eval is intentional for ${...} expansion
+            expanded=$(eval echo "$val")
+            env_args+=(-e "$key=$expanded")
+        done < <(echo "$spec" | jq -r '.env // {} | to_entries[] | "\(.key)\t\(.value)"')
+
+        # Build positional args array
+        cmd_args=()
+        while read -r arg; do
+            [ -z "$arg" ] && continue
+            cmd_args+=("$arg")
+        done < <(echo "$spec" | jq -r '.args // [] | .[]')
+
+        echo "  - $name: registering (scope=$scope)"
+        # Newer claude CLI (2.1+) requires -e flags AFTER the name
+        if ! claude mcp add --scope "$scope" "$name" "${env_args[@]}" -- "$command" "${cmd_args[@]}" 2>&1 | sed 's/^/      /'; then
+            echo "  - $name: registration failed (continuing)"
+        fi
+    done
+fi
+
 touch "$MARKER_FILE"
 chown -R dev:dev "$PLUGINS_DIR"
 

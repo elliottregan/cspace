@@ -17,6 +17,7 @@
     "model": "claude-opus-4-6[1m]",
     "effort": "max"
   },
+  "mcpServers": {},
   "verify": {
     "all": "",
     "e2e": ""

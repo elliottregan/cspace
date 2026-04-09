@@ -1,0 +1,4 @@
+You have agent-messenger MCP tools for communicating with agents:
+- list_agent_questions: Check for pending questions from agents. Call periodically while waiting.
+- respond_to_agent: Answer an agent's blocking question. Provide instance, question_id, and your answer. The agent is fs.watch-blocked in ask_orchestrator — it receives your answer immediately.
+- send_directive: Send a proactive message to an agent. The agent's supervisor injects it as a new user turn in the live session, so the agent sees it immediately — no polling.

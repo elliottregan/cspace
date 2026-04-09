@@ -77,6 +77,9 @@ else
     export CSPACE_CLAUDE_MODEL="$(cfg '.claude.model')"
     export CSPACE_CLAUDE_EFFORT="$(cfg '.claude.effort')"
 
+    # Export MCP server config (compact JSON object) for init-claude-plugins.sh
+    export CSPACE_MCP_SERVERS="$(cfg_json '.mcpServers' | jq -c '.' 2>/dev/null || echo '{}')"
+
     # Resolve Dockerfile for build
     CSPACE_DOCKERFILE=$(resolve_template "Dockerfile")
     export CSPACE_DOCKERFILE
@@ -119,9 +122,28 @@ else
         echo "Copied .env.local"
     fi
 
-    # Set up gh as git credential helper
-    dc_exec "$NAME" bash -c \
-        '[ -n "${GH_TOKEN:-}" ] && gh auth setup-git && echo "gh CLI configured" || echo "No GH_TOKEN, skipping gh auth"'
+    # Set up gh as git credential helper. GH_TOKEN comes from the host
+    # .env via the env_file directive in docker-compose.core.yml.
+    # Without it, agents cannot push/pull and will hang on credential
+    # prompts — fail loudly rather than silently producing broken instances.
+    if ! dc_exec "$NAME" bash -c \
+        '[ -n "${GH_TOKEN:-}" ] && gh auth setup-git && echo "gh CLI configured for git push/pull"'; then
+        echo "" >&2
+        echo "ERROR: GH_TOKEN is not set in the container." >&2
+        echo "" >&2
+        echo "Agents in this instance will not be able to push, pull, or open PRs." >&2
+        echo "" >&2
+        echo "Fix:" >&2
+        echo "  1. Create a GitHub token with scopes: repo, workflow, read:org" >&2
+        echo "     https://github.com/settings/tokens/new?scopes=repo,workflow,read:org" >&2
+        echo "  2. Add it to your project .env (or shell env):" >&2
+        echo "     echo 'GH_TOKEN=ghp_...' >> $PROJECT_ROOT/.env" >&2
+        echo "  3. Tear down and recreate this instance:" >&2
+        echo "     cspace down $NAME && cspace up $NAME" >&2
+        echo "" >&2
+        echo "For SSO-protected org repos, also authorize the token for your org." >&2
+        exit 1
+    fi
 fi
 
 # --- Idempotent stages ---

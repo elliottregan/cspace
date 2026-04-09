@@ -7,6 +7,14 @@ get_instances() {
         --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null | sort -u
 }
 
+# Get every running cspace instance across all projects.
+# Output: tab-separated "instance<TAB>project"
+get_all_instances() {
+    docker ps --filter "label=cspace.instance=true" \
+        --format '{{.Label "com.docker.compose.project"}}	{{.Label "cspace.project"}}' \
+        2>/dev/null | sort -u
+}
+
 # Get instance details as "name branch age" lines
 get_instance_details() {
     local projects
@@ -22,6 +30,23 @@ get_instance_details() {
             --format '{{.RunningFor}}' 2>/dev/null | head -1)
         printf "%-16s %-30s %s\n" "$project" "$branch" "$age"
     done <<< "$projects"
+}
+
+# Like get_instance_details but spans all projects, with a project column.
+get_all_instance_details() {
+    local rows
+    rows=$(get_all_instances)
+    [ -z "$rows" ] && return
+
+    while IFS=$'\t' read -r instance project; do
+        [ -z "$instance" ] && continue
+        local DC="docker compose -p $instance"
+        local branch=$($DC exec -T -u dev -w /workspace devcontainer git branch --show-current 2>/dev/null || echo "?")
+        local age=$(docker ps --filter "label=com.docker.compose.project=$instance" \
+            --filter "label=cspace.instance=true" \
+            --format '{{.RunningFor}}' 2>/dev/null | head -1)
+        printf "%-16s %-20s %-30s %s\n" "$instance" "${project:-?}" "$branch" "$age"
+    done <<< "$rows"
 }
 
 # Check if an instance is running

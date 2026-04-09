@@ -32,6 +32,54 @@ cspace up
 - **jq** for JSON processing
 - **gum** (optional) for interactive TUI — `brew install gum`
 - **gh** (optional) for GitHub integration — `brew install gh`
+- **`GH_TOKEN`** in your project `.env` — required for git push/pull from inside the container. See [Git Authentication](#git-authentication) below.
+
+## Git Authentication
+
+Containers have no access to your host's SSH agent, so all git operations go over HTTPS using a GitHub personal access token. cspace wires this up automatically — you just need to provide the token.
+
+### Setup (one-time per project)
+
+1. **Create a token** with the right scopes:
+
+   ```
+   https://github.com/settings/tokens/new?scopes=repo,workflow,read:org
+   ```
+
+   Required scopes:
+   - **`repo`** — read/write to repository contents (clone, push, open PRs)
+   - **`workflow`** — required if agents will edit `.github/workflows/` files
+   - **`read:org`** — required for SSO-protected org repos and `gh` org commands
+
+   For org repos with SAML SSO: after creating the token, click **"Configure SSO"** next to it and authorize each org you need access to.
+
+2. **Add it to your project `.env`**:
+
+   ```bash
+   echo 'GH_TOKEN=ghp_yourTokenHere' >> .env
+   ```
+
+   (cspace's `.env` loading is project-local — don't commit this file.)
+
+3. **`cspace up`** — instance creation will:
+   - Run `gh auth setup-git` to register `gh` as a git credential helper
+   - Rewrite any `git@github.com:` SSH URLs to `https://github.com/` automatically
+   - Alias `GITHUB_TOKEN=$GH_TOKEN` (and vice versa) so tools expecting either name work
+
+If `GH_TOKEN` is missing, instance creation **fails loudly** with a setup hint — agents would otherwise hang on credential prompts.
+
+### What works after setup
+
+- `git push` / `git pull` against `origin`
+- `gh pr create`, `gh issue list`, etc.
+- MCP servers and tooling that read `GITHUB_TOKEN`
+- Autonomous agents pushing feature branches and opening PRs
+
+### Limitations
+
+- **No commit signing.** Repos that require GPG/SSH-signed commits will reject agent pushes. Workaround: relax the rule for bot accounts, or open an issue to add signing support.
+- **No automatic token refresh.** Rotating `GH_TOKEN` on the host requires recreating instances (`cspace down <name> && cspace up <name>`).
+- **Branch protection.** Direct pushes to protected branches (typically `main`) are blocked — agents should always push feature branches and open PRs. The built-in implementer prompt does this by default.
 
 ## Commands
 
@@ -46,10 +94,12 @@ cspace issue <num> [name]           Autonomous agent for a GitHub issue
   --prompt "..."                    Additional instructions
 cspace resume <name> <session-id>   Resume a previous session
 cspace ssh <name>                   Shell into instance
-cspace list                         List running instances
+cspace list                         List running instances for this project
+cspace list --all                   List instances across ALL projects
 cspace ports <name>                 Show port mappings
 cspace down <name>                  Destroy instance + volumes
-cspace down --all                   Destroy everything
+cspace down --all                   Destroy this project's instances + sidecars
+cspace down --everywhere            Destroy ALL instances across ALL projects
 cspace warm <name...>               Pre-provision containers
 cspace shared up|down               Manage browser sidecars
 cspace rebuild                      Rebuild container image

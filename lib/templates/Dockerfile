@@ -35,6 +35,11 @@ USER dev
 ENV PATH="/home/dev/.local/bin:$PATH"
 ENV COLORTERM=truecolor
 ENV LANG=C.UTF-8
+# BASH_ENV is sourced by every bash invocation (including non-interactive
+# `bash -c` from `docker exec`), giving us a hook to derive container env
+# vars from others. /etc/cspace-bash-env aliases GITHUB_TOKEN -> GH_TOKEN
+# so tooling that expects either name works.
+ENV BASH_ENV=/etc/cspace-bash-env
 RUN curl -fsSL https://claude.ai/install.sh | bash
 # Use HTTPS for GitHub (container doesn't have SSH agent access)
 RUN git config --global url."https://github.com/".insteadOf "git@github.com:"
@@ -61,6 +66,19 @@ RUN mkdir -p /workspace && chown dev:dev /workspace
 RUN mkdir -p /home/dev/.claude && chown dev:dev /home/dev/.claude
 RUN mkdir -p /logs && chown dev:dev /logs
 
+# BASH_ENV hook: aliases GITHUB_TOKEN <-> GH_TOKEN so tooling expecting
+# either name works. Sourced on every bash invocation (interactive or `-c`).
+RUN cat > /etc/cspace-bash-env <<'EOF'
+# Sourced by every bash invocation via BASH_ENV.
+# Keep this file fast and side-effect-free.
+if [ -n "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]; then
+    export GITHUB_TOKEN="$GH_TOKEN"
+elif [ -n "${GITHUB_TOKEN:-}" ] && [ -z "${GH_TOKEN:-}" ]; then
+    export GH_TOKEN="$GITHUB_TOKEN"
+fi
+EOF
+RUN chmod 644 /etc/cspace-bash-env
+
 # Copy initialization scripts
 COPY scripts/init-workspace.sh /usr/local/bin/init-workspace.sh
 COPY scripts/init-firewall.sh /usr/local/bin/init-firewall.sh
@@ -70,6 +88,13 @@ RUN chmod +x /usr/local/bin/init-workspace.sh \
     /usr/local/bin/init-firewall.sh \
     /usr/local/bin/init-claude-plugins.sh \
     /usr/local/bin/entrypoint.sh
+
+# Pre-install agent-supervisor (Claude Agent SDK wrapper) into the image so
+# containers can run the supervisor without per-instance npm installs.
+COPY agent-supervisor/package.json agent-supervisor/pnpm-lock.yaml /opt/agent-supervisor/
+RUN cd /opt/agent-supervisor && pnpm install --frozen-lockfile --prod
+COPY agent-supervisor/ /opt/agent-supervisor/
+RUN chown -R dev:dev /opt/agent-supervisor
 
 WORKDIR /workspace
 EXPOSE 22
