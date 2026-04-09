@@ -587,8 +587,9 @@ cmd_rebuild() {
     local dockerfile
     dockerfile=$(resolve_template "Dockerfile")
 
-    docker build --no-cache -t "$(image_name)" -f "$dockerfile" \
-        "$(dirname "$dockerfile")"
+    # Build context is the cspace repo root so the Dockerfile can COPY both
+    # bin/cspace and lib/. Matches the context set in docker-compose.core.yml.
+    docker build --no-cache -t "$(image_name)" -f "$dockerfile" "$CSPACE_HOME"
     echo "Image '$(image_name)' rebuilt."
 }
 
