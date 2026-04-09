@@ -19,6 +19,10 @@ progress_hook="/workspace/.cspace/hooks/claude-progress-logger.sh"
 transcript_hook="/workspace/.cspace/hooks/claude-transcript-copy.sh"
 [ -x "$transcript_hook" ] || transcript_hook="$CSPACE_HOME/lib/hooks/claude-transcript-copy.sh"
 
+# Status line — project override takes precedence over the cspace default
+statusline_cmd="/workspace/.cspace/scripts/statusline.sh"
+[ -x "$statusline_cmd" ] || statusline_cmd="$CSPACE_HOME/lib/scripts/statusline.sh"
+
 # Always write hooks (they reference workspace scripts that may change between runs)
 USER_SETTINGS="/home/dev/.claude/settings.json"
 mkdir -p /home/dev/.claude
@@ -52,6 +56,10 @@ cat > "$USER_SETTINGS" <<HOOKS_EOF
         ]
       }
     ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "$statusline_cmd"
   },
   "model": "$MODEL",
   "effortLevel": "$EFFORT"
