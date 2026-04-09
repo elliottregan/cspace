@@ -7,7 +7,10 @@ services:
     container_name: ${CSPACE_PREFIX:-cs}.${COMPOSE_PROJECT_NAME}
     hostname: ${COMPOSE_PROJECT_NAME}
     build:
-      context: ${CSPACE_HOME}/lib
+      # Build context is the cspace repo root so the Dockerfile can COPY
+      # both bin/cspace and lib/. Override the Dockerfile path via
+      # CSPACE_DOCKERFILE for project-specific extensions.
+      context: ${CSPACE_HOME}
       dockerfile: ${CSPACE_DOCKERFILE:-${CSPACE_HOME}/lib/templates/Dockerfile}
 
     # Required for iptables firewall (init-firewall.sh)
@@ -35,7 +38,9 @@ services:
     environment:
       - USE_BUILTIN_RIPGREP=0
       - PW_TEST_CONNECT_WS_ENDPOINT=ws://playwright:3000/
-      - CSPACE_HOME=${CSPACE_HOME}
+      # CSPACE_HOME is set to /opt/cspace via ENV in the Dockerfile.
+      # Don't pass the host's CSPACE_HOME — that's a host filesystem path
+      # that doesn't exist inside the container.
       - CSPACE_FIREWALL_DOMAINS=${CSPACE_FIREWALL_DOMAINS:-}
       - CSPACE_CLAUDE_MODEL=${CSPACE_CLAUDE_MODEL:-claude-opus-4-6[1m]}
       - CSPACE_CLAUDE_EFFORT=${CSPACE_CLAUDE_EFFORT:-max}

@@ -42,8 +42,10 @@ INSTANCE MANAGEMENT:
   cspace rebuild                      Rebuild container image
 
 AUTONOMOUS AGENTS:
-  cspace issue <num> [name] [--base branch] [--prompt "..."]
-  cspace resume <name> <session-id> [--prompt "..."]
+  cspace up <name> --prompt-file <path>   One-shot agent with a free-text prompt
+  cspace coordinate "<instructions>"      Multi-task coordinator (reads coordinator.md playbook)
+  cspace coordinate --prompt-file <path>  Same, prompt loaded from file (no quoting)
+  cspace coordinate --name <name> ...     Use a specific instance name (resumable)
 
 SUPERVISOR (host-side dispatch to running agents):
   cspace send <instance> "text"           Inject a user turn into a session
@@ -181,14 +183,25 @@ cmd_up() {
     local no_claude=false
     local arg=""
     local prompt=""
+    local prompt_file=""
+    local base_override=""
 
     while [ $# -gt 0 ]; do
         case "$1" in
             --no-claude) no_claude=true; shift ;;
             --prompt) prompt="$2"; shift 2 ;;
+            --prompt-file) prompt_file="$2"; shift 2 ;;
+            --base) base_override="$2"; shift 2 ;;
             *) arg="$1"; shift ;;
         esac
     done
+
+    if [ -n "$prompt" ] && [ -n "$prompt_file" ]; then
+        die "--prompt and --prompt-file are mutually exclusive"
+    fi
+    if [ -n "$prompt_file" ] && [ ! -f "$prompt_file" ]; then
+        die "Prompt file not found: $prompt_file"
+    fi
 
     load_config
     require_initialized
@@ -205,6 +218,9 @@ cmd_up() {
     else
         name="$arg"
     fi
+
+    # --base overrides any branch derived from the positional arg
+    [ -n "$base_override" ] && branch="$base_override"
 
     # Provision the instance
     CSPACE_INSTANCE_NAME="$name" CSPACE_INSTANCE_BRANCH="${branch:-}" \
@@ -230,7 +246,13 @@ cmd_up() {
 
     # Launch Claude
     local DC="docker compose -p $name"
-    if [ -n "$prompt" ]; then
+    if [ -n "$prompt_file" ]; then
+        # Copy the file directly — bypasses any quoting issues with the prompt body
+        $DC cp "$prompt_file" devcontainer:/tmp/claude-prompt.txt
+        $DC exec -T devcontainer chown dev:dev /tmp/claude-prompt.txt </dev/null
+        exec $DC exec -u dev -w /workspace devcontainer \
+            bash -c 'claude -p "$(cat /tmp/claude-prompt.txt)" --dangerously-skip-permissions'
+    elif [ -n "$prompt" ]; then
         printf '%s' "$prompt" | $DC exec -T -u dev devcontainer bash -c 'cat > /tmp/claude-prompt.txt'
         exec $DC exec -u dev -w /workspace devcontainer \
             bash -c 'claude -p "$(cat /tmp/claude-prompt.txt)" --dangerously-skip-permissions'
@@ -239,36 +261,42 @@ cmd_up() {
     fi
 }
 
-cmd_issue() {
-    local number="" name="" prompt="" base="main"
+cmd_coordinate() {
+    local prompt="" prompt_file="" name=""
 
-    # Parse args
     while [ $# -gt 0 ]; do
         case "$1" in
-            --base) base="$2"; shift 2 ;;
-            --prompt) prompt="$2"; shift 2 ;;
+            --prompt-file) prompt_file="$2"; shift 2 ;;
+            --name) name="$2"; shift 2 ;;
             --*) die "Unknown flag: $1" ;;
             *)
-                if [ -z "$number" ]; then
-                    number="$1"
-                elif [ -z "$name" ]; then
-                    name="$1"
+                if [ -z "$prompt" ]; then
+                    prompt="$1"
                 fi
                 shift
                 ;;
         esac
     done
 
-    [ -z "$number" ] && die "Usage: cspace issue <number> [name] [--base branch] [--prompt '...']"
+    if [ -z "$prompt" ] && [ -z "$prompt_file" ]; then
+        die "Usage: cspace coordinate \"<instructions>\" [--name <name>]
+       cspace coordinate --prompt-file <path> [--name <name>]"
+    fi
+    if [ -n "$prompt" ] && [ -n "$prompt_file" ]; then
+        die "Pass either an inline prompt or --prompt-file, not both"
+    fi
+    if [ -n "$prompt_file" ] && [ ! -f "$prompt_file" ]; then
+        die "Prompt file not found: $prompt_file"
+    fi
 
     load_config
     require_initialized
 
     if [ -z "$name" ]; then
-        name="issue-${number}"
+        name="coord-$(date +%s)"
     fi
 
-    # Provision the instance
+    # Provision the coordinator instance
     CSPACE_INSTANCE_NAME="$name" CSPACE_INSTANCE_BRANCH="" \
         bash "$(resolve_script setup-instance.sh)"
 
@@ -276,55 +304,28 @@ cmd_issue() {
 
     local DC="docker compose -p $name"
 
-    # Re-copy host .env into container
+    # Re-copy host .env into container so the coordinator inherits GH_TOKEN, etc.
     if [ -f "$PROJECT_ROOT/.env" ]; then
         $DC cp "$PROJECT_ROOT/.env" devcontainer:/workspace/.env
         $DC exec -T devcontainer chown dev:dev /workspace/.env </dev/null
     fi
 
-    # Strategic context
-    local STRATEGIC_CONTEXT STRATEGIC_CONTEXT_PREAMBLE="" MILESTONE_FLAG=""
-    STRATEGIC_CONTEXT=$($DC exec -T -u dev devcontainer cat /workspace/docs/milestone-context.md 2>/dev/null || echo "")
-
-    if [ -n "$STRATEGIC_CONTEXT" ]; then
-        local MILESTONE_NAME
-        MILESTONE_NAME=$(echo "$STRATEGIC_CONTEXT" | head -1 | sed 's/^# Active Milestone: //')
-        MILESTONE_FLAG=" --milestone \"${MILESTONE_NAME}\""
-        STRATEGIC_CONTEXT_PREAMBLE=$(printf 'STRATEGIC CONTEXT — READ THIS FIRST:\n\n%s\n\nYour assigned issue is #%s. Check the dependency graph above:\n- If other issues depend on yours, build shared abstractions (not narrow solutions).\n- If yours depends on others, check their branches/PRs for interfaces to consume.\n- Follow the milestone'"'"'s architectural principles.\n\n---\n\n' "$STRATEGIC_CONTEXT" "$number")
+    # Build the full coordinator prompt: playbook + USER INSTRUCTIONS + body
+    local playbook_file
+    playbook_file=$(resolve_agent "coordinator.md")
+    local user_body
+    if [ -n "$prompt_file" ]; then
+        user_body=$(cat "$prompt_file")
+    else
+        user_body="$prompt"
     fi
 
-    # Load and template agent prompt
-    local agent_file
-    agent_file=$(resolve_agent "implementer.md")
-    local AGENT_PROMPT
-    AGENT_PROMPT=$(cat "$agent_file")
+    local FULL_PROMPT
+    FULL_PROMPT="$(cat "$playbook_file")"$'\n\nUSER INSTRUCTIONS:\n\n'"$user_body"
 
-    # Substitute template variables
-    local verify_cmd e2e_cmd
-    verify_cmd=$(cfg '.verify.all')
-    e2e_cmd=$(cfg '.verify.e2e')
-
-    AGENT_PROMPT="${AGENT_PROMPT//\$\{STRATEGIC_CONTEXT_PREAMBLE\}/$STRATEGIC_CONTEXT_PREAMBLE}"
-    AGENT_PROMPT="${AGENT_PROMPT//\$\{NUMBER\}/$number}"
-    AGENT_PROMPT="${AGENT_PROMPT//\$\{MILESTONE_FLAG\}/$MILESTONE_FLAG}"
-    AGENT_PROMPT="${AGENT_PROMPT//\$\{BASE_BRANCH\}/$base}"
-    AGENT_PROMPT="${AGENT_PROMPT//\$\{VERIFY_COMMAND\}/$verify_cmd}"
-    AGENT_PROMPT="${AGENT_PROMPT//\$\{E2E_COMMAND\}/$e2e_cmd}"
-
-    if [ -n "$prompt" ]; then
-        AGENT_PROMPT="$AGENT_PROMPT"$'\n\n'"ADDITIONAL INSTRUCTIONS FROM THE USER:"$'\n\n'"$prompt"
-    fi
-
-    # Pass prompt into container
-    printf '%s' "$AGENT_PROMPT" | $DC exec -T -u dev devcontainer bash -c 'cat > /tmp/claude-prompt.txt'
-
-    # Sync to base branch
-    echo "Syncing repo to latest origin/${base}..."
-    $DC exec -T -u dev -w /workspace devcontainer git fetch --prune --quiet </dev/null
-    $DC exec -T -u dev -w /workspace devcontainer git stash --quiet </dev/null 2>/dev/null || true
-    $DC exec -T -u dev -w /workspace devcontainer git checkout "${base}" </dev/null 2>/dev/null \
-        || $DC exec -T -u dev -w /workspace devcontainer git checkout -b "${base}" "origin/${base}" </dev/null
-    $DC exec -T -u dev -w /workspace devcontainer git reset --hard "origin/${base}" </dev/null
+    # Stream the prompt into the container via stdin (no quoting concerns)
+    printf '%s' "$FULL_PROMPT" | \
+        $DC exec -T -u dev devcontainer bash -c 'cat > /tmp/coordinator-prompt.txt'
 
     local model effort
     model=$(cfg '.claude.model')
@@ -332,8 +333,8 @@ cmd_issue() {
 
     # Per-project system prompt override (optional)
     local system_prompt_flag=""
-    if dc_exec "$name" test -f /workspace/.cspace/agent-supervisor/agent-system-prompt.txt 2>/dev/null; then
-        system_prompt_flag="--system-prompt-file /workspace/.cspace/agent-supervisor/agent-system-prompt.txt"
+    if dc_exec "$name" test -f /workspace/.cspace/agent-supervisor/coordinator-system-prompt.txt 2>/dev/null; then
+        system_prompt_flag="--system-prompt-file /workspace/.cspace/agent-supervisor/coordinator-system-prompt.txt"
     fi
 
     # effort=max is the supervisor default; opt out only if config says otherwise
@@ -342,64 +343,26 @@ cmd_issue() {
         effort_flag="--no-effort-max"
     fi
 
-    # Launch autonomous Claude via the agent-supervisor (Claude Agent SDK
-    # streaming-input mode). The supervisor exposes a Unix socket so
-    # `cspace send/respond/interrupt` can inject mid-session user turns.
+    # Launch the supervisor in coordinator role. Output streams to the
+    # caller's terminal via stream-status.sh; the supervisor's Unix socket
+    # is reachable for cspace send/respond/interrupt mid-run.
     local EXIT_CODE=0
     $DC exec -u dev -w /workspace \
         -e CLAUDE_AUTONOMOUS=1 \
         -e CLAUDE_INSTANCE="$name" \
-        -e CLAUDE_ISSUE="$number" \
         devcontainer \
-        bash -c "set -o pipefail; trap '' PIPE; trap '[ -x /workspace/.cspace/hooks/copy-transcript-on-exit.sh ] && /workspace/.cspace/hooks/copy-transcript-on-exit.sh || [ -x $CSPACE_HOME/lib/hooks/copy-transcript-on-exit.sh ] && $CSPACE_HOME/lib/hooks/copy-transcript-on-exit.sh' EXIT; node /opt/agent-supervisor/supervisor.mjs --role agent --instance \"$name\" --prompt-file /tmp/claude-prompt.txt --model ${model:-claude-opus-4-6} $effort_flag $system_prompt_flag 2>/tmp/claude-stderr.log \
-            | $CSPACE_HOME/lib/scripts/stream-status.sh" || EXIT_CODE=$?
+        bash -c "set -o pipefail; trap '' PIPE; trap '[ -x /workspace/.cspace/hooks/copy-transcript-on-exit.sh ] && /workspace/.cspace/hooks/copy-transcript-on-exit.sh || [ -x /opt/cspace/lib/hooks/copy-transcript-on-exit.sh ] && /opt/cspace/lib/hooks/copy-transcript-on-exit.sh' EXIT; node /opt/cspace/lib/agent-supervisor/supervisor.mjs --role coordinator --prompt-file /tmp/coordinator-prompt.txt --model ${model:-claude-opus-4-6} $effort_flag $system_prompt_flag 2>/tmp/coordinator-stderr.log \
+            | /opt/cspace/lib/scripts/stream-status.sh" || EXIT_CODE=$?
 
     if [ $EXIT_CODE -eq 0 ] || [ $EXIT_CODE -eq 141 ]; then
         exit 0
     fi
 
     echo "" >&2
-    echo "FAILED — Claude exited with code $EXIT_CODE" >&2
-    local SESSION_ID
-    SESSION_ID=$($DC exec -T -u dev devcontainer cat /tmp/claude-session-id.txt 2>/dev/null || true)
-    [ -n "$SESSION_ID" ] && echo "  Resume:  cspace resume $name $SESSION_ID" >&2
+    echo "FAILED — coordinator exited with code $EXIT_CODE" >&2
     echo "  Shell:   cspace ssh $name" >&2
+    echo "  Re-run:  cspace coordinate \"...\" --name $name (resumable)" >&2
     exit $EXIT_CODE
-}
-
-cmd_resume() {
-    local name="${1:-}" session_id="${2:-}" prompt=""
-    shift 2 2>/dev/null || true
-
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --prompt) prompt="$2"; shift 2 ;;
-            *) shift ;;
-        esac
-    done
-
-    [ -z "$name" ] || [ -z "$session_id" ] && die "Usage: cspace resume <name> <session-id> [--prompt '...']"
-
-    load_config
-    require_running "$name"
-
-    local DC="docker compose -p $name"
-    $DC exec -T -u dev -w /workspace devcontainer git fetch --prune --quiet 2>/dev/null || true
-
-    local model effort
-    model=$(cfg '.claude.model')
-    effort=$(cfg '.claude.effort')
-
-    if [ -n "$prompt" ]; then
-        exec $DC exec -u dev -w /workspace devcontainer claude --print --verbose \
-            --model "${model:-claude-opus-4-6}" --effort "${effort:-max}" \
-            --output-format stream-json --dangerously-skip-permissions \
-            --resume "$session_id" -p "$prompt" 2>/tmp/claude-stderr.log \
-            | "$CSPACE_HOME/lib/scripts/stream-status.sh"
-    else
-        exec $DC exec -u dev -w /workspace devcontainer claude \
-            --resume "$session_id" --dangerously-skip-permissions
-    fi
 }
 
 cmd_ssh() {
@@ -721,7 +684,7 @@ cmd_tui() {
         options+=("Ports               Show port mappings")
         options+=("Down                Tear down an instance")
     fi
-    options+=("Issue               Autonomous agent for a GitHub issue")
+    options+=("Coordinate          Run a coordinator on a multi-task instruction")
     if [ "$has_instances" = true ]; then
         options+=("Down all            Tear down all instances")
         options+=("List                Show all running instances")
@@ -744,15 +707,15 @@ cmd_tui() {
     choice=$(printf '%s\n' "${options[@]}" | gum choose --header "What do you want to do?") || exit 0
 
     case "$choice" in
-        New*)       tui_new ;;
-        Connect*)   tui_connect ;;
-        SSH*)       local n; n=$(tui_pick_instance); cmd_ssh "$n" ;;
-        Ports*)     local n; n=$(tui_pick_instance); cmd_ports "$n" ;;
+        New*)        tui_new ;;
+        Connect*)    tui_connect ;;
+        SSH*)        local n; n=$(tui_pick_instance); cmd_ssh "$n" ;;
+        Ports*)      local n; n=$(tui_pick_instance); cmd_ports "$n" ;;
         "Down all"*) cmd_down_all ;;
-        Down*)      tui_down ;;
-        Issue*)     tui_issue ;;
-        List*)      cmd_list ;;
-        Rebuild*)   gum confirm "Rebuild the container image?" && cmd_rebuild ;;
+        Down*)       tui_down ;;
+        Coordinate*) tui_coordinate ;;
+        List*)       cmd_list ;;
+        Rebuild*)    gum confirm "Rebuild the container image?" && cmd_rebuild ;;
     esac
 }
 
@@ -802,41 +765,17 @@ tui_down() {
     gum style --foreground 78 "Instance '$name' removed."
 }
 
-tui_issue() {
-    local number repo
-    repo=$(project_repo)
-    local issue_label
-    issue_label=$(cfg '.agent.issue_label')
-
-    # Fetch ready issues
-    local issues=""
-    if [ -n "$repo" ] && [ -n "$issue_label" ]; then
-        issues=$(gh issue list --repo "$repo" --label "$issue_label" --state open \
-            --json number,title --limit 20 2>/dev/null | \
-            jq -r '.[] | "#\(.number)  \(.title)"' 2>/dev/null || true)
-    fi
-
-    if [ -n "$issues" ]; then
-        local selected
-        selected=$(printf '%s\n%s' "$issues" "(enter manually)" | \
-            gum choose --header "Ready issues") || exit 0
-        if [[ "$selected" == "(enter manually)" ]]; then
-            number=$(gum input --placeholder "GitHub issue number") || exit 0
-        else
-            number=$(echo "$selected" | grep -o '^#[0-9]*' | tr -d '#')
-        fi
-    else
-        number=$(gum input --placeholder "GitHub issue number") || exit 0
-    fi
-
-    [ -z "$number" ] && die "Issue number required."
+tui_coordinate() {
+    local prompt
+    prompt=$(gum write --placeholder "What should the coordinator do? (Ctrl+D to submit)" --width 80 --height 10) || exit 0
+    [ -z "$prompt" ] && die "Prompt required."
 
     local name
-    name=$(gum input --placeholder "Instance name (leave empty for issue-$number)") || exit 0
+    name=$(gum input --placeholder "Instance name (leave empty to auto-generate)") || exit 0
     if [ -z "$name" ]; then
-        cmd_issue "$number"
+        cmd_coordinate "$prompt"
     else
-        cmd_issue "$number" "$name"
+        cmd_coordinate "$prompt" --name "$name"
     fi
 }
 
@@ -848,8 +787,7 @@ case "${1:-}" in
     version|--version|-v) cmd_version ;;
     init)           shift; cmd_init "$@" ;;
     up)             shift; cmd_up "$@" ;;
-    issue)          shift; cmd_issue "$@" ;;
-    resume)         shift; cmd_resume "$@" ;;
+    coordinate)     shift; cmd_coordinate "$@" ;;
     ssh)            shift; cmd_ssh "$@" ;;
     list|ls)        shift; cmd_list "$@" ;;
     ports)          shift; cmd_ports "$@" ;;

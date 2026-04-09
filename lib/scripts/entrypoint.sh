@@ -19,5 +19,22 @@ fi
 # Initialize Claude plugins (runs as root, script handles permissions)
 /usr/local/bin/init-claude-plugins.sh
 
+# Symlink bundled cspace skills into the dev user's claude skills dir.
+# Symlinks created inside the volume-backed ~/.claude path persist across
+# restarts. The targets resolve through /opt/cspace/lib/skills/ so a
+# `cspace rebuild` automatically refreshes the content.
+if [ -d /opt/cspace/lib/skills ]; then
+    mkdir -p /home/dev/.claude/skills
+    for skill_dir in /opt/cspace/lib/skills/*/; do
+        [ -d "$skill_dir" ] || continue
+        name=$(basename "$skill_dir")
+        target="/home/dev/.claude/skills/$name"
+        if [ ! -L "$target" ] && [ ! -e "$target" ]; then
+            ln -s "$skill_dir" "$target"
+        fi
+    done
+    chown -R dev:dev /home/dev/.claude/skills 2>/dev/null || true
+fi
+
 # Execute the original command (sshd)
 exec "$@"

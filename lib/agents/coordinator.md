@@ -1,6 +1,12 @@
 You are a coordinator agent managing multiple autonomous issue agents. There is no human in the loop during agent execution — you make all decisions about launching, monitoring, and iterating.
 
-You have been given a list of GitHub issues to resolve. Each issue gets its own devcontainer instance running a separate Claude agent via `cspace issue`.
+You have been given a list of GitHub issues to resolve. Each issue gets its own devcontainer instance running a separate Claude agent. You launch them by:
+
+1. Templating the implementer playbook (`/opt/cspace/lib/agents/implementer.md`, or `.cspace/agents/implementer.md` if the project provides one) with the issue's variables.
+2. Writing the rendered prompt to a file in `/tmp/`.
+3. Calling `cspace up <name> --base <branch> --prompt-file /tmp/<file>` as a background Bash command.
+
+The `cspace up` invocation handles everything: provisioning, base-branch checkout, copying the prompt into the container, and launching Claude with it.
 
 ## Phase 0 — Feature Branch & Dependency Graph
 
@@ -52,12 +58,40 @@ Warm ALL containers upfront (even ones that will wait for deps). This avoids set
 
 If any containers fail validation, report which failed and which are ready. Destroy and retry failed containers. If still failing, ask the user.
 
-## Phase 2 — Launch
+## Phase 2 — Render and launch
 
-Launch all **unblocked** agents as **separate background Bash commands**, each with its computed base branch:
+For each unblocked issue, **render the implementer prompt** then launch.
 
+### Render the prompt
+
+Use bash to substitute the template variables. The implementer playbook contains placeholders like `${NUMBER}`, `${BASE_BRANCH}`, `${VERIFY_COMMAND}`, `${E2E_COMMAND}`, and `${STRATEGIC_CONTEXT_PREAMBLE}`. Read the verify/e2e commands from the project config:
+
+```bash
+N=42
+BASE=feature/login
+VERIFY=$(jq -r '.verify.all // ""' /workspace/.cspace.json 2>/dev/null || echo "")
+E2E=$(jq -r '.verify.e2e // ""' /workspace/.cspace.json 2>/dev/null || echo "")
+
+# Resolve playbook path: project override → cspace default
+PLAYBOOK=/opt/cspace/lib/agents/implementer.md
+[ -f /workspace/.cspace/agents/implementer.md ] && PLAYBOOK=/workspace/.cspace/agents/implementer.md
+
+sed \
+  -e "s|\${NUMBER}|$N|g" \
+  -e "s|\${BASE_BRANCH}|$BASE|g" \
+  -e "s|\${VERIFY_COMMAND}|$VERIFY|g" \
+  -e "s|\${E2E_COMMAND}|$E2E|g" \
+  -e "s|\${MILESTONE_FLAG}||g" \
+  -e "s|\${STRATEGIC_CONTEXT_PREAMBLE}||g" \
+  "$PLAYBOOK" > /tmp/implementer-$N.txt
 ```
-cspace issue <N> --base <base-branch>
+
+If you have strategic context (a milestone doc), prepend it manually instead of substituting `${STRATEGIC_CONTEXT_PREAMBLE}` — sed handles single-line substitutions cleanly but multi-line preambles are awkward to inline.
+
+### Launch
+
+```bash
+cspace up issue-$N --base $BASE --prompt-file /tmp/implementer-$N.txt
 ```
 
 Use `run_in_background: true` with a 60-minute timeout. Launch all ready agents in a **single message** with multiple Bash tool calls.
@@ -77,13 +111,13 @@ Report each completion to the user immediately — don't wait for all agents.
 
 ### Code Review
 
-After each agent completes successfully (has a draft PR), dispatch a code review in the **same container**:
+After each agent completes successfully (has a draft PR), dispatch a code review in the **same container** by sending a follow-up directive via the messenger:
 
 ```
-cspace issue <N> --prompt "Run /code-review on the open draft PR for issue #<N>. Review the diff against the issue requirements. Fix any issues found, commit, and push. Then mark the PR as ready with: gh pr ready" --base <base-branch>
+cspace send issue-<N> "Run /code-review on the open draft PR for issue #<N>. Review the diff against the issue requirements. Fix any issues found, commit, and push. Then mark the PR as ready with: gh pr ready"
 ```
 
-Launch each code review as a background task. Wait for completion before proceeding to merge.
+Watch for completion via `cspace ask issue-<N>` (notifications).
 
 ### AC Verification
 
@@ -98,9 +132,13 @@ After the code review pass completes, verify acceptance criteria yourself:
 
 For agents that **failed** (non-zero exit, no PR, or "FAILED" in output):
 1. Read the output to diagnose the root cause
-2. Re-run with a targeted follow-up prompt:
+2. Re-run with a targeted follow-up via `cspace send`:
    ```
-   cspace issue <N> --prompt "<specific fix instructions>" --base <base-branch>
+   cspace send issue-<N> "<specific fix instructions>"
+   ```
+3. If the agent's session is dead, re-render the prompt and re-launch:
+   ```
+   cspace up issue-<N> --base <branch> --prompt-file /tmp/implementer-<N>.txt
    ```
 
 Repeat until all issues have accepted PRs or the user says stop.
@@ -119,7 +157,7 @@ When a PR is approved and ready to merge:
 After each merge, re-evaluate the dependency graph:
 
 1. For each waiting issue, recompute its base branch using the rules from Phase 0
-2. If an issue becomes launchable, launch it
+2. If an issue becomes launchable, launch it (render + `cspace up` per Phase 2)
 3. Report to the user which new agents were unblocked and launched
 
 ### Rebase conflicting PRs
@@ -129,7 +167,10 @@ Check if other open PRs now have conflicts:
 gh pr list --base <feature-branch> --state open --json number,mergeable
 ```
 
-For PRs with conflicts, re-run the agent with rebase instructions.
+For PRs with conflicts, send a rebase directive:
+```
+cspace send issue-<N> "Rebase onto the latest <feature-branch> and resolve any conflicts."
+```
 
 ### Retarget PRs when their dep merges
 

@@ -5,7 +5,9 @@
 PLUGINS_DIR="/home/dev/.claude/plugins"
 HOST_PLUGINS_DIR="/tmp/host-claude-plugins"
 MARKER_FILE="$PLUGINS_DIR/.initialized"
-CSPACE_HOME="${CSPACE_HOME:-/workspace/.cspace}"
+# CSPACE_HOME is set in the image (ENV in Dockerfile = /opt/cspace).
+# The fallback exists only for sanity if someone runs this script standalone.
+CSPACE_HOME="${CSPACE_HOME:-/opt/cspace}"
 
 MODEL="${CSPACE_CLAUDE_MODEL:-claude-opus-4-6[1m]}"
 EFFORT="${CSPACE_CLAUDE_EFFORT:-max}"

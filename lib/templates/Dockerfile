@@ -79,22 +79,33 @@ fi
 EOF
 RUN chmod 644 /etc/cspace-bash-env
 
-# Copy initialization scripts
-COPY scripts/init-workspace.sh /usr/local/bin/init-workspace.sh
-COPY scripts/init-firewall.sh /usr/local/bin/init-firewall.sh
-COPY scripts/init-claude-plugins.sh /usr/local/bin/init-claude-plugins.sh
-COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
+# Copy initialization scripts (build context is the cspace repo root)
+COPY lib/scripts/init-workspace.sh /usr/local/bin/init-workspace.sh
+COPY lib/scripts/init-firewall.sh /usr/local/bin/init-firewall.sh
+COPY lib/scripts/init-claude-plugins.sh /usr/local/bin/init-claude-plugins.sh
+COPY lib/scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/init-workspace.sh \
     /usr/local/bin/init-firewall.sh \
     /usr/local/bin/init-claude-plugins.sh \
     /usr/local/bin/entrypoint.sh
 
-# Pre-install agent-supervisor (Claude Agent SDK wrapper) into the image so
-# containers can run the supervisor without per-instance npm installs.
-COPY agent-supervisor/package.json agent-supervisor/pnpm-lock.yaml /opt/agent-supervisor/
-RUN cd /opt/agent-supervisor && pnpm install --frozen-lockfile --prod
-COPY agent-supervisor/ /opt/agent-supervisor/
-RUN chown -R dev:dev /opt/agent-supervisor
+# Bake the entire cspace CLI + lib into the image at /opt/cspace.
+# This gives agents inside containers the same `cspace` command the host has,
+# letting them spawn sibling containers via the docker socket (DooD).
+# The agent-supervisor's node_modules is installed at this canonical path,
+# so /opt/cspace/lib/agent-supervisor/supervisor.mjs runs out of the box.
+COPY lib/agent-supervisor/package.json lib/agent-supervisor/pnpm-lock.yaml /opt/cspace/lib/agent-supervisor/
+RUN cd /opt/cspace/lib/agent-supervisor && pnpm install --frozen-lockfile --prod
+COPY lib/ /opt/cspace/lib/
+COPY bin/cspace /opt/cspace/bin/cspace
+RUN chmod +x /opt/cspace/bin/cspace && \
+    ln -sf /opt/cspace/bin/cspace /usr/local/bin/cspace && \
+    chown -R dev:dev /opt/cspace
+
+# CSPACE_HOME tells the in-container cspace CLI and init scripts where the
+# bundled lib lives. Set via ENV (not passed from host) so it always matches
+# the in-image path regardless of where the host installed cspace.
+ENV CSPACE_HOME=/opt/cspace
 
 WORKDIR /workspace
 EXPOSE 22
