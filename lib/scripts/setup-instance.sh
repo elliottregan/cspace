@@ -148,6 +148,37 @@ fi
 # Ensure plugin marketplace
 ensure_marketplace
 
+# --- Install recommended plugins ---
+install_plugins() {
+    if [ "$(cfg_json '.plugins.enabled')" = "false" ]; then
+        echo "Plugin installation disabled in config."
+        return
+    fi
+
+    local marker="/home/dev/.claude/plugins/.plugins-installed"
+    if dc_exec "$NAME" test -f "$marker" 2>/dev/null; then
+        echo "Recommended plugins already installed."
+        return
+    fi
+
+    local plugins
+    plugins=$(cfg_json '.plugins.install' 2>/dev/null | jq -r '.[]' 2>/dev/null) || true
+    if [ -z "$plugins" ]; then
+        return
+    fi
+
+    echo "Installing recommended plugins..."
+    while read -r plugin; do
+        [ -z "$plugin" ] && continue
+        echo "  - $plugin"
+        dc_exec "$NAME" claude plugin install "$plugin" 2>&1 | sed 's/^/      /' || true
+    done <<< "$plugins"
+
+    dc_exec "$NAME" touch "$marker"
+    echo "Plugin installation complete."
+}
+install_plugins
+
 # --- Project-specific post-setup hook ---
 POST_SETUP=$(cfg '.post_setup')
 if [ -n "$POST_SETUP" ] && [ -f "$PROJECT_ROOT/$POST_SETUP" ]; then

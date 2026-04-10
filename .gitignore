@@ -12,3 +12,4 @@ lib/agent-supervisor/node_modules/
 .cspace.local.json
 
 .env
+.pnpm-store/

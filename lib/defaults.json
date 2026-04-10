@@ -25,6 +25,23 @@
   "agent": {
     "issue_label": "ready"
   },
+  "plugins": {
+    "enabled": true,
+    "install": [
+      "superpowers",
+      "frontend-design",
+      "context7",
+      "code-review",
+      "code-simplifier",
+      "github",
+      "feature-dev",
+      "security-guidance",
+      "commit-commands",
+      "pr-review-toolkit",
+      "agent-sdk-dev",
+      "plugin-dev"
+    ]
+  },
   "services": "",
   "post_setup": ""
 }
