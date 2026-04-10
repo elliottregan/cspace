@@ -39,6 +39,14 @@ Every cspace project is configured through a `.cspace.json` file in the reposito
     "effort": "max"
   },
   "mcpServers": {},
+  "plugins": {
+    "enabled": true,
+    "install": [
+      "superpowers",
+      "context7",
+      "code-review"
+    ]
+  },
   "verify": {
     "all": "npm run lint && npm run typecheck && npm run test",
     "e2e": "npm run e2e"
@@ -95,6 +103,25 @@ Claude Code agent configuration.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `mcpServers` | `object` | `{}` | MCP (Model Context Protocol) server configurations. Each key is a server name; the value is the server's config object. Passed through to Claude Code inside the container. |
+
+### `plugins`
+
+Controls automatic plugin installation from the official marketplace during instance setup.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `plugins.enabled` | `boolean` | `true` | Enable automatic plugin installation. Set to `false` to skip. |
+| `plugins.install` | `array` | See below | List of plugin names to install from the official marketplace. |
+
+The default `plugins.install` list includes: `superpowers`, `frontend-design`, `context7`, `code-review`, `code-simplifier`, `github`, `feature-dev`, `security-guidance`, `commit-commands`, `pr-review-toolkit`, `agent-sdk-dev`, `plugin-dev`.
+
+Override the list in `.cspace.json` to install a different set, or disable entirely:
+
+```json title=".cspace.local.json"
+{
+  "plugins": { "enabled": false }
+}
+```
 
 ### `verify`
 
