@@ -10,6 +10,20 @@ Hand every open issue labeled `ready` to the cspace coordinator. The coordinator
 
 The label name comes from `.cspace.json` (`agent.issue_label`, default `"ready"`).
 
+## Gate: do these issues need containers?
+
+Before reaching for `cspace coordinate`, check whether the issues actually
+need environment isolation (databases, browser sessions, running services).
+If the issues are pure code generation, refactoring, or writing new files
+that can be verified with a build command — use worktree-isolated subagents
+via the `dispatching-parallel-agents` skill instead. It's faster and simpler.
+
+**Use cspace coordinate when:** issues need E2E tests, database migrations,
+dev servers, or any running services to verify.
+
+**Use worktree subagents when:** issues are pure code changes verifiable with
+build/lint/unit-test commands and don't need a running environment.
+
 ## Process
 
 ### Step 1: Fetch ready issues

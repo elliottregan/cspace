@@ -24,28 +24,43 @@ to another coordinator.
 
 ## Gate: does this task actually need a container?
 
+**The deciding question is: does this task need _environment_ isolation?**
+Environment isolation means the task needs its own running services, network
+state, or filesystem state that would conflict with the caller or other agents.
+
 **Use a container only when at least one of these is true:**
 
 - The task writes to a stateful backend (database, queue, cache) and must not
   collide with the caller's data.
 - The task needs its own browser session (E2E tests, visual verification, web
   scraping with state).
-- The task is a long-running autonomous flow that would block the caller for
-  more than a few minutes.
+- The task needs to run services (dev servers, APIs, workers) that bind ports
+  or create state that would clash with parallel work.
 - The side effects must be invisible to the caller until they're ready (risky
   experiments, speculative migrations).
 
 **Use something lighter when:**
 
-- The task only touches front-end code (components, CSS, copy) → launch a
-  local subagent or use a git worktree.
-- The task is a file review, audit, or read-only exploration → use a local
-  subagent (Explore for search, code-reviewer for review).
-- The task is a pure refactor with no stateful side effects → git worktree +
-  local subagent is faster.
+- The task is pure code generation, refactoring, or writing new files with no
+  runtime dependencies → git worktree + subagent is faster and simpler.
+- The task only touches front-end code (components, CSS, copy) → local
+  subagent or git worktree.
+- The task is a file review, audit, or read-only exploration → local subagent
+  (Explore for search, code-reviewer for review).
+- The task can be verified with just a build command (go build, tsc, cargo
+  check) and doesn't need running services → worktree subagent.
+- The task is "long-running" but only because there's a lot of code to write,
+  not because it needs a persistent environment → worktree subagent.
 
-State isolation is the load-bearing question. No database writes, no browser?
-You probably don't need a container.
+**"Long-running" is NOT a reason for a container.** A task that takes 30
+minutes of pure code generation does not need container isolation — it needs
+a worktree so it doesn't conflict with other file changes. Reserve containers
+for tasks that need their own _running environment_, not just their own
+_file tree_.
+
+For parallel code-only work, use the `dispatching-parallel-agents` skill with
+worktree isolation instead. It's faster to spin up, has no Docker overhead,
+and the agents can access the same tools and context as the caller.
 
 ## Pick the right primitive
 
