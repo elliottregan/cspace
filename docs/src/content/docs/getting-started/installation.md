@@ -100,3 +100,7 @@ cspace self-update
 ```
 
 Or re-run the install script — it detects the existing installation and updates it via `git pull --ff-only`.
+
+## Next steps
+
+Continue to the [Quick Start](/getting-started/quick-start/) to initialize your first project and launch an instance.

@@ -45,12 +45,14 @@ cspace up
 
 This will:
 
-1. Build the devcontainer image (first run only)
-2. Start the container with your project code
-3. Copy your git identity and `.env` into the container
-4. Launch Claude Code inside the instance
+1. Assign a planet name (mercury, venus, earth…) with deterministic port mappings
+2. Build the devcontainer image (first run only)
+3. Bundle and copy your repository into the container
+4. Copy your git identity and `.env` into the container
+5. Configure `gh` as the git credential helper
+6. Launch Claude Code inside the instance
 
-Instances are automatically assigned planet names (mercury, venus, earth...) with deterministic port mappings. You can also specify a name or branch:
+You can also specify a name or branch:
 
 ```bash
 cspace up venus              # use a specific planet name
@@ -74,6 +76,10 @@ To run an autonomous agent against a GitHub issue:
 cspace issue 42         # agent resolves issue #42 end-to-end
 ```
 
+:::tip
+Run `cspace` with no arguments to open an interactive TUI menu (requires [gum](https://github.com/charmbracelet/gum)).
+:::
+
 ## 5. Clean up
 
 When you're done with an instance:
@@ -87,3 +93,4 @@ cspace down --all       # destroy all instances for this project
 
 - [Git Authentication](/getting-started/git-authentication/) — set up your GitHub token and understand SSO requirements
 - [Configuration Reference](/configuration/configuration-reference/) — customize ports, firewall, Claude model, and more
+- [CLI Reference](/cli-reference/overview/) — full command documentation

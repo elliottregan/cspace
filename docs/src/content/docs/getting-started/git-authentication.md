@@ -63,3 +63,28 @@ If `GH_TOKEN` is missing from the container environment, instance creation **fai
 - **No commit signing.** Repos that require GPG/SSH-signed commits will reject agent pushes. Workaround: relax the rule for bot accounts, or open an issue to add signing support.
 - **No automatic token refresh.** Rotating `GH_TOKEN` on the host requires recreating instances (`cspace down <name> && cspace up <name>`).
 - **Branch protection applies.** GitHub blocks direct pushes to protected branches (typically `main`) — agents should always push feature branches and open PRs. The built-in implementer prompt does this by default.
+
+## Troubleshooting
+
+### "GH_TOKEN is not set" error
+
+If `cspace up` fails with this error, your `.env` file is missing or doesn't contain `GH_TOKEN`:
+
+```bash title="Terminal"
+# Verify your .env has the token
+grep GH_TOKEN .env
+
+# If missing, add it
+echo 'GH_TOKEN=ghp_yourTokenHere' >> .env
+
+# Recreate the instance
+cspace down <name> && cspace up <name>
+```
+
+### 403 errors on organization repos
+
+Your token is not authorized for SSO. Go to your [tokens page](https://github.com/settings/tokens), click **"Configure SSO"** next to the token, and authorize the organization.
+
+### Token works on host but not in container
+
+Make sure the token is in your project-root `.env` file, not just exported in your shell. The container reads tokens from the `.env` file via Docker Compose's `env_file` directive — shell exports on the host are not forwarded into containers.
