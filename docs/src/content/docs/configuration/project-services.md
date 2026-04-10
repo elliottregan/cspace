@@ -104,57 +104,17 @@ touch /workspace/.cspace-db-done
 Make your post-setup script **idempotent** — it may run more than once if a container is recreated. The sentinel file pattern (`if [ -f /workspace/.cspace-db-done ]; then exit 0; fi`) shown above is one way to ensure the script only runs once.
 </Aside>
 
-## Example: full services setup
+## Putting it together
 
-Here's a complete example combining services and post-setup for a Node.js project with PostgreSQL:
+To use both services and a post-setup hook, reference both in your `.cspace.json`:
 
 ```json title=".cspace.json"
 {
-  "project": {
-    "name": "my-app"
-  },
-  "container": {
-    "ports": {
-      "3000": "dev server"
-    }
-  },
-  "verify": {
-    "all": "npm run lint && npm run typecheck && npm run test",
-    "e2e": "npm run e2e"
-  },
   "services": ".cspace/docker-compose.yml",
   "post_setup": ".cspace/post-setup.sh"
 }
 ```
 
-```yaml title=".cspace/docker-compose.yml"
-services:
-  devcontainer:
-    environment:
-      - DATABASE_URL=postgresql://dev:dev@postgres:5432/myapp
+With the Docker Compose file and post-setup script from the examples above, each cspace instance gets its own Postgres container with its own data volume, so agents working in parallel never collide.
 
-  postgres:
-    image: postgres:16
-    container_name: ${CSPACE_PREFIX}.${COMPOSE_PROJECT_NAME}.postgres
-    environment:
-      POSTGRES_DB: myapp
-      POSTGRES_USER: dev
-      POSTGRES_PASSWORD: dev
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - default
-
-volumes:
-  postgres-data:
-```
-
-```bash title=".cspace/post-setup.sh"
-#!/bin/bash
-set -euo pipefail
-if [ -f /workspace/.cspace-db-done ]; then exit 0; fi
-cd /workspace && npm run migrate
-touch /workspace/.cspace-db-done
-```
-
-Each cspace instance gets its own Postgres container with its own data volume, so agents working in parallel never collide.
+See [Configuration Reference](/configuration/configuration-reference/) for all available config keys.

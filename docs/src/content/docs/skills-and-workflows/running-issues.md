@@ -95,29 +95,9 @@ gh issue list --label "$LABEL" --state open \
 
 If no issues are found, the workflow stops.
 
-### Step 2: Feature branch decision
+### Steps 2–4: Branch, launch, and monitor
 
-Same rules as `/run-issues` — default is no feature branch, each issue gets its own PR targeting `main`.
-
-### Step 3: Launch the coordinator
-
-```bash
-cat > /tmp/coord-ready.txt <<'PROMPT'
-Work on these ready-labeled issues, each independently targeting main:
-#538, #537, #536, #519
-
-Follow the coordinator playbook. Each gets its own container and PR.
-Merge order does not matter.
-PROMPT
-
-cspace coordinate --prompt-file /tmp/coord-ready.txt
-```
-
-Run in the background with a 60-minute timeout.
-
-### Step 4: Monitor and report
-
-Same as `/run-issues` — read the coordinator output, review the summary. Resumable on failure.
+The remaining steps follow the same process as `/run-issues` above — [feature branch decision](#step-2-feature-branch-decision), [launch the coordinator](#step-3-launch-the-coordinator) with the ready issue numbers, and [monitor the results](#step-4-monitor-and-report).
 
 ### Step 5: Clean up labels
 
@@ -130,17 +110,7 @@ gh issue edit 537 --remove-label "ready"
 
 ## Configuring the issue label
 
-The label used by `/run-ready` defaults to `"ready"` but can be changed in `.cspace.json`:
-
-```json title=".cspace.json"
-{
-  "agent": {
-    "issue_label": "auto"
-  }
-}
-```
-
-This changes the label that `/run-ready` queries for, so you can use whatever label convention fits your project.
+The label used by `/run-ready` defaults to `"ready"` but can be changed via the `agent.issue_label` key in `.cspace.json`. See [Configuration Reference](/configuration/configuration-reference/#agent) for details.
 
 ## Comparison
 
