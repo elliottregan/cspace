@@ -257,10 +257,10 @@ cmd_up() {
     # watcher, structured event log). See lib/core/supervisor.sh.
     if [ -n "$prompt_file" ]; then
         # Copy the file directly — bypasses any quoting issues with the prompt body
-        $DC cp "$prompt_file" devcontainer:/tmp/claude-prompt.txt
-        $DC exec -T devcontainer chown dev:dev /tmp/claude-prompt.txt </dev/null
+        dc "$name" cp "$prompt_file" devcontainer:/tmp/claude-prompt.txt
+        dc_exec_root "$name" chown dev:dev /tmp/claude-prompt.txt
     else
-        printf '%s' "$prompt" | $DC exec -T -u dev devcontainer bash -c 'cat > /tmp/claude-prompt.txt'
+        printf '%s' "$prompt" | dc "$name" exec -T -u dev devcontainer bash -c 'cat > /tmp/claude-prompt.txt'
     fi
 
     local model effort
@@ -573,7 +573,7 @@ supervisor_dispatch() {
     target=$(get_instances | head -1) || true
     [ -z "$target" ] && die "No running cspace instances. Start one with 'cspace up' first."
     docker compose -p "$(compose_project "$target")" exec -u dev -T devcontainer \
-        node /opt/agent-supervisor/cli.mjs "$@"
+        node /opt/cspace/lib/agent-supervisor/cli.mjs "$@"
 }
 
 supervisor_dispatch_interactive() {
@@ -582,7 +582,7 @@ supervisor_dispatch_interactive() {
     target=$(get_instances | head -1) || true
     [ -z "$target" ] && die "No running cspace instances. Start one with 'cspace up' first."
     exec docker compose -p "$(compose_project "$target")" exec -u dev devcontainer \
-        node /opt/agent-supervisor/cli.mjs "$@"
+        node /opt/cspace/lib/agent-supervisor/cli.mjs "$@"
 }
 
 cmd_send() {
