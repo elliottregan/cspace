@@ -5,9 +5,11 @@ import starlightThemeVintage from 'starlight-theme-vintage';
 
 // https://astro.build/config
 export default defineConfig({
+	site: 'https://cspace.netlify.app',
 	integrations: [
 		starlight({
 			title: 'cspace',
+			routeMiddleware: './src/routeData.ts',
 			plugins: [starlightThemeVintage()],
 			customCss: ['./src/styles/theme.css'],
 			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/elliottregan/cspace' }],
