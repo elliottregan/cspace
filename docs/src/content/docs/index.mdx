@@ -1,0 +1,60 @@
+---
+title: cspace
+description: Autonomous devcontainer workspaces for Claude Code
+template: splash
+hero:
+  tagline: Portable CLI for managing isolated Claude Code devcontainer instances. Spin up multiple independent development environments, each with their own workspace, browser sidecars, and network firewall — then run autonomous Claude agents against GitHub issues.
+  actions:
+    - text: Get Started
+      link: /getting-started/installation/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/elliottregan/cspace
+      variant: minimal
+      icon: external
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## Why cspace
+
+<CardGrid stagger>
+	<Card title="Safe autonomous execution" icon="setting">
+		Each agent runs in its own isolated container with an egress firewall, so you can confidently disable protections like confirmation prompts and let agents work autonomously without risking your host environment.
+	</Card>
+	<Card title="Isolated databases and services" icon="rocket">
+		Every instance gets its own database, cache, and backing services via Docker Compose — no cross-talk between agents, no collision with your local dev setup.
+	</Card>
+	<Card title="Browser testing built in" icon="open-book">
+		Per-instance Playwright and headless Chromium (CDP) sidecars give each agent its own browser session for E2E testing, visual verification, and browser automation via MCP.
+	</Card>
+	<Card title="Parallel by default" icon="random">
+		Spin up as many instances as your machine can handle. Run tests, builds, and agents in parallel across fully independent environments with deterministic port mappings.
+	</Card>
+	<Card title="Live previews" icon="laptop">
+		Expose dev server ports from any instance and preview running applications directly from your host — each container gets its own mapped ports.
+	</Card>
+	<Card title="Orchestrate an agent fleet" icon="star">
+		Coordinate any amount of work across an agent fleet. The coordinator resolves dependencies, sequences merges, and runs watchdog checks — from a handful of issues to an entire backlog.
+	</Card>
+</CardGrid>
+
+## What cspace does
+
+<CardGrid stagger>
+	<Card title="Multi-instance management" icon="rocket">
+		Run multiple isolated devcontainers in parallel, each with their own workspace and state. Instances auto-assign planet names with deterministic port mappings.
+	</Card>
+	<Card title="Claude Code integration" icon="laptop">
+		Each instance has Claude Code pre-installed with configurable model, effort level, hooks for progress logging, and transcript export.
+	</Card>
+	<Card title="Network firewall" icon="setting">
+		iptables-based allowlist restricts egress to GitHub, npm, Anthropic, and your project-specific domains.
+	</Card>
+	<Card title="Autonomous agents" icon="star">
+		Run `cspace up <name> --prompt-file <path>` to fully autonomously resolve a GitHub issue: explore code, design architecture, implement, verify, and ship a PR.
+	</Card>
+	<Card title="Multi-agent coordination" icon="random">
+		The coordinator prompt manages parallel agents across issues with dependency tracking and merge ordering.
+	</Card>
+</CardGrid>
