@@ -11,6 +11,8 @@ RUN apk add --no-cache \
     iptables ipset bind-tools jq iproute2 \
     # Docker-outside-of-Docker: CLI talks to host daemon via mounted socket
     docker-cli docker-cli-compose \
+    # Go toolchain
+    go \
     # Task runner
     just && \
     npm install -g pnpm
