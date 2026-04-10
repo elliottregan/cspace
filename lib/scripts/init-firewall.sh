@@ -88,6 +88,9 @@ ALLOWED_DOMAINS=(
   "claude.ai"
   "context7.com"
   "playwright.dev"
+  "proxy.golang.org"
+  "sum.golang.org"
+  "storage.googleapis.com"
 )
 # GitHub Actions blob hosts
 for i in $(seq 1 20); do
