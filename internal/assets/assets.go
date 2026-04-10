@@ -27,13 +27,15 @@ func DefaultsJSON() ([]byte, error) {
 // preserving the directory structure under embedded/.
 // It returns the path to the extraction root directory.
 //
-// Files ending in .sh are made executable (0755).
+// Files ending in .sh or .mjs are made executable (0755).
 // A .version marker file is written with the given version string;
 // if the marker already matches, extraction is skipped.
+// Stale files from previous versions are cleaned by removing
+// the extraction directory before re-extracting.
 func ExtractTo(dir string, version string) (string, error) {
 	extractRoot := filepath.Join(dir, "lib")
 
-	// Check version marker — skip extraction if versions match
+	// Skip extraction if version marker matches
 	markerPath := filepath.Join(extractRoot, ".version")
 	if existing, err := os.ReadFile(markerPath); err == nil {
 		if strings.TrimSpace(string(existing)) == version {
@@ -41,43 +43,46 @@ func ExtractTo(dir string, version string) (string, error) {
 		}
 	}
 
-	// Walk the embedded FS and extract everything
-	err := fs.WalkDir(EmbeddedFS, "embedded", func(path string, d fs.DirEntry, err error) error {
+	// Clean stale files from previous version before re-extracting
+	if err := os.RemoveAll(extractRoot); err != nil {
+		return "", fmt.Errorf("cleaning stale assets: %w", err)
+	}
+
+	// Use fs.Sub to strip the "embedded/" prefix automatically
+	subFS, err := fs.Sub(EmbeddedFS, "embedded")
+	if err != nil {
+		return "", fmt.Errorf("creating sub filesystem: %w", err)
+	}
+
+	err = fs.WalkDir(subFS, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-
-		// Strip the "embedded/" prefix to get the relative path
-		relPath := strings.TrimPrefix(path, "embedded")
-		relPath = strings.TrimPrefix(relPath, "/")
-		if relPath == "" {
-			return nil // root directory
+		if path == "." {
+			return nil
 		}
 
-		targetPath := filepath.Join(extractRoot, relPath)
+		targetPath := filepath.Join(extractRoot, path)
 
 		if d.IsDir() {
 			return os.MkdirAll(targetPath, 0755)
 		}
 
-		// Read the embedded file
-		data, err := EmbeddedFS.ReadFile(path)
+		data, err := fs.ReadFile(subFS, path)
 		if err != nil {
 			return fmt.Errorf("reading embedded %s: %w", path, err)
 		}
 
-		// Ensure parent directory exists
+		// Defensive: ensure parent exists (embed.FS may omit directory entries)
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 			return fmt.Errorf("creating directory for %s: %w", targetPath, err)
 		}
 
-		// Determine file mode — shell scripts get executable bit
 		mode := os.FileMode(0644)
 		if strings.HasSuffix(path, ".sh") || strings.HasSuffix(path, ".mjs") {
 			mode = 0755
 		}
 
-		// Write the file
 		if err := os.WriteFile(targetPath, data, mode); err != nil {
 			return fmt.Errorf("writing %s: %w", targetPath, err)
 		}
@@ -88,7 +93,6 @@ func ExtractTo(dir string, version string) (string, error) {
 		return "", fmt.Errorf("extracting embedded assets: %w", err)
 	}
 
-	// Write version marker
 	if err := os.WriteFile(markerPath, []byte(version+"\n"), 0644); err != nil {
 		return "", fmt.Errorf("writing version marker: %w", err)
 	}

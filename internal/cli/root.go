@@ -32,9 +32,9 @@ func NewRootCmd() *cobra.Command {
 Spin up Docker containers with independent workspaces, browser sidecars,
 and network firewalls, then run autonomous Claude agents against GitHub issues.`,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			// Skip config/asset loading for commands that don't need it
-			name := cmd.Name()
-			if name == "version" || name == "help" || name == "completion" {
+			// Skip config/asset loading for commands that don't need a project context
+			switch cmd.Name() {
+			case "version", "help", "completion", "init", "self-update":
 				return nil
 			}
 

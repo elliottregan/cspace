@@ -7,6 +7,7 @@ func newDownCmd() *cobra.Command {
 		Use:     "down <name>",
 		Short:   "Destroy instance and volumes",
 		GroupID: "instance",
+		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return errNotImplemented("down")
 		},

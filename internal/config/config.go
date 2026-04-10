@@ -19,6 +19,10 @@ import (
 	"github.com/elliottregan/cspace/internal/assets"
 )
 
+const appPrefix = "cspace"
+
+var gitRepoRe = regexp.MustCompile(`github\.com[:/](.+)$`)
+
 // Config represents the merged cspace configuration.
 type Config struct {
 	Project    ProjectConfig          `json:"project"`
@@ -85,13 +89,11 @@ type PluginsConfig struct {
 // If assetsDir is non-empty, it is stored on the returned Config for use
 // by resolve functions.
 func Load(dir string, assetsDir string) (*Config, error) {
-	// Find project root
 	projectRoot, err := FindProjectRoot(dir)
 	if err != nil {
 		return nil, fmt.Errorf("finding project root: %w", err)
 	}
 
-	// Read embedded defaults.json into a generic map
 	defaultsBytes, err := assets.DefaultsJSON()
 	if err != nil {
 		return nil, fmt.Errorf("reading embedded defaults.json: %w", err)
@@ -102,45 +104,24 @@ func Load(dir string, assetsDir string) (*Config, error) {
 		return nil, fmt.Errorf("parsing defaults.json: %w", err)
 	}
 
-	// Merge .cspace.json if it exists
-	projectConfigPath := filepath.Join(projectRoot, ".cspace.json")
-	if data, err := os.ReadFile(projectConfigPath); err == nil {
-		var overlay map[string]interface{}
-		if err := json.Unmarshal(data, &overlay); err != nil {
-			return nil, fmt.Errorf("parsing .cspace.json: %w", err)
+	// Merge project and local config files in precedence order
+	for _, name := range []string{".cspace.json", ".cspace.local.json"} {
+		data, err := os.ReadFile(filepath.Join(projectRoot, name))
+		if err != nil {
+			continue
 		}
-		base = DeepMerge(base, overlay)
-	}
-
-	// Merge .cspace.local.json if it exists
-	localConfigPath := filepath.Join(projectRoot, ".cspace.local.json")
-	if data, err := os.ReadFile(localConfigPath); err == nil {
 		var overlay map[string]interface{}
 		if err := json.Unmarshal(data, &overlay); err != nil {
-			return nil, fmt.Errorf("parsing .cspace.local.json: %w", err)
+			return nil, fmt.Errorf("parsing %s: %w", name, err)
 		}
 		base = DeepMerge(base, overlay)
 	}
 
 	// Apply environment variable overrides
-	if v := os.Getenv("CSPACE_PROJECT_NAME"); v != "" {
-		project, _ := base["project"].(map[string]interface{})
-		if project == nil {
-			project = make(map[string]interface{})
-			base["project"] = project
-		}
-		project["name"] = v
-	}
-	if v := os.Getenv("CSPACE_PROJECT_REPO"); v != "" {
-		project, _ := base["project"].(map[string]interface{})
-		if project == nil {
-			project = make(map[string]interface{})
-			base["project"] = project
-		}
-		project["repo"] = v
-	}
+	setNestedMapValue(base, "project", "name", os.Getenv("CSPACE_PROJECT_NAME"))
+	setNestedMapValue(base, "project", "repo", os.Getenv("CSPACE_PROJECT_REPO"))
 
-	// Marshal the merged map back to JSON, then unmarshal into Config struct
+	// Convert merged map to Config struct via JSON round-trip
 	mergedBytes, err := json.Marshal(base)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling merged config: %w", err)
@@ -154,12 +135,23 @@ func Load(dir string, assetsDir string) (*Config, error) {
 	cfg.ProjectRoot = projectRoot
 	cfg.AssetsDir = assetsDir
 
-	// Auto-detect empty fields
-	if err := cfg.autoDetect(); err != nil {
-		return nil, fmt.Errorf("auto-detecting config: %w", err)
-	}
+	cfg.autoDetect()
 
 	return cfg, nil
+}
+
+// setNestedMapValue sets base[section][key] = value if value is non-empty,
+// creating the section map if needed.
+func setNestedMapValue(base map[string]interface{}, section, key, value string) {
+	if value == "" {
+		return
+	}
+	m, _ := base[section].(map[string]interface{})
+	if m == nil {
+		m = make(map[string]interface{})
+		base[section] = m
+	}
+	m[key] = value
 }
 
 // DeepMerge performs a recursive merge of overlay into base,
@@ -172,27 +164,22 @@ func Load(dir string, assetsDir string) (*Config, error) {
 func DeepMerge(base, overlay map[string]interface{}) map[string]interface{} {
 	result := make(map[string]interface{}, len(base))
 
-	// Copy all base keys
 	for k, v := range base {
 		result[k] = v
 	}
 
-	// Merge overlay keys
 	for k, overlayVal := range overlay {
 		baseVal, exists := result[k]
 		if !exists {
-			// New key from overlay
 			result[k] = overlayVal
 			continue
 		}
 
-		// Both exist — check if both are maps (recursive merge)
 		baseMap, baseIsMap := baseVal.(map[string]interface{})
 		overlayMap, overlayIsMap := overlayVal.(map[string]interface{})
 		if baseIsMap && overlayIsMap {
 			result[k] = DeepMerge(baseMap, overlayMap)
 		} else {
-			// Scalar or array: overlay replaces base
 			result[k] = overlayVal
 		}
 	}
@@ -216,7 +203,6 @@ func FindProjectRoot(dir string) (string, error) {
 
 		parent := filepath.Dir(current)
 		if parent == current {
-			// Reached filesystem root
 			return "", fmt.Errorf("not in a git repository (searched from %s)", absDir)
 		}
 		current = parent
@@ -224,25 +210,20 @@ func FindProjectRoot(dir string) (string, error) {
 }
 
 // autoDetect fills in empty project fields from the environment.
-func (c *Config) autoDetect() error {
-	// Auto-detect project name from directory
+func (c *Config) autoDetect() {
 	if c.Project.Name == "" {
 		c.Project.Name = filepath.Base(c.ProjectRoot)
 	}
 
-	// Auto-detect repo from git remote
 	if c.Project.Repo == "" {
 		c.Project.Repo = detectGitRepo(c.ProjectRoot)
 	}
 
-	// Auto-derive prefix from project name
 	if c.Project.Prefix == "" && len(c.Project.Name) >= 2 {
 		c.Project.Prefix = c.Project.Name[:2]
 	} else if c.Project.Prefix == "" && len(c.Project.Name) > 0 {
 		c.Project.Prefix = c.Project.Name
 	}
-
-	return nil
 }
 
 // detectGitRepo extracts the GitHub owner/repo from the git remote origin URL.
@@ -254,11 +235,9 @@ func detectGitRepo(projectRoot string) string {
 	}
 
 	url := strings.TrimSpace(string(out))
-	// Match github.com[:/]owner/repo(.git)?
-	re := regexp.MustCompile(`github\.com[:/](.+?)(?:\.git)?$`)
-	matches := re.FindStringSubmatch(url)
+	matches := gitRepoRe.FindStringSubmatch(url)
 	if len(matches) >= 2 {
-		return matches[1]
+		return strings.TrimSuffix(matches[1], ".git")
 	}
 	return ""
 }
@@ -272,22 +251,22 @@ func (c *Config) ComposeName(instance string) string {
 
 // ImageName returns the Docker image name for this project.
 func (c *Config) ImageName() string {
-	return "cspace-" + c.Project.Name
+	return appPrefix + "-" + c.Project.Name
 }
 
 // MemoryVolume returns the shared memory volume name.
 func (c *Config) MemoryVolume() string {
-	return "cspace-" + c.Project.Name + "-memory"
+	return appPrefix + "-" + c.Project.Name + "-memory"
 }
 
 // LogsVolume returns the shared logs volume name.
 func (c *Config) LogsVolume() string {
-	return "cspace-" + c.Project.Name + "-logs"
+	return appPrefix + "-" + c.Project.Name + "-logs"
 }
 
 // InstanceLabel returns the Docker label for this project's instances.
 func (c *Config) InstanceLabel() string {
-	return "cspace.project=" + c.Project.Name
+	return appPrefix + ".project=" + c.Project.Name
 }
 
 // IsInitialized returns true if a .cspace.json file exists in the project root.
