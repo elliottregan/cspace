@@ -32,7 +32,7 @@ func newDownCmd() *cobra.Command {
 			}
 
 			name := args[0]
-			if _, err := compose.Run(name, cfg, "down", "--volumes"); err != nil {
+			if err := compose.Run(name, cfg, "down", "--volumes"); err != nil {
 				return err
 			}
 			fmt.Printf("Instance '%s' removed.\n", name)
@@ -60,7 +60,7 @@ func downAll() error {
 
 	for _, name := range names {
 		fmt.Printf("Tearing down instance: %s\n", name)
-		if _, err := compose.Run(name, cfg, "down", "--volumes"); err != nil {
+		if err := compose.Run(name, cfg, "down", "--volumes"); err != nil {
 			// Log but continue tearing down other instances
 			fmt.Fprintf(os.Stderr, "  warning: %v\n", err)
 		}

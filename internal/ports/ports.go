@@ -32,12 +32,7 @@ type PortMapping struct {
 
 // IsPlanet returns true if the name is a known planet name.
 func IsPlanet(name string) bool {
-	for _, p := range Planets {
-		if p == name {
-			return true
-		}
-	}
-	return false
+	return PlanetIndex(name) >= 0
 }
 
 // PlanetIndex returns the index of a planet name, or -1 if not found.

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/elliottregan/cspace/internal/config"
 	"github.com/elliottregan/cspace/internal/ports"
@@ -67,7 +68,7 @@ func ComposeEnv(name string, cfg *config.Config) []string {
 
 // Cmd constructs an *exec.Cmd for running docker compose with proper file
 // resolution and environment for the given instance.
-// The returned command is not started — the caller can attach stdio or run it.
+// The returned command is not started -- the caller can attach stdio or run it.
 func Cmd(name string, cfg *config.Config, args ...string) (*exec.Cmd, error) {
 	files, err := ComposeFiles(cfg)
 	if err != nil {
@@ -76,15 +77,16 @@ func Cmd(name string, cfg *config.Config, args ...string) (*exec.Cmd, error) {
 
 	composeName := cfg.ComposeName(name)
 
-	// Build the full argument list: -f file1 -f file2 -p project <args...>
-	cmdArgs := make([]string, 0, 2*len(files)+2+len(args))
+	// Build the full argument list: compose -f file1 -f file2 -p project <args...>
+	cmdArgs := make([]string, 0, 1+2*len(files)+2+len(args))
+	cmdArgs = append(cmdArgs, "compose")
 	for _, f := range files {
 		cmdArgs = append(cmdArgs, "-f", f)
 	}
 	cmdArgs = append(cmdArgs, "-p", composeName)
 	cmdArgs = append(cmdArgs, args...)
 
-	cmd := exec.Command("docker", append([]string{"compose"}, cmdArgs...)...)
+	cmd := exec.Command("docker", cmdArgs...)
 
 	// Merge compose env vars with the current environment
 	cmd.Env = append(os.Environ(), ComposeEnv(name, cfg)...)
@@ -92,22 +94,21 @@ func Cmd(name string, cfg *config.Config, args ...string) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-// Run constructs and runs a docker compose command for the given instance,
-// returning combined output and any error.
+// Run constructs and runs a docker compose command for the given instance.
 // Stdout and stderr are inherited from the parent process.
-func Run(name string, cfg *config.Config, args ...string) ([]byte, error) {
+func Run(name string, cfg *config.Config, args ...string) error {
 	cmd, err := Cmd(name, cfg, args...)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("docker compose %v: %w", args, err)
+		return fmt.Errorf("docker compose %s: %w", strings.Join(args, " "), err)
 	}
-	return nil, nil
+	return nil
 }
 
 // RunDirect runs docker compose with an explicit project name, without
@@ -115,7 +116,9 @@ func Run(name string, cfg *config.Config, args ...string) ([]byte, error) {
 // operations like `down --everywhere` where we only have the compose
 // project name from Docker labels.
 func RunDirect(composeProject string, args ...string) error {
-	cmdArgs := append([]string{"compose", "-p", composeProject}, args...)
+	cmdArgs := make([]string, 0, 3+len(args))
+	cmdArgs = append(cmdArgs, "compose", "-p", composeProject)
+	cmdArgs = append(cmdArgs, args...)
 	cmd := exec.Command("docker", cmdArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
