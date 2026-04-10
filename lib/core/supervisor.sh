@@ -68,7 +68,10 @@ launch_supervisor() {
         bash -c "set -o pipefail; trap '' PIPE; trap '[ -x /workspace/.cspace/hooks/copy-transcript-on-exit.sh ] && /workspace/.cspace/hooks/copy-transcript-on-exit.sh || [ -x /opt/cspace/lib/hooks/copy-transcript-on-exit.sh ] && /opt/cspace/lib/hooks/copy-transcript-on-exit.sh' EXIT; node /opt/cspace/lib/agent-supervisor/supervisor.mjs --role $role $instance_flag --prompt-file $container_prompt_path --model ${model:-claude-opus-4-6} $effort_flag $system_prompt_flag 2>$stderr_log \
             | /opt/cspace/lib/scripts/stream-status.sh" || EXIT_CODE=$?
 
-    if [ $EXIT_CODE -eq 0 ] || [ $EXIT_CODE -eq 141 ]; then
+    # 0   = clean exit
+    # 2   = stream-status.sh exited after supervisor closed its pipe
+    # 141 = SIGPIPE (bash default when pipe reader exits)
+    if [ $EXIT_CODE -eq 0 ] || [ $EXIT_CODE -eq 2 ] || [ $EXIT_CODE -eq 141 ]; then
         return 0
     fi
 
