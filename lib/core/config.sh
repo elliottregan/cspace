@@ -89,6 +89,7 @@ cfg_json() {
 project_name() { cfg '.project.name'; }
 project_prefix() { cfg '.project.prefix'; }
 project_repo() { cfg '.project.repo'; }
+compose_project() { echo "$(project_prefix)-${1}"; }
 image_name() { echo "cspace-$(project_name)"; }
 memory_volume() { echo "cspace-$(project_name)-memory"; }
 logs_volume() { echo "cspace-$(project_name)-logs"; }

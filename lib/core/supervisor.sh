@@ -51,7 +51,7 @@ launch_supervisor() {
     local effort_flag="$5"
     local system_prompt_flag="$6"
 
-    local DC="docker compose -p $name"
+    local DC="docker compose -p $(compose_project "$name")"
 
     # Only the agent role takes --instance; the supervisor rejects it for
     # coordinators (see supervisor.mjs:241-244).
@@ -126,7 +126,7 @@ relaunch_supervisor_detached() {
     local inbox_flag=""
     [ -n "$ignore_inbox_before" ] && inbox_flag="--ignore-inbox-before $ignore_inbox_before"
 
-    docker compose -p "$name" exec -d -T -u dev -w /workspace \
+    docker compose -p "$(compose_project "$name")" exec -d -T -u dev -w /workspace \
         -e CLAUDE_AUTONOMOUS=1 \
         -e CLAUDE_INSTANCE="$name" \
         devcontainer \
@@ -195,7 +195,7 @@ restart_supervisor() {
     # If reason given, prepend a restart marker to the prompt
     local prompt_path="/tmp/claude-prompt.txt"
     if [ -n "$reason" ]; then
-        local DC="docker compose -p $name"
+        local DC="docker compose -p $(compose_project "$name")"
         $DC exec -T -u dev devcontainer bash -c "
             { echo '[This session was restarted by the coordinator. Reason: $reason. Your workspace is preserved — all files, branches, and uncommitted changes are intact. Re-establish any external state (browser sessions, test servers, etc.) as needed, then continue your task.]'
               echo ''

@@ -248,7 +248,7 @@ cmd_up() {
         # Interactive TTY — drop the user straight into a live claude session.
         # Not routed through the supervisor because it has no streaming-input
         # mode appropriate for a TTY and the user is already in the loop.
-        exec docker compose -p "$name" exec -u dev -w /workspace devcontainer claude --dangerously-skip-permissions
+        exec docker compose -p "$(compose_project "$name")" exec -u dev -w /workspace devcontainer claude --dangerously-skip-permissions
     fi
 
     # Autonomous path — stage the prompt in the container, then run through
@@ -315,7 +315,7 @@ cmd_coordinate() {
 
     skip_onboarding "$name"
 
-    local DC="docker compose -p $name"
+    local DC="docker compose -p $(compose_project "$name")"
 
     # Re-copy host .env into container so the coordinator inherits GH_TOKEN, etc.
     if [ -f "$PROJECT_ROOT/.env" ]; then
@@ -360,7 +360,7 @@ cmd_ssh() {
 
     load_config
     require_running "$name"
-    exec docker compose -p "$name" exec -u dev -w /workspace devcontainer bash
+    exec docker compose -p "$(compose_project "$name")" exec -u dev -w /workspace devcontainer bash
 }
 
 cmd_list() {
@@ -572,7 +572,7 @@ supervisor_dispatch() {
     local target
     target=$(get_instances | head -1) || true
     [ -z "$target" ] && die "No running cspace instances. Start one with 'cspace up' first."
-    docker compose -p "$target" exec -u dev -T devcontainer \
+    docker compose -p "$(compose_project "$target")" exec -u dev -T devcontainer \
         node /opt/agent-supervisor/cli.mjs "$@"
 }
 
@@ -581,7 +581,7 @@ supervisor_dispatch_interactive() {
     local target
     target=$(get_instances | head -1) || true
     [ -z "$target" ] && die "No running cspace instances. Start one with 'cspace up' first."
-    exec docker compose -p "$target" exec -u dev devcontainer \
+    exec docker compose -p "$(compose_project "$target")" exec -u dev devcontainer \
         node /opt/agent-supervisor/cli.mjs "$@"
 }
 

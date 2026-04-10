@@ -48,5 +48,5 @@ get_host_port() {
     local name="$1"
     local service="$2"
     local port="$3"
-    docker compose -p "$name" port "$service" "$port" 2>/dev/null | sed 's/0.0.0.0://'
+    docker compose -p "$(compose_project "$name")" port "$service" "$port" 2>/dev/null | sed 's/0.0.0.0://'
 }

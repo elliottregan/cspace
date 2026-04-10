@@ -25,7 +25,8 @@ export_compose_env() {
     local prefix
     prefix=$(project_prefix)
 
-    export COMPOSE_PROJECT_NAME="$name"
+    export COMPOSE_PROJECT_NAME="$(compose_project "$name")"
+    export CSPACE_CONTAINER_NAME="${name}"
     export CSPACE_PROJECT_NAME="$(project_name)"
     export CSPACE_PREFIX="$prefix"
     export CSPACE_IMAGE="$(image_name)"
@@ -54,6 +55,6 @@ dc_compose() {
     local files
     files=$(compose_files)
     # shellcheck disable=SC2086
-    docker compose $files -p "$name" "$@"
+    docker compose $files -p "$(compose_project "$name")" "$@"
 }
 

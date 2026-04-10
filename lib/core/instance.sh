@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Instance lifecycle helpers for cspace
 
-# Get all running instance names for this project
+# Get all running instance names for this project.
+# Returns bare instance names (without the project prefix).
 get_instances() {
+    local prefix
+    prefix="$(project_prefix)."
     docker ps --filter "label=$(instance_label)" \
-        --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null | sort -u
+        --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null \
+        | sed "s/^${prefix}//" | sort -u
 }
 
 # Get every running cspace instance across all projects.
@@ -17,19 +21,20 @@ get_all_instances() {
 
 # Get instance details as "name branch age" lines
 get_instance_details() {
-    local projects
-    projects=$(get_instances)
-    [ -z "$projects" ] && return
+    local instances
+    instances=$(get_instances)
+    [ -z "$instances" ] && return
 
-    while read -r project; do
-        [ -z "$project" ] && continue
-        local DC="docker compose -p $project"
-        local branch=$($DC exec -T -u dev -w /workspace devcontainer git branch --show-current 2>/dev/null || echo "?")
-        local age=$(docker ps --filter "label=com.docker.compose.project=$project" \
+    while read -r name; do
+        [ -z "$name" ] && continue
+        local cp
+        cp=$(compose_project "$name")
+        local branch=$(dc_exec "$name" git branch --show-current 2>/dev/null || echo "?")
+        local age=$(docker ps --filter "label=com.docker.compose.project=$cp" \
             --filter "label=$(instance_label)" \
             --format '{{.RunningFor}}' 2>/dev/null | head -1)
-        printf "%-16s %-30s %s\n" "$project" "$branch" "$age"
-    done <<< "$projects"
+        printf "%-16s %-30s %s\n" "$name" "$branch" "$age"
+    done <<< "$instances"
 }
 
 # Like get_instance_details but spans all projects, with a project column.
@@ -38,21 +43,20 @@ get_all_instance_details() {
     rows=$(get_all_instances)
     [ -z "$rows" ] && return
 
-    while IFS=$'\t' read -r instance project; do
-        [ -z "$instance" ] && continue
-        local DC="docker compose -p $instance"
-        local branch=$($DC exec -T -u dev -w /workspace devcontainer git branch --show-current 2>/dev/null || echo "?")
-        local age=$(docker ps --filter "label=com.docker.compose.project=$instance" \
+    while IFS=$'\t' read -r cp project; do
+        [ -z "$cp" ] && continue
+        local branch=$(docker compose -p "$cp" exec -T -u dev -w /workspace devcontainer git branch --show-current 2>/dev/null || echo "?")
+        local age=$(docker ps --filter "label=com.docker.compose.project=$cp" \
             --filter "label=cspace.instance=true" \
             --format '{{.RunningFor}}' 2>/dev/null | head -1)
-        printf "%-16s %-20s %-30s %s\n" "$instance" "${project:-?}" "$branch" "$age"
+        printf "%-16s %-20s %-30s %s\n" "$cp" "${project:-?}" "$branch" "$age"
     done <<< "$rows"
 }
 
 # Check if an instance is running
 is_running() {
     local name="$1"
-    docker compose -p "$name" ps --status running -q 2>/dev/null | grep -q .
+    docker compose -p "$(compose_project "$name")" ps --status running -q 2>/dev/null | grep -q .
 }
 
 # Require an instance to be running
@@ -67,21 +71,21 @@ require_running() {
 
 # Docker compose command for an instance
 dc() {
-    docker compose -p "$1" "${@:2}"
+    docker compose -p "$(compose_project "$1")" "${@:2}"
 }
 
 # Execute a command inside the devcontainer
 dc_exec() {
     local name="$1"
     shift
-    docker compose -p "$name" exec -T -u dev -w /workspace devcontainer "$@" </dev/null
+    docker compose -p "$(compose_project "$name")" exec -T -u dev -w /workspace devcontainer "$@" </dev/null
 }
 
 # Execute as root inside the devcontainer
 dc_exec_root() {
     local name="$1"
     shift
-    docker compose -p "$name" exec -T devcontainer "$@" </dev/null
+    docker compose -p "$(compose_project "$name")" exec -T devcontainer "$@" </dev/null
 }
 
 # Skip Claude onboarding (auth is via CLAUDE_CODE_OAUTH_TOKEN env var)
