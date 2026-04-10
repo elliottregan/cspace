@@ -24,7 +24,7 @@ cspace up [name|branch] [flags]
 | `--no-claude` | Create the instance without launching Claude Code |
 | `--prompt "text"` | Run as a one-shot autonomous agent with the given inline prompt |
 | `--prompt-file <path>` | Run as a one-shot autonomous agent with the prompt loaded from a file |
-| `--base <branch>` | Override the base branch for checkout |
+| `--base <branch>` | Override which branch is checked out in the container (the instance name is still derived from the positional argument) |
 
 `--prompt` and `--prompt-file` are mutually exclusive.
 
@@ -57,7 +57,7 @@ cspace up mercury
 # Launch from a branch
 cspace up feature/auth
 
-# Launch from a branch with a custom base
+# Name derived from feature/auth, but check out develop instead
 cspace up feature/auth --base develop
 
 # Provision without Claude
@@ -113,6 +113,8 @@ cspace list [--all]
 ### Description
 
 Displays a table of running instances with their name, current git branch, and uptime. Without `--all`, only instances for the current project are shown.
+
+`cspace ls` is accepted as an alias for `cspace list`.
 
 ### Output
 
