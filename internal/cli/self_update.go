@@ -93,26 +93,8 @@ func runSelfUpdate(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Find matching asset for current platform.
-	// GoReleaser produces raw binary assets named cspace-<os>-<arch>
-	// via the "binaries" archive ID in .goreleaser.yml.
+	// Find matching asset and download it
 	assetName := fmt.Sprintf("cspace-%s-%s", runtime.GOOS, runtime.GOARCH)
-	var downloadURL string
-	for _, asset := range release.Assets {
-		if asset.Name == assetName {
-			downloadURL = asset.BrowserDownloadURL
-			break
-		}
-	}
-	if downloadURL == "" {
-		// List available assets for debugging
-		var available []string
-		for _, a := range release.Assets {
-			available = append(available, a.Name)
-		}
-		return fmt.Errorf("no release asset found for %s/%s (expected %s)\nAvailable assets: %s",
-			runtime.GOOS, runtime.GOARCH, assetName, strings.Join(available, ", "))
-	}
 
 	// Get the current binary path
 	execPath, err := os.Executable()
@@ -124,22 +106,9 @@ func runSelfUpdate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolving binary path: %w", err)
 	}
 
-	// Download to a temporary file in the same directory (for atomic rename)
 	fmt.Printf("Downloading %s...\n", assetName)
-	tmpPath, err := downloadToTemp(downloadURL, filepath.Dir(execPath))
-	if err != nil {
-		return fmt.Errorf("downloading update: %w", err)
-	}
-	defer os.Remove(tmpPath) // Clean up on error
-
-	// Make executable
-	if err := os.Chmod(tmpPath, 0755); err != nil {
-		return fmt.Errorf("setting permissions: %w", err)
-	}
-
-	// Atomic replace
-	if err := os.Rename(tmpPath, execPath); err != nil {
-		return fmt.Errorf("replacing binary: %w\nDownloaded file is at: %s\nYou may need to run with sudo or manually move the file", err, tmpPath)
+	if err := downloadReleaseAsset(release, assetName, execPath); err != nil {
+		return err
 	}
 
 	fmt.Printf("Updated to %s\n", release.TagName)
@@ -150,7 +119,17 @@ func runSelfUpdate(cmd *cobra.Command, args []string) error {
 // Uses net/http directly so it works without the gh CLI.
 func fetchLatestRelease(repo string) (*ghRelease, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
+	return fetchRelease(url)
+}
 
+// fetchReleaseByTag queries the GitHub Releases API for a release with the given tag.
+func fetchReleaseByTag(repo, tag string) (*ghRelease, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/tags/%s", repo, tag)
+	return fetchRelease(url)
+}
+
+// fetchRelease fetches a GitHub release from the given API URL.
+func fetchRelease(url string) (*ghRelease, error) {
 	resp, err := http.Get(url)
 	if err != nil {
 		return nil, err
@@ -170,6 +149,42 @@ func fetchLatestRelease(repo string) (*ghRelease, error) {
 	}
 
 	return &release, nil
+}
+
+// downloadReleaseAsset finds the named asset in a release, downloads it, and
+// atomically places it at targetPath with executable permissions.
+func downloadReleaseAsset(release *ghRelease, assetName, targetPath string) error {
+	var downloadURL string
+	for _, asset := range release.Assets {
+		if asset.Name == assetName {
+			downloadURL = asset.BrowserDownloadURL
+			break
+		}
+	}
+	if downloadURL == "" {
+		var available []string
+		for _, a := range release.Assets {
+			available = append(available, a.Name)
+		}
+		return fmt.Errorf("no release asset %q found in %s\nAvailable: %s",
+			assetName, release.TagName, strings.Join(available, ", "))
+	}
+
+	tmpPath, err := downloadToTemp(downloadURL, filepath.Dir(targetPath))
+	if err != nil {
+		return fmt.Errorf("downloading %s: %w", assetName, err)
+	}
+	defer os.Remove(tmpPath) // clean up on error
+
+	if err := os.Chmod(tmpPath, 0755); err != nil {
+		return fmt.Errorf("setting permissions: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, targetPath); err != nil {
+		return fmt.Errorf("replacing %s: %w\nDownloaded file at: %s", targetPath, err, tmpPath)
+	}
+
+	return nil
 }
 
 // downloadToTemp downloads a URL to a temporary file in the given directory.

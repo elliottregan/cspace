@@ -77,14 +77,15 @@ if curl -fsSL -o "$TMPDIR/checksums.txt" "$CHECKSUM_URL" 2>/dev/null; then
     (
         cd "$TMPDIR"
         if command -v sha256sum &>/dev/null; then
-            grep "$ASSET_NAME" checksums.txt | sha256sum --check --quiet
+            grep -F "  ${ASSET_NAME}" checksums.txt | sha256sum --check --quiet
+            echo "Checksum verified."
         elif command -v shasum &>/dev/null; then
-            grep "$ASSET_NAME" checksums.txt | shasum -a 256 --check --quiet
+            grep -F "  ${ASSET_NAME}" checksums.txt | shasum -a 256 --check --quiet
+            echo "Checksum verified."
         else
             echo "Warning: No checksum tool found, skipping verification." >&2
         fi
     )
-    echo "Checksum verified."
 else
     echo "Warning: Could not download checksums, skipping verification." >&2
 fi

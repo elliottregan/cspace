@@ -176,47 +176,37 @@ func findGoModRoot(dir string) string {
 }
 
 // downloadLinuxBinary downloads a Linux binary for the given arch and version
-// from GitHub Releases. Reuses the release API functions from self_update.go.
+// from GitHub Releases. Uses fetchReleaseByTag to get the exact version rather
+// than always fetching latest. Reuses downloadReleaseAsset from self_update.go.
 func downloadLinuxBinary(targetPath, arch, version string) error {
-	// Fetch the release matching our version
-	release, err := fetchLatestRelease(releaseRepo)
-	if err != nil {
-		return fmt.Errorf("fetching release info: %w", err)
+	// Normalize version tag (ensure "v" prefix)
+	tag := version
+	if !strings.HasPrefix(tag, "v") {
+		tag = "v" + tag
 	}
 
-	// Look for the raw binary asset (produced by GoReleaser "binaries" archive)
-	assetName := fmt.Sprintf("cspace-linux-%s", arch)
-	var downloadURL string
-	for _, asset := range release.Assets {
-		if asset.Name == assetName {
-			downloadURL = asset.BrowserDownloadURL
-			break
+	// Fetch the release matching our exact version
+	release, err := fetchReleaseByTag(releaseRepo, tag)
+	if err != nil {
+		// Fall back to latest if the exact tag isn't found
+		release, err = fetchLatestRelease(releaseRepo)
+		if err != nil {
+			return fmt.Errorf("fetching release info: %w", err)
 		}
 	}
-	if downloadURL == "" {
-		return fmt.Errorf("no asset named %s found in release %s", assetName, release.TagName)
+
+	assetName := fmt.Sprintf("cspace-linux-%s", arch)
+	if err := downloadReleaseAsset(release, assetName, targetPath); err != nil {
+		return err
 	}
 
-	// Download to a temp file then move into place
-	tmpPath, err := downloadToTemp(downloadURL, filepath.Dir(targetPath))
-	if err != nil {
-		return fmt.Errorf("downloading %s: %w", assetName, err)
-	}
-	defer os.Remove(tmpPath) // clean up on error
-
-	if err := os.Chmod(tmpPath, 0755); err != nil {
-		return fmt.Errorf("setting permissions: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, targetPath); err != nil {
-		return fmt.Errorf("moving binary into place: %w", err)
-	}
-
-	fmt.Printf("Downloaded %s successfully.\n", assetName)
+	fmt.Printf("Downloaded %s from %s.\n", assetName, release.TagName)
 	return nil
 }
 
-// copyBinary copies a file from src to dst, preserving executable permissions.
+// copyBinary atomically copies a file from src to dst with executable
+// permissions. It writes to a temp file first, syncs, then renames into place
+// to avoid leaving a truncated binary if the copy is interrupted.
 func copyBinary(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -224,14 +214,37 @@ func copyBinary(src, dst string) error {
 	}
 	defer in.Close()
 
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".cspace-copy-*")
 	if err != nil {
-		return fmt.Errorf("creating destination: %w", err)
+		return fmt.Errorf("creating temp file: %w", err)
 	}
-	defer out.Close()
+	tmpPath := tmp.Name()
 
-	if _, err := io.Copy(out, in); err != nil {
+	if _, err := io.Copy(tmp, in); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
 		return fmt.Errorf("copying: %w", err)
+	}
+
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("syncing: %w", err)
+	}
+
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("closing temp file: %w", err)
+	}
+
+	if err := os.Chmod(tmpPath, 0755); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("setting permissions: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, dst); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("renaming into place: %w", err)
 	}
 
 	return nil
