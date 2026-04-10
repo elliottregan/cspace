@@ -57,6 +57,8 @@ SUPERVISOR (host-side dispatch to running agents):
   cspace watch [instance]                 Stream agent notifications/questions
   cspace interrupt <instance>             Interrupt a running session
   cspace agent-status <instance>          Show supervisor status JSON
+  cspace restart-supervisor <instance>    Restart agent supervisor (preserves workspace)
+    [--reason "text"]                     Why the restart is needed
 
 SHARED SERVICES:
   cspace shared up                    Start browser sidecars
@@ -649,6 +651,28 @@ cmd_agent_status() {
     supervisor_dispatch status "$@"
 }
 
+cmd_restart_supervisor() {
+    local name="" reason=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --reason) reason="$2"; shift 2 ;;
+            --*) die "Unknown flag: $1" ;;
+            *)
+                if [ -z "$name" ]; then
+                    name="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    [ -z "$name" ] && die "Usage: cspace restart-supervisor <instance> [--reason \"text\"]"
+
+    load_config
+    restart_supervisor "$name" "$reason"
+}
+
 cmd_self_update() {
     if [ -d "$CSPACE_HOME/.git" ]; then
         echo "Updating cspace..."
@@ -795,6 +819,7 @@ case "${1:-}" in
     watch)          shift; cmd_watch "$@" ;;
     interrupt)      shift; cmd_interrupt "$@" ;;
     agent-status)   shift; cmd_agent_status "$@" ;;
+    restart-supervisor) shift; cmd_restart_supervisor "$@" ;;
     sync-context)   cmd_sync_context ;;
     self-update)    cmd_self_update ;;
     *)              die "Unknown command: $1. Run 'cspace help' for usage." ;;

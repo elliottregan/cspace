@@ -82,3 +82,111 @@ launch_supervisor() {
     fi
     exit $EXIT_CODE
 }
+
+# relaunch_supervisor_detached <name> <prompt_path> <stderr_log> <effort_flag> <system_prompt_flag> [ignore_inbox_before_ms]
+#
+# Launch a fresh agent supervisor in the same container in DETACHED mode.
+# Used by restart_supervisor after the old supervisor has exited. Key
+# differences from launch_supervisor:
+#   - Uses -d (detached) and -T (no TTY) — returns immediately
+#   - No stream-status.sh pipe (no terminal to render to)
+#   - No EXIT trap (transcript copy fires via SessionEnd hook when
+#     CLAUDE_AUTONOMOUS=1 is set)
+#
+# Reads from caller scope:
+#   $model — passed via --model (defaults to claude-opus-4-6 on empty)
+relaunch_supervisor_detached() {
+    local name="$1"
+    local container_prompt_path="$2"
+    local stderr_log="$3"
+    local effort_flag="$4"
+    local system_prompt_flag="$5"
+    local ignore_inbox_before="${6:-}"
+
+    local inbox_flag=""
+    [ -n "$ignore_inbox_before" ] && inbox_flag="--ignore-inbox-before $ignore_inbox_before"
+
+    docker compose -p "$name" exec -d -T -u dev -w /workspace \
+        -e CLAUDE_AUTONOMOUS=1 \
+        -e CLAUDE_INSTANCE="$name" \
+        devcontainer \
+        bash -c "node /opt/cspace/lib/agent-supervisor/supervisor.mjs \
+            --role agent --instance $name \
+            --prompt-file $container_prompt_path \
+            --model ${model:-claude-opus-4-6} \
+            $effort_flag $system_prompt_flag $inbox_flag \
+            2>$stderr_log"
+}
+
+# restart_supervisor <name> [reason]
+#
+# Restart an agent's supervisor inside its existing container. Sends an
+# interrupt to the old supervisor, waits for it to exit cleanly (by
+# watching for its completion notification in _coordinator/inbox/), then
+# launches a fresh supervisor with the same prompt file. If reason is
+# given, a restart marker is prepended to the prompt.
+#
+# Reads from caller scope:
+#   $model — passed via --model (defaults to claude-opus-4-6 on empty)
+restart_supervisor() {
+    local name="$1"
+    local reason="${2:-}"
+
+    local MSG_DIR="/logs/messages"
+    local start_ms
+    start_ms=$(date +%s%3N)
+
+    # Create a reference timestamp file for the completion-poll find
+    local ref_file="/tmp/.cspace-restart-ref-${name}"
+    touch "$ref_file"
+
+    # Interrupt the old supervisor via the existing socket dispatch
+    echo "Interrupting supervisor for $name..."
+    supervisor_dispatch interrupt "$name" 2>/dev/null || true
+
+    # Wait for the completion notification that signals the old supervisor
+    # has cleaned up its socket and is about to exit. The supervisor writes
+    # the completion AFTER cleanup() (socket released) so this is safe.
+    local waited=0
+    local found=""
+    while [ $waited -lt 30000 ]; do
+        found=$(find "$MSG_DIR/_coordinator/inbox/" -name "completion-${name}-*" \
+            -newer "$ref_file" 2>/dev/null | head -1)
+        if [ -n "$found" ]; then
+            break
+        fi
+        sleep 0.25
+        waited=$((waited + 250))
+    done
+    rm -f "$ref_file"
+
+    if [ -z "$found" ]; then
+        echo "WARNING: timed out waiting for old supervisor to exit (30s)" >&2
+    else
+        echo "Old supervisor exited cleanly."
+    fi
+
+    # If reason given, prepend a restart marker to the prompt
+    local prompt_path="/tmp/claude-prompt.txt"
+    if [ -n "$reason" ]; then
+        local DC="docker compose -p $name"
+        $DC exec -T -u dev devcontainer bash -c "
+            { echo '[This session was restarted by the coordinator. Reason: $reason. Your workspace is preserved — all files, branches, and uncommitted changes are intact. Re-establish any external state (browser sessions, test servers, etc.) as needed, then continue your task.]'
+              echo ''
+              cat /tmp/claude-prompt.txt
+            } > /tmp/restart-prompt.txt
+        " </dev/null
+        prompt_path="/tmp/restart-prompt.txt"
+    fi
+
+    # Build flags from config
+    local effort_flag system_prompt_flag
+    effort_flag=$(build_effort_flag "$(cfg '.claude.effort')")
+    system_prompt_flag=$(build_system_prompt_flag "$name" agent)
+
+    # Launch new supervisor detached with inbox filter
+    relaunch_supervisor_detached "$name" "$prompt_path" "/tmp/agent-stderr.log" \
+        "$effort_flag" "$system_prompt_flag" "$start_ms"
+
+    echo "Restarted supervisor for $name (detached)."
+}

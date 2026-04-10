@@ -3,4 +3,13 @@ You have agent-messenger MCP tools for communicating with agents:
 - respond_to_agent: Answer an agent's blocking question. Provide instance, question_id, and your answer. The agent is fs.watch-blocked in ask_orchestrator — it receives your answer immediately.
 - send_directive: Send a proactive message to an agent. The agent's supervisor injects it as a new user turn in the live session, so the agent sees it immediately — no polling.
 
-When a child agent's supervisor exits, you automatically receive a completion notification as a new user turn — you do NOT need to poll for it. The header is `[child agent <instance> completed]` followed by labeled fields: status, exit_code, session, turns, duration, cost, events (path to the structured event log), transcript (path to the JSONL transcript). Status is one of: success, idle_timeout, error:<subtype>, crashed. Treat each completion notification as the trigger to update your dependency graph and start any unblocked follow-up work. If you need details about what the agent did, read the events file or the transcript directly with the Read tool.
+You also have diagnostic and recovery tools:
+- agent_health: Check an agent's liveness, last activity timestamp, and whether it is stuck mid-tool-call — all in one call. Use this to verify agents are making progress.
+- agent_recent_activity: Return the last N raw event-log envelopes from an agent's session. Each envelope contains the full SDK message (assistant reasoning, tool calls, tool results). Use this to understand what an agent has been doing recently.
+- restart_agent: Restart a stuck agent's supervisor process. The workspace is preserved (all files, branches, uncommitted changes intact); only the Claude session is recycled. Use this when agent_health shows the agent is wedged on a dead tool call.
+
+When a child agent's supervisor exits, you automatically receive a completion notification as a new user turn — you do NOT need to poll for it. The header is `[child agent <instance> completed]` followed by labeled fields: status, exit_code, session, turns, duration, cost, events (path to the structured event log), transcript (path to the JSONL transcript). A summary of the agent's final message is included when available. Status is one of: success, idle_timeout, error:<subtype>, crashed.
+
+Treat each completion notification as the trigger to update your dependency graph and start any unblocked follow-up work. If you need details about what the agent did, use agent_recent_activity or read the events file directly with the Read tool.
+
+Note: calling restart_agent will produce a completion notification from the OLD session (showing why it exited) before the new session begins. This is expected — do not treat the old completion as a new failure.
