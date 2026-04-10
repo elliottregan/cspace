@@ -38,7 +38,9 @@ While instances are isolated, two Docker volumes are shared across all instances
 
 These volumes are created as Docker external volumes the first time an instance is provisioned and persist across instance lifecycles.
 
-Optionally, browser sidecars (Playwright and Chromium CDP) can run in **shared mode** instead of per-instance mode. Shared sidecars serve all instances from a single container pair on a dedicated `cspace-shared` bridge network, reducing resource usage for projects with many parallel agents:
+:::tip
+Browser sidecars can also run in **shared mode** instead of per-instance mode. Shared sidecars serve all instances from a single container pair on a dedicated `cspace-shared` bridge network, reducing resource usage for projects with many parallel agents:
+:::
 
 ```bash
 cspace shared up    # Start shared browser sidecars
@@ -70,7 +72,9 @@ All instances use the same Docker image, built from the cspace Dockerfile (`lib/
 
 **Bundled cspace CLI**: The entire cspace repository is copied to `/opt/cspace` in the image with `CSPACE_HOME=/opt/cspace` set as an environment variable. This gives agents running inside containers access to the same `cspace` command the host has — enabling them to spawn sibling containers via the Docker socket.
 
-Projects can override the Dockerfile by placing a custom one at `.cspace/Dockerfile`.
+:::note
+Projects can override the Dockerfile by placing a custom one at `.cspace/Dockerfile`. See [Template Overrides](/configuration/template-overrides/) for the full list of overridable files.
+:::
 
 ## Networking model
 
@@ -108,7 +112,9 @@ This pattern enables:
 - **Project services** — databases and other services defined in `.cspace/docker-compose.yml` run as sibling containers on the same network
 - **No nested virtualization** — avoids the performance and complexity costs of running Docker inside Docker
 
+:::note
 The devcontainer requires `CAP_NET_ADMIN` and `CAP_NET_RAW` Linux capabilities for the iptables firewall, but no other elevated privileges.
+:::
 
 ## Architecture diagram
 

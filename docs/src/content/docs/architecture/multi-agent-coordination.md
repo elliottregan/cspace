@@ -40,7 +40,9 @@ For each unblocked issue, the coordinator:
 
 All ready agents launch in a single batch. Blocked agents wait.
 
-> A maximum of **4 parallel agents** run at once to avoid overloading the host. If more than 4 issues are unblocked, the coordinator batches them — launching the first 4, waiting for any to complete, then launching the next.
+:::caution
+A maximum of **4 parallel agents** run at once to avoid overloading the host. If more than 4 issues are unblocked, the coordinator batches them — launching the first 4, waiting for any to complete, then launching the next.
+:::
 
 ### Phase 3 — Monitor
 
@@ -94,7 +96,9 @@ The coordinator uses `blocked-by: #N` annotations in issue descriptions to build
 | Exactly one unmerged dep | That dep's issue branch (e.g., `issue-10`) | Launch immediately — inherits the dep's changes |
 | Multiple unmerged deps | — | **Wait** until enough deps merge that at most one remains |
 
+:::tip
 The "exactly one unmerged dep" rule is key: by branching from that dependency's issue branch, the agent gets the dependency's work for free without waiting for it to merge. When the dependency eventually merges into the feature branch, the dependent PR is retargeted.
+:::
 
 After each merge, the coordinator recomputes the entire dependency graph — base branches and launch eligibility can change as the graph evolves.
 

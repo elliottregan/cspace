@@ -81,6 +81,10 @@ Additional domains are read from the `CSPACE_FIREWALL_DOMAINS` environment varia
 
 Domains are resolved to IP addresses via DNS at firewall initialization time. If a domain fails to resolve, a warning is logged but the firewall continues.
 
+:::caution
+Domain resolution happens once at container startup. If a service's IP addresses change after the firewall initializes, the container may lose access until it restarts.
+:::
+
 ## Domain resolution
 
 The firewall uses `ipset` with `hash:net` to build a CIDR-based allowlist. Domains are resolved using two methods:
@@ -88,7 +92,7 @@ The firewall uses `ipset` with `hash:net` to build a CIDR-based allowlist. Domai
 - **CIDR ranges** (GitHub IPs, Vercel CDN) — added directly to the ipset
 - **Domain names** — resolved to IP addresses via `dig +short A`, then each IP is added individually
 
-This means the allowlist is IP-based, not hostname-based. DNS resolution happens once at container startup. If a service's IP addresses change after the firewall initializes, the container may lose access until it restarts.
+This means the allowlist is IP-based, not hostname-based.
 
 ## Verification
 

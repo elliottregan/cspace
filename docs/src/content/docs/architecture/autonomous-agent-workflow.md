@@ -61,7 +61,9 @@ The agent runs the project's configured verification commands:
 
 If any checks fail, the agent fixes the issues and re-runs verification until everything passes.
 
-> **Shell rule**: Long-running commands like E2E tests must never be piped through `tail` or `head`. These commands buffer their output, so piping them blocks until the entire command finishes. Instead, the agent redirects output to a file and reads it afterward: `cmd > /tmp/output.log 2>&1 && tail -40 /tmp/output.log`.
+:::caution[Shell rule]
+Long-running commands like E2E tests must never be piped through `tail` or `head`. These commands buffer their output, so piping them blocks until the entire command finishes. Instead, the agent redirects output to a file and reads it afterward: `cmd > /tmp/output.log 2>&1 && tail -40 /tmp/output.log`.
+:::
 
 ### Phase 6 — Ship
 
@@ -79,7 +81,9 @@ The agent performs its own review before considering the task done:
 
 ## How the supervisor manages sessions
 
-The agent doesn't run Claude Code directly. Instead, it runs inside a **supervisor** process (`lib/agent-supervisor/supervisor.mjs`) — a long-lived wrapper around the Claude Agent SDK that enables mid-session communication.
+:::note
+The agent doesn't run Claude Code directly. It runs inside a **supervisor** process (`lib/agent-supervisor/supervisor.mjs`) — a long-lived wrapper around the Claude Agent SDK that enables mid-session communication.
+:::
 
 ### Streaming input model
 
