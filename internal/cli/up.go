@@ -2,11 +2,13 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/elliottregan/cspace/internal/instance"
 	"github.com/elliottregan/cspace/internal/ports"
 	"github.com/elliottregan/cspace/internal/provision"
+	"github.com/elliottregan/cspace/internal/supervisor"
 	"github.com/spf13/cobra"
 )
 
@@ -36,7 +38,19 @@ Use --no-claude to provision the container without launching Claude.`,
 
 func runUp(cmd *cobra.Command, args []string) error {
 	noClaude, _ := cmd.Flags().GetBool("no-claude")
+	prompt, _ := cmd.Flags().GetString("prompt")
+	promptFile, _ := cmd.Flags().GetString("prompt-file")
 	baseOverride, _ := cmd.Flags().GetString("base")
+
+	// Validate flags
+	if prompt != "" && promptFile != "" {
+		return fmt.Errorf("--prompt and --prompt-file are mutually exclusive")
+	}
+	if promptFile != "" {
+		if _, err := os.Stat(promptFile); err != nil {
+			return fmt.Errorf("prompt file not found: %s", promptFile)
+		}
+	}
 
 	// Parse positional arg: could be name, branch (contains /), or empty
 	var name, branch string
@@ -100,6 +114,26 @@ func runUp(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Non-no-claude path: not yet implemented in this phase
-	return errNotImplemented("up (without --no-claude)")
+	if prompt == "" && promptFile == "" {
+		return supervisor.LaunchInteractive(name, cfg)
+	}
+
+	// Autonomous path — stage the prompt in the container, then run through
+	// the supervisor for structured event logging and control socket.
+	if promptFile != "" {
+		if err := supervisor.StagePromptFile(composeName, promptFile, supervisor.ContainerPromptPath); err != nil {
+			return err
+		}
+	} else {
+		if err := supervisor.StagePromptText(composeName, prompt, supervisor.ContainerPromptPath); err != nil {
+			return err
+		}
+	}
+
+	return supervisor.LaunchSupervisor(supervisor.LaunchParams{
+		Name:       name,
+		Role:       supervisor.RoleAgent,
+		PromptFile: supervisor.ContainerPromptPath,
+		StderrLog:  supervisor.ContainerAgentStderrLog,
+	}, cfg)
 }

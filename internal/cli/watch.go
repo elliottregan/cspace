@@ -1,6 +1,9 @@
 package cli
 
-import "github.com/spf13/cobra"
+import (
+	"github.com/elliottregan/cspace/internal/supervisor"
+	"github.com/spf13/cobra"
+)
 
 func newWatchCmd() *cobra.Command {
 	return &cobra.Command{
@@ -9,7 +12,12 @@ func newWatchCmd() *cobra.Command {
 		GroupID: "supervisor",
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return errNotImplemented("watch")
+			target, err := supervisor.ResolveDispatchTarget(cfg)
+			if err != nil {
+				return err
+			}
+			dispatchArgs := append([]string{"watch"}, args...)
+			return supervisor.DispatchInteractive(target, dispatchArgs...)
 		},
 	}
 }
