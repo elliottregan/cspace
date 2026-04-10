@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -83,7 +84,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		)
 
 		if err := form.Run(); err != nil {
-			if err.Error() == "user aborted" {
+			if errors.Is(err, huh.ErrUserAborted) {
 				fmt.Println("Aborted.")
 				return nil
 			}

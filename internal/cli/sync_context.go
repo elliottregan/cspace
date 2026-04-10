@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -210,7 +211,8 @@ func extractSection(description, header string) string {
 	inSection := false
 
 	for _, line := range lines {
-		if line == header || strings.HasPrefix(line, header+"\n") || strings.HasPrefix(line, header+"\r") {
+		// Trim trailing \r for Windows-style line endings
+		if strings.TrimRight(line, "\r") == header {
 			inSection = true
 			continue
 		}
@@ -231,9 +233,9 @@ func extractIssueRefs(line string) []int {
 	var refs []int
 	for _, m := range matches {
 		if len(m) >= 2 {
-			var n int
-			fmt.Sscanf(m[1], "%d", &n)
-			refs = append(refs, n)
+			if n, err := strconv.Atoi(m[1]); err == nil {
+				refs = append(refs, n)
+			}
 		}
 	}
 	return refs
@@ -262,14 +264,13 @@ func generateContextDoc(ms milestoneData, goals, principles string, issues []par
 		}
 		fmt.Fprintln(&b, line)
 
-		if len(issue.BlockedBy) > 0 && len(issue.Blocks) > 0 {
+		if len(issue.BlockedBy) > 0 {
 			fmt.Fprintf(&b, "  blocked-by: %s\n", formatIssueRefs(issue.BlockedBy))
+		}
+		if len(issue.Blocks) > 0 {
 			fmt.Fprintf(&b, "  blocks: %s\n", formatIssueRefs(issue.Blocks))
-		} else if len(issue.BlockedBy) > 0 {
-			fmt.Fprintf(&b, "  blocked-by: %s\n", formatIssueRefs(issue.BlockedBy))
-		} else if len(issue.Blocks) > 0 {
-			fmt.Fprintf(&b, "  blocks: %s\n", formatIssueRefs(issue.Blocks))
-		} else {
+		}
+		if len(issue.BlockedBy) == 0 && len(issue.Blocks) == 0 {
 			fmt.Fprintln(&b, "  (independent)")
 		}
 		fmt.Fprintln(&b)

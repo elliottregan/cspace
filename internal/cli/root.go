@@ -40,40 +40,13 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 
 			// For the root command (no subcommand), attempt config loading
 			// but tolerate failure — the TUI falls back to help when cfg is nil.
-			isRoot := cmd.Name() == "cspace" && cmd.Parent() == nil
+			tolerateErr := cmd.Name() == "cspace" && cmd.Parent() == nil
 
-			// Extract embedded assets
-			cspaceHome, err := defaultCspaceHome()
-			if err != nil {
-				if isRoot {
+			if err := loadConfig(); err != nil {
+				if tolerateErr {
 					return nil
 				}
-				return fmt.Errorf("determining cspace home: %w", err)
-			}
-
-			assetsDir, err = assets.ExtractTo(cspaceHome, Version)
-			if err != nil {
-				if isRoot {
-					return nil
-				}
-				return fmt.Errorf("extracting assets: %w", err)
-			}
-
-			// Load configuration
-			cwd, err := os.Getwd()
-			if err != nil {
-				if isRoot {
-					return nil
-				}
-				return fmt.Errorf("getting working directory: %w", err)
-			}
-
-			cfg, err = config.Load(cwd, assetsDir)
-			if err != nil {
-				if isRoot {
-					return nil
-				}
-				return fmt.Errorf("loading config: %w", err)
+				return err
 			}
 
 			return nil
@@ -139,6 +112,31 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 // Execute runs the root command.
 func Execute() error {
 	return NewRootCmd().Execute()
+}
+
+// loadConfig extracts embedded assets and loads the project configuration.
+func loadConfig() error {
+	cspaceHome, err := defaultCspaceHome()
+	if err != nil {
+		return fmt.Errorf("determining cspace home: %w", err)
+	}
+
+	assetsDir, err = assets.ExtractTo(cspaceHome, Version)
+	if err != nil {
+		return fmt.Errorf("extracting assets: %w", err)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting working directory: %w", err)
+	}
+
+	cfg, err = config.Load(cwd, assetsDir)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	return nil
 }
 
 // defaultCspaceHome returns the default path for cspace data.

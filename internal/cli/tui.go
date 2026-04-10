@@ -11,7 +11,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// TUI styles
 var (
 	headerStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -20,9 +19,6 @@ var (
 			BorderForeground(lipgloss.Color("99")).
 			PaddingLeft(1).
 			PaddingRight(1)
-
-	statusStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("78"))
 
 	dimStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240"))
@@ -43,7 +39,6 @@ const (
 
 // runTUI displays the interactive main menu when cspace is run with no args.
 func runTUI(cmd *cobra.Command) error {
-	// Display styled header
 	projectDisplay := cfg.Project.Name
 	if projectDisplay == "" {
 		cwd, _ := os.Getwd()
@@ -52,11 +47,10 @@ func runTUI(cmd *cobra.Command) error {
 	fmt.Println(headerStyle.Render("cspace: " + projectDisplay))
 	fmt.Println()
 
-	// Query running instances
+	// Query running instances once — reuse for both header display and picker
 	details, _ := instance.GetInstanceDetails(cfg)
 	hasInstances := len(details) > 0
 
-	// Show running instances
 	if hasInstances {
 		for _, d := range details {
 			fmt.Printf("  %s  %s  %s\n",
@@ -68,7 +62,6 @@ func runTUI(cmd *cobra.Command) error {
 		fmt.Println()
 	}
 
-	// Build menu options dynamically based on running instances
 	var options []huh.Option[string]
 
 	options = append(options, huh.NewOption("New instance        Launch a new Claude instance", tuiActionNew))
@@ -100,32 +93,29 @@ func runTUI(cmd *cobra.Command) error {
 	)
 
 	if err := form.Run(); err != nil {
-		// User pressed Ctrl+C or Escape
 		return nil
 	}
 
-	// Dispatch to the chosen action
 	switch choice {
 	case tuiActionNew:
 		return tuiNew()
 	case tuiActionConnect:
-		return tuiConnect(cmd)
+		return tuiConnect(details)
 	case tuiActionSSH:
-		name, err := tuiPickInstance("SSH into")
+		name, err := pickFromDetails(details, "SSH into")
 		if err != nil {
 			return err
 		}
-		composeName := cfg.ComposeName(name)
-		return instance.DcExecInteractive(composeName, "bash")
+		return instance.DcExecInteractive(cfg.ComposeName(name), "bash")
 	case tuiActionPorts:
-		name, err := tuiPickInstance("View ports for")
+		name, err := pickFromDetails(details, "View ports for")
 		if err != nil {
 			return err
 		}
 		instance.ShowPorts(name, cfg)
 		return nil
 	case tuiActionDown:
-		return tuiDown()
+		return tuiDown(details)
 	case tuiActionCoordinate:
 		return tuiCoordinate()
 	case tuiActionDownAll:
@@ -152,10 +142,9 @@ func tuiNew() error {
 	)
 
 	if err := form.Run(); err != nil {
-		return nil // User cancelled
+		return nil
 	}
 
-	// Reuse the up command logic
 	if name == "" {
 		var err error
 		name, err = ports.NextPlanet(cfg.InstanceLabel())
@@ -169,8 +158,8 @@ func tuiNew() error {
 }
 
 // tuiConnect shows a sub-menu for connecting to a running instance.
-func tuiConnect(cmd *cobra.Command) error {
-	name, err := tuiPickInstance("Connect to")
+func tuiConnect(details []instance.Detail) error {
+	name, err := pickFromDetails(details, "Connect to")
 	if err != nil {
 		return err
 	}
@@ -181,25 +170,25 @@ func tuiConnect(cmd *cobra.Command) error {
 			huh.NewSelect[string]().
 				Title(fmt.Sprintf("Connect to %s", name)).
 				Options(
-					huh.NewOption("Claude       Open Claude Code", "claude"),
-					huh.NewOption("SSH          Shell into container", "ssh"),
-					huh.NewOption("Ports        Show port mappings", "ports"),
+					huh.NewOption("Claude       Open Claude Code", tuiActionConnect),
+					huh.NewOption("SSH          Shell into container", tuiActionSSH),
+					huh.NewOption("Ports        Show port mappings", tuiActionPorts),
 				).
 				Value(&action),
 		),
 	)
 
 	if err := form.Run(); err != nil {
-		return nil // User cancelled
+		return nil
 	}
 
 	composeName := cfg.ComposeName(name)
 	switch action {
-	case "claude":
+	case tuiActionConnect:
 		return runUpWithArgs(name, "", false, "", "")
-	case "ssh":
+	case tuiActionSSH:
 		return instance.DcExecInteractive(composeName, "bash")
-	case "ports":
+	case tuiActionPorts:
 		instance.ShowPorts(name, cfg)
 		return nil
 	}
@@ -208,8 +197,8 @@ func tuiConnect(cmd *cobra.Command) error {
 }
 
 // tuiDown prompts to pick an instance and tears it down after confirmation.
-func tuiDown() error {
-	name, err := tuiPickInstance("Tear down")
+func tuiDown(details []instance.Detail) error {
+	name, err := pickFromDetails(details, "Tear down")
 	if err != nil {
 		return err
 	}
@@ -237,13 +226,7 @@ func tuiDown() error {
 		return err
 	}
 
-	// Reuse compose down logic
-	if err := runDownInstance(name); err != nil {
-		return err
-	}
-
-	fmt.Println(statusStyle.Render(fmt.Sprintf("Instance '%s' removed.", name)))
-	return nil
+	return runDownInstance(name)
 }
 
 // tuiCoordinate prompts for multiline coordinator instructions.
@@ -260,7 +243,7 @@ func tuiCoordinate() error {
 	)
 
 	if err := form.Run(); err != nil {
-		return nil // User cancelled
+		return nil
 	}
 
 	if prompt == "" {
@@ -281,12 +264,7 @@ func tuiCoordinate() error {
 		return nil
 	}
 
-	// Build args for coordinate command
-	args := []string{prompt}
-	if name != "" {
-		return runCoordinateWithArgs(prompt, "", name)
-	}
-	return runCoordinateWithArgs(args[0], "", "")
+	return runCoordinateWithArgs(prompt, "", name)
 }
 
 // tuiRebuild confirms and triggers a rebuild.
@@ -311,19 +289,13 @@ func tuiRebuild() error {
 	return runRebuild(nil, nil)
 }
 
-// tuiPickInstance displays a selection menu of running instances and returns
-// the chosen instance name.
-func tuiPickInstance(action string) (string, error) {
-	details, err := instance.GetInstanceDetails(cfg)
-	if err != nil {
-		return "", err
-	}
-
+// pickFromDetails presents a selection menu from pre-fetched instance details.
+// If only one instance exists, it is selected automatically.
+func pickFromDetails(details []instance.Detail, action string) (string, error) {
 	if len(details) == 0 {
 		return "", fmt.Errorf("no running instances")
 	}
 
-	// If only one instance, return it directly
 	if len(details) == 1 {
 		fmt.Printf("Using instance: %s\n", details[0].Name)
 		return details[0].Name, nil

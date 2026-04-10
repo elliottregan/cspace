@@ -65,7 +65,7 @@ func runSelfUpdate(cmd *cobra.Command, args []string) error {
 	currentClean := strings.TrimPrefix(Version, "v")
 	latestClean := strings.TrimPrefix(release.TagName, "v")
 
-	if currentClean == latestClean || Version == release.TagName {
+	if currentClean == latestClean {
 		fmt.Println("Already up to date.")
 		return nil
 	}
