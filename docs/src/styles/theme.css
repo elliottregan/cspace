@@ -1,0 +1,36 @@
+:root,
+::backdrop {
+  --sl-vintage-hue-base: 55;
+  --sl-color-accent: oklch(0.7306 0.1783 47);
+}
+
+:root[data-theme='light'],
+[data-theme='light'] ::backdrop {
+  --sl-color-accent: oklch(0.4945 0.1912 40);
+}
+
+.sl-link-button {
+  --sl-vintage-link-button-shape-width: 0px;
+  --sl-vintage-link-button-primary-color-top: oklch(0.84 0.10 50);
+  --sl-vintage-link-button-primary-color-bottom: oklch(0.76 0.14 45);
+  border-radius: 0.5rem;
+}
+
+.sl-link-button:is(:hover, :focus-visible) {
+  --sl-vintage-link-button-primary-color-top: oklch(0.80 0.12 50);
+  --sl-vintage-link-button-primary-color-bottom: oklch(0.72 0.16 45);
+}
+
+.sl-link-button.primary::before {
+  border-radius: 0.5rem;
+}
+
+[data-theme='light'] .sl-link-button {
+  --sl-vintage-link-button-primary-color-top: oklch(0.80 0.10 50);
+  --sl-vintage-link-button-primary-color-bottom: oklch(0.70 0.14 45);
+}
+
+[data-theme='light'] .sl-link-button:is(:hover, :focus-visible) {
+  --sl-vintage-link-button-primary-color-top: oklch(0.76 0.12 50);
+  --sl-vintage-link-button-primary-color-bottom: oklch(0.66 0.16 45);
+}
