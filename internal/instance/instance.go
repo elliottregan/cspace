@@ -203,6 +203,9 @@ func DcExec(composeName string, cmdArgs ...string) (string, error) {
 	cmd.Stdin = nil
 	out, err := cmd.Output()
 	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
+			return "", fmt.Errorf("%s", strings.TrimSpace(string(ee.Stderr)))
+		}
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
@@ -290,6 +293,9 @@ func DcExecRoot(composeName string, cmdArgs ...string) (string, error) {
 	cmd.Stdin = nil
 	out, err := cmd.Output()
 	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
+			return "", fmt.Errorf("%s", strings.TrimSpace(string(ee.Stderr)))
+		}
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
