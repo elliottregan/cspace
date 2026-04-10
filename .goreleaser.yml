@@ -1,0 +1,64 @@
+version: 2
+
+before:
+  hooks:
+    - make sync-embedded
+
+builds:
+  - id: cspace
+    main: ./cmd/cspace
+    binary: cspace
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/elliottregan/cspace/internal/cli.Version={{.Version}}
+
+archives:
+  # Standard archives for install.sh and Homebrew
+  - id: default
+    builds: [cspace]
+    name_template: "cspace_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: darwin
+        format: zip
+
+  # Raw binaries for self-update and rebuild download
+  - id: binaries
+    builds: [cspace]
+    name_template: "cspace-{{ .Os }}-{{ .Arch }}"
+    format: binary
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+release:
+  github:
+    owner: elliottregan
+    name: cspace
+
+changelog:
+  sort: asc
+
+brews:
+  - ids: [default]
+    name: cspace
+    repository:
+      owner: elliottregan
+      name: homebrew-cspace
+    homepage: "https://github.com/elliottregan/cspace"
+    description: "Portable CLI for managing Claude Code devcontainer instances"
+    license: "MIT"
+    install: |
+      bin.install "cspace"
+    test: |
+      system "#{bin}/cspace", "version"
+    dependencies:
+      - name: docker
+        type: optional

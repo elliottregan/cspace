@@ -93,8 +93,10 @@ func runSelfUpdate(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Find matching asset for current platform
-	assetName := fmt.Sprintf("cspace-go-%s-%s", runtime.GOOS, runtime.GOARCH)
+	// Find matching asset for current platform.
+	// GoReleaser produces raw binary assets named cspace-<os>-<arch>
+	// via the "binaries" archive ID in .goreleaser.yml.
+	assetName := fmt.Sprintf("cspace-%s-%s", runtime.GOOS, runtime.GOARCH)
 	var downloadURL string
 	for _, asset := range release.Assets {
 		if asset.Name == assetName {
