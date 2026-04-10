@@ -15,6 +15,8 @@ source "$CSPACE_HOME/lib/core/ports.sh"
 source "$CSPACE_HOME/lib/core/instance.sh"
 # shellcheck source=../lib/core/compose.sh
 source "$CSPACE_HOME/lib/core/compose.sh"
+# shellcheck source=../lib/core/supervisor.sh
+source "$CSPACE_HOME/lib/core/supervisor.sh"
 
 VERSION="0.1.0"
 
@@ -55,6 +57,8 @@ SUPERVISOR (host-side dispatch to running agents):
   cspace watch [instance]                 Stream agent notifications/questions
   cspace interrupt <instance>             Interrupt a running session
   cspace agent-status <instance>          Show supervisor status JSON
+  cspace restart-supervisor <instance>    Restart agent supervisor (preserves workspace)
+    [--reason "text"]                     Why the restart is needed
 
 SHARED SERVICES:
   cspace shared up                    Start browser sidecars
@@ -246,19 +250,34 @@ cmd_up() {
 
     # Launch Claude
     local DC="docker compose -p $name"
+    if [ -z "$prompt_file" ] && [ -z "$prompt" ]; then
+        # Interactive TTY — drop the user straight into a live claude session.
+        # Not routed through the supervisor because it has no streaming-input
+        # mode appropriate for a TTY and the user is already in the loop.
+        exec $DC exec -u dev -w /workspace devcontainer claude --dangerously-skip-permissions
+    fi
+
+    # Autonomous path — stage the prompt in the container, then run through
+    # the supervisor so both implementer and coordinator share the same
+    # launch pipeline (messenger MCP tools, Unix control socket, inbox
+    # watcher, structured event log). See lib/core/supervisor.sh.
     if [ -n "$prompt_file" ]; then
         # Copy the file directly — bypasses any quoting issues with the prompt body
         $DC cp "$prompt_file" devcontainer:/tmp/claude-prompt.txt
         $DC exec -T devcontainer chown dev:dev /tmp/claude-prompt.txt </dev/null
-        exec $DC exec -u dev -w /workspace devcontainer \
-            bash -c 'claude -p "$(cat /tmp/claude-prompt.txt)" --dangerously-skip-permissions'
-    elif [ -n "$prompt" ]; then
-        printf '%s' "$prompt" | $DC exec -T -u dev devcontainer bash -c 'cat > /tmp/claude-prompt.txt'
-        exec $DC exec -u dev -w /workspace devcontainer \
-            bash -c 'claude -p "$(cat /tmp/claude-prompt.txt)" --dangerously-skip-permissions'
     else
-        exec $DC exec -u dev -w /workspace devcontainer claude --dangerously-skip-permissions
+        printf '%s' "$prompt" | $DC exec -T -u dev devcontainer bash -c 'cat > /tmp/claude-prompt.txt'
     fi
+
+    local model effort
+    model=$(cfg '.claude.model')
+    effort=$(cfg '.claude.effort')
+
+    local effort_flag system_prompt_flag
+    effort_flag=$(build_effort_flag "$effort")
+    system_prompt_flag=$(build_system_prompt_flag "$name" agent)
+
+    launch_supervisor "$name" agent /tmp/claude-prompt.txt /tmp/agent-stderr.log "$effort_flag" "$system_prompt_flag"
 }
 
 cmd_coordinate() {
@@ -331,38 +350,14 @@ cmd_coordinate() {
     model=$(cfg '.claude.model')
     effort=$(cfg '.claude.effort')
 
-    # Per-project system prompt override (optional)
-    local system_prompt_flag=""
-    if dc_exec "$name" test -f /workspace/.cspace/agent-supervisor/coordinator-system-prompt.txt 2>/dev/null; then
-        system_prompt_flag="--system-prompt-file /workspace/.cspace/agent-supervisor/coordinator-system-prompt.txt"
-    fi
-
-    # effort=max is the supervisor default; opt out only if config says otherwise
-    local effort_flag=""
-    if [ -n "$effort" ] && [ "$effort" != "max" ]; then
-        effort_flag="--no-effort-max"
-    fi
+    local effort_flag system_prompt_flag
+    effort_flag=$(build_effort_flag "$effort")
+    system_prompt_flag=$(build_system_prompt_flag "$name" coordinator)
 
     # Launch the supervisor in coordinator role. Output streams to the
     # caller's terminal via stream-status.sh; the supervisor's Unix socket
     # is reachable for cspace send/respond/interrupt mid-run.
-    local EXIT_CODE=0
-    $DC exec -u dev -w /workspace \
-        -e CLAUDE_AUTONOMOUS=1 \
-        -e CLAUDE_INSTANCE="$name" \
-        devcontainer \
-        bash -c "set -o pipefail; trap '' PIPE; trap '[ -x /workspace/.cspace/hooks/copy-transcript-on-exit.sh ] && /workspace/.cspace/hooks/copy-transcript-on-exit.sh || [ -x /opt/cspace/lib/hooks/copy-transcript-on-exit.sh ] && /opt/cspace/lib/hooks/copy-transcript-on-exit.sh' EXIT; node /opt/cspace/lib/agent-supervisor/supervisor.mjs --role coordinator --prompt-file /tmp/coordinator-prompt.txt --model ${model:-claude-opus-4-6} $effort_flag $system_prompt_flag 2>/tmp/coordinator-stderr.log \
-            | /opt/cspace/lib/scripts/stream-status.sh" || EXIT_CODE=$?
-
-    if [ $EXIT_CODE -eq 0 ] || [ $EXIT_CODE -eq 141 ]; then
-        exit 0
-    fi
-
-    echo "" >&2
-    echo "FAILED — coordinator exited with code $EXIT_CODE" >&2
-    echo "  Shell:   cspace ssh $name" >&2
-    echo "  Re-run:  cspace coordinate \"...\" --name $name (resumable)" >&2
-    exit $EXIT_CODE
+    launch_supervisor "$name" coordinator /tmp/coordinator-prompt.txt /tmp/coordinator-stderr.log "$effort_flag" "$system_prompt_flag"
 }
 
 cmd_ssh() {
@@ -656,6 +651,28 @@ cmd_agent_status() {
     supervisor_dispatch status "$@"
 }
 
+cmd_restart_supervisor() {
+    local name="" reason=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --reason) reason="$2"; shift 2 ;;
+            --*) die "Unknown flag: $1" ;;
+            *)
+                if [ -z "$name" ]; then
+                    name="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    [ -z "$name" ] && die "Usage: cspace restart-supervisor <instance> [--reason \"text\"]"
+
+    load_config
+    restart_supervisor "$name" "$reason"
+}
+
 cmd_self_update() {
     if [ -d "$CSPACE_HOME/.git" ]; then
         echo "Updating cspace..."
@@ -802,6 +819,7 @@ case "${1:-}" in
     watch)          shift; cmd_watch "$@" ;;
     interrupt)      shift; cmd_interrupt "$@" ;;
     agent-status)   shift; cmd_agent_status "$@" ;;
+    restart-supervisor) shift; cmd_restart_supervisor "$@" ;;
     sync-context)   cmd_sync_context ;;
     self-update)    cmd_self_update ;;
     *)              die "Unknown command: $1. Run 'cspace help' for usage." ;;
