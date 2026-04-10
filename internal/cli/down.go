@@ -12,10 +12,11 @@ import (
 
 func newDownCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "down <name>",
-		Short:   "Destroy instance and volumes",
-		GroupID: "instance",
-		Args:    cobra.MaximumNArgs(1),
+		Use:               "down <name>",
+		Short:             "Destroy instance and volumes",
+		GroupID:           "instance",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeInstanceNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			everywhere, _ := cmd.Flags().GetBool("everywhere")
 			if everywhere {
@@ -24,19 +25,14 @@ func newDownCmd() *cobra.Command {
 
 			allFlag, _ := cmd.Flags().GetBool("all")
 			if allFlag {
-				return downAll()
+				return runDownAll()
 			}
 
 			if len(args) == 0 {
 				return fmt.Errorf("usage: cspace down <name> | --all | --everywhere")
 			}
 
-			name := args[0]
-			if err := compose.Run(name, cfg, "down", "--volumes"); err != nil {
-				return err
-			}
-			fmt.Printf("Instance '%s' removed.\n", name)
-			return nil
+			return runDownInstance(args[0])
 		},
 	}
 
@@ -46,8 +42,17 @@ func newDownCmd() *cobra.Command {
 	return cmd
 }
 
-// downAll tears down all instances for the current project.
-func downAll() error {
+// runDownInstance tears down a single instance by name.
+func runDownInstance(name string) error {
+	if err := compose.Run(name, cfg, "down", "--volumes"); err != nil {
+		return err
+	}
+	fmt.Printf("Instance '%s' removed.\n", name)
+	return nil
+}
+
+// runDownAll tears down all instances for the current project.
+func runDownAll() error {
 	names, err := instance.GetInstances(cfg)
 	if err != nil {
 		return err

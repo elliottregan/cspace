@@ -14,9 +14,10 @@ func newResumeCmd() *cobra.Command {
 		Short: "Resume a Claude session in a running instance",
 		Long: `Reconnect to a running instance and launch Claude Code interactively.
 If a session-id is provided, Claude will attempt to resume that session.`,
-		GroupID: "agents",
-		Args:    cobra.RangeArgs(1, 2),
-		RunE:    runResume,
+		GroupID:           "agents",
+		Args:              cobra.RangeArgs(1, 2),
+		ValidArgsFunction: completeInstanceNames,
+		RunE:              runResume,
 	}
 
 	cmd.Flags().String("prompt", "", "Inline prompt text for autonomous agent")

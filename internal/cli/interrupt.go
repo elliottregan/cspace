@@ -7,10 +7,11 @@ import (
 
 func newInterruptCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:     "interrupt <instance>",
-		Short:   "Interrupt a running session",
-		GroupID: "supervisor",
-		Args:    cobra.ExactArgs(1),
+		Use:               "interrupt <instance>",
+		Short:             "Interrupt a running session",
+		GroupID:           "supervisor",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeInstanceNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return supervisor.RunDispatch(cfg, "interrupt", args[0])
 		},
