@@ -19,13 +19,6 @@ compose_files() {
     echo "$args"
 }
 
-# Build the shared services compose file flags
-shared_compose_files() {
-    local shared
-    shared=$(resolve_template "docker-compose.shared.yml")
-    echo "-f $shared"
-}
-
 # Export environment variables needed by compose templates
 export_compose_env() {
     local name="$1"
@@ -36,7 +29,6 @@ export_compose_env() {
     export CSPACE_PROJECT_NAME="$(project_name)"
     export CSPACE_PREFIX="$prefix"
     export CSPACE_IMAGE="$(image_name)"
-    export CSPACE_SHARED_NETWORK="$(shared_network)"
     export CSPACE_MEMORY_VOLUME="$(memory_volume)"
     export CSPACE_LOGS_VOLUME="$(logs_volume)"
     export CSPACE_LABEL="$(instance_label)"
@@ -65,23 +57,3 @@ dc_compose() {
     docker compose $files -p "$name" "$@"
 }
 
-# Run docker compose for shared services
-dc_shared() {
-    export CSPACE_SHARED_NETWORK="$(shared_network)"
-    export CSPACE_PREFIX="$(project_prefix)"
-
-    local files
-    files=$(shared_compose_files)
-    # shellcheck disable=SC2086
-    docker compose $files "$@"
-}
-
-# Ensure shared services are running
-ensure_shared() {
-    if dc_shared ps --status running -q 2>/dev/null | grep -q .; then
-        echo "Shared services already running."
-    else
-        echo "Starting shared browser services..."
-        dc_shared up -d
-    fi
-}

@@ -9,3 +9,4 @@
 
 # Agent supervisor — node_modules is installed inside the container at build time
 lib/agent-supervisor/node_modules/
+.cspace.local.json

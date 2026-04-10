@@ -122,6 +122,6 @@ show_ports() {
             local svc_ports
             svc_ports=$(dc "$name" port "$svc" 2>/dev/null | sed 's/0.0.0.0://' || true)
             [ -n "$svc_ports" ] && echo "  $svc: http://localhost:${svc_ports}"
-        done <<< "$services"
+        done <<< "$services" || true
     fi
 }

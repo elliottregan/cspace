@@ -1,5 +1,7 @@
 # Core devcontainer service — used by all cspace projects.
 # Project-specific services are added via compose file layering (-f).
+# Browser sidecars (playwright, chromium-cdp) are per-instance for full
+# isolation — each instance gets its own browsers with no cross-talk.
 
 services:
   devcontainer:
@@ -48,9 +50,9 @@ services:
       - TERM_PROGRAM=${TERM_PROGRAM:-}
       - COLORTERM=${COLORTERM:-}
 
-    networks:
-      - default
-      - cspace-shared
+    depends_on:
+      - playwright
+      - chromium-cdp
 
     ports:
       - "${HOST_PORT_DEV:-0}:5173"
@@ -58,6 +60,40 @@ services:
 
     tty: true
     stdin_open: true
+
+  # Playwright run-server for E2E tests.
+  # Devcontainers connect via PW_TEST_CONNECT_WS_ENDPOINT=ws://playwright:3000/
+  playwright:
+    image: mcr.microsoft.com/playwright:v1.58.0-noble
+    container_name: ${CSPACE_PREFIX:-cs}.${COMPOSE_PROJECT_NAME}.playwright
+    command: npx -y playwright@1.58.0 run-server --port 3000 --host 0.0.0.0
+    init: true
+
+  # Headless Chromium exposing CDP for the Playwright MCP plugin.
+  # Modern Chromium ignores --remote-debugging-address=0.0.0.0,
+  # so socat forwards the container-public port to localhost.
+  # Devcontainers connect via chromium-cdp:9222 on the instance network.
+  chromium-cdp:
+    image: mcr.microsoft.com/playwright:v1.58.0-noble
+    container_name: ${CSPACE_PREFIX:-cs}.${COMPOSE_PROJECT_NAME}.chromium-cdp
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apt-get update -qq && apt-get install -y -qq socat >/dev/null 2>&1
+        CHROME=$$(find /ms-playwright -name "chrome" -type f -executable | head -1)
+        echo "Launching $$CHROME"
+        $$CHROME \
+          --headless=new \
+          --no-sandbox \
+          --disable-gpu \
+          --disable-dev-shm-usage \
+          --remote-debugging-port=9223 \
+          --remote-allow-origins=* \
+          --user-data-dir=/tmp/chrome-profile &
+        until curl -sf http://127.0.0.1:9223/json/version >/dev/null; do sleep 0.5; done
+        echo "CDP ready, forwarding 0.0.0.0:9222 -> 127.0.0.1:9223"
+        socat TCP-LISTEN:9222,fork,reuseaddr TCP:127.0.0.1:9223
+    init: true
 
 volumes:
   workspace:
@@ -68,9 +104,4 @@ volumes:
   gh-config:
   cspace-logs:
     name: ${CSPACE_LOGS_VOLUME:-cspace-logs}
-    external: true
-
-networks:
-  cspace-shared:
-    name: ${CSPACE_SHARED_NETWORK:-cspace-shared}
     external: true

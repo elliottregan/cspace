@@ -89,7 +89,6 @@ cfg_json() {
 project_name() { cfg '.project.name'; }
 project_prefix() { cfg '.project.prefix'; }
 project_repo() { cfg '.project.repo'; }
-shared_network() { echo "cspace-$(project_name)-shared"; }
 image_name() { echo "cspace-$(project_name)"; }
 memory_volume() { echo "cspace-$(project_name)-memory"; }
 logs_volume() { echo "cspace-$(project_name)-logs"; }

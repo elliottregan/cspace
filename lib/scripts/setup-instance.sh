@@ -30,9 +30,6 @@ if [ -z "${CONFIG:-}" ]; then
     load_config
 fi
 
-# --- Shared services ---
-ensure_shared
-
 # --- Port assignment ---
 assign_ports "$NAME"
 

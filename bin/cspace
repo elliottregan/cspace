@@ -60,10 +60,6 @@ SUPERVISOR (host-side dispatch to running agents):
   cspace restart-supervisor <instance>    Restart agent supervisor (preserves workspace)
     [--reason "text"]                     Why the restart is needed
 
-SHARED SERVICES:
-  cspace shared up                    Start browser sidecars
-  cspace shared down                  Stop browser sidecars
-
 PROJECT SETUP:
   cspace init                         Scaffold .cspace.json + .cspace/
   cspace init --full                  Also copy all templates for customization
@@ -168,7 +164,6 @@ cmd_init() {
         echo "Copying templates for customization..."
         cp "$CSPACE_HOME/lib/templates/Dockerfile" "$project_root/.cspace/Dockerfile"
         cp "$CSPACE_HOME/lib/templates/docker-compose.core.yml" "$project_root/.cspace/docker-compose.core.yml"
-        cp "$CSPACE_HOME/lib/templates/docker-compose.shared.yml" "$project_root/.cspace/docker-compose.shared.yml"
         mkdir -p "$project_root/.cspace/agents"
         cp "$CSPACE_HOME/lib/agents/implementer.md" "$project_root/.cspace/agents/implementer.md"
         cp "$CSPACE_HOME/lib/agents/coordinator.md" "$project_root/.cspace/agents/coordinator.md"
@@ -249,12 +244,11 @@ cmd_up() {
     fi
 
     # Launch Claude
-    local DC="docker compose -p $name"
     if [ -z "$prompt_file" ] && [ -z "$prompt" ]; then
         # Interactive TTY — drop the user straight into a live claude session.
         # Not routed through the supervisor because it has no streaming-input
         # mode appropriate for a TTY and the user is already in the loop.
-        exec $DC exec -u dev -w /workspace devcontainer claude --dangerously-skip-permissions
+        exec docker compose -p "$name" exec -u dev -w /workspace devcontainer claude --dangerously-skip-permissions
     fi
 
     # Autonomous path — stage the prompt in the container, then run through
@@ -445,8 +439,6 @@ cmd_down_all() {
     else
         echo "No instances found for this project."
     fi
-    echo "Stopping shared services for this project..."
-    dc_shared down
 }
 
 cmd_down_everywhere() {
@@ -482,25 +474,6 @@ cmd_down_everywhere() {
         echo "Tearing down instance: $instance"
         docker compose -p "$instance" down --volumes 2>&1 | sed 's/^/  /'
     done
-
-    # Tear down shared sidecars by enumerating cspace-*-shared networks.
-    # The sidecars (playwright, chromium-cdp) attach to one shared network
-    # per project, so removing those networks + their containers cleans up.
-    echo "Stopping shared services across all projects..."
-    docker network ls --format '{{.Name}}' 2>/dev/null \
-        | grep -E '^cspace-.*-shared$' \
-        | while read -r net; do
-            [ -z "$net" ] && continue
-            # Remove every container still attached to this network
-            local attached
-            attached=$(docker network inspect "$net" \
-                --format '{{range .Containers}}{{.Name}}{{"\n"}}{{end}}' 2>/dev/null | grep -v '^$' || true)
-            if [ -n "$attached" ]; then
-                echo "  network $net: removing $(echo "$attached" | wc -l | tr -d ' ') container(s)"
-                echo "$attached" | xargs -r docker rm -f >/dev/null 2>&1 || true
-            fi
-            docker network rm "$net" >/dev/null 2>&1 || true
-        done
 
     echo "Done."
 }
@@ -562,17 +535,6 @@ cmd_warm() {
     else
         echo "All ${#names[@]} containers ready."
     fi
-}
-
-cmd_shared() {
-    local action="${1:-}"
-    load_config
-
-    case "$action" in
-        up) ensure_shared ;;
-        down) dc_shared down ;;
-        *) die "Usage: cspace shared up|down" ;;
-    esac
 }
 
 cmd_rebuild() {
@@ -811,7 +773,6 @@ case "${1:-}" in
     ports)          shift; cmd_ports "$@" ;;
     down)           shift; cmd_down "$@" ;;
     warm)           shift; cmd_warm "$@" ;;
-    shared)         shift; cmd_shared "$@" ;;
     rebuild)        cmd_rebuild ;;
     send)           shift; cmd_send "$@" ;;
     respond)        shift; cmd_respond "$@" ;;
