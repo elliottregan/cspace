@@ -26,13 +26,13 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 		Each instance has Claude Code pre-installed with configurable model, effort level, hooks for progress logging, and transcript export.
 	</Card>
 	<Card title="Browser sidecars" icon="open-book">
-		Shared Playwright run-server and headless Chromium (CDP) containers for E2E testing and browser automation via MCP.
+		Per-instance Playwright run-server and headless Chromium (CDP) containers for E2E testing and browser automation via MCP.
 	</Card>
 	<Card title="Network firewall" icon="setting">
 		iptables-based allowlist restricts egress to GitHub, npm, Anthropic, and your project-specific domains.
 	</Card>
 	<Card title="Autonomous agents" icon="star">
-		Run `cspace issue 42` to fully autonomously resolve a GitHub issue: explore code, design architecture, implement, verify, and ship a PR.
+		Run `cspace up <name> --prompt-file <path>` to fully autonomously resolve a GitHub issue: explore code, design architecture, implement, verify, and ship a PR.
 	</Card>
 	<Card title="Multi-agent coordination" icon="random">
 		The coordinator prompt manages parallel agents across issues with dependency tracking and merge ordering.

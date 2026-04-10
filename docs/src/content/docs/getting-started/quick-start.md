@@ -73,7 +73,12 @@ cspace ports mercury    # show port mappings
 To run an autonomous agent against a GitHub issue:
 
 ```bash
-cspace issue 42         # agent resolves issue #42 end-to-end
+# Write a prompt referencing the issue, then launch an instance with it
+cat > /tmp/issue-prompt.txt <<'EOF'
+Resolve GitHub issue #42 end-to-end. Read the issue, implement the fix,
+verify with tests, and open a PR.
+EOF
+cspace up mars --prompt-file /tmp/issue-prompt.txt
 ```
 
 :::tip

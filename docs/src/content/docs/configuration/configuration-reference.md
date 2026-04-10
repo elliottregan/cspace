@@ -25,8 +25,7 @@ Every cspace project is configured through a `.cspace.json` file in the reposito
     },
     "environment": {
       "VITE_HOST": "0.0.0.0"
-    },
-    "packages": []
+    }
   },
   "firewall": {
     "enabled": true,
@@ -72,7 +71,6 @@ Controls the devcontainer environment.
 |-----|------|---------|-------------|
 | `container.ports` | `object` | `{}` | Port mappings exposed from the container. Keys are port numbers (as strings), values are human-readable descriptions. Example: `{"3000": "dev server"}`. |
 | `container.environment` | `object` | `{}` | Environment variables injected into the container. Key-value pairs. Example: `{"VITE_HOST": "0.0.0.0"}`. |
-| `container.packages` | `array` | `[]` | Additional system packages (apt) to install in the container image. |
 
 ### `firewall`
 

@@ -61,7 +61,7 @@ The line added is:
 export PATH="$HOME/.cspace/bin:$PATH"
 ```
 
-If this line already exists in your RC file, the installer skips this step.
+If `.cspace/bin` is already in your RC file, the installer skips this step.
 
 ### Custom install location
 

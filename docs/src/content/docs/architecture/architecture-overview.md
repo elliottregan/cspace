@@ -9,7 +9,7 @@ cspace runs each task in its own devcontainer instance — a Docker container wi
 
 ## Instance model
 
-Every `cspace up` or `cspace issue` invocation creates one devcontainer instance. Each instance gets:
+Every `cspace up` invocation creates one devcontainer instance. Each instance gets:
 
 - Its own **workspace volume** — a fresh clone of the project repository
 - Its own **Claude Code state** — settings, conversation history, session data
@@ -38,14 +38,9 @@ While instances are isolated, two Docker volumes are shared across all instances
 
 These volumes are created as Docker external volumes the first time an instance is provisioned and persist across instance lifecycles.
 
-:::tip
-Browser sidecars can also run in **shared mode** instead of per-instance mode. Shared sidecars serve all instances from a single container pair on a dedicated `cspace-shared` bridge network, reducing resource usage for projects with many parallel agents:
+:::note
+Browser sidecars are provisioned per-instance as part of the instance's Docker Compose stack (defined in `docker-compose.core.yml`). Each instance gets its own Playwright and Chromium containers on its own network.
 :::
-
-```bash
-cspace shared up    # Start shared browser sidecars
-cspace shared down  # Stop them
-```
 
 ## Container image composition
 

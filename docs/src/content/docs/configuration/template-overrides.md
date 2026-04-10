@@ -11,14 +11,13 @@ cspace ships with built-in templates for the container image, Docker Compose con
 
 ## Override points
 
-There are five template override points. Place the override file at the specified path in your project root:
+There are four template override points. Place the override file at the specified path in your project root:
 
 | Override path | What it replaces | Use case |
 |---------------|-----------------|----------|
 | `.cspace/Dockerfile` | Container image build | Add system dependencies, change the base image, or install custom tooling. |
-| `.cspace/docker-compose.core.yml` | Core devcontainer service definition | Change resource limits, add capabilities, or modify the core container configuration. |
-| `.cspace/docker-compose.shared.yml` | Browser sidecar services (Playwright, Chromium) | Customize browser versions, add extra sidecar containers, or change browser configuration. |
-| `.cspace/agents/implementer.md` | Autonomous agent prompt | Customize how the agent explores code, designs solutions, and ships PRs for `cspace issue`. |
+| `.cspace/docker-compose.core.yml` | Core devcontainer service definition (including browser sidecars) | Change resource limits, add capabilities, modify browser sidecar configuration, or adjust the core container setup. |
+| `.cspace/agents/implementer.md` | Autonomous agent prompt | Customize how the agent explores code, designs solutions, and ships PRs. |
 | `.cspace/agents/coordinator.md` | Multi-agent coordinator prompt | Customize how the coordinator manages parallel agents, resolves dependencies, and sequences work. |
 
 <Aside type="note">
@@ -66,7 +65,7 @@ Run `cspace init --full` to copy all built-in templates into your `.cspace/` dir
 cspace init --full
 ```
 
-This copies the default Dockerfile, Compose files, and agent prompts into `.cspace/` so you can edit them in place.
+This copies the default Dockerfile, core Compose file, and agent prompts into `.cspace/` so you can edit them in place.
 
 <Aside type="tip">
 You don't need to override everything. Only create override files for the templates you want to customize — cspace will use the built-in defaults for everything else.
@@ -91,7 +90,7 @@ RUN apt-get update && apt-get install -y \
 
 ## Customizing agent prompts
 
-The implementer prompt controls how `cspace issue <num>` works — how the agent explores the codebase, designs solutions, and ships PRs. Override it to add project-specific instructions:
+The implementer prompt controls how autonomous agents work — how the agent explores the codebase, designs solutions, and ships PRs. Override it to add project-specific instructions:
 
 ```markdown title=".cspace/agents/implementer.md"
 <!-- Your custom implementer prompt -->
@@ -111,24 +110,13 @@ Agent prompt overrides replace the entire built-in prompt, not just parts of it.
 
 ## Customizing Compose files
 
-### Core service
-
-The core Compose file defines the devcontainer service itself — resource limits, capabilities, volume mounts, and network configuration. Override it when you need to change fundamental container behavior:
+The core Compose file defines the devcontainer service itself — resource limits, capabilities, volume mounts, browser sidecars, and network configuration. Override it when you need to change fundamental container behavior:
 
 ```yaml title=".cspace/docker-compose.core.yml"
 # Your custom core service definition
 # Replaces the built-in devcontainer Compose configuration
 ```
 
-### Shared services
-
-The shared Compose file defines browser sidecars (Playwright run-server and headless Chromium). Override it to change browser versions or add extra shared services:
-
-```yaml title=".cspace/docker-compose.shared.yml"
-# Your custom shared services definition
-# Replaces the built-in browser sidecar configuration
-```
-
 <Aside type="note">
-For adding project-specific services like databases alongside the devcontainer (without replacing the core or shared definitions), use the `services` config key instead. See [Project Services](/configuration/project-services/).
+For adding project-specific services like databases alongside the devcontainer (without replacing the core definition), use the `services` config key instead. See [Project Services](/configuration/project-services/).
 </Aside>

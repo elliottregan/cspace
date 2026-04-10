@@ -9,7 +9,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 Container agents let you hand off work to an isolated cspace devcontainer — its own database, its own browser sidecar, its own filesystem. Each container is a full clone of the repo with its own volumes, and `git push` is the only way changes escape.
 
-Docker-in-docker is enabled, so this works from the host **or** from inside a container — a running coordinator can delegate further work to another coordinator.
+Docker-outside-Docker (DooD) is enabled, so this works from the host **or** from inside a container — a running coordinator can delegate further work to another coordinator.
 
 ## When to use a container agent
 

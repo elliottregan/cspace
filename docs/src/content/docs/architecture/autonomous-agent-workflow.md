@@ -5,7 +5,7 @@ sidebar:
   order: 2
 ---
 
-When you run `cspace issue 42`, cspace provisions a devcontainer instance and launches an autonomous Claude agent inside it. The agent follows a 7-phase workflow defined in the implementer playbook (`lib/agents/implementer.md`) to resolve the issue end-to-end — from reading the issue through shipping a tested PR.
+When you run `cspace up <name> --prompt-file <path>` with a prompt that references a GitHub issue, cspace provisions a devcontainer instance and launches an autonomous Claude agent inside it. The agent follows a 7-phase workflow defined in the implementer playbook (`lib/agents/implementer.md`) to resolve the issue end-to-end — from reading the issue through shipping a tested PR.
 
 The agent is fully autonomous: there is no human in the loop. It makes all decisions itself, does not wait for approvals, and is expected to ship a complete, tested pull request.
 
