@@ -62,4 +62,4 @@ If `GH_TOKEN` is missing from the container environment, instance creation **fai
 
 - **No commit signing.** Repos that require GPG/SSH-signed commits will reject agent pushes. Workaround: relax the rule for bot accounts, or open an issue to add signing support.
 - **No automatic token refresh.** Rotating `GH_TOKEN` on the host requires recreating instances (`cspace down <name> && cspace up <name>`).
-- **Branch protection enforced.** Direct pushes to protected branches (typically `main`) are blocked — agents should always push feature branches and open PRs. The built-in implementer prompt does this by default.
+- **Branch protection applies.** GitHub blocks direct pushes to protected branches (typically `main`) — agents should always push feature branches and open PRs. The built-in implementer prompt does this by default.

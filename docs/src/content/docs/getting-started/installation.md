@@ -33,10 +33,6 @@ This will:
 3. Add `~/.cspace/bin` to your `PATH` in the appropriate shell RC file
 4. Install zsh completions (if you use zsh)
 
-:::tip
-If you already have cspace installed, running the script again will update it via `git pull --ff-only`.
-:::
-
 After installation, restart your shell or source your RC file:
 
 ```bash
@@ -103,4 +99,4 @@ To update cspace to the latest version:
 cspace self-update
 ```
 
-Or re-run the install script — it will `git pull` the latest changes.
+Or re-run the install script — it detects the existing installation and updates it via `git pull --ff-only`.
