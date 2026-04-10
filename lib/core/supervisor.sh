@@ -80,7 +80,27 @@ launch_supervisor() {
     else
         echo "  Re-run:  cspace up $name --prompt-file <path>" >&2
     fi
-    exit $EXIT_CODE
+    return $EXIT_CODE
+}
+
+# resolve_logs_volume_path
+#
+# Find the host-side mountpoint of the cspace-logs Docker volume so
+# host-side scripts can read /logs/messages/ etc. Falls back to a
+# direct path if it already exists (e.g., running inside a container).
+resolve_logs_volume_path() {
+    if [ -d "/logs/messages" ]; then
+        echo "/logs/messages"
+        return
+    fi
+    local vol="${CSPACE_LOGS_VOLUME:-cspace-logs}"
+    local mp
+    mp=$(docker volume inspect "$vol" --format '{{ .Mountpoint }}' 2>/dev/null) || true
+    if [ -n "$mp" ] && [ -d "$mp" ]; then
+        echo "$mp/messages"
+        return
+    fi
+    echo ""
 }
 
 # relaunch_supervisor_detached <name> <prompt_path> <stderr_log> <effort_flag> <system_prompt_flag> [ignore_inbox_before_ms]
@@ -132,7 +152,13 @@ restart_supervisor() {
     local name="$1"
     local reason="${2:-}"
 
-    local MSG_DIR="/logs/messages"
+    local MSG_DIR
+    MSG_DIR=$(resolve_logs_volume_path)
+    if [ -z "$MSG_DIR" ]; then
+        echo "ERROR: cannot resolve cspace-logs volume path" >&2
+        return 1
+    fi
+
     local start_ms
     start_ms=$(date +%s%3N)
 
