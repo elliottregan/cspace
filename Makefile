@@ -1,6 +1,7 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
-LDFLAGS := -ldflags "-X github.com/elliottregan/cspace/internal/cli.Version=$(VERSION)"
-GOBIN   := ./bin/cspace-go
+LDFLAGS         := -ldflags "-X github.com/elliottregan/cspace/internal/cli.Version=$(VERSION)"
+LDFLAGS_RELEASE := -ldflags "-s -w -X github.com/elliottregan/cspace/internal/cli.Version=$(VERSION)"
+GOBIN           := ./bin/cspace-go
 
 .PHONY: build build-linux clean test vet sync-embedded
 
@@ -22,8 +23,9 @@ build: sync-embedded
 	go build $(LDFLAGS) -o $(GOBIN) ./cmd/cspace
 
 build-linux: sync-embedded
-	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(GOBIN)-linux-amd64 ./cmd/cspace
-	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o $(GOBIN)-linux-arm64 ./cmd/cspace
+	@mkdir -p dist
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS_RELEASE) -o dist/cspace-linux-amd64 ./cmd/cspace
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(LDFLAGS_RELEASE) -o dist/cspace-linux-arm64 ./cmd/cspace
 
 test: sync-embedded
 	go test ./...
@@ -33,4 +35,5 @@ vet: sync-embedded
 
 clean:
 	rm -f $(GOBIN) $(GOBIN)-linux-amd64 $(GOBIN)-linux-arm64
+	rm -rf dist
 	rm -rf internal/assets/embedded
