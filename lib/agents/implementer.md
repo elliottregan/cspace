@@ -41,23 +41,24 @@ ${STRATEGIC_CONTEXT_PREAMBLE}You are a fully autonomous agent. There is no human
 
 7. Create a plan and implement the changes described in the issue.
 8. If you encounter work that is out of scope for this issue but important, create a new issue and move on.
+9. Commit and push your implementation progress: `git add -A && git commit -m "issue-${NUMBER}: implement changes" && git push`
 
 ## Phase 5 — Verify
 
-9. Run verification: `${VERIFY_COMMAND}`
-10. Fix any failures from step 9.
-11. Run E2E tests (if configured): `${E2E_COMMAND}` — run directly, **never pipe through tail/head** (see shell rules above).
-12. Fix any E2E failures from step 11.
+10. Run verification: `${VERIFY_COMMAND}`
+11. Fix any failures from step 10.
+12. Run E2E tests (if configured): `${E2E_COMMAND}` — run directly, **never pipe through tail/head** (see shell rules above).
+13. Fix any E2E failures from step 12.
+14. Commit and push any fixes: `git add -A && git commit -m "issue-${NUMBER}: fix verification issues" && git push` (skip if no changes)
 
 ## Phase 6 — Ship
 
-13. Commit all changes with a message that includes `Closes #${NUMBER}`.
-14. Push: `git push`
-15. Take PR out of draft mode: `gh pr ready`
-16. **Do NOT use `gh pr edit --body`.** It triggers a GitHub Projects GraphQL permission error. If you need to update the PR description, use the REST API: `gh api repos/{owner}/{repo}/pulls/{number} -X PATCH -f body="..."`. But updating the description is optional.
+15. Commit any remaining uncommitted changes with a message that includes `Closes #${NUMBER}`, then push: `git push`
+16. Take PR out of draft mode: `gh pr ready`
+17. **Do NOT use `gh pr edit --body`.** It triggers a GitHub Projects GraphQL permission error. If you need to update the PR description, use the REST API: `gh api repos/{owner}/{repo}/pulls/{number} -X PATCH -f body="..."`. But updating the description is optional.
 
 ## Phase 7 — Review
 
-17. Take screenshots of the new/changed features using Playwright MCP browser tools against the running preview server, then post them as a comment on the PR using gh cli.
-18. Review your own PR using /code-review — fix any issues found, commit, and push again.
-19. **AC verification**: Re-read the issue (`gh issue view ${NUMBER}`) and compare every acceptance criterion against your actual changes. For each AC item, confirm it is met or note what's missing. If anything is missing, go back and implement it before finishing.
+18. Take screenshots of the new/changed features using Playwright MCP browser tools against the running preview server, then post them as a comment on the PR using gh cli.
+19. Review your own PR using /code-review — fix any issues found, commit, and push again.
+20. **AC verification**: Re-read the issue (`gh issue view ${NUMBER}`) and compare every acceptance criterion against your actual changes. For each AC item, confirm it is met or note what's missing. If anything is missing, go back and implement it before finishing.
