@@ -7,10 +7,11 @@ import (
 
 func newSendCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:     "send <instance> <text>",
-		Short:   "Inject a user turn into a session",
-		GroupID: "supervisor",
-		Args:    cobra.ExactArgs(2),
+		Use:               "send <instance> <text>",
+		Short:             "Inject a user turn into a session",
+		GroupID:           "supervisor",
+		Args:              cobra.ExactArgs(2),
+		ValidArgsFunction: completeInstanceNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return supervisor.RunDispatch(cfg, "send", args[0], args[1])
 		},

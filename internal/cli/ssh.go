@@ -7,10 +7,11 @@ import (
 
 func newSSHCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:     "ssh <name>",
-		Short:   "Shell into running instance",
-		GroupID: "instance",
-		Args:    cobra.ExactArgs(1),
+		Use:               "ssh <name>",
+		Short:             "Shell into running instance",
+		GroupID:           "instance",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeInstanceNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			composeName := cfg.ComposeName(name)

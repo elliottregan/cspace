@@ -38,32 +38,51 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 				return nil
 			}
 
+			// For the root command (no subcommand), attempt config loading
+			// but tolerate failure — the TUI falls back to help when cfg is nil.
+			isRoot := cmd.Name() == "cspace" && cmd.Parent() == nil
+
 			// Extract embedded assets
 			cspaceHome, err := defaultCspaceHome()
 			if err != nil {
+				if isRoot {
+					return nil
+				}
 				return fmt.Errorf("determining cspace home: %w", err)
 			}
 
 			assetsDir, err = assets.ExtractTo(cspaceHome, Version)
 			if err != nil {
+				if isRoot {
+					return nil
+				}
 				return fmt.Errorf("extracting assets: %w", err)
 			}
 
 			// Load configuration
 			cwd, err := os.Getwd()
 			if err != nil {
+				if isRoot {
+					return nil
+				}
 				return fmt.Errorf("getting working directory: %w", err)
 			}
 
 			cfg, err = config.Load(cwd, assetsDir)
 			if err != nil {
+				if isRoot {
+					return nil
+				}
 				return fmt.Errorf("loading config: %w", err)
 			}
 
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// No subcommand given — show help (TUI in a future phase)
+			// No subcommand given — launch TUI if interactive and config loaded
+			if cfg != nil && isInteractive() {
+				return runTUI(cmd)
+			}
 			return cmd.Help()
 		},
 		SilenceUsage:  true,
@@ -111,6 +130,7 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 		newSyncContextCmd(),
 		newSelfUpdateCmd(),
 		newVersionCmd(),
+		newCompletionCmd(),
 	)
 
 	return root

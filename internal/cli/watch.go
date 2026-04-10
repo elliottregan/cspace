@@ -7,10 +7,11 @@ import (
 
 func newWatchCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:     "watch [instance]",
-		Short:   "Stream agent notifications and questions",
-		GroupID: "supervisor",
-		Args:    cobra.MaximumNArgs(1),
+		Use:               "watch [instance]",
+		Short:             "Stream agent notifications and questions",
+		GroupID:           "supervisor",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeInstanceNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target, err := supervisor.ResolveDispatchTarget(cfg)
 			if err != nil {

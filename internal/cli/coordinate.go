@@ -48,6 +48,12 @@ func runCoordinate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("pass either an inline prompt or --prompt-file, not both")
 	}
 
+	return runCoordinateWithArgs(prompt, promptFile, name)
+}
+
+// runCoordinateWithArgs is the shared implementation for the coordinate command,
+// callable from both the CLI handler and the TUI menu.
+func runCoordinateWithArgs(prompt, promptFile, name string) error {
 	if name == "" {
 		name = "coord-" + strconv.FormatInt(time.Now().Unix(), 10)
 	}

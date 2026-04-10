@@ -7,11 +7,12 @@ import (
 
 func newRestartSupervisorCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "restart-supervisor <instance>",
-		Short:   "Restart agent supervisor (preserves workspace)",
-		GroupID: "supervisor",
-		Args:    cobra.ExactArgs(1),
-		RunE:    runRestartSupervisor,
+		Use:               "restart-supervisor <instance>",
+		Short:             "Restart agent supervisor (preserves workspace)",
+		GroupID:           "supervisor",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeInstanceNames,
+		RunE:              runRestartSupervisor,
 	}
 
 	cmd.Flags().String("reason", "", "Why the restart is needed")
