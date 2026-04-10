@@ -35,25 +35,22 @@ func runResume(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// If prompt or prompt-file given, run through supervisor
 	if prompt != "" || promptFile != "" {
-		containerPromptPath := "/tmp/claude-prompt.txt"
-
 		if promptFile != "" {
-			if err := supervisor.StagePromptFile(composeName, promptFile, containerPromptPath); err != nil {
+			if err := supervisor.StagePromptFile(composeName, promptFile, supervisor.ContainerPromptPath); err != nil {
 				return err
 			}
 		} else {
-			if err := supervisor.StagePromptText(composeName, prompt, containerPromptPath); err != nil {
+			if err := supervisor.StagePromptText(composeName, prompt, supervisor.ContainerPromptPath); err != nil {
 				return err
 			}
 		}
 
 		return supervisor.LaunchSupervisor(supervisor.LaunchParams{
-			Name:      name,
-			Role:      "agent",
-			PromptFile: containerPromptPath,
-			StderrLog: "/tmp/agent-stderr.log",
+			Name:       name,
+			Role:       supervisor.RoleAgent,
+			PromptFile: supervisor.ContainerPromptPath,
+			StderrLog:  supervisor.ContainerAgentStderrLog,
 		}, cfg)
 	}
 

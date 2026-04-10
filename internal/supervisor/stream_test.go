@@ -108,25 +108,6 @@ func TestProcessStream_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestBaseName(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"/workspace/foo/bar.go", "bar.go"},
-		{"bar.go", "bar.go"},
-		{"/a/b/c", "c"},
-		{"", ""},
-	}
-
-	for _, tt := range tests {
-		got := baseName(tt.input)
-		if got != tt.expected {
-			t.Errorf("baseName(%q) = %q, want %q", tt.input, got, tt.expected)
-		}
-	}
-}
-
 func TestExitCodeFromError(t *testing.T) {
 	// nil error -> 0
 	if code := exitCodeFromError(nil); code != 0 {

@@ -114,29 +114,26 @@ func runUp(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// No prompt given — launch interactive Claude session
 	if prompt == "" && promptFile == "" {
 		return supervisor.LaunchInteractive(name, cfg)
 	}
 
 	// Autonomous path — stage the prompt in the container, then run through
 	// the supervisor for structured event logging and control socket.
-	containerPromptPath := "/tmp/claude-prompt.txt"
-
 	if promptFile != "" {
-		if err := supervisor.StagePromptFile(composeName, promptFile, containerPromptPath); err != nil {
+		if err := supervisor.StagePromptFile(composeName, promptFile, supervisor.ContainerPromptPath); err != nil {
 			return err
 		}
 	} else {
-		if err := supervisor.StagePromptText(composeName, prompt, containerPromptPath); err != nil {
+		if err := supervisor.StagePromptText(composeName, prompt, supervisor.ContainerPromptPath); err != nil {
 			return err
 		}
 	}
 
 	return supervisor.LaunchSupervisor(supervisor.LaunchParams{
-		Name:      name,
-		Role:      "agent",
-		PromptFile: containerPromptPath,
-		StderrLog: "/tmp/agent-stderr.log",
+		Name:       name,
+		Role:       supervisor.RoleAgent,
+		PromptFile: supervisor.ContainerPromptPath,
+		StderrLog:  supervisor.ContainerAgentStderrLog,
 	}, cfg)
 }

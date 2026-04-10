@@ -7,18 +7,27 @@ import (
 	"github.com/elliottregan/cspace/internal/instance"
 )
 
-// cliMjsPath is the path to the supervisor CLI inside containers.
-const cliMjsPath = "/opt/cspace/lib/agent-supervisor/cli.mjs"
+// Supervisor roles.
+const (
+	RoleAgent       = "agent"
+	RoleCoordinator = "coordinator"
+)
+
+// Well-known container paths used by the supervisor protocol.
+const (
+	ContainerPromptPath      = "/tmp/claude-prompt.txt"
+	ContainerCoordPromptPath = "/tmp/coordinator-prompt.txt"
+	ContainerAgentStderrLog  = "/tmp/agent-stderr.log"
+	ContainerCoordStderrLog  = "/tmp/coordinator-stderr.log"
+	ContainerRestartPrompt   = "/tmp/restart-prompt.txt"
+
+	cliMjsPath = "/opt/cspace/lib/agent-supervisor/cli.mjs"
+)
 
 // Dispatch runs a supervisor CLI command inside a running container.
-// It picks the first running instance for the current project as the
-// dispatch target (any container can reach any instance's socket via
-// the shared cspace-logs volume).
-//
-// Output is printed to stdout/stderr via DcExecInteractive.
+// Output is discarded; use DispatchWithOutput to capture it.
 func Dispatch(composeName string, args ...string) error {
-	cmdArgs := append([]string{"node", cliMjsPath}, args...)
-	_, err := instance.DcExec(composeName, cmdArgs...)
+	_, err := DispatchWithOutput(composeName, args...)
 	return err
 }
 
@@ -30,7 +39,7 @@ func DispatchInteractive(composeName string, args ...string) error {
 	return instance.DcExecInteractive(composeName, cmdArgs...)
 }
 
-// DispatchWithOutput runs a supervisor CLI command and returns the output.
+// DispatchWithOutput runs a supervisor CLI command and returns stdout.
 func DispatchWithOutput(composeName string, args ...string) (string, error) {
 	cmdArgs := append([]string{"node", cliMjsPath}, args...)
 	return instance.DcExec(composeName, cmdArgs...)
@@ -45,4 +54,22 @@ func ResolveDispatchTarget(cfg *config.Config) (string, error) {
 		return "", fmt.Errorf("no running cspace instances; start one with 'cspace up' first")
 	}
 	return cfg.ComposeName(names[0]), nil
+}
+
+// RunDispatch is a convenience helper for CLI dispatch commands.
+// It resolves a dispatch target, runs the command, and prints output.
+func RunDispatch(cfg *config.Config, args ...string) error {
+	target, err := ResolveDispatchTarget(cfg)
+	if err != nil {
+		return err
+	}
+
+	out, err := DispatchWithOutput(target, args...)
+	if err != nil {
+		return err
+	}
+	if out != "" {
+		fmt.Println(out)
+	}
+	return nil
 }

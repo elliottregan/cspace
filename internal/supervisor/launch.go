@@ -16,10 +16,10 @@ import (
 
 // LaunchParams groups the arguments for launching a supervisor.
 type LaunchParams struct {
-	Name      string // Instance name (e.g. "mercury")
-	Role      string // "agent" or "coordinator"
-	PromptFile string // Container-side path to prompt file (e.g. /tmp/claude-prompt.txt)
-	StderrLog string // Container-side path for stderr log (e.g. /tmp/agent-stderr.log)
+	Name       string // Instance name (e.g. "mercury")
+	Role       string // RoleAgent or RoleCoordinator
+	PromptFile string // Container-side path to prompt file
+	StderrLog  string // Container-side path for stderr log
 }
 
 // LaunchSupervisor runs the agent-supervisor inside the named instance
@@ -32,19 +32,15 @@ type LaunchParams struct {
 //   - 2 = stream pipe closed
 //   - 141 = SIGPIPE
 func LaunchSupervisor(params LaunchParams, cfg *config.Config) error {
-	// Build supervisor command args
 	supervisorArgs := buildSupervisorArgs(params, cfg)
 
-	// Build the bash command that runs inside the container:
-	// - Redirect supervisor stderr to log file
-	// - Run copy-transcript-on-exit.sh on EXIT (like the bash version)
+	// Redirect supervisor stderr to log file and run transcript-copy on EXIT.
 	bashCmd := fmt.Sprintf(
 		"trap '[ -x /workspace/.cspace/hooks/copy-transcript-on-exit.sh ] && /workspace/.cspace/hooks/copy-transcript-on-exit.sh || [ -x /opt/cspace/lib/hooks/copy-transcript-on-exit.sh ] && /opt/cspace/lib/hooks/copy-transcript-on-exit.sh' EXIT; node /opt/cspace/lib/agent-supervisor/supervisor.mjs %s 2>%s",
 		strings.Join(supervisorArgs, " "),
 		params.StderrLog,
 	)
 
-	// Build docker compose exec command
 	execArgs := []string{
 		"exec", "-T", "-u", "dev", "-w", "/workspace",
 		"-e", "CLAUDE_AUTONOMOUS=1",
@@ -58,37 +54,30 @@ func LaunchSupervisor(params LaunchParams, cfg *config.Config) error {
 		return fmt.Errorf("building compose command: %w", err)
 	}
 
-	// Pipe stdout for NDJSON processing
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("creating stdout pipe: %w", err)
 	}
-
-	// Inherit stderr so docker compose messages are visible
 	cmd.Stderr = os.Stderr
 
-	// Start the command
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting supervisor: %w", err)
 	}
 
 	// Process NDJSON stream (blocks until EOF)
-	result := ProcessStream(stdout)
-	_ = result // SessionID captured for potential future use
+	ProcessStream(stdout)
 
-	// Wait for command to exit
 	exitErr := cmd.Wait()
 	exitCode := exitCodeFromError(exitErr)
 
-	// Exit codes 0, 2, and 141 are success
-	if exitCode == 0 || exitCode == 2 || exitCode == 141 {
+	if isSuccessExit(exitCode) {
 		return nil
 	}
 
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintf(os.Stderr, "FAILED \u2014 %s exited with code %d\n", params.Role, exitCode)
 	fmt.Fprintf(os.Stderr, "  Shell:   cspace ssh %s\n", params.Name)
-	if params.Role == "coordinator" {
+	if params.Role == RoleCoordinator {
 		fmt.Fprintf(os.Stderr, "  Re-run:  cspace coordinate \"...\" --name %s (resumable)\n", params.Name)
 	} else {
 		fmt.Fprintf(os.Stderr, "  Re-run:  cspace up %s --prompt-file <path>\n", params.Name)
@@ -98,9 +87,7 @@ func LaunchSupervisor(params LaunchParams, cfg *config.Config) error {
 }
 
 // LaunchInteractive launches Claude Code directly (not through the
-// supervisor) for interactive TTY sessions. Equivalent to:
-//
-//	exec docker compose exec -u dev -w /workspace devcontainer claude --dangerously-skip-permissions
+// supervisor) for interactive TTY sessions.
 func LaunchInteractive(name string, cfg *config.Config) error {
 	cmd, err := compose.Cmd(name, cfg,
 		"exec", "-u", "dev", "-w", "/workspace",
@@ -120,7 +107,6 @@ func LaunchInteractive(name string, cfg *config.Config) error {
 
 // RelaunchDetached launches a supervisor in detached mode inside the
 // container. Used by RestartSupervisor after the old supervisor exits.
-// The supervisor runs in the background with no terminal rendering.
 func RelaunchDetached(params LaunchParams, cfg *config.Config, ignoreInboxBeforeMs int64) error {
 	supervisorArgs := buildSupervisorArgs(params, cfg)
 
@@ -134,7 +120,6 @@ func RelaunchDetached(params LaunchParams, cfg *config.Config, ignoreInboxBefore
 		params.StderrLog,
 	)
 
-	// Use -d (detached) and -T (no TTY)
 	execArgs := []string{
 		"exec", "-d", "-T", "-u", "dev", "-w", "/workspace",
 		"-e", "CLAUDE_AUTONOMOUS=1",
@@ -160,7 +145,6 @@ func RelaunchDetached(params LaunchParams, cfg *config.Config, ignoreInboxBefore
 func RestartSupervisor(name, reason string, cfg *config.Config) error {
 	composeName := cfg.ComposeName(name)
 
-	// Find the logs volume path for completion polling
 	logsPath := resolveLogsVolumePath(cfg)
 	if logsPath == "" {
 		return fmt.Errorf("cannot resolve cspace-logs volume path")
@@ -168,7 +152,6 @@ func RestartSupervisor(name, reason string, cfg *config.Config) error {
 
 	startMs := time.Now().UnixMilli()
 
-	// Interrupt the old supervisor
 	fmt.Printf("Interrupting supervisor for %s...\n", name)
 	Dispatch(composeName, "interrupt", name)
 
@@ -190,7 +173,6 @@ func RestartSupervisor(name, reason string, cfg *config.Config) error {
 				if err != nil {
 					continue
 				}
-				// Check if the file is newer than our start time
 				if info.ModTime().UnixMilli() >= startMs {
 					found = true
 					break
@@ -209,31 +191,29 @@ func RestartSupervisor(name, reason string, cfg *config.Config) error {
 		fmt.Println("Old supervisor exited cleanly.")
 	}
 
-	// If reason given, prepend a restart marker to the prompt
-	promptPath := "/tmp/claude-prompt.txt"
+	// Prepend restart marker to prompt if reason given
+	promptPath := ContainerPromptPath
 	if reason != "" {
 		restartScript := fmt.Sprintf(
 			`{ echo '[This session was restarted by the coordinator. Reason: %s. Your workspace is preserved — all files, branches, and uncommitted changes are intact. Re-establish any external state (browser sessions, test servers, etc.) as needed, then continue your task.]'
 echo ''
-cat /tmp/claude-prompt.txt
-} > /tmp/restart-prompt.txt`, reason)
+cat %s
+} > %s`, reason, ContainerPromptPath, ContainerRestartPrompt)
 
 		_, err := instance.DcExec(composeName, "bash", "-c", restartScript)
 		if err != nil {
 			return fmt.Errorf("prepending restart marker: %w", err)
 		}
-		promptPath = "/tmp/restart-prompt.txt"
+		promptPath = ContainerRestartPrompt
 	}
 
-	// Build effort and system prompt flags
 	params := LaunchParams{
-		Name:      name,
-		Role:      "agent",
+		Name:       name,
+		Role:       RoleAgent,
 		PromptFile: promptPath,
-		StderrLog: "/tmp/agent-stderr.log",
+		StderrLog:  ContainerAgentStderrLog,
 	}
 
-	// Launch new supervisor detached with inbox filter
 	if err := RelaunchDetached(params, cfg, startMs); err != nil {
 		return fmt.Errorf("relaunching supervisor: %w", err)
 	}
@@ -242,20 +222,17 @@ cat /tmp/claude-prompt.txt
 	return nil
 }
 
-// StagePromptFile copies a host-side prompt file into the container at
-// the given container path. Also fixes ownership to the dev user.
+// StagePromptFile copies a host-side prompt file into the container.
 func StagePromptFile(composeName, hostPath, containerPath string) error {
 	if err := instance.DcCp(composeName, hostPath, containerPath); err != nil {
 		return fmt.Errorf("copying prompt file: %w", err)
 	}
-	// Fix ownership
 	instance.DcExecRoot(composeName, "chown", "dev:dev", containerPath)
 	return nil
 }
 
 // StagePromptText writes inline prompt text into the container at the given path.
 func StagePromptText(composeName, text, containerPath string) error {
-	// Use bash -c 'cat > path' with text on stdin
 	args := []string{
 		"compose", "-p", composeName,
 		"exec", "-T", "-u", "dev",
@@ -279,28 +256,21 @@ func buildSupervisorArgs(params LaunchParams, cfg *config.Config) []string {
 		"--prompt-file", params.PromptFile,
 	}
 
-	// Only the agent role takes --instance
-	if params.Role == "agent" {
+	if params.Role == RoleAgent {
 		args = append(args, "--instance", params.Name)
 	}
 
-	// Model
 	model := cfg.Claude.Model
 	if model == "" {
 		model = "claude-opus-4-6"
 	}
 	args = append(args, "--model", model)
 
-	// Effort flag: pass --no-effort-max when effort is set and not "max"
 	if cfg.Claude.Effort != "" && cfg.Claude.Effort != "max" {
 		args = append(args, "--no-effort-max")
 	}
 
-	// System prompt override: check for per-role override file in the container
-	// This is done by checking via dc_exec, but for simplicity we just pass the
-	// flag if the file exists. Since we can't check the container filesystem
-	// synchronously here without another docker exec, we'll check via a known
-	// convention: if the project has .cspace/agent-supervisor/<role>-system-prompt.txt
+	// Check for per-role system prompt override inside the container
 	systemPromptFile := filepath.Join("/workspace/.cspace/agent-supervisor",
 		params.Role+"-system-prompt.txt")
 	composeName := cfg.ComposeName(params.Name)
@@ -312,14 +282,12 @@ func buildSupervisorArgs(params LaunchParams, cfg *config.Config) []string {
 }
 
 // resolveLogsVolumePath finds the host-side mountpoint of the cspace-logs
-// Docker volume so host-side scripts can read /logs/messages/.
+// Docker volume.
 func resolveLogsVolumePath(cfg *config.Config) string {
-	// If we're inside a container, use the direct path
 	if info, err := os.Stat("/logs/messages"); err == nil && info.IsDir() {
 		return "/logs/messages"
 	}
 
-	// Try to inspect the Docker volume
 	vol := cfg.LogsVolume()
 	out, err := exec.Command("docker", "volume", "inspect", vol,
 		"--format", "{{ .Mountpoint }}").Output()
@@ -338,7 +306,6 @@ func resolveLogsVolumePath(cfg *config.Config) string {
 }
 
 // exitCodeFromError extracts the exit code from an exec error.
-// Returns 0 for nil errors.
 func exitCodeFromError(err error) int {
 	if err == nil {
 		return 0
@@ -349,4 +316,9 @@ func exitCodeFromError(err error) int {
 		}
 	}
 	return 1
+}
+
+// isSuccessExit returns true for exit codes that indicate success.
+func isSuccessExit(code int) bool {
+	return code == 0 || code == 2 || code == 141
 }

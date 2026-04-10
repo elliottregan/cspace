@@ -11,20 +11,13 @@ func newWatchCmd() *cobra.Command {
 		Short:   "Stream agent notifications and questions",
 		GroupID: "supervisor",
 		Args:    cobra.MaximumNArgs(1),
-		RunE:    runWatch,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			target, err := supervisor.ResolveDispatchTarget(cfg)
+			if err != nil {
+				return err
+			}
+			dispatchArgs := append([]string{"watch"}, args...)
+			return supervisor.DispatchInteractive(target, dispatchArgs...)
+		},
 	}
-}
-
-func runWatch(cmd *cobra.Command, args []string) error {
-	target, err := supervisor.ResolveDispatchTarget(cfg)
-	if err != nil {
-		return err
-	}
-
-	// Build dispatch args: "watch" followed by optional instance
-	dispatchArgs := []string{"watch"}
-	dispatchArgs = append(dispatchArgs, args...)
-
-	// Use interactive dispatch for continuous streaming
-	return supervisor.DispatchInteractive(target, dispatchArgs...)
 }

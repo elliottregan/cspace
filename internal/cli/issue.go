@@ -104,17 +104,15 @@ func runIssue(cmd *cobra.Command, args []string) error {
 		instance.DcExec(composeName, "git", "reset", "--hard", "origin/"+baseBranch)
 	}
 
-	// Stage the rendered prompt
-	containerPromptPath := "/tmp/claude-prompt.txt"
-	if err := supervisor.StagePromptText(composeName, prompt, containerPromptPath); err != nil {
+	if err := supervisor.StagePromptText(composeName, prompt, supervisor.ContainerPromptPath); err != nil {
 		return err
 	}
 
 	return supervisor.LaunchSupervisor(supervisor.LaunchParams{
-		Name:      name,
-		Role:      "agent",
-		PromptFile: containerPromptPath,
-		StderrLog: "/tmp/agent-stderr.log",
+		Name:       name,
+		Role:       supervisor.RoleAgent,
+		PromptFile: supervisor.ContainerPromptPath,
+		StderrLog:  supervisor.ContainerAgentStderrLog,
 	}, cfg)
 }
 

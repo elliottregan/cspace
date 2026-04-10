@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -58,8 +59,8 @@ type StreamResult struct {
 // the reader returns EOF or an error.
 func ProcessStream(r io.Reader) StreamResult {
 	scanner := bufio.NewScanner(r)
-	// Increase buffer size for large NDJSON lines (SDK messages can be big)
-	scanner.Buffer(make([]byte, 0, 256*1024), 2*1024*1024)
+	// Allow large NDJSON lines (SDK messages can be big); max 2MB per line.
+	scanner.Buffer(make([]byte, 0, 8*1024), 2*1024*1024)
 
 	var (
 		turn      int
@@ -90,7 +91,6 @@ func ProcessStream(r io.Reader) StreamResult {
 			renderAssistantEvent(turn, ev)
 
 		case "result":
-			// Capture session_id from result if not yet captured
 			if sessionID == "" && ev.SessionID != "" {
 				sessionID = ev.SessionID
 			}
@@ -107,7 +107,6 @@ func ProcessStream(r io.Reader) StreamResult {
 				}
 			}
 
-			// Print result text to stdout (like stream-status.sh)
 			if ev.Result != "" {
 				fmt.Println(ev.Result)
 			}
@@ -131,7 +130,6 @@ func renderAssistantEvent(turn int, ev StreamEvent) {
 		return
 	}
 
-	// Check for tool uses
 	hasTools := false
 	for _, c := range msg.Content {
 		if c.Type == "tool_use" {
@@ -140,7 +138,6 @@ func renderAssistantEvent(turn int, ev StreamEvent) {
 		}
 	}
 
-	// If no tools, show text (first 120 chars)
 	if !hasTools {
 		var texts []string
 		for _, c := range msg.Content {
@@ -165,11 +162,17 @@ func renderToolUse(turn int, c messageContent) {
 		json.Unmarshal(c.Input, &input)
 	}
 
-	switch c.Name {
-	case "Bash":
+	// File-operation tools share a common render pattern
+	fileVerbs := map[string]string{
+		"Read":  "Reading",
+		"Edit":  "Editing",
+		"Write": "Writing",
+	}
+
+	switch {
+	case c.Name == "Bash":
 		cmd := input.Command
 		if cmd != "" {
-			// Take first line, max 80 chars
 			if idx := strings.IndexByte(cmd, '\n'); idx >= 0 {
 				cmd = cmd[:idx]
 			}
@@ -180,46 +183,36 @@ func renderToolUse(turn int, c messageContent) {
 		} else {
 			fmt.Fprintf(os.Stderr, "  [%d] -> %s\n", turn, c.Name)
 		}
-	case "Read":
-		file := baseName(input.FilePath)
-		if file != "" {
-			fmt.Fprintf(os.Stderr, "  [%d] -> Reading %s\n", turn, file)
+
+	case fileVerbs[c.Name] != "":
+		if input.FilePath != "" {
+			fmt.Fprintf(os.Stderr, "  [%d] -> %s %s\n", turn, fileVerbs[c.Name], filepath.Base(input.FilePath))
 		} else {
 			fmt.Fprintf(os.Stderr, "  [%d] -> %s\n", turn, c.Name)
 		}
-	case "Edit":
-		file := baseName(input.FilePath)
-		if file != "" {
-			fmt.Fprintf(os.Stderr, "  [%d] -> Editing %s\n", turn, file)
-		} else {
-			fmt.Fprintf(os.Stderr, "  [%d] -> %s\n", turn, c.Name)
-		}
-	case "Write":
-		file := baseName(input.FilePath)
-		if file != "" {
-			fmt.Fprintf(os.Stderr, "  [%d] -> Writing %s\n", turn, file)
-		} else {
-			fmt.Fprintf(os.Stderr, "  [%d] -> %s\n", turn, c.Name)
-		}
-	case "Glob", "Grep":
+
+	case c.Name == "Glob" || c.Name == "Grep":
 		if input.Pattern != "" {
 			fmt.Fprintf(os.Stderr, "  [%d] -> %s: %s\n", turn, c.Name, input.Pattern)
 		} else {
 			fmt.Fprintf(os.Stderr, "  [%d] -> %s\n", turn, c.Name)
 		}
-	case "Agent":
+
+	case c.Name == "Agent":
 		if input.Description != "" {
 			fmt.Fprintf(os.Stderr, "  [%d] -> Agent: %s\n", turn, input.Description)
 		} else {
 			fmt.Fprintf(os.Stderr, "  [%d] -> %s\n", turn, c.Name)
 		}
-	case "Skill":
+
+	case c.Name == "Skill":
 		if input.Skill != "" {
 			fmt.Fprintf(os.Stderr, "  [%d] -> Skill: %s\n", turn, input.Skill)
 		} else {
 			fmt.Fprintf(os.Stderr, "  [%d] -> %s\n", turn, c.Name)
 		}
-	case "TaskCreate", "TaskUpdate":
+
+	case c.Name == "TaskCreate" || c.Name == "TaskUpdate":
 		summary := input.Subject
 		if summary == "" {
 			summary = input.Status
@@ -229,19 +222,8 @@ func renderToolUse(turn int, c messageContent) {
 		} else {
 			fmt.Fprintf(os.Stderr, "  [%d] -> %s\n", turn, c.Name)
 		}
+
 	default:
 		fmt.Fprintf(os.Stderr, "  [%d] -> %s\n", turn, c.Name)
 	}
-}
-
-// baseName extracts the file name from a path.
-func baseName(path string) string {
-	if path == "" {
-		return ""
-	}
-	idx := strings.LastIndexByte(path, '/')
-	if idx >= 0 {
-		return path[idx+1:]
-	}
-	return path
 }
