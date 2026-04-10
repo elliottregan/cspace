@@ -3,6 +3,7 @@
 package compose
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -61,6 +62,27 @@ func ComposeEnv(name string, cfg *config.Config) []string {
 	// Export container environment from config as CSPACE_ENV_* variables
 	for k, v := range cfg.Container.Environment {
 		env = append(env, "CSPACE_ENV_"+k+"="+v)
+	}
+
+	// Firewall domains (space-separated for the container environment)
+	if len(cfg.Firewall.Domains) > 0 {
+		env = append(env, "CSPACE_FIREWALL_DOMAINS="+strings.Join(cfg.Firewall.Domains, " "))
+	}
+
+	// Claude model and effort
+	env = append(env, "CSPACE_CLAUDE_MODEL="+cfg.Claude.Model)
+	env = append(env, "CSPACE_CLAUDE_EFFORT="+cfg.Claude.Effort)
+
+	// MCP servers as compact JSON
+	mcpJSON, _ := json.Marshal(cfg.MCPServers)
+	if mcpJSON == nil {
+		mcpJSON = []byte("{}")
+	}
+	env = append(env, "CSPACE_MCP_SERVERS="+string(mcpJSON))
+
+	// Resolved Dockerfile path (used by docker-compose.core.yml for build)
+	if dockerfilePath, err := cfg.ResolveTemplate("Dockerfile"); err == nil {
+		env = append(env, "CSPACE_DOCKERFILE="+dockerfilePath)
 	}
 
 	return env

@@ -216,7 +216,7 @@ func (c *Config) autoDetect() {
 	}
 
 	if c.Project.Repo == "" {
-		c.Project.Repo = detectGitRepo(c.ProjectRoot)
+		c.Project.Repo = DetectGitRepo(c.ProjectRoot)
 	}
 
 	if c.Project.Prefix == "" && len(c.Project.Name) >= 2 {
@@ -226,8 +226,8 @@ func (c *Config) autoDetect() {
 	}
 }
 
-// detectGitRepo extracts the GitHub owner/repo from the git remote origin URL.
-func detectGitRepo(projectRoot string) string {
+// DetectGitRepo extracts the GitHub owner/repo from the git remote origin URL.
+func DetectGitRepo(projectRoot string) string {
 	cmd := exec.Command("git", "-C", projectRoot, "remote", "get-url", "origin")
 	out, err := cmd.Output()
 	if err != nil {

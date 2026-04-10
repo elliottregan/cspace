@@ -96,3 +96,99 @@ func TestComposeEnvCustomName(t *testing.T) {
 		t.Errorf("COMPOSE_PROJECT_NAME = %q, want %q", m["COMPOSE_PROJECT_NAME"], "mp-feature-branch")
 	}
 }
+
+func TestComposeEnvProvisioningVars(t *testing.T) {
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Name:   "myproject",
+			Prefix: "mp",
+		},
+		Firewall: config.FirewallConfig{
+			Enabled: true,
+			Domains: []string{"api.example.com", "cdn.example.com"},
+		},
+		Claude: config.ClaudeConfig{
+			Model:  "claude-opus-4-6[1m]",
+			Effort: "max",
+		},
+		MCPServers: map[string]interface{}{
+			"test-server": map[string]interface{}{
+				"command": "test",
+			},
+		},
+		ProjectRoot: "/home/user/myproject",
+		AssetsDir:   "/home/user/.cspace/lib",
+	}
+
+	env := ComposeEnv("mercury", cfg)
+
+	m := make(map[string]string)
+	for _, e := range env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			m[parts[0]] = parts[1]
+		}
+	}
+
+	// Firewall domains (space-separated)
+	if got := m["CSPACE_FIREWALL_DOMAINS"]; got != "api.example.com cdn.example.com" {
+		t.Errorf("CSPACE_FIREWALL_DOMAINS = %q, want %q", got, "api.example.com cdn.example.com")
+	}
+
+	// Claude model and effort
+	if got := m["CSPACE_CLAUDE_MODEL"]; got != "claude-opus-4-6[1m]" {
+		t.Errorf("CSPACE_CLAUDE_MODEL = %q, want %q", got, "claude-opus-4-6[1m]")
+	}
+	if got := m["CSPACE_CLAUDE_EFFORT"]; got != "max" {
+		t.Errorf("CSPACE_CLAUDE_EFFORT = %q, want %q", got, "max")
+	}
+
+	// MCP servers (should be compact JSON)
+	mcpVal, ok := m["CSPACE_MCP_SERVERS"]
+	if !ok {
+		t.Fatal("CSPACE_MCP_SERVERS not found in env")
+	}
+	if !strings.Contains(mcpVal, "test-server") {
+		t.Errorf("CSPACE_MCP_SERVERS = %q, want to contain 'test-server'", mcpVal)
+	}
+}
+
+func TestComposeEnvNoFirewallDomains(t *testing.T) {
+	cfg := &config.Config{
+		Project: config.ProjectConfig{
+			Name:   "myproject",
+			Prefix: "mp",
+		},
+		Firewall: config.FirewallConfig{
+			Enabled: true,
+			Domains: nil,
+		},
+		Claude: config.ClaudeConfig{
+			Model:  "sonnet",
+			Effort: "high",
+		},
+		ProjectRoot: "/home/user/myproject",
+		AssetsDir:   "/home/user/.cspace/lib",
+	}
+
+	env := ComposeEnv("earth", cfg)
+
+	m := make(map[string]string)
+	for _, e := range env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			m[parts[0]] = parts[1]
+		}
+	}
+
+	// No firewall domains should mean the key is absent
+	if _, ok := m["CSPACE_FIREWALL_DOMAINS"]; ok {
+		t.Error("CSPACE_FIREWALL_DOMAINS should not be set when domains list is empty")
+	}
+
+	// MCP servers should default to empty object
+	if got := m["CSPACE_MCP_SERVERS"]; got != "null" && got != "{}" {
+		// With nil MCPServers, json.Marshal returns "null"
+		t.Errorf("CSPACE_MCP_SERVERS = %q, want null or {}", got)
+	}
+}
