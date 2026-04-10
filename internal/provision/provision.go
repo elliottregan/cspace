@@ -260,11 +260,13 @@ func copyEnvFile(composeName, projectRoot, filename string) {
 }
 
 // setupGHAuth configures gh auth inside the container if GH_TOKEN is set.
-// Returns a descriptive error if GH_TOKEN is missing (callers should warn, not fail).
+// Returns a descriptive error if GH_TOKEN is missing or gh auth fails
+// (callers should warn, not fail).
 func setupGHAuth(composeName, projectRoot string) error {
-	_, err := instance.DcExec(composeName, "bash", "-c",
-		`[ -n "${GH_TOKEN:-}" ] && gh auth setup-git && echo "gh CLI configured for git push/pull"`)
-	if err != nil {
+	// Check token presence separately from auth setup so the error
+	// message accurately describes the failure.
+	if _, err := instance.DcExec(composeName, "bash", "-c",
+		`[ -n "${GH_TOKEN:-}" ]`); err != nil {
 		return fmt.Errorf(`GH_TOKEN is not set in the container.
 
 Agents in this instance will not be able to push, pull, or open PRs.
@@ -279,6 +281,13 @@ Fix:
 
 For SSO-protected org repos, also authorize the token for your org.`, projectRoot)
 	}
+
+	if _, err := instance.DcExec(composeName, "bash", "-c",
+		`gh auth setup-git`); err != nil {
+		return fmt.Errorf("gh auth setup-git failed (GH_TOKEN is set but may be invalid): %w", err)
+	}
+
+	fmt.Println("gh CLI configured for git push/pull")
 	return nil
 }
 

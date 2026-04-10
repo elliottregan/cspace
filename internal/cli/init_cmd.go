@@ -27,7 +27,7 @@ When running interactively, prompts let you confirm or override the
 auto-detected values. In non-interactive mode (piped stdin), auto-detected
 defaults are used silently.
 
-Use --full to also copy all templates (Dockerfile, compose files, agent
+Use --full to also copy templates (Dockerfile, compose file, agent
 playbooks) into .cspace/ for customization.`,
 		GroupID: "setup",
 		RunE:    runInit,

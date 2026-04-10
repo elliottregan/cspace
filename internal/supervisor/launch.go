@@ -37,7 +37,7 @@ func LaunchSupervisor(params LaunchParams, cfg *config.Config) error {
 	// Redirect supervisor stderr to log file and run transcript-copy on EXIT.
 	bashCmd := fmt.Sprintf(
 		"trap '[ -x /workspace/.cspace/hooks/copy-transcript-on-exit.sh ] && /workspace/.cspace/hooks/copy-transcript-on-exit.sh || [ -x /opt/cspace/lib/hooks/copy-transcript-on-exit.sh ] && /opt/cspace/lib/hooks/copy-transcript-on-exit.sh' EXIT; node /opt/cspace/lib/agent-supervisor/supervisor.mjs %s 2>%s",
-		strings.Join(supervisorArgs, " "),
+		shellQuoteArgs(supervisorArgs),
 		params.StderrLog,
 	)
 
@@ -117,7 +117,7 @@ func RelaunchDetached(params LaunchParams, cfg *config.Config, ignoreInboxBefore
 
 	bashCmd := fmt.Sprintf(
 		"node /opt/cspace/lib/agent-supervisor/supervisor.mjs %s 2>%s",
-		strings.Join(supervisorArgs, " "),
+		shellQuoteArgs(supervisorArgs),
 		params.StderrLog,
 	)
 
@@ -330,4 +330,14 @@ func isSuccessExit(code int) bool {
 // literal quote, re-open quote).
 func shellEscape(s string) string {
 	return strings.ReplaceAll(s, "'", `'\''`)
+}
+
+// shellQuoteArgs wraps each argument in single quotes and joins them
+// with spaces, safe for inclusion in a bash -c string.
+func shellQuoteArgs(args []string) string {
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = "'" + shellEscape(a) + "'"
+	}
+	return strings.Join(quoted, " ")
 }

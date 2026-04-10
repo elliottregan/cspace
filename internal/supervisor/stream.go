@@ -79,10 +79,13 @@ func ProcessStream(r io.Reader) StreamResult {
 			continue
 		}
 
-		// Capture session_id from the first event that carries one
+		// Capture session_id from the first event that carries one.
+		// Write it to /tmp/claude-session-id.txt so the EXIT trap
+		// (copy-transcript-on-exit.sh) can find it on crash/kill.
 		if sessionID == "" && ev.SessionID != "" {
 			sessionID = ev.SessionID
 			fmt.Fprintf(os.Stderr, "  Session: %s\n", sessionID)
+			os.WriteFile("/tmp/claude-session-id.txt", []byte(sessionID), 0644)
 		}
 
 		switch ev.Type {

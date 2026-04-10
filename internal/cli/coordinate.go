@@ -47,6 +47,11 @@ func runCoordinate(cmd *cobra.Command, args []string) error {
 	if prompt != "" && promptFile != "" {
 		return fmt.Errorf("pass either an inline prompt or --prompt-file, not both")
 	}
+	if promptFile != "" {
+		if _, err := os.Stat(promptFile); err != nil {
+			return fmt.Errorf("prompt file not found: %s", promptFile)
+		}
+	}
 
 	return runCoordinateWithArgs(prompt, promptFile, name)
 }

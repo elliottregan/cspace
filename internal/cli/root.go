@@ -161,8 +161,3 @@ func defaultCspaceHome() (string, error) {
 
 	return filepath.Join(userHome, ".cspace"), nil
 }
-
-// errNotImplemented returns a formatted error for stub commands.
-func errNotImplemented(name string) error {
-	return fmt.Errorf("cspace %s is not yet implemented in the Go CLI; use the bash version", name)
-}

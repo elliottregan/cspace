@@ -183,10 +183,34 @@ func downloadReleaseAsset(release *ghRelease, assetName, targetPath string) erro
 	}
 
 	if err := os.Rename(tmpPath, targetPath); err != nil {
-		return fmt.Errorf("replacing %s: %w\nDownloaded file at: %s", targetPath, err, tmpPath)
+		// Rename fails across filesystems (EXDEV). Fall back to copy+remove.
+		if copyErr := copyFile(tmpPath, targetPath); copyErr != nil {
+			return fmt.Errorf("replacing %s: %w\nDownloaded file at: %s", targetPath, err, tmpPath)
+		}
 	}
 
 	return nil
+}
+
+// copyFile copies src to dst, used as fallback when os.Rename fails across
+// filesystems (EXDEV).
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	if err != nil {
+		return err
+	}
+
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // downloadToTemp downloads a URL to a temporary file in the given directory.
