@@ -13,8 +13,10 @@ next_planet() {
     running=$(docker ps --filter "label=$(instance_label)" \
         --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null || true)
 
+    local prefix
+    prefix="$(project_prefix)-"
     for planet in "${PLANETS[@]}"; do
-        if ! echo "$running" | grep -qx "$planet"; then
+        if ! echo "$running" | grep -qx "${prefix}${planet}"; then
             echo "$planet"
             return 0
         fi

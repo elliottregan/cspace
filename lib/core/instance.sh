@@ -56,7 +56,7 @@ get_all_instance_details() {
 # Check if an instance is running
 is_running() {
     local name="$1"
-    docker compose -p "$(compose_project "$name")" ps --status running -q 2>/dev/null | grep -q .
+    docker compose -p "$(compose_project "$name")" ps --status running --format '{{.Service}}' 2>/dev/null | grep -q '^devcontainer$'
 }
 
 # Require an instance to be running
