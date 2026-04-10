@@ -1,17 +1,29 @@
 package cli
 
-import "github.com/spf13/cobra"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/elliottregan/cspace/internal/instance"
+	"github.com/elliottregan/cspace/internal/ports"
+	"github.com/elliottregan/cspace/internal/provision"
+	"github.com/spf13/cobra"
+)
 
 func newUpCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "up [name|branch]",
-		Short:   "Create/reconnect instance and launch Claude",
-		Long:    `Create or reconnect to a devcontainer instance, then launch Claude Code.`,
+		Use:   "up [name|branch]",
+		Short: "Create/reconnect instance and launch Claude",
+		Long: `Create or reconnect to a devcontainer instance, then launch Claude Code.
+
+If no name is given, the next available planet name is auto-assigned.
+If a branch path (containing /) is given, it becomes the instance name
+with slashes replaced by hyphens.
+
+Use --no-claude to provision the container without launching Claude.`,
 		GroupID: "instance",
 		Args:    cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return errNotImplemented("up")
-		},
+		RunE:    runUp,
 	}
 
 	cmd.Flags().Bool("no-claude", false, "Create instance without launching Claude")
@@ -20,4 +32,74 @@ func newUpCmd() *cobra.Command {
 	cmd.Flags().String("base", "", "Override base branch")
 
 	return cmd
+}
+
+func runUp(cmd *cobra.Command, args []string) error {
+	noClaude, _ := cmd.Flags().GetBool("no-claude")
+	baseOverride, _ := cmd.Flags().GetString("base")
+
+	// Parse positional arg: could be name, branch (contains /), or empty
+	var name, branch string
+	if len(args) > 0 {
+		arg := args[0]
+		if strings.Contains(arg, "/") {
+			branch = arg
+			name = strings.ReplaceAll(arg, "/", "-")
+			fmt.Printf("Branch: %s -> instance: %s\n", branch, name)
+		} else {
+			name = arg
+		}
+	}
+
+	// Auto-assign planet name if none given
+	if name == "" {
+		var err error
+		name, err = ports.NextPlanet(cfg.InstanceLabel())
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Instance name: %s\n", name)
+	}
+
+	// --base overrides any branch derived from the positional arg
+	if baseOverride != "" {
+		branch = baseOverride
+	}
+
+	// Provision the instance
+	_, err := provision.Run(provision.Params{
+		Name:   name,
+		Branch: branch,
+		Cfg:    cfg,
+	})
+	if err != nil {
+		return err
+	}
+
+	// Skip Claude onboarding
+	composeName := cfg.ComposeName(name)
+	instance.SkipOnboarding(composeName)
+
+	// Show port mappings
+	instance.ShowPorts(name, cfg)
+
+	// Git operations — fetch and checkout/pull
+	instance.DcExec(composeName, "git", "fetch", "--prune", "--quiet")
+	if branch != "" {
+		// Try checkout existing branch, then create tracking branch
+		if _, err := instance.DcExec(composeName, "git", "checkout", branch); err != nil {
+			instance.DcExec(composeName, "git", "checkout", "-b", branch, "origin/"+branch)
+		}
+		instance.DcExec(composeName, "git", "reset", "--hard", "origin/"+branch)
+	} else {
+		instance.DcExec(composeName, "git", "pull", "--ff-only", "--quiet")
+	}
+
+	if noClaude {
+		fmt.Printf("Instance '%s' is ready. Run 'cspace ssh %s' to connect.\n", name, name)
+		return nil
+	}
+
+	// Non-no-claude path: not yet implemented in this phase
+	return errNotImplemented("up (without --no-claude)")
 }

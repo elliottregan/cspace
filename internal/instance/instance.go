@@ -274,6 +274,48 @@ func ShowPorts(name string, cfg *config.Config) {
 	}
 }
 
+// DcExecRoot runs a command inside the devcontainer as root and returns stdout.
+// Unlike DcExec, this does not set -u dev or -w /workspace.
+func DcExecRoot(composeName string, cmdArgs ...string) (string, error) {
+	baseArgs := []string{
+		"compose", "-p", composeName,
+		"exec", "-T",
+		"devcontainer",
+	}
+	args := make([]string, 0, len(baseArgs)+len(cmdArgs))
+	args = append(args, baseArgs...)
+	args = append(args, cmdArgs...)
+
+	cmd := exec.Command("docker", args...)
+	cmd.Stdin = nil
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// DcCp copies a file from the host into the devcontainer service.
+// Equivalent to: docker compose -p <project> cp <src> devcontainer:<dst>
+func DcCp(composeName, hostPath, containerPath string) error {
+	cmd := exec.Command("docker", "compose", "-p", composeName,
+		"cp", hostPath, "devcontainer:"+containerPath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// SkipOnboarding sets hasCompletedOnboarding=true in the container's
+// ~/.claude.json file. Auth is handled by CLAUDE_CODE_OAUTH_TOKEN env var.
+func SkipOnboarding(composeName string) error {
+	script := `const fs = require('fs'), f = '/home/dev/.claude.json';
+const d = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f)) : {};
+d.hasCompletedOnboarding = true;
+fs.writeFileSync(f, JSON.stringify(d));`
+	_, err := DcExec(composeName, "node", "-e", script)
+	return err
+}
+
 // dcExecOutput runs a command in the devcontainer and returns stdout,
 // or "?" on any error.
 func dcExecOutput(composeName string, cmdArgs ...string) string {
