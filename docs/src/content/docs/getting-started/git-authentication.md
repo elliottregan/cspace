@@ -13,7 +13,7 @@ Containers have no access to your host's SSH agent, so all git operations go ove
 
 Create a personal access token with the required scopes:
 
-```
+```text
 https://github.com/settings/tokens/new?scopes=repo,workflow,read:org
 ```
 
