@@ -1,6 +1,9 @@
 package cli
 
-import "github.com/spf13/cobra"
+import (
+	"github.com/elliottregan/cspace/internal/supervisor"
+	"github.com/spf13/cobra"
+)
 
 func newSendCmd() *cobra.Command {
 	return &cobra.Command{
@@ -9,7 +12,7 @@ func newSendCmd() *cobra.Command {
 		GroupID: "supervisor",
 		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return errNotImplemented("send")
+			return supervisor.RunDispatch(cfg, "send", args[0], args[1])
 		},
 	}
 }

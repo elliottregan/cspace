@@ -1,6 +1,9 @@
 package cli
 
-import "github.com/spf13/cobra"
+import (
+	"github.com/elliottregan/cspace/internal/supervisor"
+	"github.com/spf13/cobra"
+)
 
 func newInterruptCmd() *cobra.Command {
 	return &cobra.Command{
@@ -9,7 +12,7 @@ func newInterruptCmd() *cobra.Command {
 		GroupID: "supervisor",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return errNotImplemented("interrupt")
+			return supervisor.RunDispatch(cfg, "interrupt", args[0])
 		},
 	}
 }
