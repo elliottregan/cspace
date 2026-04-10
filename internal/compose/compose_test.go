@@ -186,9 +186,8 @@ func TestComposeEnvNoFirewallDomains(t *testing.T) {
 		t.Error("CSPACE_FIREWALL_DOMAINS should not be set when domains list is empty")
 	}
 
-	// MCP servers should default to empty object
-	if got := m["CSPACE_MCP_SERVERS"]; got != "null" && got != "{}" {
-		// With nil MCPServers, json.Marshal returns "null"
-		t.Errorf("CSPACE_MCP_SERVERS = %q, want null or {}", got)
+	// MCP servers should default to empty object (nil maps normalize to "{}")
+	if got := m["CSPACE_MCP_SERVERS"]; got != "{}" {
+		t.Errorf("CSPACE_MCP_SERVERS = %q, want %q", got, "{}")
 	}
 }

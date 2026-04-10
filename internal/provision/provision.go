@@ -115,9 +115,9 @@ func Run(p Params) (Result, error) {
 		copyEnvFile(composeName, cfg.ProjectRoot, ".env")
 		copyEnvFile(composeName, cfg.ProjectRoot, ".env.local")
 
-		// 11. Setup GH_TOKEN + gh auth
+		// 11. Setup GH_TOKEN + gh auth (warn on failure, don't block provisioning)
 		if err := setupGHAuth(composeName, cfg.ProjectRoot); err != nil {
-			return Result{}, err
+			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 		}
 	}
 
@@ -259,8 +259,8 @@ func copyEnvFile(composeName, projectRoot, filename string) {
 	fmt.Printf("Copied %s\n", filename)
 }
 
-// setupGHAuth verifies GH_TOKEN is set and runs gh auth setup-git.
-// Returns a descriptive error if GH_TOKEN is missing.
+// setupGHAuth configures gh auth inside the container if GH_TOKEN is set.
+// Returns a descriptive error if GH_TOKEN is missing (callers should warn, not fail).
 func setupGHAuth(composeName, projectRoot string) error {
 	_, err := instance.DcExec(composeName, "bash", "-c",
 		`[ -n "${GH_TOKEN:-}" ] && gh auth setup-git && echo "gh CLI configured for git push/pull"`)

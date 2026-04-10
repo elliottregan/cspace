@@ -174,7 +174,9 @@ func downloadReleaseAsset(release *ghRelease, assetName, targetPath string) erro
 	if err != nil {
 		return fmt.Errorf("downloading %s: %w", assetName, err)
 	}
-	defer os.Remove(tmpPath) // clean up on error
+	// Clean up temp file on error. After a successful rename, tmpPath no
+	// longer exists so os.Remove harmlessly returns ENOENT.
+	defer os.Remove(tmpPath)
 
 	if err := os.Chmod(tmpPath, 0755); err != nil {
 		return fmt.Errorf("setting permissions: %w", err)

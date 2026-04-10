@@ -106,7 +106,8 @@ func LaunchInteractive(name string, cfg *config.Config) error {
 }
 
 // RelaunchDetached launches a supervisor in detached mode inside the
-// container. Used by RestartSupervisor after the old supervisor exits.
+// container. Used by RestartSupervisor after the old supervisor exits
+// or the wait timeout (30s) expires.
 func RelaunchDetached(params LaunchParams, cfg *config.Config, ignoreInboxBeforeMs int64) error {
 	supervisorArgs := buildSupervisorArgs(params, cfg)
 
@@ -194,11 +195,12 @@ func RestartSupervisor(name, reason string, cfg *config.Config) error {
 	// Prepend restart marker to prompt if reason given
 	promptPath := ContainerPromptPath
 	if reason != "" {
+		safeReason := shellEscape(reason)
 		restartScript := fmt.Sprintf(
 			`{ echo '[This session was restarted by the coordinator. Reason: %s. Your workspace is preserved — all files, branches, and uncommitted changes are intact. Re-establish any external state (browser sessions, test servers, etc.) as needed, then continue your task.]'
 echo ''
 cat %s
-} > %s`, reason, ContainerPromptPath, ContainerRestartPrompt)
+} > %s`, safeReason, ContainerPromptPath, ContainerRestartPrompt)
 
 		_, err := instance.DcExec(composeName, "bash", "-c", restartScript)
 		if err != nil {
@@ -237,7 +239,7 @@ func StagePromptText(composeName, text, containerPath string) error {
 		"compose", "-p", composeName,
 		"exec", "-T", "-u", "dev",
 		"devcontainer",
-		"bash", "-c", "cat > " + containerPath,
+		"bash", "-c", "cat > '" + shellEscape(containerPath) + "'",
 	}
 
 	cmd := exec.Command("docker", args...)
@@ -321,4 +323,11 @@ func exitCodeFromError(err error) int {
 // isSuccessExit returns true for exit codes that indicate success.
 func isSuccessExit(code int) bool {
 	return code == 0 || code == 2 || code == 141
+}
+
+// shellEscape escapes a string for safe inclusion in a single-quoted
+// shell context by replacing each ' with '\'' (end quote, escaped
+// literal quote, re-open quote).
+func shellEscape(s string) string {
+	return strings.ReplaceAll(s, "'", `'\''`)
 }

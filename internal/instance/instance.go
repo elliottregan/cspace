@@ -98,17 +98,24 @@ func GetAllInstances() ([]Info, error) {
 	return infos, nil
 }
 
-// IsRunning checks whether the given instance has any running containers.
+// IsRunning checks whether the devcontainer service is running for the
+// given instance. Only checks the devcontainer specifically — sidecars
+// (playwright, chromium-cdp) being up doesn't count.
 func IsRunning(composeName string) bool {
 	out, err := exec.Command(
 		"docker", "compose",
 		"-p", composeName,
-		"ps", "--status", "running", "-q",
+		"ps", "--status", "running", "--format", "{{.Service}}",
 	).Output()
 	if err != nil {
 		return false
 	}
-	return strings.TrimSpace(string(out)) != ""
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.TrimSpace(line) == "devcontainer" {
+			return true
+		}
+	}
+	return false
 }
 
 // RequireRunning returns an error if the instance is not running.

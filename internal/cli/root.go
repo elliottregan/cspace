@@ -49,6 +49,14 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 				return err
 			}
 
+			// Commands that modify or create instances require an initialized project
+			switch cmd.Name() {
+			case "up", "coordinate", "issue", "warm", "rebuild":
+				if !cfg.IsInitialized() {
+					return fmt.Errorf("no .cspace.json found in %s\nRun 'cspace init' first", cfg.ProjectRoot)
+				}
+			}
+
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -73,9 +73,9 @@ func ComposeEnv(name string, cfg *config.Config) []string {
 	env = append(env, "CSPACE_CLAUDE_MODEL="+cfg.Claude.Model)
 	env = append(env, "CSPACE_CLAUDE_EFFORT="+cfg.Claude.Effort)
 
-	// MCP servers as compact JSON
+	// MCP servers as compact JSON (nil map marshals to "null", normalize to "{}")
 	mcpJSON, _ := json.Marshal(cfg.MCPServers)
-	if mcpJSON == nil {
+	if len(mcpJSON) == 0 || string(mcpJSON) == "null" {
 		mcpJSON = []byte("{}")
 	}
 	env = append(env, "CSPACE_MCP_SERVERS="+string(mcpJSON))

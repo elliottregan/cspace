@@ -59,6 +59,16 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	// Load embedded defaults so init writes consistent values
+	defaultsBytes, err := assets.DefaultsJSON()
+	if err != nil {
+		return fmt.Errorf("reading defaults: %w", err)
+	}
+	var initConfig map[string]interface{}
+	if err := json.Unmarshal(defaultsBytes, &initConfig); err != nil {
+		return fmt.Errorf("parsing defaults: %w", err)
+	}
+
 	// Auto-detect project info
 	name := filepath.Base(projectRoot)
 	repo := config.DetectGitRepo(projectRoot)
@@ -66,6 +76,10 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if len(prefix) >= 2 {
 		prefix = prefix[:2]
 	}
+
+	var firewallDomains string
+	var verifyAll string
+	var verifyE2E string
 
 	// Interactive prompts when running in a terminal
 	if isInteractive() {
@@ -80,6 +94,15 @@ func runInit(cmd *cobra.Command, args []string) error {
 				huh.NewInput().
 					Title("Instance prefix (2-3 chars)").
 					Value(&prefix),
+				huh.NewInput().
+					Title("Extra firewall domains (comma-separated, optional)").
+					Value(&firewallDomains),
+				huh.NewInput().
+					Title("Verification command (e.g. npm run lint && npm test)").
+					Value(&verifyAll),
+				huh.NewInput().
+					Title("E2E test command (optional)").
+					Value(&verifyE2E),
 			),
 		)
 
@@ -94,35 +117,46 @@ func runInit(cmd *cobra.Command, args []string) error {
 		fmt.Println("Using auto-detected defaults (non-interactive mode)...")
 	}
 
-	// Build the initial config
-	initConfig := map[string]interface{}{
-		"project": map[string]interface{}{
-			"name":   name,
-			"repo":   repo,
-			"prefix": prefix,
-		},
-		"container": map[string]interface{}{
-			"ports":       map[string]interface{}{},
-			"environment": map[string]interface{}{},
-		},
-		"firewall": map[string]interface{}{
-			"enabled": true,
-			"domains": []string{},
-		},
-		"claude": map[string]interface{}{
-			"model":  "claude-opus-4-6[1m]",
-			"effort": "max",
-		},
-		"verify": map[string]interface{}{
-			"all": "",
-			"e2e": "",
-		},
-		"agent": map[string]interface{}{
-			"issue_label": "ready",
-		},
-		"services":   "",
-		"post_setup": "",
+	// Apply user inputs to the defaults-derived config
+	projectMap, _ := initConfig["project"].(map[string]interface{})
+	if projectMap == nil {
+		projectMap = make(map[string]interface{})
 	}
+	projectMap["name"] = name
+	projectMap["repo"] = repo
+	projectMap["prefix"] = prefix
+	initConfig["project"] = projectMap
+
+	if firewallDomains != "" {
+		var domains []string
+		for _, d := range strings.Split(firewallDomains, ",") {
+			d = strings.TrimSpace(d)
+			if d != "" {
+				domains = append(domains, d)
+			}
+		}
+		firewallMap, _ := initConfig["firewall"].(map[string]interface{})
+		if firewallMap == nil {
+			firewallMap = make(map[string]interface{})
+		}
+		firewallMap["domains"] = domains
+		initConfig["firewall"] = firewallMap
+	}
+
+	verifyMap, _ := initConfig["verify"].(map[string]interface{})
+	if verifyMap == nil {
+		verifyMap = make(map[string]interface{})
+	}
+	if verifyAll != "" {
+		verifyMap["all"] = verifyAll
+	}
+	if verifyE2E != "" {
+		verifyMap["e2e"] = verifyE2E
+	}
+	initConfig["verify"] = verifyMap
+
+	// Remove plugin install list from generated config — users inherit from defaults
+	delete(initConfig, "plugins")
 
 	data, err := json.MarshalIndent(initConfig, "", "  ")
 	if err != nil {
