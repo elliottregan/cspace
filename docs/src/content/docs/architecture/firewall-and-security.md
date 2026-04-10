@@ -176,4 +176,6 @@ No other elevated capabilities are granted. The `dev` user has passwordless `sud
 
 ### Docker socket access
 
+:::caution
 The host Docker socket is mounted read-write. This is the most privileged access the container has — a process with Docker socket access can effectively control the host. This is an intentional design choice: agents need to spawn sibling containers (the Docker-outside-Docker pattern). If this is a concern for your environment, consider running cspace on a dedicated machine or VM.
+:::
