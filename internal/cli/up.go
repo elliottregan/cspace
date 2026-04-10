@@ -80,6 +80,12 @@ func runUp(cmd *cobra.Command, args []string) error {
 		branch = baseOverride
 	}
 
+	return runUpWithArgs(name, branch, noClaude, prompt, promptFile)
+}
+
+// runUpWithArgs is the shared implementation for the up command, callable from
+// both the CLI handler and the TUI menu.
+func runUpWithArgs(name, branch string, noClaude bool, prompt, promptFile string) error {
 	// Provision the instance
 	_, err := provision.Run(provision.Params{
 		Name:   name,

@@ -7,10 +7,11 @@ import (
 
 func newPortsCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:     "ports <name>",
-		Short:   "Show port mappings for an instance",
-		GroupID: "instance",
-		Args:    cobra.ExactArgs(1),
+		Use:               "ports <name>",
+		Short:             "Show port mappings for an instance",
+		GroupID:           "instance",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeInstanceNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			composeName := cfg.ComposeName(name)

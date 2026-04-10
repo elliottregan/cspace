@@ -7,10 +7,11 @@ import (
 
 func newAgentStatusCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:     "agent-status <instance>",
-		Short:   "Show supervisor status JSON",
-		GroupID: "supervisor",
-		Args:    cobra.ExactArgs(1),
+		Use:               "agent-status <instance>",
+		Short:             "Show supervisor status JSON",
+		GroupID:           "supervisor",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeInstanceNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return supervisor.RunDispatch(cfg, "status", args[0])
 		},

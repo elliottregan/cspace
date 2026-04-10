@@ -2,12 +2,14 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/huh"
 	"github.com/elliottregan/cspace/internal/assets"
 	"github.com/elliottregan/cspace/internal/config"
 	"github.com/spf13/cobra"
@@ -20,6 +22,10 @@ func newInitCmd() *cobra.Command {
 		Long: `Initialize a project for cspace by creating a .cspace.json configuration
 file and .cspace/ directory. Auto-detects project name and GitHub repo
 from the current directory and git remote.
+
+When running interactively, prompts let you confirm or override the
+auto-detected values. In non-interactive mode (piped stdin), auto-detected
+defaults are used silently.
 
 Use --full to also copy all templates (Dockerfile, compose files, agent
 playbooks) into .cspace/ for customization.`,
@@ -59,6 +65,33 @@ func runInit(cmd *cobra.Command, args []string) error {
 	prefix := name
 	if len(prefix) >= 2 {
 		prefix = prefix[:2]
+	}
+
+	// Interactive prompts when running in a terminal
+	if isInteractive() {
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Project name").
+					Value(&name),
+				huh.NewInput().
+					Title("GitHub repo (owner/repo)").
+					Value(&repo),
+				huh.NewInput().
+					Title("Instance prefix (2-3 chars)").
+					Value(&prefix),
+			),
+		)
+
+		if err := form.Run(); err != nil {
+			if errors.Is(err, huh.ErrUserAborted) {
+				fmt.Println("Aborted.")
+				return nil
+			}
+			return fmt.Errorf("prompt error: %w", err)
+		}
+	} else {
+		fmt.Println("Using auto-detected defaults (non-interactive mode)...")
 	}
 
 	// Build the initial config
