@@ -33,7 +33,7 @@ If your org uses SAML SSO, you must also click **"Configure SSO"** next to the t
 
 Add `GH_TOKEN` to the `.env` file in your project root:
 
-```bash
+```bash title="Project root"
 echo 'GH_TOKEN=ghp_yourTokenHere' >> .env
 ```
 

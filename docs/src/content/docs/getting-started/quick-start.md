@@ -11,7 +11,7 @@ This guide walks you through initializing cspace in a project and launching your
 
 Navigate to your project root and run:
 
-```bash
+```bash title="Terminal"
 cd my-project
 cspace init
 ```
@@ -31,7 +31,7 @@ Run `cspace init --full` to also copy the built-in templates (Dockerfile, docker
 
 Before launching an instance, add a GitHub personal access token to your project:
 
-```bash
+```bash title="Project root"
 echo 'GH_TOKEN=ghp_yourTokenHere' >> .env
 ```
 

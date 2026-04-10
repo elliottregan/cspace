@@ -22,7 +22,7 @@ You will also need a **`GH_TOKEN`** in your project `.env` file for git push/pul
 
 Run the install script:
 
-```bash
+```bash title="Terminal"
 curl -fsSL https://raw.githubusercontent.com/elliottregan/cspace/main/install.sh | bash
 ```
 
@@ -57,7 +57,7 @@ The installer automatically detects your shell and appends to the correct RC fil
 
 The line added is:
 
-```bash
+```bash title="~/.zshrc (or ~/.bashrc, ~/.profile)"
 export PATH="$HOME/.cspace/bin:$PATH"
 ```
 
