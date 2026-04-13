@@ -115,7 +115,7 @@ if [ -n "${CSPACE_MCP_SERVERS:-}" ] && [ "$CSPACE_MCP_SERVERS" != "{}" ] && [ "$
         skip=0
         while read -r req; do
             [ -z "$req" ] && continue
-            if [ -z "$(eval echo "\${$req:-}")" ]; then
+            if [ -z "$(printenv "$req" 2>/dev/null)" ]; then
                 echo "  - $name: skipping (missing $req)"
                 skip=1
                 break
@@ -130,8 +130,12 @@ if [ -n "${CSPACE_MCP_SERVERS:-}" ] && [ "$CSPACE_MCP_SERVERS" != "{}" ] && [ "$
         env_args=()
         while IFS=$'\t' read -r key val; do
             [ -z "$key" ] && continue
-            # Expand ${VAR} references — eval is intentional for ${...} expansion
-            expanded=$(eval echo "$val")
+            # Expand a single ${VAR} reference safely via printenv
+            if [[ "$val" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$ ]]; then
+                expanded=$(printenv "${BASH_REMATCH[1]}" 2>/dev/null || true)
+            else
+                expanded="$val"
+            fi
             env_args+=(-e "$key=$expanded")
         done < <(echo "$spec" | jq -r '.env // {} | to_entries[] | "\(.key)\t\(.value)"')
 
