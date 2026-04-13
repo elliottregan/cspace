@@ -154,6 +154,29 @@ if [ -n "${CSPACE_MCP_SERVERS:-}" ] && [ "$CSPACE_MCP_SERVERS" != "{}" ] && [ "$
     done
 fi
 
+# --- Built-in browser MCP servers ---
+# Always registered. Both run inside the browser sidecar via docker exec,
+# which has unrestricted network access (no firewall). The agent container
+# communicates with them over stdio through the docker exec pipe.
+BROWSER_CONTAINER="${CSPACE_CONTAINER_NAME}.browser"
+if [ -n "$CSPACE_CONTAINER_NAME" ]; then
+    echo "Registering browser MCP servers..."
+
+    # Playwright MCP — browser automation via the sidecar's Chrome instance
+    echo "  - playwright: registering"
+    claude mcp add --scope user playwright -- \
+        docker exec -i "$BROWSER_CONTAINER" \
+        npx --yes @playwright/mcp@latest \
+        --cdp-endpoint http://localhost:9222 --no-sandbox 2>&1 | sed 's/^/      /' || true
+
+    # Chrome DevTools MCP — page inspection via CDP
+    echo "  - chrome-devtools: registering"
+    claude mcp add --scope user chrome-devtools -- \
+        docker exec -i "$BROWSER_CONTAINER" \
+        npx --yes chrome-devtools-mcp@latest \
+        --browserUrl http://localhost:9222 2>&1 | sed 's/^/      /' || true
+fi
+
 touch "$MARKER_FILE"
 chown -R dev:dev "$PLUGINS_DIR"
 
