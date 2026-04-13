@@ -27,6 +27,13 @@ func VolumeRemove(name string) error {
 	return nil
 }
 
+// RemoveContainer force-removes a container by name, ignoring errors
+// (e.g. if the container doesn't exist). Used to clean up orphans from
+// partial teardowns before creating new instances.
+func RemoveContainer(name string) {
+	exec.Command("docker", "rm", "-f", name).Run() //nolint:errcheck
+}
+
 // Exec runs a docker command with the given arguments and returns
 // the combined stdout/stderr output.
 func Exec(args ...string) (string, error) {

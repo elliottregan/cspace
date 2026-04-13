@@ -87,7 +87,14 @@ func Run(p Params) (Result, error) {
 			return Result{}, fmt.Errorf("creating volumes: %w", err)
 		}
 
-		// 5. Start container
+		// 5. Remove orphaned containers from a previous instance with the
+		// same name. Handles partial teardowns where docker compose down
+		// didn't fully clean up.
+		for _, suffix := range []string{"", ".playwright", ".chromium-cdp"} {
+			docker.RemoveContainer(name + suffix)
+		}
+
+		// 6. Start container
 		if err := compose.Run(name, cfg, "up", "-d"); err != nil {
 			return Result{}, fmt.Errorf("starting container: %w", err)
 		}
