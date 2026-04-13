@@ -383,7 +383,7 @@ func runPostSetup(composeName string, cfg *config.Config) error {
 		return fmt.Errorf("copying post-setup script: %w", err)
 	}
 	instance.DcExecRoot(composeName, "chmod", "+x", "/tmp/post-setup.sh")
-	if _, err := instance.DcExec(composeName, "bash", "/tmp/post-setup.sh"); err != nil {
+	if err := instance.DcExecStream(composeName, "bash", "/tmp/post-setup.sh"); err != nil {
 		return fmt.Errorf("running post-setup script: %w", err)
 	}
 	instance.DcExec(composeName, "touch", marker)

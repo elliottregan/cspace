@@ -287,6 +287,27 @@ func ShowPorts(name string, cfg *config.Config) {
 	}
 }
 
+// DcExecStream runs a command inside the cspace service with stdout and stderr
+// streamed to the terminal. Used for long-running operations (like post-setup
+// hooks) where the user needs to see progress. Returns an error if the command
+// exits non-zero.
+func DcExecStream(composeName string, cmdArgs ...string) error {
+	baseArgs := []string{
+		"compose", "-p", composeName,
+		"exec", "-T", "-u", "dev", "-w", "/workspace",
+		ServiceName,
+	}
+	args := make([]string, 0, len(baseArgs)+len(cmdArgs))
+	args = append(args, baseArgs...)
+	args = append(args, cmdArgs...)
+
+	cmd := exec.Command("docker", args...)
+	cmd.Stdin = nil
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 // DcExecRoot runs a command inside the devcontainer as root and returns stdout.
 // Unlike DcExec, this does not set -u dev or -w /workspace.
 func DcExecRoot(composeName string, cmdArgs ...string) (string, error) {
