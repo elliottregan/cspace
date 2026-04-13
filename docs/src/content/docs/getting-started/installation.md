@@ -17,7 +17,24 @@ Before installing cspace, make sure you have the following:
 On macOS, [OrbStack](https://orbstack.dev) is a lightweight alternative to Docker Desktop with faster startup, lower resource usage, and built-in Linux VM support.
 :::
 
-You will also need a **`GH_TOKEN`** in your project `.env` file for git push/pull from inside containers. See [Git Authentication](/getting-started/git-authentication/) for setup instructions.
+## Environment variables
+
+cspace containers read environment variables from your project's `.env` file. Add these before running `cspace up`:
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` | Yes (one of) | Authenticates Claude Code inside containers. Use an [API key](https://console.anthropic.com/settings/keys) or an OAuth token from `claude auth login`. |
+| `GH_TOKEN` | Yes | GitHub personal access token for git push/pull and PR creation inside containers. Needs `repo`, `workflow`, and `read:org` scopes. See [Git Authentication](/getting-started/git-authentication/). |
+
+```bash title="Project root"
+# Add to your .env file (not committed to git)
+echo 'ANTHROPIC_API_KEY=sk-ant-...' >> .env
+echo 'GH_TOKEN=ghp_...' >> .env
+```
+
+:::note
+If you're on a Claude Pro/Team/Enterprise plan, you can use OAuth instead of an API key. Run `claude auth login` on the host, then set `CLAUDE_CODE_OAUTH_TOKEN` in `.env` with the token from `~/.claude.json`.
+:::
 
 ## Install
 

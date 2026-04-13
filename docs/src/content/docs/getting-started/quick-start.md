@@ -82,7 +82,7 @@ cspace up mars --prompt-file /tmp/issue-prompt.txt
 ```
 
 :::tip
-Run `cspace` with no arguments to open an interactive TUI menu (requires [gum](https://github.com/charmbracelet/gum)).
+Run `cspace` with no arguments to open an interactive TUI menu.
 :::
 
 ## 5. Clean up
