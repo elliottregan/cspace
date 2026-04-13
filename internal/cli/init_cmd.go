@@ -80,6 +80,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	var firewallDomains string
 	var verifyAll string
 	var verifyE2E string
+	var template string
 
 	// Interactive prompts when running in a terminal
 	if isInteractive() {
@@ -103,6 +104,14 @@ func runInit(cmd *cobra.Command, args []string) error {
 				huh.NewInput().
 					Title("E2E test command (optional)").
 					Value(&verifyE2E),
+				huh.NewSelect[string]().
+					Title("Project template").
+					Description("Scaffold .devcontainer/ with services and post-setup hook").
+					Options(
+						huh.NewOption("None", "none"),
+						huh.NewOption("Convex + Nuxt", "convex-nuxt"),
+					).
+					Value(&template),
 			),
 		)
 
@@ -230,12 +239,65 @@ func runInit(cmd *cobra.Command, args []string) error {
 		fmt.Println("Templates copied to .cspace/ — edit them to customize.")
 	}
 
+	// Scaffold .devcontainer/ from template if selected
+	if template != "" && template != "none" {
+		if err := scaffoldDevcontainer(projectRoot, template); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: scaffolding template: %v\n", err)
+		}
+	}
+
 	fmt.Println("")
 	fmt.Println("Project initialized! Next steps:")
 	fmt.Println("  1. Edit .cspace.json to configure ports, verify commands, etc.")
-	fmt.Println("  2. (Optional) Add project services in .cspace/docker-compose.yml")
-	fmt.Println("  3. (Optional) Add post-setup script in .cspace/post-setup.sh")
-	fmt.Println("  4. Run 'cspace up' to launch an instance")
+	if template != "" && template != "none" {
+		fmt.Println("  2. Review .devcontainer/ files and customize TODOs")
+		fmt.Println("  3. Run 'cspace up' to launch an instance")
+	} else {
+		fmt.Println("  2. (Optional) Add project services in .devcontainer/docker-compose.yml")
+		fmt.Println("  3. (Optional) Add post-setup script in .devcontainer/post-setup.sh")
+		fmt.Println("  4. Run 'cspace up' to launch an instance")
+	}
 
+	return nil
+}
+
+// scaffoldDevcontainer copies template files into .devcontainer/.
+func scaffoldDevcontainer(projectRoot, template string) error {
+	devcontainerDir := filepath.Join(projectRoot, ".devcontainer")
+	if err := os.MkdirAll(devcontainerDir, 0755); err != nil {
+		return fmt.Errorf("creating .devcontainer/: %w", err)
+	}
+
+	subFS, err := fs.Sub(assets.EmbeddedFS, "embedded/templates/devcontainer/"+template)
+	if err != nil {
+		return fmt.Errorf("accessing template %q: %w", template, err)
+	}
+
+	err = fs.WalkDir(subFS, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || path == "." {
+			return err
+		}
+
+		dst := filepath.Join(devcontainerDir, path)
+		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+			return err
+		}
+
+		data, err := fs.ReadFile(subFS, path)
+		if err != nil {
+			return err
+		}
+
+		if err := os.WriteFile(dst, data, 0644); err != nil {
+			return err
+		}
+		fmt.Printf("  Created .devcontainer/%s\n", path)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("Scaffolded .devcontainer/ from template: " + template)
 	return nil
 }

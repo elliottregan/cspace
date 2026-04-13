@@ -1,0 +1,52 @@
+# Project services for a Convex + Nuxt application.
+# Layered on top of cspace's core compose template via auto-detection.
+# Only define additional services here — do NOT redefine the cspace service.
+#
+# Available env vars (from cspace's ComposeEnv):
+#   CSPACE_CONTAINER_NAME — compose project name, e.g. "re-mercury"
+#   COMPOSE_PROJECT_NAME  — same value (Docker Compose built-in)
+#   CSPACE_INSTANCE_NAME  — instance name, e.g. "mercury"
+
+services:
+  # Clear cloud Convex vars loaded via env_file so the local self-hosted
+  # backend (configured by post-setup.sh) takes precedence.
+  cspace:
+    environment:
+      - CONVEX_DEPLOY_KEY=
+      - CONVEX_DEPLOYMENT=
+
+  # Self-hosted Convex backend — one per instance, data in a named volume.
+  convex-backend:
+    image: ghcr.io/get-convex/convex-backend:latest
+    container_name: ${CSPACE_CONTAINER_NAME}.convex
+    stop_grace_period: 10s
+    stop_signal: SIGINT
+    ports:
+      - "0:3210"
+      - "0:3211"
+    volumes:
+      - convex-data:/convex/data
+    environment:
+      - CONVEX_CLOUD_ORIGIN=http://${CSPACE_CONTAINER_NAME}.convex:3210
+      - CONVEX_SITE_ORIGIN=http://${CSPACE_CONTAINER_NAME}.convex:3211
+    healthcheck:
+      test: curl -f http://localhost:3210/version
+      interval: 5s
+      start_period: 10s
+
+  # Convex dashboard — web UI for browsing local data and logs.
+  convex-dashboard:
+    image: ghcr.io/get-convex/convex-dashboard:latest
+    container_name: ${CSPACE_CONTAINER_NAME}.convex-dash
+    stop_grace_period: 10s
+    stop_signal: SIGINT
+    ports:
+      - "0:6791"
+    environment:
+      - NEXT_PUBLIC_DEPLOYMENT_URL=http://127.0.0.1:3210
+    depends_on:
+      convex-backend:
+        condition: service_healthy
+
+volumes:
+  convex-data:
