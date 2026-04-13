@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/elliottregan/cspace/internal/compose"
+	"github.com/elliottregan/cspace/internal/docker"
 	"github.com/elliottregan/cspace/internal/instance"
 	"github.com/spf13/cobra"
 )
@@ -70,6 +71,10 @@ func runDownAll() error {
 			fmt.Fprintf(os.Stderr, "  warning: %v\n", err)
 		}
 	}
+
+	// Remove the project network now that all instances are gone.
+	docker.NetworkRemove(cfg.ProjectNetwork())
+
 	return nil
 }
 

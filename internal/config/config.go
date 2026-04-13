@@ -249,6 +249,14 @@ func (c *Config) ComposeName(instance string) string {
 	return c.Project.Prefix + "-" + instance
 }
 
+// ProjectNetwork returns the name of the shared Docker bridge network
+// for this project. All devcontainer instances of the same project join
+// this network, enabling inter-instance communication while keeping
+// different projects fully isolated from each other.
+func (c *Config) ProjectNetwork() string {
+	return appPrefix + "-" + c.Project.Name
+}
+
 // ImageName returns the Docker image name for this project.
 func (c *Config) ImageName() string {
 	return appPrefix + "-" + c.Project.Name
