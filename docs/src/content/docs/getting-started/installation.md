@@ -12,7 +12,6 @@ Before installing cspace, make sure you have the following:
 | Dependency | Required | Purpose | Install |
 |-----------|----------|---------|---------|
 | **Docker** with Compose v2 | Yes | Runs devcontainer instances | [docs.docker.com](https://docs.docker.com/get-docker/) |
-| **gh** | No | GitHub CLI for agents to push/pull/open PRs | `brew install gh` |
 
 You will also need a **`GH_TOKEN`** in your project `.env` file for git push/pull from inside containers. See [Git Authentication](/getting-started/git-authentication/) for setup instructions.
 
