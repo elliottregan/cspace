@@ -129,15 +129,9 @@ if [ -f /.dockerenv ] || grep -q 'docker\|containerd' /proc/1/cgroup 2>/dev/null
 fi
 
 # --- Resolve our container's full name (for `docker port` lookups below) ---
-# The hostname is set to COMPOSE_PROJECT_NAME via the compose template.
-# We need the full container name (e.g. "cs.mercury") to query docker.
-SELF_CONTAINER=""
-if [ -n "$CONTAINER" ] && [ -S /var/run/docker.sock ]; then
-    SELF_CONTAINER=$(docker ps \
-        --filter "label=com.docker.compose.project=$CONTAINER" \
-        --filter "label=com.docker.compose.service=devcontainer" \
-        --format '{{.Names}}' 2>/dev/null | head -1)
-fi
+# CSPACE_CONTAINER_NAME is the project-scoped Docker container name
+# (e.g. "mp-mercury"). Use it directly for `docker port` lookups.
+SELF_CONTAINER="${CSPACE_CONTAINER_NAME:-}"
 
 # --- Line 1: [planet] dir | branch | worktree | PR | services ---
 DISPLAY_CWD="${CWD:-$PWD}"

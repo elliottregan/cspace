@@ -7,7 +7,7 @@ services:
   devcontainer:
     image: ${CSPACE_IMAGE:-cspace-dev}
     container_name: ${CSPACE_CONTAINER_NAME}
-    hostname: ${CSPACE_CONTAINER_NAME}
+    hostname: ${CSPACE_INSTANCE_NAME}
     build:
       # Build context is the cspace repo root so the Dockerfile can COPY
       # both bin/cspace and lib/. Override the Dockerfile path via
@@ -43,6 +43,7 @@ services:
       # CSPACE_HOME is set to /opt/cspace via ENV in the Dockerfile.
       # Don't pass the host's CSPACE_HOME — that's a host filesystem path
       # that doesn't exist inside the container.
+      - CSPACE_CONTAINER_NAME=${CSPACE_CONTAINER_NAME:-}
       - CSPACE_FIREWALL_DOMAINS=${CSPACE_FIREWALL_DOMAINS:-}
       - CSPACE_CLAUDE_MODEL=${CSPACE_CLAUDE_MODEL:-claude-opus-4-6[1m]}
       - CSPACE_CLAUDE_EFFORT=${CSPACE_CLAUDE_EFFORT:-max}
