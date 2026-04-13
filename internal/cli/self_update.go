@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -192,6 +193,12 @@ func downloadReleaseAsset(release *ghRelease, assetName, targetPath string) erro
 		if copyErr := copyFile(tmpPath, targetPath); copyErr != nil {
 			return fmt.Errorf("replacing %s: %w\nDownloaded file at: %s", targetPath, err, tmpPath)
 		}
+	}
+
+	// macOS requires binaries to be signed. Cross-compiled binaries from CI
+	// have no signature, so apply an ad-hoc signature to satisfy Gatekeeper.
+	if runtime.GOOS == "darwin" {
+		exec.Command("codesign", "-s", "-", targetPath).Run()
 	}
 
 	return nil

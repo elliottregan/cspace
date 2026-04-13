@@ -112,6 +112,12 @@ fi
 cp "$TMPDIR/$ASSET_NAME" "$BIN_DIR/cspace"
 chmod +x "$BIN_DIR/cspace"
 
+# macOS requires binaries to be signed. Cross-compiled binaries from CI have
+# no signature, so apply an ad-hoc signature to satisfy Gatekeeper.
+if [ "$OS" = "darwin" ] && command -v codesign &>/dev/null; then
+    codesign -s - "$BIN_DIR/cspace" 2>/dev/null || true
+fi
+
 # --- Add to PATH ---
 
 SHELL_NAME=$(basename "${SHELL:-/bin/bash}")
