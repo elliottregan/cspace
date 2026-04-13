@@ -10,6 +10,20 @@ IFS=$'\n\t'
 
 echo "Initializing firewall..."
 
+# Save current iptables state for rollback if verification fails
+IPTABLES_BACKUP=$(mktemp)
+iptables-save > "$IPTABLES_BACKUP"
+IPSET_BACKUP=$(mktemp)
+ipset save > "$IPSET_BACKUP" 2>/dev/null || true
+
+rollback_firewall() {
+  echo "ERROR: Rolling back firewall to previous state..."
+  iptables-restore < "$IPTABLES_BACKUP"
+  ipset destroy allowed-domains 2>/dev/null || true
+  ipset restore < "$IPSET_BACKUP" 2>/dev/null || true
+  rm -f "$IPTABLES_BACKUP" "$IPSET_BACKUP"
+}
+
 # 1. Extract Docker DNS info BEFORE any flushing
 DOCKER_DNS_RULES=$(iptables-save -t nat | grep "127\.0\.0\.11" || true)
 
@@ -156,16 +170,19 @@ iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited
 
 echo "Firewall configuration complete"
 
-# Verify
+# Verify — rollback to previous state on failure
 if curl --connect-timeout 5 https://example.com >/dev/null 2>&1; then
+  rollback_firewall
   echo "ERROR: Firewall verification failed - was able to reach https://example.com"
   exit 1
 fi
 
 if ! curl --connect-timeout 5 https://api.github.com/zen >/dev/null 2>&1; then
+  rollback_firewall
   echo "ERROR: Firewall verification failed - unable to reach https://api.github.com"
   exit 1
 fi
 
+rm -f "$IPTABLES_BACKUP" "$IPSET_BACKUP"
 echo "Firewall initialized successfully"
 touch /tmp/.firewall-init-done
