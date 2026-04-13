@@ -44,6 +44,7 @@ type Result struct {
 //  6. Start global reverse proxy, connect to project network
 //  7. docker compose up -d
 //  8. Wait for container readiness
+//  8b. Inject /etc/hosts for cspace.local resolution inside containers
 //  9. Fix volume ownership
 //  10. Copy bundle into container, init workspace
 //  11. Configure git identity
@@ -128,6 +129,12 @@ func Run(p Params) (Result, error) {
 		fmt.Println("Waiting for container...")
 		if err := WaitForReady(composeName, 120*time.Second); err != nil {
 			return Result{}, err
+		}
+
+		// 8b. Inject /etc/hosts entries so cspace.local hostnames resolve
+		// to Traefik's Docker IP inside all containers.
+		if err := docker.InjectHosts(composeName, cfg.ProjectNetwork()); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: hosts injection: %v\n", err)
 		}
 
 		// 9. Fix volume ownership
