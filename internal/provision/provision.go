@@ -106,6 +106,17 @@ func Run(p Params) (Result, error) {
 			return Result{}, fmt.Errorf("creating project network: %w", err)
 		}
 
+		// 6b. Start the global reverse proxy if not already running.
+		if err := docker.EnsureProxy(cfg.AssetsDir); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: proxy: %v\n", err)
+		}
+
+		// 6c. Connect the proxy to this project's network so Traefik can
+		// route traffic to instance containers.
+		if err := docker.NetworkConnect(cfg.ProjectNetwork(), docker.ProxyContainerName); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: connecting proxy to project network: %v\n", err)
+		}
+
 		// 7. Start container
 		if err := compose.Run(name, cfg, "up", "-d"); err != nil {
 			return Result{}, fmt.Errorf("starting container: %w", err)
