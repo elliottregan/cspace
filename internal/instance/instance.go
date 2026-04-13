@@ -311,8 +311,8 @@ func DcExecRoot(composeName string, cmdArgs ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// DcCp copies a file from the host into the devcontainer service.
-// Equivalent to: docker compose -p <project> cp <src> devcontainer:<dst>
+// DcCp copies a file from the host into the cspace service.
+// Equivalent to: docker compose -p <project> cp <src> cspace:<dst>
 func DcCp(composeName, hostPath, containerPath string) error {
 	cmd := exec.Command("docker", "compose", "-p", composeName,
 		"cp", hostPath, ServiceName+":"+containerPath)
