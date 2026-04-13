@@ -25,11 +25,17 @@ func ComposeFiles(cfg *config.Config) ([]string, error) {
 
 	files := []string{core}
 
-	// Add project-specific services if configured
+	// Add project-specific services: explicit config takes priority,
+	// then auto-detect from .devcontainer/docker-compose.yml.
 	if cfg.Services != "" {
 		svcPath := filepath.Join(cfg.ProjectRoot, cfg.Services)
 		if _, err := os.Stat(svcPath); err == nil {
 			files = append(files, svcPath)
+		}
+	} else {
+		autoPath := filepath.Join(cfg.ProjectRoot, ".devcontainer", "docker-compose.yml")
+		if _, err := os.Stat(autoPath); err == nil {
+			files = append(files, autoPath)
 		}
 	}
 
