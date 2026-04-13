@@ -170,10 +170,8 @@ if [ -n "$PR_LINK" ]; then
 fi
 
 # --- Service URLs from .cspace.json's container.ports map ---
-# For each declared port, check if a service is listening internally, then
-# display a clickable URL. Prefers OrbStack DNS (each container gets its own
-# hostname, so multiple instances can share the same port). Falls back to
-# localhost:HOST_PORT via docker port for non-OrbStack runtimes.
+# Uses cspace.local hostnames routed by the Traefik proxy. Falls back to
+# localhost:PORT via docker port if the proxy isn't running.
 label_color() {
     case "$1" in
         dev)     printf '%s' "$GRN" ;;
@@ -182,21 +180,31 @@ label_color() {
     esac
 }
 CSPACE_JSON="/workspace/.cspace.json"
-ORB_HOST="cspace.${SELF_CONTAINER}.orb.local"
-# Detect OrbStack by checking if .orb.local DNS resolves
-USE_ORB=""
-if getent hosts "$ORB_HOST" >/dev/null 2>&1; then
-    USE_ORB=1
+INSTANCE="${CONTAINER}"
+PROJECT="${CSPACE_PROJECT_NAME:-}"
+# Check if Traefik proxy is reachable (cspace-proxy container running)
+PROXY_UP=""
+if docker inspect cspace-proxy --format '{{.State.Running}}' 2>/dev/null | grep -q true; then
+    PROXY_UP=1
 fi
 if [ -n "$SELF_CONTAINER" ] && [ -f "$CSPACE_JSON" ]; then
+    FIRST=1
     while IFS=$'\t' read -r internal_port label; do
         [ -z "$internal_port" ] && continue
         # Only show URLs for ports actually in use right now
         ss -tlnp 2>/dev/null | grep -q ":${internal_port} " || continue
-        if [ -n "$USE_ORB" ]; then
-            URL="http://${ORB_HOST}:${internal_port}"
-            DISPLAY="${ORB_HOST}:${internal_port}"
+        if [ -n "$PROXY_UP" ] && [ -n "$PROJECT" ] && [ -n "$INSTANCE" ]; then
+            # Traefik hostname: first port gets bare subdomain, others get label prefix
+            if [ -n "$FIRST" ]; then
+                HOST="${INSTANCE}.${PROJECT}.cspace.local"
+                FIRST=""
+            else
+                HOST="${label}.${INSTANCE}.${PROJECT}.cspace.local"
+            fi
+            URL="http://${HOST}"
+            DISPLAY="$HOST"
         else
+            # Fallback: localhost with docker port mapping
             host_port=$(docker port "$SELF_CONTAINER" "$internal_port" 2>/dev/null \
                 | head -1 | awk -F: '{print $NF}')
             [ -z "$host_port" ] && continue
