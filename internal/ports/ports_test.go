@@ -45,30 +45,16 @@ func TestPlanetIndex(t *testing.T) {
 }
 
 func TestAssignPorts(t *testing.T) {
-	tests := []struct {
-		name    string
-		wantDev int
-		wantPre int
-	}{
-		{"mercury", 5173, 4173},
-		{"venus", 5174, 4174},
-		{"earth", 5175, 4175},
-		{"mars", 5176, 4176},
-		{"jupiter", 5177, 4177},
-		{"saturn", 5178, 4178},
-		{"uranus", 5179, 4179},
-		{"neptune", 5180, 4180},
-		{"custom", 0, 0},
-		{"my-branch", 0, 0},
-		{"", 0, 0},
-	}
-	for _, tt := range tests {
-		pm := AssignPorts(tt.name)
-		if pm.Dev != tt.wantDev {
-			t.Errorf("AssignPorts(%q).Dev = %d, want %d", tt.name, pm.Dev, tt.wantDev)
+	// All instances get Docker-assigned ports (0) to allow the same planet
+	// name to run across multiple projects without port collisions.
+	names := []string{"mercury", "venus", "neptune", "custom", "my-branch", ""}
+	for _, name := range names {
+		pm := AssignPorts(name)
+		if pm.Dev != 0 {
+			t.Errorf("AssignPorts(%q).Dev = %d, want 0", name, pm.Dev)
 		}
-		if pm.Preview != tt.wantPre {
-			t.Errorf("AssignPorts(%q).Preview = %d, want %d", tt.name, pm.Preview, tt.wantPre)
+		if pm.Preview != 0 {
+			t.Errorf("AssignPorts(%q).Preview = %d, want 0", name, pm.Preview)
 		}
 	}
 }

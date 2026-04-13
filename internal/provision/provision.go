@@ -89,9 +89,12 @@ func Run(p Params) (Result, error) {
 
 		// 5. Remove orphaned containers from a previous instance with the
 		// same name. Handles partial teardowns where docker compose down
-		// didn't fully clean up.
+		// didn't fully clean up. Refuses to remove running containers to
+		// prevent accidentally destroying a live instance.
 		for _, suffix := range []string{"", ".playwright", ".chromium-cdp"} {
-			docker.RemoveContainer(name + suffix)
+			if err := docker.RemoveOrphanContainer(name + suffix); err != nil {
+				return Result{}, fmt.Errorf("refusing to provision '%s': %w", name, err)
+			}
 		}
 
 		// 6. Start container

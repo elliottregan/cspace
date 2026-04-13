@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 // VolumeCreate creates a named Docker volume. Idempotent -- does not
@@ -27,9 +28,35 @@ func VolumeRemove(name string) error {
 	return nil
 }
 
+// IsContainerRunning checks whether a container with the given name exists
+// and is in a running state.
+func IsContainerRunning(name string) bool {
+	out, err := exec.Command(
+		"docker", "inspect", "-f", "{{.State.Running}}", name,
+	).Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "true"
+}
+
+// RemoveOrphanContainer removes a stopped container by name, ignoring errors
+// (e.g. if the container doesn't exist). Returns an error if the container
+// is currently running — callers must never silently destroy a live instance.
+func RemoveOrphanContainer(name string) error {
+	if IsContainerRunning(name) {
+		return fmt.Errorf("container '%s' is running; refusing to remove", name)
+	}
+	exec.Command("docker", "rm", "-f", name).Run() //nolint:errcheck
+	return nil
+}
+
 // RemoveContainer force-removes a container by name, ignoring errors
 // (e.g. if the container doesn't exist). Used to clean up orphans from
 // partial teardowns before creating new instances.
+//
+// Deprecated: Use RemoveOrphanContainer instead, which refuses to remove
+// running containers.
 func RemoveContainer(name string) {
 	exec.Command("docker", "rm", "-f", name).Run() //nolint:errcheck
 }

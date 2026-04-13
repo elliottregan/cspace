@@ -17,14 +17,9 @@ var Planets = []string{
 	"jupiter", "saturn", "uranus", "neptune",
 }
 
-const (
-	// PortBaseDev is the base host port for dev servers (Vite :5173).
-	PortBaseDev = 5173
-	// PortBasePreview is the base host port for preview servers (Vite :4173).
-	PortBasePreview = 4173
-)
-
 // PortMapping holds the host port assignments for an instance.
+// All instances use Docker-assigned ports (0) to avoid cross-project
+// collisions. Use ports.GetHostPort() to query the actual assigned port.
 type PortMapping struct {
 	Dev     int // Host port for container :5173 (0 = Docker-assigned)
 	Preview int // Host port for container :4173 (0 = Docker-assigned)
@@ -46,20 +41,15 @@ func PlanetIndex(name string) int {
 }
 
 // AssignPorts returns the port mapping for a given instance name.
-// Planet names get deterministic ports; custom names get 0 (Docker-assigned).
+// All instances get Docker-assigned ports (0) to allow the same planet
+// name to run across multiple projects without port collisions.
 func AssignPorts(name string) PortMapping {
-	idx := PlanetIndex(name)
-	if idx < 0 {
-		return PortMapping{Dev: 0, Preview: 0}
-	}
-	return PortMapping{
-		Dev:     PortBaseDev + idx,
-		Preview: PortBasePreview + idx,
-	}
+	return PortMapping{Dev: 0, Preview: 0}
 }
 
-// NextPlanet returns the first planet name not currently in use.
-// It queries running Docker containers filtered by the given instance label.
+// NextPlanet returns the first planet name not currently in use by the
+// current project. Names are project-scoped (compose name = prefix-planet),
+// so different projects can use the same planet name simultaneously.
 func NextPlanet(instanceLabel string) (string, error) {
 	out, err := exec.Command(
 		"docker", "ps",
@@ -79,10 +69,6 @@ func NextPlanet(instanceLabel string) (string, error) {
 	}
 
 	for _, planet := range Planets {
-		// Check both the bare planet name and any prefixed version.
-		// The bash version compares compose project names (prefix-planet)
-		// against bare planet names, which is a latent bug. We check
-		// whether any running compose project name ends with the planet.
 		inUse := false
 		for name := range running {
 			if name == planet || strings.HasSuffix(name, "-"+planet) {

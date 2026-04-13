@@ -47,8 +47,8 @@ func TestComposeEnv(t *testing.T) {
 		{"CSPACE_LOGS_VOLUME", "cspace-myproject-logs"},
 		{"CSPACE_LABEL", "cspace.project=myproject"},
 		{"CSPACE_HOME", "/home/user/.cspace"},
-		{"HOST_PORT_DEV", "5173"},     // mercury = index 0
-		{"HOST_PORT_PREVIEW", "4173"}, // mercury = index 0
+		{"HOST_PORT_DEV", "0"},     // all instances use Docker-assigned ports
+		{"HOST_PORT_PREVIEW", "0"}, // all instances use Docker-assigned ports
 		{"PROJECT_ROOT", "/home/user/myproject"},
 		{"CSPACE_ENV_NODE_ENV", "development"},
 	}
