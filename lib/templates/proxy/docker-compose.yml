@@ -20,7 +20,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
 
   coredns:
-    image: coredns/coredns:1.12
+    image: coredns/coredns:1.12.0
     container_name: cspace-dns
     restart: unless-stopped
     command: ["-conf", "/etc/coredns/Corefile"]
