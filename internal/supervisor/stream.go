@@ -55,8 +55,7 @@ type StreamResult struct {
 }
 
 // ProcessStream reads NDJSON events from r and renders status updates
-// to stderr, matching the behavior of stream-status.sh. It blocks until
-// the reader returns EOF or an error.
+// to stderr. It blocks until the reader returns EOF or an error.
 func ProcessStream(r io.Reader) StreamResult {
 	scanner := bufio.NewScanner(r)
 	// Allow large NDJSON lines (SDK messages can be big); max 2MB per line.

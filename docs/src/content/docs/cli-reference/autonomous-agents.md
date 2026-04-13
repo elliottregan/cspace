@@ -37,7 +37,7 @@ Creates a dedicated coordinator instance and launches the coordinator agent. The
 3. Builds the full prompt by concatenating the playbook + `USER INSTRUCTIONS:` + the user's prompt
 4. Re-copies the host `.env` into the container so the coordinator inherits `GH_TOKEN` and other environment variables
 5. Launches the agent supervisor with `--role coordinator`
-6. Streams real-time status output to the terminal via `stream-status.sh`
+6. Streams real-time status output to the terminal
 
 The coordinator's Unix control socket is reachable for mid-run interaction via `cspace send`, `cspace respond`, and `cspace interrupt`.
 
@@ -76,7 +76,7 @@ Unlike the interactive mode (plain `cspace up`), the autonomous path:
 - Routes through the agent supervisor with `--role agent`
 - Enables messenger MCP tools for inter-agent communication
 - Creates a Unix control socket for `cspace send`/`cspace respond`/`cspace interrupt`
-- Streams NDJSON status events through `stream-status.sh`
+- Streams NDJSON status events to the Go CLI for rendering
 - Writes structured logs to the shared logs volume
 
 ### Examples

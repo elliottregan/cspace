@@ -302,7 +302,7 @@ cspace sync-context
 
 ### Description
 
-Runs the `sync-context.sh` script to generate documentation of the current milestone state. The script is resolved via the override system — a project-level script in `.cspace/scripts/sync-context.sh` takes precedence over the default.
+Generates documentation of the current milestone state from the GitHub API.
 
 ### Examples
 
