@@ -240,9 +240,11 @@ func InjectHosts(composeName, projectNetwork string) error {
 		if id == "" {
 			continue
 		}
-		// Remove old cspace.local entries and append fresh ones
+		// Remove old cspace.local entries and append fresh ones.
+		// Uses tee instead of sed -i because /etc/hosts is a Docker bind mount
+		// and sed -i fails with "resource busy" when trying to rename.
 		script := fmt.Sprintf(
-			`sed -i '/cspace\.local/d' /etc/hosts && echo '%s' >> /etc/hosts`,
+			`{ grep -v 'cspace\.local' /etc/hosts; echo '%s'; } | tee /etc/hosts > /dev/null`,
 			hostsLine,
 		)
 		exec.Command("docker", "exec", id, "sh", "-c", script).Run() //nolint:errcheck
