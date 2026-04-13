@@ -111,6 +111,10 @@ This pattern enables:
 The devcontainer requires `CAP_NET_ADMIN` and `CAP_NET_RAW` Linux capabilities for the iptables firewall, but no other elevated privileges.
 :::
 
+## Reverse Proxy
+
+A global [Traefik reverse proxy](/architecture/reverse-proxy/) provides per-instance hostnames (`<instance>.<project>.cspace.local`), eliminating the need to track dynamic port mappings. CoreDNS resolves `*.cspace.local` to localhost. The proxy starts automatically on the first `cspace up` and is shared across all projects.
+
 ## Architecture diagram
 
 ```

@@ -1,0 +1,31 @@
+# Global cspace reverse proxy — shared across all projects.
+# Started automatically on first `cspace up`, left running across teardowns.
+# Traefik routes by hostname via Docker labels on instance containers.
+# CoreDNS resolves *.cspace.local to 127.0.0.1 for the host.
+
+services:
+  traefik:
+    image: traefik:v3
+    container_name: cspace-proxy
+    restart: unless-stopped
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--api.insecure=false"
+      - "--log.level=WARN"
+    ports:
+      - "127.0.0.1:80:80"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  coredns:
+    image: coredns/coredns:1.12.0
+    container_name: cspace-dns
+    restart: unless-stopped
+    command: ["-conf", "/etc/coredns/Corefile"]
+    ports:
+      - "127.0.0.1:53:53/udp"
+      - "127.0.0.1:53:53/tcp"
+    volumes:
+      - ./Corefile:/etc/coredns/Corefile:ro

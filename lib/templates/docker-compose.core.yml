@@ -24,6 +24,18 @@ services:
     labels:
       - "cspace.instance=true"
       - "cspace.project=${CSPACE_PROJECT_NAME}"
+      # Traefik routing: <instance>.<project>.cspace.local -> port 3000
+      - "traefik.enable=true"
+      - "traefik.docker.network=${CSPACE_PROJECT_NETWORK}"
+      - "traefik.http.routers.${CSPACE_CONTAINER_NAME}-dev.rule=Host(`${CSPACE_INSTANCE_NAME}.${CSPACE_PROJECT_NAME}.cspace.local`)"
+      - "traefik.http.routers.${CSPACE_CONTAINER_NAME}-dev.entrypoints=web"
+      - "traefik.http.routers.${CSPACE_CONTAINER_NAME}-dev.service=${CSPACE_CONTAINER_NAME}-dev"
+      - "traefik.http.services.${CSPACE_CONTAINER_NAME}-dev.loadbalancer.server.port=3000"
+      # Traefik routing: preview.<instance>.<project>.cspace.local -> port 4173
+      - "traefik.http.routers.${CSPACE_CONTAINER_NAME}-preview.rule=Host(`preview.${CSPACE_INSTANCE_NAME}.${CSPACE_PROJECT_NAME}.cspace.local`)"
+      - "traefik.http.routers.${CSPACE_CONTAINER_NAME}-preview.entrypoints=web"
+      - "traefik.http.routers.${CSPACE_CONTAINER_NAME}-preview.service=${CSPACE_CONTAINER_NAME}-preview"
+      - "traefik.http.services.${CSPACE_CONTAINER_NAME}-preview.loadbalancer.server.port=4173"
 
     volumes:
       - workspace:/workspace

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -197,6 +198,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Set up local DNS resolver for *.cspace.local
+	ensureDNSResolver()
+
 	// If --full, copy templates
 	if full {
 		fmt.Println("Copying templates for customization...")
@@ -300,4 +304,54 @@ func scaffoldDevcontainer(projectRoot, template string) error {
 
 	fmt.Println("Scaffolded .devcontainer/ from template: " + template)
 	return nil
+}
+
+// ensureDNSResolver checks if the macOS DNS resolver for cspace.local is
+// configured, and prompts the user to set it up if not.
+func ensureDNSResolver() {
+	resolverPath := "/etc/resolver/cspace.local"
+	if _, err := os.Stat(resolverPath); err == nil {
+		return // already configured
+	}
+
+	if !isInteractive() {
+		fmt.Println("Note: local DNS not configured. Run 'cspace init' interactively to set up *.cspace.local resolution.")
+		return
+	}
+
+	var setupDNS bool
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Set up local DNS for *.cspace.local?").
+				Description("Requires sudo (one-time). Enables hostnames like mercury.myproject.cspace.local").
+				Value(&setupDNS),
+		),
+	)
+
+	if err := form.Run(); err != nil || !setupDNS {
+		fmt.Println("Skipped DNS setup. Service URLs will use localhost:PORT instead.")
+		return
+	}
+
+	// Create resolver directory and file
+	cmd := exec.Command("sudo", "mkdir", "-p", "/etc/resolver")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: creating /etc/resolver: %v\n", err)
+		return
+	}
+
+	cmd = exec.Command("sudo", "tee", resolverPath)
+	cmd.Stdin = strings.NewReader("nameserver 127.0.0.1\n")
+	cmd.Stdout = nil // suppress tee's stdout echo
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: writing %s: %v\n", resolverPath, err)
+		return
+	}
+
+	fmt.Println("Local DNS configured. *.cspace.local will resolve to 127.0.0.1.")
 }

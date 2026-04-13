@@ -38,16 +38,18 @@ type Result struct {
 // Steps:
 //  1. Validate instance name
 //  2. If already running, skip container creation
-//  3. Detect branch, normalize remote URL, create git bundle
+//  3. Remove orphaned containers, detect branch, create git bundle
 //  4. Create shared Docker volumes
-//  5. docker compose up -d
-//  6. Wait for container readiness
-//  7. Fix volume ownership
-//  8. Copy bundle into container, init workspace
-//  9. Configure git identity
-//  10. Copy .env files
-//  11. Setup GH_TOKEN + gh auth
-//  12. Idempotent: marketplace, plugins, post-setup hook
+//  5. Create project network
+//  6. Start global reverse proxy, connect to project network
+//  7. docker compose up -d
+//  8. Wait for container readiness
+//  9. Fix volume ownership
+//  10. Copy bundle into container, init workspace
+//  11. Configure git identity
+//  12. Copy .env files
+//  13. Setup GH_TOKEN + gh auth
+//  14. Idempotent: marketplace, plugins, post-setup hook
 func Run(p Params) (Result, error) {
 	name := p.Name
 	cfg := p.Cfg
@@ -94,47 +96,58 @@ func Run(p Params) (Result, error) {
 		}
 		defer os.Remove(bundlePath)
 
-		// 5. Create shared volumes
+		// 4. Create shared volumes
 		if err := ensureVolumes(cfg); err != nil {
 			return Result{}, fmt.Errorf("creating volumes: %w", err)
 		}
 
-		// 6. Ensure the shared project network exists before starting the
-		// Compose stack. The devcontainer service declares this as an external
+		// 5. Ensure the shared project network exists before starting the
+		// Compose stack. The cspace service declares this as an external
 		// network in docker-compose.core.yml, so it must exist before compose up.
 		if err := docker.NetworkCreate(cfg.ProjectNetwork(), cfg.InstanceLabel()); err != nil {
 			return Result{}, fmt.Errorf("creating project network: %w", err)
 		}
 
-		// 7. Start container
+		// 6. Start the global reverse proxy and connect it to the project network.
+		if err := docker.EnsureProxy(cfg.AssetsDir); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: proxy: %v\n", err)
+		}
+
+		// Connect the proxy to this project's network so Traefik can
+		// route traffic to instance containers.
+		if err := docker.NetworkConnect(cfg.ProjectNetwork(), docker.ProxyContainerName); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: connecting proxy to project network: %v\n", err)
+		}
+
+		// 7. Start instance containers
 		if err := compose.Run(name, cfg, "up", "-d"); err != nil {
 			return Result{}, fmt.Errorf("starting container: %w", err)
 		}
 
-		// 6. Wait for readiness
+		// 8. Wait for readiness
 		fmt.Println("Waiting for container...")
 		if err := WaitForReady(composeName, 120*time.Second); err != nil {
 			return Result{}, err
 		}
 
-		// 7. Fix volume ownership
+		// 9. Fix volume ownership
 		if _, err := instance.DcExecRoot(composeName, "chown", "-R", "dev:dev", "/workspace", "/home/dev/.claude"); err != nil {
 			return Result{}, fmt.Errorf("fixing ownership: %w", err)
 		}
 
-		// 8. Copy bundle and init workspace
+		// 10. Copy bundle and init workspace
 		if err := initWorkspace(composeName, bundlePath, branch, remoteURL); err != nil {
 			return Result{}, fmt.Errorf("initializing workspace: %w", err)
 		}
 
-		// 9. Configure git identity from host
+		// 11. Configure git identity from host
 		configureGit(composeName, cfg.ProjectRoot)
 
-		// 10. Copy .env files
+		// 12. Copy .env files
 		copyEnvFile(composeName, cfg.ProjectRoot, ".env")
 		copyEnvFile(composeName, cfg.ProjectRoot, ".env.local")
 
-		// 11. Setup GH_TOKEN + gh auth (warn on failure, don't block provisioning)
+		// 13. Setup GH_TOKEN + gh auth (warn on failure, don't block provisioning)
 		if err := setupGHAuth(composeName, cfg.ProjectRoot); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 		}
@@ -142,17 +155,17 @@ func Run(p Params) (Result, error) {
 
 	// --- Idempotent stages (run even if container was already running) ---
 
-	// 12a. Ensure plugin marketplace
+	// 14a. Ensure plugin marketplace
 	if err := ensureMarketplace(composeName); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: marketplace setup: %v\n", err)
 	}
 
-	// 12b. Install recommended plugins
+	// 14b. Install recommended plugins
 	if err := installPlugins(composeName, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: plugin installation: %v\n", err)
 	}
 
-	// 12c. Run post-setup hook
+	// 14c. Run post-setup hook
 	if err := runPostSetup(composeName, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: post-setup: %v\n", err)
 	}

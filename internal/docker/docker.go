@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -52,6 +53,21 @@ func NetworkCreate(name, instanceLabel string) error {
 // Used during teardown when no instances remain on the network.
 func NetworkRemove(name string) {
 	exec.Command("docker", "network", "rm", name).Run() //nolint:errcheck
+}
+
+// NetworkConnect connects a container to a network. Idempotent — returns
+// nil if the container is already connected.
+func NetworkConnect(network, container string) error {
+	cmd := exec.Command("docker", "network", "connect", network, container)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// "already exists" means the container is already connected — success
+		if strings.Contains(string(out), "already exists") {
+			return nil
+		}
+		return fmt.Errorf("connecting %s to network %s: %s", container, network, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // IsContainerRunning checks whether a container with the given name exists
@@ -105,6 +121,27 @@ func CopyToContainer(containerID, srcPath, dstPath string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// ProxyContainerName is the Docker container name for the global Traefik proxy.
+const ProxyContainerName = "cspace-proxy"
+
+// EnsureProxy starts the global Traefik + CoreDNS proxy stack if not already
+// running. Runs `docker compose up -d` unconditionally because it's idempotent
+// and will restart any crashed services (e.g., CoreDNS down while Traefik up).
+func EnsureProxy(assetsDir string) error {
+	composePath := filepath.Join(assetsDir, "templates", "proxy", "docker-compose.yml")
+	cmd := exec.Command("docker", "compose",
+		"-f", composePath,
+		"-p", "cspace-proxy",
+		"up", "-d",
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("starting cspace proxy: %w", err)
+	}
+	return nil
 }
 
 // Build runs `docker build` with the given options.
