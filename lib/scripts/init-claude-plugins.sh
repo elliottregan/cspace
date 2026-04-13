@@ -2,6 +2,10 @@
 # Initialize Claude plugins and settings for cspace devcontainers.
 # Configurable via CSPACE_CLAUDE_MODEL and CSPACE_CLAUDE_EFFORT env vars.
 
+# Ensure claude CLI is in PATH (installed to ~/.local/bin by Claude Code installer,
+# but entrypoint.sh runs this script before profile is sourced).
+export PATH="/home/dev/.local/bin:$PATH"
+
 PLUGINS_DIR="/home/dev/.claude/plugins"
 HOST_PLUGINS_DIR="/tmp/host-claude-plugins"
 MARKER_FILE="$PLUGINS_DIR/.initialized"
@@ -75,6 +79,32 @@ cat > "$USER_SETTINGS" <<HOOKS_EOF
 }
 HOOKS_EOF
 chown dev:dev "$USER_SETTINGS"
+
+# --- Built-in browser MCP servers ---
+# Always registered (runs every startup, not gated by marker).
+# Both run inside the browser sidecar via docker exec, which has unrestricted
+# network access (no firewall). The agent container communicates with them
+# over stdio through the docker exec pipe.
+BROWSER_CONTAINER="${CSPACE_CONTAINER_NAME}.browser"
+if [ -n "$CSPACE_CONTAINER_NAME" ]; then
+    echo "Registering browser MCP servers..."
+
+    # Playwright MCP — browser automation via the sidecar's Chrome instance
+    # Runs as dev user so claude writes to /home/dev/.claude.json, not /root/
+    CLAUDE_BIN="/home/dev/.local/bin/claude"
+    echo "  - playwright: registering"
+    sudo -u dev "$CLAUDE_BIN" mcp add --scope user playwright -- \
+        docker exec -i "$BROWSER_CONTAINER" \
+        npx --yes @playwright/mcp@latest \
+        --cdp-endpoint http://localhost:9222 --no-sandbox 2>&1 | sed 's/^/      /' || true
+
+    # Chrome DevTools MCP — page inspection via CDP
+    echo "  - chrome-devtools: registering"
+    sudo -u dev "$CLAUDE_BIN" mcp add --scope user chrome-devtools -- \
+        docker exec -i "$BROWSER_CONTAINER" \
+        npx --yes chrome-devtools-mcp@latest \
+        --browserUrl http://localhost:9222 2>&1 | sed 's/^/      /' || true
+fi
 
 # Skip plugin init if already done
 if [ -f "$MARKER_FILE" ]; then
@@ -152,29 +182,6 @@ if [ -n "${CSPACE_MCP_SERVERS:-}" ] && [ "$CSPACE_MCP_SERVERS" != "{}" ] && [ "$
             echo "  - $name: registration failed (continuing)"
         fi
     done
-fi
-
-# --- Built-in browser MCP servers ---
-# Always registered. Both run inside the browser sidecar via docker exec,
-# which has unrestricted network access (no firewall). The agent container
-# communicates with them over stdio through the docker exec pipe.
-BROWSER_CONTAINER="${CSPACE_CONTAINER_NAME}.browser"
-if [ -n "$CSPACE_CONTAINER_NAME" ]; then
-    echo "Registering browser MCP servers..."
-
-    # Playwright MCP — browser automation via the sidecar's Chrome instance
-    echo "  - playwright: registering"
-    claude mcp add --scope user playwright -- \
-        docker exec -i "$BROWSER_CONTAINER" \
-        npx --yes @playwright/mcp@latest \
-        --cdp-endpoint http://localhost:9222 --no-sandbox 2>&1 | sed 's/^/      /' || true
-
-    # Chrome DevTools MCP — page inspection via CDP
-    echo "  - chrome-devtools: registering"
-    claude mcp add --scope user chrome-devtools -- \
-        docker exec -i "$BROWSER_CONTAINER" \
-        npx --yes chrome-devtools-mcp@latest \
-        --browserUrl http://localhost:9222 2>&1 | sed 's/^/      /' || true
 fi
 
 touch "$MARKER_FILE"
