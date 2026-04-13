@@ -56,6 +56,7 @@ services:
       # Don't pass the host's CSPACE_HOME — that's a host filesystem path
       # that doesn't exist inside the container.
       - CSPACE_CONTAINER_NAME=${CSPACE_CONTAINER_NAME:-}
+      - CSPACE_INSTANCE_NAME=${CSPACE_INSTANCE_NAME:-}
       - CSPACE_PROJECT_NAME=${CSPACE_PROJECT_NAME:-}
       - CSPACE_FIREWALL_DOMAINS=${CSPACE_FIREWALL_DOMAINS:-}
       - CSPACE_CLAUDE_MODEL=${CSPACE_CLAUDE_MODEL:-claude-opus-4-6[1m]}
