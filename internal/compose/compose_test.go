@@ -39,7 +39,7 @@ func TestComposeEnv(t *testing.T) {
 		want string
 	}{
 		{"COMPOSE_PROJECT_NAME", "mp-mercury"},
-		{"CSPACE_CONTAINER_NAME", "mercury"},
+		{"CSPACE_CONTAINER_NAME", "mp-mercury"},
 		{"CSPACE_PROJECT_NAME", "myproject"},
 		{"CSPACE_PREFIX", "mp"},
 		{"CSPACE_IMAGE", "cspace-myproject"},

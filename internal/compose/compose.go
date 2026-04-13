@@ -46,7 +46,7 @@ func ComposeEnv(name string, cfg *config.Config) []string {
 
 	env := []string{
 		"COMPOSE_PROJECT_NAME=" + cfg.ComposeName(name),
-		"CSPACE_CONTAINER_NAME=" + name,
+		"CSPACE_CONTAINER_NAME=" + cfg.ComposeName(name),
 		"CSPACE_PROJECT_NAME=" + cfg.Project.Name,
 		"CSPACE_PREFIX=" + cfg.Project.Prefix,
 		"CSPACE_IMAGE=" + cfg.ImageName(),

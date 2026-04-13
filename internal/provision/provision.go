@@ -67,7 +67,19 @@ func Run(p Params) (Result, error) {
 		created = true
 		fmt.Printf("Creating new instance '%s'...\n", name)
 
-		// 3. Detect branch and remote URL
+		// 3. Remove orphaned containers from a previous instance with the
+		// same name. Handles partial teardowns where docker compose down
+		// didn't fully clean up. Refuses to remove running containers to
+		// prevent accidentally destroying a live instance. Runs before the
+		// expensive git bundle so we fail fast.
+		containerName := cfg.ComposeName(name)
+		for _, suffix := range []string{"", ".playwright", ".chromium-cdp"} {
+			if err := docker.RemoveOrphanContainer(containerName + suffix); err != nil {
+				return Result{}, fmt.Errorf("refusing to provision '%s': %w", name, err)
+			}
+		}
+
+		// 4. Detect branch and remote URL
 		branch := p.Branch
 		if branch == "" {
 			branch = gitCurrentBranch(cfg.ProjectRoot)
@@ -82,19 +94,9 @@ func Run(p Params) (Result, error) {
 		}
 		defer os.Remove(bundlePath)
 
-		// 4. Create shared volumes
+		// 5. Create shared volumes
 		if err := ensureVolumes(cfg); err != nil {
 			return Result{}, fmt.Errorf("creating volumes: %w", err)
-		}
-
-		// 5. Remove orphaned containers from a previous instance with the
-		// same name. Handles partial teardowns where docker compose down
-		// didn't fully clean up. Refuses to remove running containers to
-		// prevent accidentally destroying a live instance.
-		for _, suffix := range []string{"", ".playwright", ".chromium-cdp"} {
-			if err := docker.RemoveOrphanContainer(name + suffix); err != nil {
-				return Result{}, fmt.Errorf("refusing to provision '%s': %w", name, err)
-			}
 		}
 
 		// 6. Start container
