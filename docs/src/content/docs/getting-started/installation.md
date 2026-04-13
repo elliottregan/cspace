@@ -20,7 +20,13 @@ You will also need a **`GH_TOKEN`** in your project `.env` file for git push/pul
 
 ## Install
 
-Run the install script:
+### Homebrew (macOS)
+
+```bash title="Terminal"
+brew install elliottregan/cspace/cspace
+```
+
+### Install script (macOS and Linux)
 
 ```bash title="Terminal"
 curl -fsSL https://raw.githubusercontent.com/elliottregan/cspace/main/install.sh | bash
@@ -28,10 +34,11 @@ curl -fsSL https://raw.githubusercontent.com/elliottregan/cspace/main/install.sh
 
 This will:
 
-1. Clone the cspace repository to `~/.cspace` (or `$CSPACE_HOME` if set)
-2. Make the `cspace` CLI executable
-3. Add `~/.cspace/bin` to your `PATH` in the appropriate shell RC file
-4. Install zsh completions (if you use zsh)
+1. Download the correct pre-built binary for your OS and architecture from GitHub Releases
+2. Verify the SHA-256 checksum
+3. Ad-hoc sign the binary on macOS (required for Apple Silicon)
+4. Add `~/.cspace/bin` to your `PATH` in the appropriate shell RC file
+5. Install zsh completions (if you use zsh)
 
 After installation, restart your shell or source your RC file:
 
@@ -45,24 +52,6 @@ Verify the installation:
 cspace version
 ```
 
-## PATH setup
-
-The installer automatically detects your shell and appends to the correct RC file:
-
-| Shell | RC file |
-|-------|---------|
-| zsh | `~/.zshrc` |
-| bash | `~/.bashrc` |
-| other | `~/.profile` |
-
-The line added is:
-
-```bash title="~/.zshrc (or ~/.bashrc, ~/.profile)"
-export PATH="$HOME/.cspace/bin:$PATH"
-```
-
-If `.cspace/bin` is already in your RC file, the installer skips this step.
-
 ### Custom install location
 
 To install cspace somewhere other than `~/.cspace`, set `CSPACE_HOME` before running the script:
@@ -71,12 +60,20 @@ To install cspace somewhere other than `~/.cspace`, set `CSPACE_HOME` before run
 CSPACE_HOME=/opt/cspace curl -fsSL https://raw.githubusercontent.com/elliottregan/cspace/main/install.sh | bash
 ```
 
+### Specific version
+
+To install a specific version:
+
+```bash
+VERSION=v0.1.0-rc.5 curl -fsSL https://raw.githubusercontent.com/elliottregan/cspace/main/install.sh | bash
+```
+
 ## Shell completions
 
 On **zsh**, the installer automatically sets up tab completions:
 
 - Creates `~/.zsh/completions/` (or `$ZDOTDIR/.zsh/completions/`)
-- Symlinks the completion file as `_cspace`
+- Generates completions from the binary as `_cspace`
 
 After installation, you get tab completion for all cspace commands, instance names, and planet names:
 
@@ -99,7 +96,7 @@ To update cspace to the latest version:
 cspace self-update
 ```
 
-Or re-run the install script — it detects the existing installation and updates it via `git pull --ff-only`.
+Or re-run the install script — it detects the existing installation and replaces the binary.
 
 ## Next steps
 
