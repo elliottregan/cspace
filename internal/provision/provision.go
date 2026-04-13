@@ -76,7 +76,7 @@ func Run(p Params) (Result, error) {
 		// prevent accidentally destroying a live instance. Runs before the
 		// expensive git bundle so we fail fast.
 		containerName := cfg.ComposeName(name)
-		for _, suffix := range []string{"", ".playwright", ".chromium-cdp"} {
+		for _, suffix := range []string{"", ".browser"} {
 			if err := docker.RemoveOrphanContainer(containerName + suffix); err != nil {
 				return Result{}, fmt.Errorf("refusing to provision '%s': %w", name, err)
 			}
