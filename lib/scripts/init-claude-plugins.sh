@@ -19,6 +19,9 @@ progress_hook="/workspace/.cspace/hooks/claude-progress-logger.sh"
 transcript_hook="/workspace/.cspace/hooks/claude-transcript-copy.sh"
 [ -x "$transcript_hook" ] || transcript_hook="$CSPACE_HOME/lib/hooks/claude-transcript-copy.sh"
 
+block_self_destruct_hook="/workspace/.cspace/hooks/block-self-destruct.sh"
+[ -x "$block_self_destruct_hook" ] || block_self_destruct_hook="$CSPACE_HOME/lib/hooks/block-self-destruct.sh"
+
 # Status line — project override takes precedence over the cspace default
 statusline_cmd="/workspace/.cspace/scripts/statusline.sh"
 [ -x "$statusline_cmd" ] || statusline_cmd="$CSPACE_HOME/lib/scripts/statusline.sh"
@@ -29,6 +32,12 @@ mkdir -p /home/dev/.claude
 cat > "$USER_SETTINGS" <<HOOKS_EOF
 {
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "$block_self_destruct_hook" }]
+      }
+    ],
     "SessionStart": [
       {
         "matcher": "",
