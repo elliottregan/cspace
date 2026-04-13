@@ -182,8 +182,13 @@ func downloadReleaseAsset(release *ghRelease, assetName, targetPath string) erro
 		return fmt.Errorf("setting permissions: %w", err)
 	}
 
+	// Remove the old binary before placing the new one. On macOS, overwriting
+	// a running executable in place causes a SIGKILL. Unlinking first is safe:
+	// the old inode stays mapped in memory while the directory entry is freed.
+	os.Remove(targetPath)
+
 	if err := os.Rename(tmpPath, targetPath); err != nil {
-		// Rename fails across filesystems (EXDEV). Fall back to copy+remove.
+		// Rename fails across filesystems (EXDEV). Fall back to copy.
 		if copyErr := copyFile(tmpPath, targetPath); copyErr != nil {
 			return fmt.Errorf("replacing %s: %w\nDownloaded file at: %s", targetPath, err, tmpPath)
 		}
