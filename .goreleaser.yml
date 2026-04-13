@@ -53,6 +53,7 @@ brews:
     repository:
       owner: elliottregan
       name: homebrew-cspace
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/elliottregan/cspace"
     description: "Portable CLI for managing Claude Code devcontainer instances"
     license: "MIT"
