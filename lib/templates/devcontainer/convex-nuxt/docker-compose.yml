@@ -29,6 +29,13 @@ services:
     environment:
       - CONVEX_CLOUD_ORIGIN=http://${CSPACE_CONTAINER_NAME}.convex:3210
       - CONVEX_SITE_ORIGIN=http://${CSPACE_CONTAINER_NAME}.convex:3211
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${CSPACE_PROJECT_NETWORK}"
+      - "traefik.http.routers.${CSPACE_CONTAINER_NAME}-convex.rule=Host(`convex.${CSPACE_INSTANCE_NAME}.${CSPACE_PROJECT_NAME}.cspace.local`)"
+      - "traefik.http.routers.${CSPACE_CONTAINER_NAME}-convex.entrypoints=web"
+      - "traefik.http.routers.${CSPACE_CONTAINER_NAME}-convex.service=${CSPACE_CONTAINER_NAME}-convex"
+      - "traefik.http.services.${CSPACE_CONTAINER_NAME}-convex.loadbalancer.server.port=3210"
     healthcheck:
       test: curl -f http://localhost:3210/version
       interval: 5s
