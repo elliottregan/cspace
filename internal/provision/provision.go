@@ -99,7 +99,14 @@ func Run(p Params) (Result, error) {
 			return Result{}, fmt.Errorf("creating volumes: %w", err)
 		}
 
-		// 6. Start container
+		// 6. Ensure the shared project network exists before starting the
+		// Compose stack. The devcontainer service declares this as an external
+		// network in docker-compose.core.yml, so it must exist before compose up.
+		if err := docker.NetworkCreate(cfg.ProjectNetwork(), cfg.InstanceLabel()); err != nil {
+			return Result{}, fmt.Errorf("creating project network: %w", err)
+		}
+
+		// 7. Start container
 		if err := compose.Run(name, cfg, "up", "-d"); err != nil {
 			return Result{}, fmt.Errorf("starting container: %w", err)
 		}

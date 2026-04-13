@@ -28,6 +28,32 @@ func VolumeRemove(name string) error {
 	return nil
 }
 
+// NetworkCreate creates a named Docker bridge network labelled for this
+// project. Idempotent — if the network already exists, returns nil.
+func NetworkCreate(name, instanceLabel string) error {
+	out, err := exec.Command(
+		"docker", "network", "inspect", name, "--format", "{{.Name}}",
+	).Output()
+	if err == nil && strings.TrimSpace(string(out)) == name {
+		return nil
+	}
+	cmd := exec.Command("docker", "network", "create",
+		"--label", instanceLabel,
+		"--label", "cspace.network=project",
+		name,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("creating network %s: %s: %w", name, out, err)
+	}
+	return nil
+}
+
+// NetworkRemove removes a named Docker network, ignoring errors.
+// Used during teardown when no instances remain on the network.
+func NetworkRemove(name string) {
+	exec.Command("docker", "network", "rm", name).Run() //nolint:errcheck
+}
+
 // IsContainerRunning checks whether a container with the given name exists
 // and is in a running state.
 func IsContainerRunning(name string) bool {

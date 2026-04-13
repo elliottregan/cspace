@@ -54,6 +54,7 @@ func ComposeEnv(name string, cfg *config.Config) []string {
 		"CSPACE_MEMORY_VOLUME=" + cfg.MemoryVolume(),
 		"CSPACE_LOGS_VOLUME=" + cfg.LogsVolume(),
 		"CSPACE_LABEL=" + cfg.InstanceLabel(),
+		"CSPACE_PROJECT_NETWORK=" + cfg.ProjectNetwork(),
 		"CSPACE_HOME=" + cspaceHome,
 		"HOST_PORT_DEV=" + strconv.Itoa(pm.Dev),
 		"HOST_PORT_PREVIEW=" + strconv.Itoa(pm.Preview),
