@@ -81,6 +81,13 @@ else
     CSPACE_DOCKERFILE=$(resolve_template "Dockerfile")
     export CSPACE_DOCKERFILE
 
+    # Remove orphaned containers from a previous instance with the same name.
+    # This handles partial teardowns where `docker compose down` didn't fully
+    # clean up (interrupted, daemon hiccup, etc.).
+    for suffix in "" ".playwright" ".chromium-cdp"; do
+        docker rm -f "${NAME}${suffix}" 2>/dev/null || true
+    done
+
     # Start container
     dc_compose "$NAME" up -d
 
