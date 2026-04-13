@@ -127,12 +127,9 @@ func CopyToContainer(containerID, srcPath, dstPath string) error {
 const ProxyContainerName = "cspace-proxy"
 
 // EnsureProxy starts the global Traefik + CoreDNS proxy stack if not already
-// running. The compose file is resolved from the embedded assets directory.
+// running. Runs `docker compose up -d` unconditionally because it's idempotent
+// and will restart any crashed services (e.g., CoreDNS down while Traefik up).
 func EnsureProxy(assetsDir string) error {
-	if IsContainerRunning(ProxyContainerName) {
-		return nil
-	}
-
 	composePath := filepath.Join(assetsDir, "templates", "proxy", "docker-compose.yml")
 	cmd := exec.Command("docker", "compose",
 		"-f", composePath,

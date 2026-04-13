@@ -180,7 +180,7 @@ label_color() {
     esac
 }
 CSPACE_JSON="/workspace/.cspace.json"
-INSTANCE="${CONTAINER}"
+INSTANCE="${CSPACE_INSTANCE_NAME:-$CONTAINER}"
 PROJECT="${CSPACE_PROJECT_NAME:-}"
 # Check if Traefik proxy is reachable (cspace-proxy container running)
 PROXY_UP=""
