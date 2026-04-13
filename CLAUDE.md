@@ -50,7 +50,7 @@ Go binary built with Cobra. Entry point is `cmd/cspace/main.go`, which calls `cl
 Node.js process (ESM) that wraps the Claude Agent SDK's `query()` with:
 - An async-queue-backed prompt stream for injecting user turns mid-session
 - A Unix socket server (`/logs/messages/{instance}/supervisor.sock`) for host->container commands (`send`, `respond`, `interrupt`)
-- NDJSON event streaming to stdout, consumed by `stream-status.sh` for terminal rendering
+- NDJSON event streaming to stdout, processed by Go's `ProcessStream()` for terminal rendering
 - MCP tools for inter-agent communication (`ask_orchestrator`, `notify_orchestrator` for agents; `list_agent_questions`, `respond_to_agent`, `send_directive` for coordinators)
 
 Key dependency: `@anthropic-ai/claude-agent-sdk`
@@ -60,7 +60,6 @@ Key dependency: `@anthropic-ai/claude-agent-sdk`
 - **Dockerfile** — Alpine + Node + Claude Code + SSH + Docker-in-Docker
 - **docker-compose.core.yml** — Devcontainer + Playwright run-server + Chromium CDP sidecar
 - **entrypoint.sh** — Container init: firewall, plugins, workspace setup
-- **setup-instance.sh** — Host-side provisioning: git bundle, port assignment, compose up, copy repo into container
 - **init-firewall.sh** — iptables allowlist (GitHub, npm, Anthropic + custom domains)
 - **init-claude-plugins.sh** — Writes Claude settings.json, hooks config, MCP servers
 

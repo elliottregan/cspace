@@ -16,7 +16,6 @@ sync-embedded:
 	@cp -r lib/agent-supervisor internal/assets/embedded/
 	@rm -rf internal/assets/embedded/agent-supervisor/node_modules
 	@cp -r lib/skills internal/assets/embedded/
-	@cp -r lib/core internal/assets/embedded/
 	@cp lib/defaults.json internal/assets/embedded/
 
 build: sync-embedded

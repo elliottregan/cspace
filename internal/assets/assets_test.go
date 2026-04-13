@@ -64,7 +64,6 @@ func TestExtractTo_CreatesFiles(t *testing.T) {
 		"templates/docker-compose.core.yml",
 		"templates/docker-compose.shared.yml",
 		"scripts/entrypoint.sh",
-		"scripts/setup-instance.sh",
 		"hooks/claude-progress-logger.sh",
 		"agents/coordinator.md",
 		"agents/implementer.md",
@@ -94,7 +93,6 @@ func TestExtractTo_PreservesStructure(t *testing.T) {
 		"agents",
 		"agent-supervisor",
 		"skills",
-		"core",
 	}
 
 	for _, d := range expectedDirs {
@@ -121,7 +119,6 @@ func TestExtractTo_ShellScriptsExecutable(t *testing.T) {
 	// Check that .sh files are executable
 	shFiles := []string{
 		"scripts/entrypoint.sh",
-		"scripts/setup-instance.sh",
 		"hooks/claude-progress-logger.sh",
 	}
 
