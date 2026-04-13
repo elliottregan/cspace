@@ -61,7 +61,7 @@ services:
       - chromium-cdp
 
     ports:
-      - "${HOST_PORT_DEV:-0}:5173"
+      - "${HOST_PORT_DEV:-0}:3000"
       - "${HOST_PORT_PREVIEW:-0}:4173"
 
     tty: true

@@ -171,20 +171,41 @@ fi
 
 # --- Service URLs from .cspace.json's container.ports map ---
 # For each declared port, check if a service is listening internally, then
-# look up its host-mapped port via the mounted docker socket and print a
-# clickable localhost URL. Works on every Docker runtime, no orb.local.
+# display a clickable URL. Prefers OrbStack DNS (each container gets its own
+# hostname, so multiple instances can share the same port). Falls back to
+# localhost:HOST_PORT via docker port for non-OrbStack runtimes.
+label_color() {
+    case "$1" in
+        dev)     printf '%s' "$GRN" ;;
+        preview) printf '%s' "$YLW" ;;
+        *)       printf '%s' "$CYN" ;;
+    esac
+}
 CSPACE_JSON="/workspace/.cspace.json"
+ORB_HOST="cspace.${SELF_CONTAINER}.orb.local"
+# Detect OrbStack by checking if .orb.local DNS resolves
+USE_ORB=""
+if getent hosts "$ORB_HOST" >/dev/null 2>&1; then
+    USE_ORB=1
+fi
 if [ -n "$SELF_CONTAINER" ] && [ -f "$CSPACE_JSON" ]; then
     while IFS=$'\t' read -r internal_port label; do
         [ -z "$internal_port" ] && continue
         # Only show URLs for ports actually in use right now
         ss -tlnp 2>/dev/null | grep -q ":${internal_port} " || continue
-        host_port=$(docker port "$SELF_CONTAINER" "$internal_port" 2>/dev/null \
-            | head -1 | awk -F: '{print $NF}')
-        [ -z "$host_port" ] && continue
+        if [ -n "$USE_ORB" ]; then
+            URL="http://${ORB_HOST}:${internal_port}"
+            DISPLAY="${ORB_HOST}:${internal_port}"
+        else
+            host_port=$(docker port "$SELF_CONTAINER" "$internal_port" 2>/dev/null \
+                | head -1 | awk -F: '{print $NF}')
+            [ -z "$host_port" ] && continue
+            URL="http://localhost:${host_port}"
+            DISPLAY="localhost:${host_port}"
+        fi
         printf "$DIV"
-        printf "${GRN}● %s${RST} " "$label"
-        link "http://localhost:${host_port}" "localhost:${host_port}"
+        printf "$(label_color "$label")● %s${RST} " "$label"
+        link "$URL" "$DISPLAY"
     done < <(jq -r '.container.ports // {} | to_entries[] | "\(.key)\t\(.value)"' "$CSPACE_JSON" 2>/dev/null)
 fi
 echo
