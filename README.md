@@ -2,7 +2,7 @@
 
 Portable CLI for managing isolated Claude Code devcontainer instances. Spin up multiple independent development environments, each with their own workspace, browser sidecars, and network firewall — then run autonomous Claude agents against GitHub issues.
 
-**[Full documentation](https://cspace.netlify.app/)**
+**[Full documentation](https://cspace-cli.netlify.app/)**
 
 ## Install
 
@@ -11,7 +11,7 @@ curl -fsSL https://raw.githubusercontent.com/elliottregan/cspace/main/install.sh
 source ~/.zshrc  # or restart your shell
 ```
 
-Requires **Docker** with Compose v2 and **jq**. See [prerequisites](https://cspace.netlify.app/getting-started/installation/#prerequisites) for optional dependencies.
+Requires **Docker** with Compose v2 and **jq**. See [prerequisites](https://cspace-cli.netlify.app/getting-started/installation/#prerequisites) for optional dependencies.
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ echo 'GH_TOKEN=ghp_...' >> .env   # required for git inside containers
 cspace up                # launch an instance
 ```
 
-See the [quick start guide](https://cspace.netlify.app/getting-started/quick-start/) and [git authentication setup](https://cspace.netlify.app/getting-started/git-authentication/) for details.
+See the [quick start guide](https://cspace-cli.netlify.app/getting-started/quick-start/) and [git authentication setup](https://cspace-cli.netlify.app/getting-started/git-authentication/) for details.
 
 ## Usage
 
@@ -37,7 +37,7 @@ cspace down --all                   Destroy all project instances
 cspace self-update                  Update to latest version
 ```
 
-Full command reference: [CLI docs](https://cspace.netlify.app/cli-reference/overview/)
+Full command reference: [CLI docs](https://cspace-cli.netlify.app/cli-reference/overview/)
 
 ## How It Works
 
@@ -62,7 +62,7 @@ Instances auto-assign planet names (mercury, venus, earth...) with deterministic
 
 Running `cspace issue 42` launches an autonomous agent that explores the codebase, designs and implements a solution, runs your verification commands, and opens a PR.
 
-More: [architecture overview](https://cspace.netlify.app/architecture/architecture-overview/) | [autonomous agent workflow](https://cspace.netlify.app/architecture/autonomous-agent-workflow/) | [multi-agent coordination](https://cspace.netlify.app/architecture/multi-agent-coordination/)
+More: [architecture overview](https://cspace-cli.netlify.app/architecture/architecture-overview/) | [autonomous agent workflow](https://cspace-cli.netlify.app/architecture/autonomous-agent-workflow/) | [multi-agent coordination](https://cspace-cli.netlify.app/architecture/multi-agent-coordination/)
 
 ## Configuration
 
@@ -80,7 +80,7 @@ Project config lives in `.cspace.json` (committed) with optional `.cspace.local.
 
 Override built-in templates (Dockerfile, agent prompts, compose files) by placing files in `.cspace/`. Run `cspace init --full` to copy all templates for customization.
 
-Full reference: [configuration](https://cspace.netlify.app/configuration/configuration-reference/) | [project services](https://cspace.netlify.app/configuration/project-services/) | [template overrides](https://cspace.netlify.app/configuration/template-overrides/)
+Full reference: [configuration](https://cspace-cli.netlify.app/configuration/configuration-reference/) | [project services](https://cspace-cli.netlify.app/configuration/project-services/) | [template overrides](https://cspace-cli.netlify.app/configuration/template-overrides/)
 
 ## Development
 
