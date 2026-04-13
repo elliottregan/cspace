@@ -145,6 +145,7 @@ DIR=${DISPLAY_CWD/#$HOME/\~}
 DIV=" ${DIM}|${RST} "
 if [ -n "$CONTAINER" ]; then
     printf "${PLANET_COLOR}%s %s${RST}" "$PLANET_SYMBOL" "$CONTAINER"
+    [ -n "$CSPACE_PROJECT_NAME" ] && printf " ${GRY}(%s)${RST}" "$CSPACE_PROJECT_NAME"
     printf "$DIV"
 fi
 printf "${GRY}%s${RST} %s" "$NF_FOLDER" "$DIR"
