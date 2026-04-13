@@ -474,7 +474,11 @@ func TestFindProjectRoot_NotInRepo(t *testing.T) {
 func TestLoad_RealProjectConfig(t *testing.T) {
 	// Test loading the actual repo's .cspace.json merged over defaults.json.
 	// This verifies the real-world merge works correctly.
-	cfg, err := Load("/workspace", "")
+	repoRoot, err := FindProjectRoot(".")
+	if err != nil {
+		t.Fatalf("FindProjectRoot() error: %v", err)
+	}
+	cfg, err := Load(repoRoot, "")
 	if err != nil {
 		t.Fatalf("Load() with real project config error: %v", err)
 	}
