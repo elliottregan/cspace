@@ -49,6 +49,7 @@ changelog:
 brews:
   - ids: [default]
     name: cspace
+    skip_upload: auto
     repository:
       owner: elliottregan
       name: homebrew-cspace
