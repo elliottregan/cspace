@@ -18,6 +18,9 @@ import (
 // across projects. Per-project filtering uses config.InstanceLabel() instead.
 const GlobalInstanceLabel = "cspace.instance=true"
 
+// ServiceName is the Docker Compose service name for the main cspace container.
+const ServiceName = "cspace"
+
 // Info holds basic information about a running cspace instance.
 type Info struct {
 	ComposeName string // Docker Compose project name (e.g. "mp-mercury")
@@ -111,7 +114,7 @@ func IsRunning(composeName string) bool {
 		return false
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if strings.TrimSpace(line) == "devcontainer" {
+		if strings.TrimSpace(line) == ServiceName {
 			return true
 		}
 	}
@@ -200,7 +203,7 @@ func DcExec(composeName string, cmdArgs ...string) (string, error) {
 	baseArgs := []string{
 		"compose", "-p", composeName,
 		"exec", "-T", "-u", "dev", "-w", "/workspace",
-		"devcontainer",
+		ServiceName,
 	}
 	args := make([]string, 0, len(baseArgs)+len(cmdArgs))
 	args = append(args, baseArgs...)
@@ -224,7 +227,7 @@ func DcExecInteractive(composeName string, cmdArgs ...string) error {
 	baseArgs := []string{
 		"compose", "-p", composeName,
 		"exec", "-u", "dev", "-w", "/workspace",
-		"devcontainer",
+		ServiceName,
 	}
 	args := make([]string, 0, len(baseArgs)+len(cmdArgs))
 	args = append(args, baseArgs...)
@@ -246,7 +249,7 @@ func ShowPorts(name string, cfg *config.Config) {
 
 	// Show devcontainer ports from config
 	for port, label := range cfg.Container.Ports {
-		hostPort := ports.GetHostPort(composeName, "devcontainer", port)
+		hostPort := ports.GetHostPort(composeName, ServiceName, port)
 		if hostPort != "" {
 			fmt.Printf("  %s: http://localhost:%s\n", label, hostPort)
 		}
@@ -265,7 +268,7 @@ func ShowPorts(name string, cfg *config.Config) {
 	for _, line := range splitLines(out) {
 		parts := strings.SplitN(line, "\t", 2)
 		svc := parts[0]
-		if svc == "" || svc == "devcontainer" || len(parts) < 2 {
+		if svc == "" || svc == ServiceName || len(parts) < 2 {
 			continue
 		}
 		// Parse port mappings like "0.0.0.0:9222->9222/tcp"
@@ -290,7 +293,7 @@ func DcExecRoot(composeName string, cmdArgs ...string) (string, error) {
 	baseArgs := []string{
 		"compose", "-p", composeName,
 		"exec", "-T",
-		"devcontainer",
+		ServiceName,
 	}
 	args := make([]string, 0, len(baseArgs)+len(cmdArgs))
 	args = append(args, baseArgs...)
@@ -312,7 +315,7 @@ func DcExecRoot(composeName string, cmdArgs ...string) (string, error) {
 // Equivalent to: docker compose -p <project> cp <src> devcontainer:<dst>
 func DcCp(composeName, hostPath, containerPath string) error {
 	cmd := exec.Command("docker", "compose", "-p", composeName,
-		"cp", hostPath, "devcontainer:"+containerPath)
+		"cp", hostPath, ServiceName+":"+containerPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
