@@ -144,6 +144,113 @@ func EnsureProxy(assetsDir string) error {
 	return nil
 }
 
+// GetContainerIP returns a container's IP address on the given network.
+func GetContainerIP(container, network string) (string, error) {
+	out, err := exec.Command(
+		"docker", "inspect", container,
+		"--format", fmt.Sprintf(`{{(index .NetworkSettings.Networks "%s").IPAddress}}`, network),
+	).Output()
+	if err != nil {
+		return "", fmt.Errorf("getting IP of %s on %s: %w", container, network, err)
+	}
+	ip := strings.TrimSpace(string(out))
+	if ip == "" || ip == "<no value>" {
+		return "", fmt.Errorf("%s is not connected to network %s", container, network)
+	}
+	return ip, nil
+}
+
+// GetTraefikHostnames discovers cspace.local hostnames from Traefik labels
+// on containers in a compose project. Returns deduplicated hostnames.
+func GetTraefikHostnames(composeName string) []string {
+	out, err := exec.Command(
+		"docker", "compose", "-p", composeName,
+		"ps", "-q",
+	).Output()
+	if err != nil {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+	var hostnames []string
+
+	for _, id := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if id == "" {
+			continue
+		}
+		labelOut, err := exec.Command(
+			"docker", "inspect", id,
+			"--format", `{{range $k, $v := .Config.Labels}}{{$k}}={{$v}}{{"\n"}}{{end}}`,
+		).Output()
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(labelOut), "\n") {
+			// Match traefik.http.routers.*.rule=Host(`hostname`)
+			if !strings.Contains(line, "traefik.http.routers.") || !strings.Contains(line, ".rule=") {
+				continue
+			}
+			// Extract hostname from Host(`...`)
+			start := strings.Index(line, "Host(`")
+			if start < 0 {
+				continue
+			}
+			start += len("Host(`")
+			end := strings.Index(line[start:], "`)")
+			if end < 0 {
+				continue
+			}
+			hostname := line[start : start+end]
+			if !seen[hostname] {
+				seen[hostname] = true
+				hostnames = append(hostnames, hostname)
+			}
+		}
+	}
+	return hostnames
+}
+
+// InjectHosts injects /etc/hosts entries into all containers in a compose
+// stack, mapping cspace.local hostnames to Traefik's IP on the project
+// network. This makes cspace.local URLs work from inside containers
+// (where CoreDNS's 127.0.0.1 response doesn't reach Traefik).
+func InjectHosts(composeName, projectNetwork string) error {
+	proxyIP, err := GetContainerIP(ProxyContainerName, projectNetwork)
+	if err != nil {
+		return fmt.Errorf("resolving proxy IP: %w", err)
+	}
+
+	hostnames := GetTraefikHostnames(composeName)
+	if len(hostnames) == 0 {
+		return nil
+	}
+
+	hostsLine := proxyIP + " " + strings.Join(hostnames, " ")
+
+	// Get all container IDs in the compose project
+	out, err := exec.Command(
+		"docker", "compose", "-p", composeName,
+		"ps", "-q",
+	).Output()
+	if err != nil {
+		return fmt.Errorf("listing containers: %w", err)
+	}
+
+	for _, id := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if id == "" {
+			continue
+		}
+		// Remove old cspace.local entries and append fresh ones
+		script := fmt.Sprintf(
+			`sed -i '/cspace\.local/d' /etc/hosts && echo '%s' >> /etc/hosts`,
+			hostsLine,
+		)
+		exec.Command("docker", "exec", id, "sh", "-c", script).Run() //nolint:errcheck
+	}
+
+	return nil
+}
+
 // Build runs `docker build` with the given options.
 // image is the tag, dockerfile is the path to the Dockerfile,
 // context is the build context directory.
