@@ -12,9 +12,7 @@ Before installing cspace, make sure you have the following:
 | Dependency | Required | Purpose | Install |
 |-----------|----------|---------|---------|
 | **Docker** with Compose v2 | Yes | Runs devcontainer instances | [docs.docker.com](https://docs.docker.com/get-docker/) |
-| **jq** | Yes | JSON processing | `brew install jq` / `apt install jq` |
-| **gum** | No | Interactive TUI menus | `brew install gum` |
-| **gh** | No | GitHub CLI integration | `brew install gh` |
+| **gh** | No | GitHub CLI for agents to push/pull/open PRs | `brew install gh` |
 
 You will also need a **`GH_TOKEN`** in your project `.env` file for git push/pull from inside containers. See [Git Authentication](/getting-started/git-authentication/) for setup instructions.
 
@@ -23,7 +21,8 @@ You will also need a **`GH_TOKEN`** in your project `.env` file for git push/pul
 ### Homebrew (macOS)
 
 ```bash title="Terminal"
-brew install elliottregan/cspace/cspace
+brew tap elliottregan/cspace
+brew install cspace
 ```
 
 ### Install script (macOS and Linux)
