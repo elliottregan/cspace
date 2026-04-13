@@ -65,7 +65,7 @@ CSPACE_HOME=/opt/cspace curl -fsSL https://raw.githubusercontent.com/elliottrega
 To install a specific version:
 
 ```bash
-VERSION=v0.1.0-rc.5 curl -fsSL https://raw.githubusercontent.com/elliottregan/cspace/main/install.sh | bash
+VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/elliottregan/cspace/main/install.sh | bash
 ```
 
 ## Shell completions
