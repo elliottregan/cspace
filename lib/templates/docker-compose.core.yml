@@ -1,7 +1,6 @@
 # Core cspace service — used by all cspace projects.
 # Project-specific services are added via compose file layering (-f).
-# Browser sidecars (playwright, chromium-cdp) are per-instance for full
-# isolation — each instance gets its own browsers with no cross-talk.
+# Browser sidecar provides Chrome CDP + Playwright run-server per instance.
 
 services:
   cspace:
@@ -51,7 +50,7 @@ services:
 
     environment:
       - USE_BUILTIN_RIPGREP=0
-      - PW_TEST_CONNECT_WS_ENDPOINT=ws://playwright:3000/
+      - PW_TEST_CONNECT_WS_ENDPOINT=ws://browser:3000/
       # CSPACE_HOME is set to /opt/cspace via ENV in the Dockerfile.
       # Don't pass the host's CSPACE_HOME — that's a host filesystem path
       # that doesn't exist inside the container.
@@ -66,12 +65,11 @@ services:
       - COLORTERM=${COLORTERM:-}
 
     networks:
-      - default   # instance-scoped Compose network (playwright, chromium-cdp, project services)
+      - default   # instance-scoped Compose network (browser sidecar, project services)
       - project   # project-scoped network (shared across all instances of this project)
 
     depends_on:
-      - playwright
-      - chromium-cdp
+      - browser
 
     ports:
       - "${HOST_PORT_DEV:-0}:3000"
@@ -80,27 +78,23 @@ services:
     tty: true
     stdin_open: true
 
-  # Playwright run-server for E2E tests.
-  # Devcontainers connect via PW_TEST_CONNECT_WS_ENDPOINT=ws://playwright:3000/
-  playwright:
+  # Consolidated browser sidecar — headless Chrome (CDP on 9222) + Playwright
+  # run-server (3000) in one container. Both MCP servers (chrome-devtools,
+  # playwright) run here via docker exec from the agent container.
+  # Unrestricted network access — no firewall — so MCP browsers can reach
+  # external URLs and container-hosted sites.
+  browser:
     image: mcr.microsoft.com/playwright:v1.58.0-noble
-    container_name: ${CSPACE_CONTAINER_NAME}.playwright
-    command: npx -y playwright@1.58.0 run-server --port 3000 --host 0.0.0.0
-    init: true
-
-  # Headless Chromium exposing CDP for the Playwright MCP plugin.
-  # Modern Chromium ignores --remote-debugging-address=0.0.0.0,
-  # so socat forwards the container-public port to localhost.
-  # Devcontainers connect via chromium-cdp:9222 on the instance network.
-  chromium-cdp:
-    image: mcr.microsoft.com/playwright:v1.58.0-noble
-    container_name: ${CSPACE_CONTAINER_NAME}.chromium-cdp
+    container_name: ${CSPACE_CONTAINER_NAME}.browser
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
+        # Install socat for CDP port forwarding
         apt-get update -qq && apt-get install -y -qq socat >/dev/null 2>&1
+
+        # Start headless Chrome with CDP on port 9223 (internal)
         CHROME=$$(find /ms-playwright -name "chrome" -type f -executable | head -1)
-        echo "Launching $$CHROME"
+        echo "Launching Chrome: $$CHROME"
         $$CHROME \
           --headless=new \
           --no-sandbox \
@@ -109,9 +103,20 @@ services:
           --remote-debugging-port=9223 \
           --remote-allow-origins=* \
           --user-data-dir=/tmp/chrome-profile &
+
+        # Wait for Chrome CDP to be ready
         until curl -sf http://127.0.0.1:9223/json/version >/dev/null; do sleep 0.5; done
-        echo "CDP ready, forwarding 0.0.0.0:9222 -> 127.0.0.1:9223"
-        socat TCP-LISTEN:9222,fork,reuseaddr TCP:127.0.0.1:9223
+        echo "CDP ready on 9223"
+
+        # Forward 0.0.0.0:9222 -> localhost:9223 (socat rewrites Host header)
+        socat TCP-LISTEN:9222,fork,reuseaddr TCP:127.0.0.1:9223 &
+        echo "CDP forwarding: 0.0.0.0:9222 -> 127.0.0.1:9223"
+
+        # Start Playwright run-server for E2E tests
+        npx -y playwright@1.58.0 run-server --port 3000 --host 0.0.0.0
+    networks:
+      - default
+      - project
     init: true
 
 volumes:
