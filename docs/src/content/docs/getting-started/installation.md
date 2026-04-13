@@ -13,6 +13,10 @@ Before installing cspace, make sure you have the following:
 |-----------|----------|---------|---------|
 | **Docker** with Compose v2 | Yes | Runs devcontainer instances | [docs.docker.com](https://docs.docker.com/get-docker/) |
 
+:::tip
+On macOS, [OrbStack](https://orbstack.dev) is a lightweight alternative to Docker Desktop with faster startup, lower resource usage, and built-in Linux VM support.
+:::
+
 You will also need a **`GH_TOKEN`** in your project `.env` file for git push/pull from inside containers. See [Git Authentication](/getting-started/git-authentication/) for setup instructions.
 
 ## Install
