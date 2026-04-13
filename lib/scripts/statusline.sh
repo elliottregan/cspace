@@ -188,16 +188,14 @@ if docker inspect cspace-proxy --format '{{.State.Running}}' 2>/dev/null | grep 
     PROXY_UP=1
 fi
 if [ -n "$SELF_CONTAINER" ] && [ -f "$CSPACE_JSON" ]; then
-    FIRST=1
     while IFS=$'\t' read -r internal_port label; do
         [ -z "$internal_port" ] && continue
         # Only show URLs for ports actually in use right now
         ss -tlnp 2>/dev/null | grep -q ":${internal_port} " || continue
         if [ -n "$PROXY_UP" ] && [ -n "$PROJECT" ] && [ -n "$INSTANCE" ]; then
-            # Traefik hostname: first port gets bare subdomain, others get label prefix
-            if [ -n "$FIRST" ]; then
+            # Traefik hostname: "dev" gets bare subdomain, others get label prefix
+            if [ "$label" = "dev" ]; then
                 HOST="${INSTANCE}.${PROJECT}.cspace.local"
-                FIRST=""
             else
                 HOST="${label}.${INSTANCE}.${PROJECT}.cspace.local"
             fi
