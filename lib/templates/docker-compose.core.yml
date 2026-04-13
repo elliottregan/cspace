@@ -1,10 +1,10 @@
-# Core devcontainer service — used by all cspace projects.
+# Core cspace service — used by all cspace projects.
 # Project-specific services are added via compose file layering (-f).
 # Browser sidecars (playwright, chromium-cdp) are per-instance for full
 # isolation — each instance gets its own browsers with no cross-talk.
 
 services:
-  devcontainer:
+  cspace:
     image: ${CSPACE_IMAGE:-cspace-dev}
     container_name: ${CSPACE_CONTAINER_NAME}
     hostname: ${CSPACE_INSTANCE_NAME}

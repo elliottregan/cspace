@@ -359,11 +359,15 @@ func installPlugins(composeName string, cfg *config.Config) error {
 
 // runPostSetup copies and executes the post-setup hook if configured.
 func runPostSetup(composeName string, cfg *config.Config) error {
-	if cfg.PostSetup == "" {
-		return nil
+	// Resolve post-setup script: explicit config takes priority,
+	// then auto-detect from .devcontainer/post-setup.sh.
+	var src string
+	if cfg.PostSetup != "" {
+		src = filepath.Join(cfg.ProjectRoot, cfg.PostSetup)
+	} else {
+		src = filepath.Join(cfg.ProjectRoot, ".devcontainer", "post-setup.sh")
 	}
 
-	src := filepath.Join(cfg.ProjectRoot, cfg.PostSetup)
 	if _, err := os.Stat(src); err != nil {
 		return nil
 	}

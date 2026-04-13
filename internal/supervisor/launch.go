@@ -45,7 +45,7 @@ func LaunchSupervisor(params LaunchParams, cfg *config.Config) error {
 		"exec", "-T", "-u", "dev", "-w", "/workspace",
 		"-e", "CLAUDE_AUTONOMOUS=1",
 		"-e", "CLAUDE_INSTANCE=" + params.Name,
-		"devcontainer",
+		instance.ServiceName,
 		"bash", "-c", bashCmd,
 	}
 
@@ -91,7 +91,7 @@ func LaunchSupervisor(params LaunchParams, cfg *config.Config) error {
 func LaunchInteractive(name string, cfg *config.Config) error {
 	cmd, err := compose.Cmd(name, cfg,
 		"exec", "-u", "dev", "-w", "/workspace",
-		"devcontainer",
+		instance.ServiceName,
 		"claude", "--dangerously-skip-permissions",
 	)
 	if err != nil {
@@ -125,7 +125,7 @@ func RelaunchDetached(params LaunchParams, cfg *config.Config, ignoreInboxBefore
 		"exec", "-d", "-T", "-u", "dev", "-w", "/workspace",
 		"-e", "CLAUDE_AUTONOMOUS=1",
 		"-e", "CLAUDE_INSTANCE=" + params.Name,
-		"devcontainer",
+		instance.ServiceName,
 		"bash", "-c", bashCmd,
 	}
 
@@ -238,7 +238,7 @@ func StagePromptText(composeName, text, containerPath string) error {
 	args := []string{
 		"compose", "-p", composeName,
 		"exec", "-T", "-u", "dev",
-		"devcontainer",
+		instance.ServiceName,
 		"bash", "-c", "cat > '" + shellEscape(containerPath) + "'",
 	}
 

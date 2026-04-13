@@ -99,9 +99,10 @@ RUN chmod +x /usr/local/bin/init-workspace.sh \
 COPY lib/agent-supervisor/package.json lib/agent-supervisor/pnpm-lock.yaml /opt/cspace/lib/agent-supervisor/
 RUN cd /opt/cspace/lib/agent-supervisor && pnpm install --frozen-lockfile --prod
 COPY lib/ /opt/cspace/lib/
-# bin/cspace is a statically-linked Go binary compiled for linux.
-# It is placed in the build context by `cspace rebuild` before docker build.
-COPY bin/cspace /opt/cspace/bin/cspace
+# bin/cspace-linux is a statically-linked Go binary compiled for linux.
+# It is staged in the build context by `cspace rebuild` before docker build.
+# Named cspace-linux to avoid overwriting the host's darwin binary at bin/cspace.
+COPY bin/cspace-linux /opt/cspace/bin/cspace
 RUN chmod +x /opt/cspace/bin/cspace && \
     ln -sf /opt/cspace/bin/cspace /usr/local/bin/cspace && \
     chown -R dev:dev /opt/cspace

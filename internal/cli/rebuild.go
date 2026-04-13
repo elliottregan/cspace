@@ -42,12 +42,13 @@ func runRebuild(cmd *cobra.Command, args []string) error {
 	// the context set in docker-compose.core.yml.
 	cspaceHome := filepath.Dir(cfg.AssetsDir)
 
-	// Ensure a Linux binary is available in the build context at bin/cspace.
-	// The Dockerfile COPYs bin/cspace into /opt/cspace/bin/cspace.
-	linuxBinPath := filepath.Join(cspaceHome, "bin", "cspace")
+	// Stage the Linux binary at bin/cspace-linux (not bin/cspace) so it never
+	// overwrites the host's installed darwin binary at ~/.cspace/bin/cspace.
+	linuxBinPath := filepath.Join(cspaceHome, "bin", "cspace-linux")
 	if err := ensureLinuxBinary(linuxBinPath); err != nil {
 		return fmt.Errorf("preparing Linux binary for container: %w", err)
 	}
+	defer os.Remove(linuxBinPath)
 
 	fmt.Println("Rebuilding container image...")
 	if err := docker.Build(cfg.ImageName(), dockerfile, cspaceHome, true); err != nil {

@@ -18,6 +18,7 @@ lib/agent-supervisor/node_modules/
 bin/cspace-go
 bin/cspace-go-linux-amd64
 bin/cspace-go-linux-arm64
+bin/cspace-linux
 dist/
 
 # Embedded assets (generated from lib/ by make sync-embedded)
