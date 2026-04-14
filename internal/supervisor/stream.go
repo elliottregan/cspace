@@ -84,7 +84,7 @@ func ProcessStream(r io.Reader) StreamResult {
 		if sessionID == "" && ev.SessionID != "" {
 			sessionID = ev.SessionID
 			fmt.Fprintf(os.Stderr, "  Session: %s\n", sessionID)
-			os.WriteFile("/tmp/claude-session-id.txt", []byte(sessionID), 0644)
+			_ = os.WriteFile("/tmp/claude-session-id.txt", []byte(sessionID), 0644)
 		}
 
 		switch ev.Type {
@@ -161,7 +161,7 @@ func renderAssistantEvent(turn int, ev StreamEvent) {
 func renderToolUse(turn int, c messageContent) {
 	var input toolInput
 	if c.Input != nil {
-		json.Unmarshal(c.Input, &input)
+		_ = json.Unmarshal(c.Input, &input)
 	}
 
 	// File-operation tools share a common render pattern

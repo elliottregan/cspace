@@ -154,7 +154,7 @@ func RestartSupervisor(name, reason string, cfg *config.Config) error {
 	startMs := time.Now().UnixMilli()
 
 	fmt.Printf("Interrupting supervisor for %s...\n", name)
-	Dispatch(composeName, "interrupt", name)
+	_ = Dispatch(composeName, "interrupt", name)
 
 	// Wait for completion notification (up to 30s)
 	completionDir := filepath.Join(logsPath, "_coordinator", "inbox")
@@ -229,7 +229,7 @@ func StagePromptFile(composeName, hostPath, containerPath string) error {
 	if err := instance.DcCp(composeName, hostPath, containerPath); err != nil {
 		return fmt.Errorf("copying prompt file: %w", err)
 	}
-	instance.DcExecRoot(composeName, "chown", "dev:dev", containerPath)
+	_, _ = instance.DcExecRoot(composeName, "chown", "dev:dev", containerPath)
 	return nil
 }
 
@@ -326,7 +326,7 @@ func isSuccessExit(code int) bool {
 }
 
 // shellEscape escapes a string for safe inclusion in a single-quoted
-// shell context by replacing each ' with '\'' (end quote, escaped
+// shell context by replacing each ' with '\” (end quote, escaped
 // literal quote, re-open quote).
 func shellEscape(s string) string {
 	return strings.ReplaceAll(s, "'", `'\''`)

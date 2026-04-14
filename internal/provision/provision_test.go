@@ -4,8 +4,8 @@ import "testing"
 
 func TestValidateName(t *testing.T) {
 	tests := []struct {
-		name    string
-		valid   bool
+		name  string
+		valid bool
 	}{
 		{"mercury", true},
 		{"my-instance", true},

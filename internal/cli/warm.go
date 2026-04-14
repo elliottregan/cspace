@@ -51,7 +51,7 @@ func runWarm(cmd *cobra.Command, args []string) error {
 
 		// Skip onboarding
 		composeName := cfg.ComposeName(name)
-		instance.SkipOnboarding(composeName)
+		_ = instance.SkipOnboarding(composeName)
 
 		// Validate firewall — re-init if not done
 		if _, err := instance.DcExecRoot(composeName, "test", "-f", "/tmp/.firewall-init-done"); err != nil {
@@ -61,7 +61,7 @@ func runWarm(cmd *cobra.Command, args []string) error {
 				failed++
 				continue
 			}
-			instance.DcExecRoot(composeName, "touch", "/tmp/.firewall-init-done")
+			_, _ = instance.DcExecRoot(composeName, "touch", "/tmp/.firewall-init-done")
 		}
 
 		results = append(results, warmResult{Name: name, Status: "ready"})

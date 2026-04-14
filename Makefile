@@ -3,7 +3,7 @@ LDFLAGS         := -ldflags "-X github.com/elliottregan/cspace/internal/cli.Vers
 LDFLAGS_RELEASE := -ldflags "-s -w -X github.com/elliottregan/cspace/internal/cli.Version=$(VERSION)"
 GOBIN           := ./bin/cspace-go
 
-.PHONY: build build-linux clean test vet sync-embedded
+.PHONY: build build-linux clean test vet sync-embedded fmt fmt-check lint check install-tools setup-hooks
 
 # Sync lib/ contents into internal/assets/embedded/ for go:embed
 sync-embedded:
@@ -36,3 +36,28 @@ clean:
 	rm -f $(GOBIN) $(GOBIN)-linux-amd64 $(GOBIN)-linux-arm64
 	rm -rf dist
 	rm -rf internal/assets/embedded
+
+fmt:
+	gofmt -s -w .
+	goimports -w $$(go list -f '{{.Dir}}' ./...)
+
+fmt-check:
+	@unformatted=$$(gofmt -s -l . | grep -v '^internal/assets/embedded/' || true); \
+	if [ -n "$$unformatted" ]; then \
+		echo "Unformatted files:"; echo "$$unformatted"; exit 1; \
+	fi
+
+lint: sync-embedded
+	golangci-lint run ./...
+	shellcheck lib/scripts/*.sh lib/hooks/*.sh
+
+check: fmt-check vet lint test
+
+install-tools:
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+	go install golang.org/x/tools/cmd/goimports@latest
+	go install github.com/evilmartians/lefthook@latest
+	@echo "Install shellcheck via your package manager (brew install shellcheck / apt install shellcheck)."
+
+setup-hooks:
+	lefthook install

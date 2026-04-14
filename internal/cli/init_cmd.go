@@ -191,8 +191,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 		if !strings.Contains(string(data), ".cspace.local.json") {
 			f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_WRONLY, 0644)
 			if err == nil {
-				fmt.Fprintln(f, ".cspace.local.json")
-				f.Close()
+				_, _ = fmt.Fprintln(f, ".cspace.local.json")
+				_ = f.Close()
 				fmt.Println("Added .cspace.local.json to .gitignore")
 			}
 		}
@@ -226,7 +226,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 		// Copy agent playbooks
 		agentsDir := filepath.Join(cspaceDir, "agents")
-		os.MkdirAll(agentsDir, 0755)
+		if err := os.MkdirAll(agentsDir, 0755); err != nil {
+			return fmt.Errorf("creating agents dir: %w", err)
+		}
 		for _, agent := range []string{"implementer.md", "coordinator.md"} {
 			data, err := fs.ReadFile(subFS, "agents/"+agent)
 			if err != nil {

@@ -135,7 +135,7 @@ func fetchRelease(url string) (*ghRelease, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, fmt.Errorf("no releases found (HTTP 404)")
@@ -177,7 +177,7 @@ func downloadReleaseAsset(release *ghRelease, assetName, targetPath string) erro
 	}
 	// Clean up temp file on error. After a successful rename, tmpPath no
 	// longer exists so os.Remove harmlessly returns ENOENT.
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	if err := os.Chmod(tmpPath, 0755); err != nil {
 		return fmt.Errorf("setting permissions: %w", err)
@@ -186,7 +186,7 @@ func downloadReleaseAsset(release *ghRelease, assetName, targetPath string) erro
 	// Remove the old binary before placing the new one. On macOS, overwriting
 	// a running executable in place causes a SIGKILL. Unlinking first is safe:
 	// the old inode stays mapped in memory while the directory entry is freed.
-	os.Remove(targetPath)
+	_ = os.Remove(targetPath)
 
 	if err := os.Rename(tmpPath, targetPath); err != nil {
 		// Rename fails across filesystems (EXDEV). Fall back to copy.
@@ -198,7 +198,7 @@ func downloadReleaseAsset(release *ghRelease, assetName, targetPath string) erro
 	// macOS requires binaries to be signed. Cross-compiled binaries from CI
 	// have no signature, so apply an ad-hoc signature to satisfy Gatekeeper.
 	if runtime.GOOS == "darwin" {
-		exec.Command("codesign", "-s", "-", targetPath).Run()
+		_ = exec.Command("codesign", "-s", "-", targetPath).Run()
 	}
 
 	return nil
@@ -211,7 +211,7 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
 	if err != nil {
@@ -219,7 +219,7 @@ func copyFile(src, dst string) error {
 	}
 
 	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
+		_ = out.Close()
 		return err
 	}
 	return out.Close()
@@ -232,7 +232,7 @@ func downloadToTemp(url, dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("download returned HTTP %d", resp.StatusCode)
@@ -248,13 +248,13 @@ func downloadToTemp(url, dir string) (string, error) {
 	}
 
 	if _, err := io.Copy(f, resp.Body); err != nil {
-		f.Close()
-		os.Remove(f.Name())
+		_ = f.Close()
+		_ = os.Remove(f.Name())
 		return "", err
 	}
 
 	if err := f.Close(); err != nil {
-		os.Remove(f.Name())
+		_ = os.Remove(f.Name())
 		return "", err
 	}
 

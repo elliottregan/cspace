@@ -12,8 +12,8 @@ func newVersionCmd() *cobra.Command {
 		Short:   "Show version",
 		GroupID: "other",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintf(cmd.OutOrStdout(), "cspace %s\n", Version)
-			return nil
+			_, err := fmt.Fprintf(cmd.OutOrStdout(), "cspace %s\n", Version)
+			return err
 		},
 	}
 }

@@ -48,7 +48,7 @@ func runRebuild(cmd *cobra.Command, args []string) error {
 	if err := ensureLinuxBinary(linuxBinPath); err != nil {
 		return fmt.Errorf("preparing Linux binary for container: %w", err)
 	}
-	defer os.Remove(linuxBinPath)
+	defer func() { _ = os.Remove(linuxBinPath) }()
 
 	fmt.Println("Rebuilding container image...")
 	if err := docker.Build(cfg.ImageName(), dockerfile, cspaceHome, true); err != nil {
@@ -213,7 +213,7 @@ func copyBinary(src, dst string) error {
 	if err != nil {
 		return fmt.Errorf("opening source: %w", err)
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 
 	tmp, err := os.CreateTemp(filepath.Dir(dst), ".cspace-copy-*")
 	if err != nil {
@@ -222,29 +222,29 @@ func copyBinary(src, dst string) error {
 	tmpPath := tmp.Name()
 
 	if _, err := io.Copy(tmp, in); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("copying: %w", err)
 	}
 
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("syncing: %w", err)
 	}
 
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("closing temp file: %w", err)
 	}
 
 	if err := os.Chmod(tmpPath, 0755); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("setting permissions: %w", err)
 	}
 
 	if err := os.Rename(tmpPath, dst); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("renaming into place: %w", err)
 	}
 

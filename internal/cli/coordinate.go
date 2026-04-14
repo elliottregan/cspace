@@ -72,13 +72,13 @@ func runCoordinateWithArgs(prompt, promptFile, name string) error {
 	}
 
 	composeName := cfg.ComposeName(name)
-	instance.SkipOnboarding(composeName)
+	_ = instance.SkipOnboarding(composeName)
 
 	// Re-copy host .env so the coordinator inherits GH_TOKEN, etc.
 	envFile := filepath.Join(cfg.ProjectRoot, ".env")
 	if _, err := os.Stat(envFile); err == nil {
-		instance.DcCp(composeName, envFile, "/workspace/.env")
-		instance.DcExecRoot(composeName, "chown", "dev:dev", "/workspace/.env")
+		_ = instance.DcCp(composeName, envFile, "/workspace/.env")
+		_, _ = instance.DcExecRoot(composeName, "chown", "dev:dev", "/workspace/.env")
 	}
 
 	// Build the full coordinator prompt: playbook + user instructions
