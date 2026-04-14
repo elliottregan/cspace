@@ -106,6 +106,12 @@ if [ -n "$CSPACE_CONTAINER_NAME" ]; then
         --browserUrl http://localhost:9222 2>&1 | sed 's/^/      /' || true
 fi
 
+# cspace-context MCP — project context brain (docs/context/)
+# Independent of the browser sidecar; runs as a subprocess in the agent container.
+echo "  - cspace-context: registering"
+sudo -u dev "$CLAUDE_BIN" mcp add --scope user cspace-context -- \
+    cspace context-server --root /workspace 2>&1 | sed 's/^/      /' || true
+
 # Skip plugin init if already done
 if [ -f "$MARKER_FILE" ]; then
     exit 0
