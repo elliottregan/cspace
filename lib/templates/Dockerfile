@@ -14,7 +14,9 @@ RUN apk add --no-cache \
     # Go toolchain
     go \
     # Task runner
-    just && \
+    just \
+    # Python 3 — used by hook scripts and the coordinator preamble renderer
+    python3 && \
     npm install -g pnpm
 
 # Configure SSH
