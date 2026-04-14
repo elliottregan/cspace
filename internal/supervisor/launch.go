@@ -16,10 +16,11 @@ import (
 
 // LaunchParams groups the arguments for launching a supervisor.
 type LaunchParams struct {
-	Name       string // Instance name (e.g. "mercury")
-	Role       string // RoleAgent or RoleCoordinator
-	PromptFile string // Container-side path to prompt file
-	StderrLog  string // Container-side path for stderr log
+	Name            string // Instance name (e.g. "mercury")
+	Role            string // RoleAgent or RoleCoordinator
+	PromptFile      string // Container-side path to prompt file (required unless ResumeSessionID is set)
+	StderrLog       string // Container-side path for stderr log
+	ResumeSessionID string // If set, supervisor resumes this session; PromptFile is ignored.
 }
 
 // LaunchSupervisor runs the agent-supervisor inside the named instance
@@ -253,9 +254,12 @@ func StagePromptText(composeName, text, containerPath string) error {
 
 // buildSupervisorArgs constructs the command-line arguments for supervisor.mjs.
 func buildSupervisorArgs(params LaunchParams, cfg *config.Config) []string {
-	args := []string{
-		"--role", params.Role,
-		"--prompt-file", params.PromptFile,
+	args := []string{"--role", params.Role}
+
+	if params.ResumeSessionID != "" {
+		args = append(args, "--resume-session", params.ResumeSessionID)
+	} else {
+		args = append(args, "--prompt-file", params.PromptFile)
 	}
 
 	if params.Role == RoleAgent {
