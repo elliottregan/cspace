@@ -190,11 +190,20 @@ SHIPPED_COMMANDS="$CSPACE_HOME/lib/commands"
 USER_COMMANDS="/home/dev/.claude/commands"
 if [ -d "$SHIPPED_COMMANDS" ]; then
     mkdir -p "$USER_COMMANDS"
-    # Copy only regular files; skip .gitkeep and hidden files
-    find "$SHIPPED_COMMANDS" -maxdepth 1 -type f -name '*.md' -print0 \
-        | xargs -0 -I{} cp {} "$USER_COMMANDS/"
+    # Copy only regular *.md files. Use -exec (not xargs) so a failing cp
+    # surfaces a nonzero exit status directly.
+    copied=0
+    while IFS= read -r -d '' f; do
+        if cp "$f" "$USER_COMMANDS/"; then
+            copied=$((copied + 1))
+        else
+            echo "warning: failed to copy $f to $USER_COMMANDS" >&2
+        fi
+    done < <(find "$SHIPPED_COMMANDS" -maxdepth 1 -type f -name '*.md' -print0)
     chown -R dev:dev "$USER_COMMANDS"
-    echo "Shipped slash commands installed."
+    if [ "$copied" -gt 0 ]; then
+        echo "Installed $copied shipped slash command(s)."
+    fi
 fi
 
 touch "$MARKER_FILE"

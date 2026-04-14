@@ -34,11 +34,38 @@ if [ ! -d "$PROJECTS_DIR" ]; then
     echo "teleport: no live Claude session — $PROJECTS_DIR missing" >&2
     exit 1
 fi
+if [ ! -r "$PROJECTS_DIR" ]; then
+    echo "teleport: cannot read $PROJECTS_DIR (permission denied)" >&2
+    exit 1
+fi
 
-LATEST_TRANSCRIPT=$(ls -1t "$PROJECTS_DIR"/*.jsonl 2>/dev/null | head -n1 || true)
+# nullglob: if no matches, the array is empty instead of containing the
+# literal glob. Toggle the option around the assignment so it doesn't leak
+# into later code (piping through a subshell+printf would collapse an empty
+# match into a single empty-string element, which we don't want).
+shopt -s nullglob
+TRANSCRIPTS=( "$PROJECTS_DIR"/*.jsonl )
+shopt -u nullglob
+
+if [ "${#TRANSCRIPTS[@]}" -eq 0 ]; then
+    echo "teleport: no live Claude session — no transcripts in $PROJECTS_DIR" >&2
+    exit 1
+fi
+
+# Pick the newest by mtime without depending on -printf (BusyBox-compatible).
+LATEST_TRANSCRIPT=""
+LATEST_MTIME=0
+for t in "${TRANSCRIPTS[@]}"; do
+    # stat -c on GNU, stat -f on BSD. BusyBox stat supports -c.
+    m=$(stat -c %Y "$t" 2>/dev/null || stat -f %m "$t" 2>/dev/null || echo 0)
+    if [ "$m" -gt "$LATEST_MTIME" ]; then
+        LATEST_MTIME="$m"
+        LATEST_TRANSCRIPT="$t"
+    fi
+done
 
 if [ -z "$LATEST_TRANSCRIPT" ]; then
-    echo "teleport: no live Claude session — no transcripts in $PROJECTS_DIR" >&2
+    echo "teleport: could not stat any transcript in $PROJECTS_DIR" >&2
     exit 1
 fi
 
@@ -60,23 +87,30 @@ git -C "$WORKSPACE" bundle create "$SESSION_DIR/workspace.bundle" --all
 # 3. Copy the transcript.
 cp "$LATEST_TRANSCRIPT" "$SESSION_DIR/session.jsonl"
 
-# 4. Write the manifest.
+# 4. Write the manifest. Use jq --arg to safely serialize values that may
+# contain characters requiring JSON escaping (branch names, URLs, etc.).
 SOURCE_HEAD=$(git -C "$WORKSPACE" rev-parse HEAD 2>/dev/null || echo "")
 SOURCE_BRANCH=$(git -C "$WORKSPACE" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 SOURCE_REMOTE_URL=$(git -C "$WORKSPACE" remote get-url origin 2>/dev/null || echo "")
 CREATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-cat > "$SESSION_DIR/manifest.json" <<JSON
-{
-  "source": "$SOURCE_NAME",
-  "target": "$TARGET",
-  "session_id": "$SESSION_ID",
-  "created_at": "$CREATED_AT",
-  "source_head": "$SOURCE_HEAD",
-  "source_branch": "$SOURCE_BRANCH",
-  "source_remote_url": "$SOURCE_REMOTE_URL"
-}
-JSON
+jq -n \
+    --arg source "$SOURCE_NAME" \
+    --arg target "$TARGET" \
+    --arg session_id "$SESSION_ID" \
+    --arg created_at "$CREATED_AT" \
+    --arg source_head "$SOURCE_HEAD" \
+    --arg source_branch "$SOURCE_BRANCH" \
+    --arg source_remote_url "$SOURCE_REMOTE_URL" \
+    '{
+        source: $source,
+        target: $target,
+        session_id: $session_id,
+        created_at: $created_at,
+        source_head: $source_head,
+        source_branch: $source_branch,
+        source_remote_url: $source_remote_url,
+    }' > "$SESSION_DIR/manifest.json"
 
 # 5. Invoke the host CLI. We run `cspace up` synchronously so any failure
 #    surfaces in the script's exit code and the source stays functional.
