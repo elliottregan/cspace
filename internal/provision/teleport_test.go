@@ -98,3 +98,86 @@ func TestTeleportRunRejectsManifestTargetMismatch(t *testing.T) {
 		t.Errorf("expected 'does not match' error, got: %v", err)
 	}
 }
+
+func TestValidateTeleportInputsRejectsInvalidName(t *testing.T) {
+	dir := t.TempDir()
+	writeValidTransferDir(t, dir, "mars")
+
+	_, err := validateTeleportInputs(TeleportParams{
+		Name:         "has space",
+		TeleportFrom: dir,
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid name")
+	}
+}
+
+func TestValidateTeleportInputsRejectsMissingManifest(t *testing.T) {
+	_, err := validateTeleportInputs(TeleportParams{
+		Name:         "mars",
+		TeleportFrom: t.TempDir(),
+	})
+	if err == nil {
+		t.Fatal("expected error for missing manifest")
+	}
+}
+
+func TestValidateTeleportInputsRejectsMissingBundle(t *testing.T) {
+	dir := t.TempDir()
+	manifest := teleportManifest{Target: "mars", SessionID: "abc"}
+	data, _ := json.Marshal(manifest)
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// No workspace.bundle.
+
+	_, err := validateTeleportInputs(TeleportParams{
+		Name:         "mars",
+		TeleportFrom: dir,
+	})
+	if err == nil {
+		t.Fatal("expected error for missing workspace.bundle")
+	}
+}
+
+func TestValidateTeleportInputsRejectsMissingTranscript(t *testing.T) {
+	dir := t.TempDir()
+	manifest := teleportManifest{Target: "mars", SessionID: "abc"}
+	data, _ := json.Marshal(manifest)
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "workspace.bundle"), []byte("fake"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// No session.jsonl.
+
+	_, err := validateTeleportInputs(TeleportParams{
+		Name:         "mars",
+		TeleportFrom: dir,
+	})
+	if err == nil {
+		t.Fatal("expected error for missing session.jsonl")
+	}
+}
+
+// writeValidTransferDir populates dir with the three files a teleport transfer
+// expects — manifest targeting `target`, an empty workspace.bundle, and an
+// empty session.jsonl. Used by tests that want to exercise a later failure.
+func writeValidTransferDir(t *testing.T, dir, target string) {
+	t.Helper()
+	manifest := teleportManifest{Target: target, SessionID: "abc"}
+	data, _ := json.Marshal(manifest)
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "workspace.bundle"), []byte("fake"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+}

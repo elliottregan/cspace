@@ -65,6 +65,21 @@ func TestLaunchSupervisorRejectsEmptyParams(t *testing.T) {
 	}
 }
 
+func TestBuildSupervisorArgsModelDefaultsWhenUnset(t *testing.T) {
+	cfg := &config.Config{} // no Model set
+	params := LaunchParams{
+		Name:       "mars",
+		Role:       RoleAgent,
+		PromptFile: "/tmp/p.txt",
+		StderrLog:  "/tmp/x.log",
+	}
+	args := buildSupervisorArgs(params, cfg)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--model claude-opus-4-6") {
+		t.Errorf("expected default model claude-opus-4-6 in args, got: %s", joined)
+	}
+}
+
 func TestLaunchSupervisorRejectsBothSet(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Claude.Model = "claude-opus-4-6"

@@ -52,6 +52,36 @@ func readTeleportManifest(dir string) (teleportManifest, error) {
 	return m, nil
 }
 
+// validateTeleportInputs performs the pre-flight checks on teleport inputs
+// that don't require touching docker. Returns the parsed manifest on
+// success. Failures here mean TeleportRun can abort before provisioning
+// anything.
+func validateTeleportInputs(p TeleportParams) (teleportManifest, error) {
+	if err := validateName(p.Name); err != nil {
+		return teleportManifest{}, err
+	}
+
+	manifest, err := readTeleportManifest(p.TeleportFrom)
+	if err != nil {
+		return teleportManifest{}, err
+	}
+
+	if manifest.Target != "" && manifest.Target != p.Name {
+		return teleportManifest{}, fmt.Errorf("teleport manifest target %q does not match requested instance %q — wrong transfer directory?",
+			manifest.Target, p.Name)
+	}
+
+	bundle := filepath.Join(p.TeleportFrom, "workspace.bundle")
+	transcript := filepath.Join(p.TeleportFrom, "session.jsonl")
+	for _, f := range []string{bundle, transcript} {
+		if _, err := os.Stat(f); err != nil {
+			return teleportManifest{}, fmt.Errorf("teleport transfer missing %s: %w", f, err)
+		}
+	}
+
+	return manifest, nil
+}
+
 // TeleportRun provisions a new target instance seeded from a teleport
 // transfer directory. Steps:
 //  1. Validate name, read manifest, verify bundle + transcript exist,
@@ -63,27 +93,13 @@ func readTeleportManifest(dir string) (teleportManifest, error) {
 //  6. Launch supervisor with ResumeSessionID; session comes up idle
 //  7. Clean up the transfer directory
 func TeleportRun(p TeleportParams) error {
-	if err := validateName(p.Name); err != nil {
-		return err
-	}
-
-	manifest, err := readTeleportManifest(p.TeleportFrom)
+	manifest, err := validateTeleportInputs(p)
 	if err != nil {
 		return err
 	}
 
-	if manifest.Target != "" && manifest.Target != p.Name {
-		return fmt.Errorf("teleport manifest target %q does not match requested instance %q — wrong transfer directory?",
-			manifest.Target, p.Name)
-	}
-
 	bundle := filepath.Join(p.TeleportFrom, "workspace.bundle")
 	transcript := filepath.Join(p.TeleportFrom, "session.jsonl")
-	for _, f := range []string{bundle, transcript} {
-		if _, err := os.Stat(f); err != nil {
-			return fmt.Errorf("teleport transfer missing %s: %w", f, err)
-		}
-	}
 
 	cfg := p.Cfg
 	composeName := cfg.ComposeName(p.Name)
