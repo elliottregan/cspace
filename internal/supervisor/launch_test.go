@@ -47,3 +47,38 @@ func TestBuildSupervisorArgsWithoutResumeIncludesPromptFile(t *testing.T) {
 		t.Errorf("expected no --resume-session, got: %s", joined)
 	}
 }
+
+func TestLaunchSupervisorRejectsEmptyParams(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Claude.Model = "claude-opus-4-6"
+	params := LaunchParams{
+		Name: "mars",
+		Role: RoleAgent,
+		// Both PromptFile and ResumeSessionID unset — should fail fast.
+	}
+	err := LaunchSupervisor(params, cfg)
+	if err == nil {
+		t.Fatal("expected error when neither PromptFile nor ResumeSessionID is set")
+	}
+	if !strings.Contains(err.Error(), "must be set") {
+		t.Errorf("expected 'must be set' error, got: %v", err)
+	}
+}
+
+func TestLaunchSupervisorRejectsBothSet(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Claude.Model = "claude-opus-4-6"
+	params := LaunchParams{
+		Name:            "mars",
+		Role:            RoleAgent,
+		PromptFile:      "/tmp/p.txt",
+		ResumeSessionID: "abc-123",
+	}
+	err := LaunchSupervisor(params, cfg)
+	if err == nil {
+		t.Fatal("expected error when both PromptFile and ResumeSessionID are set")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("expected 'mutually exclusive' error, got: %v", err)
+	}
+}

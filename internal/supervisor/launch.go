@@ -36,6 +36,12 @@ type LaunchParams struct {
 //   - 2 = stream pipe closed
 //   - 141 = SIGPIPE
 func LaunchSupervisor(params LaunchParams, cfg *config.Config) error {
+	if params.PromptFile == "" && params.ResumeSessionID == "" {
+		return fmt.Errorf("supervisor: either PromptFile or ResumeSessionID must be set")
+	}
+	if params.PromptFile != "" && params.ResumeSessionID != "" {
+		return fmt.Errorf("supervisor: PromptFile and ResumeSessionID are mutually exclusive")
+	}
 	supervisorArgs := buildSupervisorArgs(params, cfg)
 
 	// Redirect supervisor stderr to log file and run transcript-copy on EXIT.
@@ -113,6 +119,12 @@ func LaunchInteractive(name string, cfg *config.Config) error {
 // container. Used by RestartSupervisor after the old supervisor exits
 // or the wait timeout (30s) expires.
 func RelaunchDetached(params LaunchParams, cfg *config.Config, ignoreInboxBeforeMs int64) error {
+	if params.PromptFile == "" && params.ResumeSessionID == "" {
+		return fmt.Errorf("supervisor: either PromptFile or ResumeSessionID must be set")
+	}
+	if params.PromptFile != "" && params.ResumeSessionID != "" {
+		return fmt.Errorf("supervisor: PromptFile and ResumeSessionID are mutually exclusive")
+	}
 	supervisorArgs := buildSupervisorArgs(params, cfg)
 
 	if ignoreInboxBeforeMs > 0 {

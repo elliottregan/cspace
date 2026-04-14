@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/elliottregan/cspace/internal/config"
 )
 
 func TestReadTeleportManifest(t *testing.T) {
@@ -53,5 +56,45 @@ func TestReadTeleportManifestRejectsMissingSessionID(t *testing.T) {
 	_, err := readTeleportManifest(dir)
 	if err == nil {
 		t.Fatal("expected error when session_id is missing")
+	}
+}
+
+// Exercises the TeleportRun target-vs-manifest mismatch guard without touching docker.
+// The mismatch check runs before any external calls, so we can verify the exact error.
+func TestTeleportRunRejectsManifestTargetMismatch(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write a manifest whose target is different from the requested instance name.
+	manifest := teleportManifest{
+		Source:       "mercury",
+		Target:       "mars",
+		SessionID:    "abc-123",
+		SourceBranch: "main",
+	}
+	data, _ := json.Marshal(manifest)
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Satisfy the bundle+transcript existence checks.
+	if err := os.WriteFile(filepath.Join(dir, "workspace.bundle"), []byte("fake"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A minimally valid cfg is enough — TeleportRun errors out before calling docker.
+	cfg := &config.Config{}
+
+	err := TeleportRun(TeleportParams{
+		Name:         "venus", // != "mars"
+		TeleportFrom: dir,
+		Cfg:          cfg,
+	})
+	if err == nil {
+		t.Fatal("expected error when manifest target mismatches requested name")
+	}
+	if !strings.Contains(err.Error(), "does not match") {
+		t.Errorf("expected 'does not match' error, got: %v", err)
 	}
 }

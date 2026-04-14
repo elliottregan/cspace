@@ -72,6 +72,11 @@ func TeleportRun(p TeleportParams) error {
 		return err
 	}
 
+	if manifest.Target != "" && manifest.Target != p.Name {
+		return fmt.Errorf("teleport manifest target %q does not match requested instance %q — wrong transfer directory?",
+			manifest.Target, p.Name)
+	}
+
 	bundle := filepath.Join(p.TeleportFrom, "workspace.bundle")
 	transcript := filepath.Join(p.TeleportFrom, "session.jsonl")
 	for _, f := range []string{bundle, transcript} {
