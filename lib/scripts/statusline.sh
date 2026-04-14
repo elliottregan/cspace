@@ -31,9 +31,13 @@ EFF_PCT=$((CTX_USED * 100 / EFFECTIVE_CTX))
 [ "$EFF_PCT" -gt 100 ] && EFF_PCT=100
 
 # --- Colors ---
-RST='\033[0m'; GRY='\033[90m'; DIM='\033[38;5;238m'; CYN='\033[36m'
-GRN='\033[32m'; YLW='\033[33m'; RED='\033[31m'; MAG='\033[35m'
-ORG='\033[38;2;218;119;86m' # Claude orange #DA7756
+# NOTE: $'...' (ANSI-C quoting) is REQUIRED — it stores a real ESC byte (0x1B).
+# Plain '\033[...]' stores the 4-char literal \033, which prints as text whenever
+# the var is passed to printf '%s' (e.g. the "$DIV" separator below).
+# Do NOT let a shell formatter rewrite these to single quotes.
+RST=$'\033[0m'; GRY=$'\033[90m'; DIM=$'\033[38;5;238m'; CYN=$'\033[36m'
+GRN=$'\033[32m'; YLW=$'\033[33m'; RED=$'\033[31m'; MAG=$'\033[35m'
+ORG=$'\033[38;2;218;119;86m' # Claude orange #DA7756
 
 # --- NerdFont icons (hex escapes so bytes survive editor round-trips) ---
 NF_BRANCH=$(printf '\xf3\xb0\x98\xac') # U+F062C 󰘬
@@ -117,14 +121,15 @@ PLANET_COLOR=""
 if [ -f /.dockerenv ] || grep -q 'docker\|containerd' /proc/1/cgroup 2>/dev/null; then
     CONTAINER=$(hostname)
     case "$CONTAINER" in
-        mercury)  PLANET_SYMBOL="☿"; PLANET_COLOR='\033[38;2;169;169;169m' ;; # silver-gray
-        venus)    PLANET_SYMBOL="♀"; PLANET_COLOR='\033[38;2;237;214;153m' ;; # pale yellow
-        earth)    PLANET_SYMBOL="♁"; PLANET_COLOR='\033[38;2;78;159;222m'  ;; # blue
-        mars)     PLANET_SYMBOL="♂"; PLANET_COLOR='\033[38;2;193;68;14m'   ;; # rusty red
-        jupiter)  PLANET_SYMBOL="♃"; PLANET_COLOR='\033[38;2;200;133;44m'  ;; # orange-brown
-        saturn)   PLANET_SYMBOL="♄"; PLANET_COLOR='\033[38;2;212;180;131m' ;; # golden tan
-        uranus)   PLANET_SYMBOL="♅"; PLANET_COLOR='\033[38;2;127;223;223m' ;; # pale cyan
-        neptune)  PLANET_SYMBOL="♆"; PLANET_COLOR='\033[38;2;63;84;186m'   ;; # deep blue
+        # PLANET_COLOR uses $'...' (ANSI-C quoting) — see Colors note above.
+        mercury)  PLANET_SYMBOL="☿"; PLANET_COLOR=$'\033[38;2;169;169;169m' ;; # silver-gray
+        venus)    PLANET_SYMBOL="♀"; PLANET_COLOR=$'\033[38;2;237;214;153m' ;; # pale yellow
+        earth)    PLANET_SYMBOL="♁"; PLANET_COLOR=$'\033[38;2;78;159;222m'  ;; # blue
+        mars)     PLANET_SYMBOL="♂"; PLANET_COLOR=$'\033[38;2;193;68;14m'   ;; # rusty red
+        jupiter)  PLANET_SYMBOL="♃"; PLANET_COLOR=$'\033[38;2;200;133;44m'  ;; # orange-brown
+        saturn)   PLANET_SYMBOL="♄"; PLANET_COLOR=$'\033[38;2;212;180;131m' ;; # golden tan
+        uranus)   PLANET_SYMBOL="♅"; PLANET_COLOR=$'\033[38;2;127;223;223m' ;; # pale cyan
+        neptune)  PLANET_SYMBOL="♆"; PLANET_COLOR=$'\033[38;2;63;84;186m'   ;; # deep blue
     esac
 fi
 
