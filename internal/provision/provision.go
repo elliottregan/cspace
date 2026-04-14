@@ -126,7 +126,9 @@ func Run(p Params) (Result, error) {
 		if err := ensureTeleportDir(tpDir); err != nil {
 			return Result{}, err
 		}
-		os.Setenv("CSPACE_TELEPORT_DIR", tpDir)
+		if err := os.Setenv("CSPACE_TELEPORT_DIR", tpDir); err != nil {
+			return Result{}, fmt.Errorf("exporting CSPACE_TELEPORT_DIR: %w", err)
+		}
 
 		// 7. Start instance containers
 		if err := compose.Run(name, cfg, "up", "-d"); err != nil {
@@ -307,12 +309,29 @@ func initWorkspace(composeName, bundlePath, branch, remoteURL string) error {
 }
 
 // configureGit sets git user.name and user.email inside the container from host config.
+// Warns (but does not fail) when the host has no git identity configured, because
+// in-container commits will fail later with a cryptic "please tell me who you are".
+// Also warns if the in-container `git config` calls themselves fail.
 func configureGit(composeName, projectRoot string) {
-	if name := gitConfigValue(projectRoot, "user.name"); name != "" {
-		_, _ = instance.DcExec(composeName, "git", "config", "--global", "user.name", name)
+	name := gitConfigValue(projectRoot, "user.name")
+	email := gitConfigValue(projectRoot, "user.email")
+
+	if name == "" && email == "" {
+		fmt.Fprintf(os.Stderr,
+			"warning: host has no git user.name or user.email configured; "+
+				"in-container commits will fail until you set them on the host\n")
+		return
 	}
-	if email := gitConfigValue(projectRoot, "user.email"); email != "" {
-		_, _ = instance.DcExec(composeName, "git", "config", "--global", "user.email", email)
+
+	if name != "" {
+		if _, err := instance.DcExec(composeName, "git", "config", "--global", "user.name", name); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: setting git user.name in container: %v\n", err)
+		}
+	}
+	if email != "" {
+		if _, err := instance.DcExec(composeName, "git", "config", "--global", "user.email", email); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: setting git user.email in container: %v\n", err)
+		}
 	}
 }
 

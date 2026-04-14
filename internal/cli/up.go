@@ -119,7 +119,9 @@ func runUpWithArgs(name, branch string, noClaude bool, prompt, promptFile, telep
 
 	// Skip Claude onboarding
 	composeName := cfg.ComposeName(name)
-	_ = instance.SkipOnboarding(composeName)
+	if err := instance.SkipOnboarding(composeName); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: skip onboarding: %v\n", err)
+	}
 
 	// Show port mappings
 	instance.ShowPorts(name, cfg)

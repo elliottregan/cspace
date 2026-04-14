@@ -114,7 +114,9 @@ func TeleportRun(p TeleportParams) error {
 	// Ensure the teleport host dir is set for the target's bind mount too,
 	// even though the target doesn't read from it — the compose env var must
 	// be defined or compose-up fails to expand the volume line.
-	os.Setenv("CSPACE_TELEPORT_DIR", teleportHostDir())
+	if err := os.Setenv("CSPACE_TELEPORT_DIR", teleportHostDir()); err != nil {
+		return fmt.Errorf("exporting CSPACE_TELEPORT_DIR: %w", err)
+	}
 
 	if err := compose.Run(p.Name, cfg, "up", "-d"); err != nil {
 		return fmt.Errorf("starting container: %w", err)
@@ -163,7 +165,9 @@ func TeleportRun(p TeleportParams) error {
 		fmt.Fprintf(os.Stderr, "warning: post-setup: %v\n", err)
 	}
 
-	instance.SkipOnboarding(composeName)
+	if err := instance.SkipOnboarding(composeName); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: skip onboarding: %v\n", err)
+	}
 
 	// Launch the supervisor in resume mode. The session is "resumed idle":
 	// no initial prompt is played, so the user can reconnect and continue.
