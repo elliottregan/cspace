@@ -106,10 +106,12 @@ awk \
   -v PH='${STRATEGIC_CONTEXT_PREAMBLE}' \
   '
     BEGIN {
-      loaded = 0
+      # Append ORS after each line so the reconstructed preamble ends with
+      # a newline, matching the file-on-disk representation. Without this
+      # the placeholder replacement would run the preamble into whatever
+      # follows on the same line of the playbook.
       while ((getline line < PRE) > 0) {
-        p = p (loaded ? ORS : "") line
-        loaded = 1
+        p = p line ORS
       }
       close(PRE)
     }
