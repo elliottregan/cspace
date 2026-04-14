@@ -2,7 +2,7 @@
 title: Firewall & Security
 description: The iptables-based network firewall, domain allowlisting, and security model of cspace devcontainers.
 sidebar:
-  order: 4
+  order: 6
 ---
 
 Each cspace devcontainer runs an iptables-based egress firewall that restricts outbound network traffic to an explicit allowlist. This prevents autonomous agents from accessing arbitrary internet services — they can only reach GitHub, npm, Anthropic's API, and domains you explicitly approve.
