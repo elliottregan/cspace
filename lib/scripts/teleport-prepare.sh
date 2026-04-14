@@ -12,11 +12,14 @@
 #                                 manifest. Injected by docker-compose.core.yml.
 #   HOME                        used to find ~/.claude/projects/-workspace
 #
+# Requires on PATH: cspace, git
+#
 # On success: writes <dir>/<session>/{workspace.bundle,session.jsonl,manifest.json},
 # invokes `cspace up`, prints the reconnect message, exits 0.
 #
-# On failure: exits non-zero with a message. The source container is never
-# modified by this script beyond creating files under CSPACE_TELEPORT_DIR.
+# On failure (before the success message is printed): the source container
+# is never modified beyond creating files under CSPACE_TELEPORT_DIR. On
+# success, the source container is stopped (but not removed).
 set -euo pipefail
 
 TARGET="${1:?Usage: teleport-prepare.sh <target-instance>}"

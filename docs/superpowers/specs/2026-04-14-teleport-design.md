@@ -70,15 +70,14 @@ The directory is cleaned up by `teleport-prepare.sh` on successful target boot; 
 
 When a user types `/cspace-teleport mars` inside mercury's conversation:
 
-1. **Slash command body** (`lib/commands/teleport.md`) expands to a short prompt instructing Claude to run `/opt/cspace/bin/teleport-prepare.sh mars`. The slash command contains zero logic — it's a trampoline, so all real work is testable standalone.
+1. **Slash command body** (`lib/commands/cspace-teleport.md`) expands to a short prompt instructing Claude to run `/opt/cspace/lib/scripts/teleport-prepare.sh mars`. The slash command contains zero logic — it's a trampoline, so all real work is testable standalone.
 
 2. **`teleport-prepare.sh`** (new, `lib/scripts/`) runs inside the source container:
    - Resolves the session id and transcript path by picking the newest `.jsonl` in `$HOME/.claude/projects/-workspace/`. The basename (without `.jsonl`) is the session id. Aborts with a clear error if the directory is empty.
    - `git bundle create /teleport/<session>/workspace.bundle --all` from `/workspace`.
    - `cp <transcript> /teleport/<session>/session.jsonl`.
-   - Writes `/teleport/<session>/manifest.json` with `{source, target, session_id, created_at, source_head, source_branch}`.
-   - Invokes `cspace up mars --teleport-from /teleport/<session>` as a background job (same pattern the coordinator uses for launching issue agents).
-   - Polls `cspace status mars` (or equivalent) until the target reports healthy, with a bounded timeout and an actionable error on timeout.
+   - Writes `/teleport/<session>/manifest.json` with `{source, target, session_id, created_at, source_head, source_branch, source_remote_url}`. The `source_remote_url` is the source container's origin remote; it's plumbed through `init-workspace.sh` so the target restores the same `origin`.
+   - Invokes `cspace up mars --teleport-from /teleport/<session>` synchronously. The nested `cspace up` uses `provision.WaitForReady` internally to block until the target container is healthy (120s timeout), so any failure surfaces directly in the script's exit code.
    - On success: removes `/teleport/<session>/`, issues `cspace stop mercury` (docker-in-docker), prints the reconnect message.
 
 3. **`cspace up --teleport-from <dir>`** (new flag in `internal/cli/up.go`):
@@ -113,7 +112,7 @@ The invariant is: **if anything fails, the source container is still fully funct
 
 **Inside-container (agent-facing):**
 
-- `lib/commands/teleport.md` — slash command trampoline, 5–10 lines.
+- `lib/commands/cspace-teleport.md` — slash command trampoline, 5–10 lines.
 - `lib/scripts/teleport-prepare.sh` — container-side teleport logic. Depends only on `git`, `cp`, `cspace` CLI, and a handful of env vars. Independently testable.
 
 **Host CLI (Go):**
@@ -128,7 +127,7 @@ The invariant is: **if anything fails, the source container is still fully funct
 
 **Embedded assets:**
 
-- `internal/assets/embedded/commands/teleport.md` and `.../scripts/teleport-prepare.sh` are populated by `make sync-embedded`. The existing install step in `init-claude-plugins.sh` already walks `commands/` and `scripts/`, so no new install logic is needed if we follow the naming convention.
+- `internal/assets/embedded/commands/cspace-teleport.md` and `.../scripts/teleport-prepare.sh` are populated by `make sync-embedded`. The existing install step in `init-claude-plugins.sh` already walks `commands/` and `scripts/`, so no new install logic is needed if we follow the naming convention.
 
 **Templates:**
 

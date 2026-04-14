@@ -15,12 +15,15 @@ import (
 )
 
 // LaunchParams groups the arguments for launching a supervisor.
+//
+// Exactly one of PromptFile or ResumeSessionID must be set. Setting both
+// is a programmer error and is rejected at LaunchSupervisor entry.
 type LaunchParams struct {
 	Name            string // Instance name (e.g. "mercury")
 	Role            string // RoleAgent or RoleCoordinator
-	PromptFile      string // Container-side path to prompt file (required unless ResumeSessionID is set)
+	PromptFile      string // Container-side path to prompt file. Required unless ResumeSessionID is set.
 	StderrLog       string // Container-side path for stderr log
-	ResumeSessionID string // If set, supervisor resumes this session; PromptFile is ignored.
+	ResumeSessionID string // If set, supervisor resumes this session instead of starting from PromptFile.
 }
 
 // LaunchSupervisor runs the agent-supervisor inside the named instance

@@ -54,7 +54,8 @@ func readTeleportManifest(dir string) (teleportManifest, error) {
 
 // TeleportRun provisions a new target instance seeded from a teleport
 // transfer directory. Steps:
-//  1. Validate name, read manifest, verify bundle + transcript exist
+//  1. Validate name, read manifest, verify bundle + transcript exist,
+//     reject running targets, and clear any stopped orphan containers
 //  2. Ensure volumes and networks (same as Run)
 //  3. docker compose up -d the target
 //  4. Copy bundle into target, run init-workspace.sh against it
