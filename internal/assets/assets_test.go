@@ -221,6 +221,18 @@ func TestCommandsDirectoryEmbedded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading embedded commands dir: %v", err)
 	}
-	// Directory exists; contents checked by later tests.
-	_ = entries
+
+	// Assert the teleport slash command ships. Using a specific file rather
+	// than "at least one .md" catches the case where a future refactor
+	// accidentally drops cspace-teleport.md while leaving the directory.
+	var found bool
+	for _, e := range entries {
+		if e.Name() == "cspace-teleport.md" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected cspace-teleport.md in embedded commands dir; got: %v", entries)
+	}
 }

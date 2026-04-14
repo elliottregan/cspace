@@ -80,7 +80,14 @@ JSON
 echo "teleport: provisioning $TARGET..."
 cspace up "$TARGET" --teleport-from "$SESSION_DIR"
 
-# 6. Stop the source container (volumes survive; user can `cspace start` or
+# 6. Print the success message BEFORE stopping the source. The `cspace stop`
+#    below tells docker to stop this very container (we're running inside
+#    the source), which may race with bash's stdout flush and swallow the
+#    reconnect instructions. Print first, stop last.
+echo ""
+echo "Teleport complete. Reconnect with: cspace resume $TARGET"
+
+# 7. Stop the source container (volumes survive; user can `cspace start` or
 #    `cspace rm` at their leisure). Skip when SOURCE_NAME is "unknown" —
 #    that means we're running outside a real cspace instance (e.g., test
 #    harness), and there's nothing to stop.
@@ -88,6 +95,3 @@ if [ "$SOURCE_NAME" != "unknown" ]; then
     echo "teleport: stopping source ($SOURCE_NAME)..."
     cspace stop "$SOURCE_NAME" || echo "teleport: warning — could not stop source; leaving it running" >&2
 fi
-
-echo ""
-echo "Teleport complete. Reconnect with: cspace resume $TARGET"

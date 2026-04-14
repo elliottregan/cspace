@@ -16,7 +16,7 @@ A fork/branch use case (keep original running, spin up a parallel clone at a dec
 
 ## Solution
 
-A new slash command, `/cspace:teleport <target-instance>`, invocable from inside an in-progress Claude Code conversation. It bundles the current workspace's git state and the session transcript onto a host-shared directory, then invokes `cspace up <target> --teleport-from <dir>` (leveraging existing docker-in-docker) to provision a new container with the workspace seeded and the supervisor configured to resume the same session id.
+A new slash command, `/cspace-teleport <target-instance>`, invocable from inside an in-progress Claude Code conversation. It bundles the current workspace's git state and the session transcript onto a host-shared directory, then invokes `cspace up <target> --teleport-from <dir>` (leveraging existing docker-in-docker) to provision a new container with the workspace seeded and the supervisor configured to resume the same session id.
 
 The source container stops (volumes intact, inspectable). The user reconnects on the host with `cspace resume <target>`.
 
@@ -32,7 +32,7 @@ The source container stops (volumes intact, inspectable). The user reconnects on
 One slash command in every cspace container:
 
 ```
-/cspace:teleport <target-instance>
+/cspace-teleport <target-instance>
 ```
 
 Behavior:
@@ -68,7 +68,7 @@ The directory is cleaned up by `teleport-prepare.sh` on successful target boot; 
 
 ## Mechanism
 
-When a user types `/cspace:teleport mars` inside mercury's conversation:
+When a user types `/cspace-teleport mars` inside mercury's conversation:
 
 1. **Slash command body** (`lib/commands/teleport.md`) expands to a short prompt instructing Claude to run `/opt/cspace/bin/teleport-prepare.sh mars`. The slash command contains zero logic — it's a trampoline, so all real work is testable standalone.
 
@@ -156,7 +156,7 @@ Neither layer reaches into the other's internals. Each can be tested with fixtur
 - **`internal/provision/teleport.go`:** Go unit test with table-driven manifest fixtures and a temp-dir source layout. Asserts workspace seeding and transcript placement. No Docker needed.
 - **`internal/cli/up.go` flag plumbing:** existing cobra flag-test pattern.
 - **Supervisor resume flag:** Node test asserting `{ resume: <id> }` is set on the SDK options object. SDK itself is mocked.
-- **End-to-end:** manual smoke test — `cspace up mercury`, run a real conversation, `/cspace:teleport venus`, confirm `cspace resume venus` continues the conversation. Not part of `make test`.
+- **End-to-end:** manual smoke test — `cspace up mercury`, run a real conversation, `/cspace-teleport venus`, confirm `cspace resume venus` continues the conversation. Not part of `make test`.
 
 ## One-line recap
 
