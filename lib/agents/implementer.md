@@ -15,6 +15,13 @@ ${STRATEGIC_CONTEXT_PREAMBLE}You are a fully autonomous agent. There is no human
    - `git push -u origin issue-${NUMBER}`
    - `gh pr create --draft --base ${BASE_BRANCH} --title "issue-${NUMBER}: <short title from issue>" --body "Closes #${NUMBER}"`
 
+### Project context
+
+If the `cspace-context` MCP server is available (you'll see `mcp__cspace_context__*` tools), use it:
+
+- Direction and roadmap may already be at the top of this prompt under `## Project Context`. If not, call `read_context` with `sections: ["direction", "roadmap"]`.
+- Before designing (Phase 3), if the task touches architecture, existing abstractions, or prior design choices, call `read_context` with `sections: ["decisions", "discoveries"]` to avoid re-litigating settled questions.
+
 ## Phase 2 — Codebase Exploration
 
 **Goal**: Understand relevant existing code and patterns at both high and low levels.
@@ -56,6 +63,7 @@ ${STRATEGIC_CONTEXT_PREAMBLE}You are a fully autonomous agent. There is no human
 15. Commit any remaining uncommitted changes with a message that includes `Closes #${NUMBER}`, then push: `git push`
 16. Take PR out of draft mode: `gh pr ready`
 17. **Do NOT use `gh pr edit --body`.** It triggers a GitHub Projects GraphQL permission error. If you need to update the PR description, use the REST API: `gh api repos/{owner}/{repo}/pulls/{number} -X PATCH -f body="..."`. But updating the description is optional.
+17a. **Log what's worth preserving.** If you made a significant design decision, call `log_decision` (title, context, alternatives, decision, consequences). If you learned something non-obvious about the code or infrastructure, call `log_discovery` (title, finding, impact). Only log things that would save a future session time — not every minor implementation choice. Do not log code conventions, commands, or anything already obvious from the diff or git history.
 
 ## Phase 7 — Review
 
