@@ -120,6 +120,16 @@ func Run(p Params) (Result, error) {
 			fmt.Fprintf(os.Stderr, "warning: connecting proxy to project network: %v\n", err)
 		}
 
+		// Ensure the teleport transfer directory exists and is exported
+		// to the compose environment for the bind mount.
+		tpDir := teleportHostDir()
+		if err := ensureTeleportDir(tpDir); err != nil {
+			return Result{}, err
+		}
+		if err := os.Setenv("CSPACE_TELEPORT_DIR", tpDir); err != nil {
+			return Result{}, fmt.Errorf("exporting CSPACE_TELEPORT_DIR: %w", err)
+		}
+
 		// 7. Start instance containers
 		if err := compose.Run(name, cfg, "up", "-d"); err != nil {
 			return Result{}, fmt.Errorf("starting container: %w", err)
@@ -137,8 +147,11 @@ func Run(p Params) (Result, error) {
 			fmt.Fprintf(os.Stderr, "warning: hosts injection: %v\n", err)
 		}
 
-		// 9. Fix volume ownership
-		if _, err := instance.DcExecRoot(composeName, "chown", "-R", "dev:dev", "/workspace", "/home/dev/.claude"); err != nil {
+		// 9. Fix volume ownership. /teleport is a host bind mount that Docker
+		// auto-creates as root when the host path doesn't already exist (common
+		// in nested DinD setups), so explicitly fix it alongside the named
+		// volumes to ensure the dev user can write bundles there.
+		if _, err := instance.DcExecRoot(composeName, "chown", "-R", "dev:dev", "/workspace", "/home/dev/.claude", "/teleport"); err != nil {
 			return Result{}, fmt.Errorf("fixing ownership: %w", err)
 		}
 
@@ -231,6 +244,30 @@ func stripCredentials(url string) string {
 	return url
 }
 
+// ensureTeleportDir creates the host-side teleport transfer directory if
+// it does not already exist. This path is bind-mounted into every cspace
+// container at /teleport so teleport can move bundles and transcripts
+// between source and target without going through docker cp.
+func ensureTeleportDir(dir string) error {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating teleport dir %s: %w", dir, err)
+	}
+	return nil
+}
+
+// teleportHostDir returns the host-side path used for the /teleport bind
+// mount. Defaults to ~/.cspace/teleport; overridable via CSPACE_TELEPORT_DIR.
+func teleportHostDir() string {
+	if v := os.Getenv("CSPACE_TELEPORT_DIR"); v != "" {
+		return v
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "/tmp/cspace-teleport"
+	}
+	return filepath.Join(home, ".cspace", "teleport")
+}
+
 // gitBundleCreate creates a git bundle of the entire repo.
 func gitBundleCreate(projectRoot, bundlePath string) error {
 	cmd := exec.Command("git", "-C", projectRoot, "bundle", "create", bundlePath, "--all")
@@ -275,12 +312,29 @@ func initWorkspace(composeName, bundlePath, branch, remoteURL string) error {
 }
 
 // configureGit sets git user.name and user.email inside the container from host config.
+// Warns (but does not fail) when the host has no git identity configured, because
+// in-container commits will fail later with a cryptic "please tell me who you are".
+// Also warns if the in-container `git config` calls themselves fail.
 func configureGit(composeName, projectRoot string) {
-	if name := gitConfigValue(projectRoot, "user.name"); name != "" {
-		_, _ = instance.DcExec(composeName, "git", "config", "--global", "user.name", name)
+	name := gitConfigValue(projectRoot, "user.name")
+	email := gitConfigValue(projectRoot, "user.email")
+
+	if name == "" && email == "" {
+		fmt.Fprintf(os.Stderr,
+			"warning: host has no git user.name or user.email configured; "+
+				"in-container commits will fail until you set them on the host\n")
+		return
 	}
-	if email := gitConfigValue(projectRoot, "user.email"); email != "" {
-		_, _ = instance.DcExec(composeName, "git", "config", "--global", "user.email", email)
+
+	if name != "" {
+		if _, err := instance.DcExec(composeName, "git", "config", "--global", "user.name", name); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: setting git user.name in container: %v\n", err)
+		}
+	}
+	if email != "" {
+		if _, err := instance.DcExec(composeName, "git", "config", "--global", "user.email", email); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: setting git user.email in container: %v\n", err)
+		}
 	}
 }
 

@@ -27,6 +27,10 @@ export default defineConfig({
 					autogenerate: { directory: 'cli-reference' },
 				},
 				{
+					label: 'Features',
+					autogenerate: { directory: 'features' },
+				},
+				{
 					label: 'Architecture',
 					autogenerate: { directory: 'architecture' },
 				},

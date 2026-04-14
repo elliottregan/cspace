@@ -15,11 +15,15 @@ import (
 )
 
 // LaunchParams groups the arguments for launching a supervisor.
+//
+// Exactly one of PromptFile or ResumeSessionID must be set. Setting both
+// is a programmer error and is rejected at LaunchSupervisor entry.
 type LaunchParams struct {
-	Name       string // Instance name (e.g. "mercury")
-	Role       string // RoleAgent or RoleCoordinator
-	PromptFile string // Container-side path to prompt file
-	StderrLog  string // Container-side path for stderr log
+	Name            string // Instance name (e.g. "mercury")
+	Role            string // RoleAgent or RoleCoordinator
+	PromptFile      string // Container-side path to prompt file. Required unless ResumeSessionID is set.
+	StderrLog       string // Container-side path for stderr log
+	ResumeSessionID string // If set, supervisor resumes this session instead of starting from PromptFile.
 }
 
 // LaunchSupervisor runs the agent-supervisor inside the named instance
@@ -32,6 +36,12 @@ type LaunchParams struct {
 //   - 2 = stream pipe closed
 //   - 141 = SIGPIPE
 func LaunchSupervisor(params LaunchParams, cfg *config.Config) error {
+	if params.PromptFile == "" && params.ResumeSessionID == "" {
+		return fmt.Errorf("supervisor: either PromptFile or ResumeSessionID must be set")
+	}
+	if params.PromptFile != "" && params.ResumeSessionID != "" {
+		return fmt.Errorf("supervisor: PromptFile and ResumeSessionID are mutually exclusive")
+	}
 	supervisorArgs := buildSupervisorArgs(params, cfg)
 
 	// Redirect supervisor stderr to log file and run transcript-copy on EXIT.
@@ -109,6 +119,12 @@ func LaunchInteractive(name string, cfg *config.Config) error {
 // container. Used by RestartSupervisor after the old supervisor exits
 // or the wait timeout (30s) expires.
 func RelaunchDetached(params LaunchParams, cfg *config.Config, ignoreInboxBeforeMs int64) error {
+	if params.PromptFile == "" && params.ResumeSessionID == "" {
+		return fmt.Errorf("supervisor: either PromptFile or ResumeSessionID must be set")
+	}
+	if params.PromptFile != "" && params.ResumeSessionID != "" {
+		return fmt.Errorf("supervisor: PromptFile and ResumeSessionID are mutually exclusive")
+	}
 	supervisorArgs := buildSupervisorArgs(params, cfg)
 
 	if ignoreInboxBeforeMs > 0 {
@@ -253,9 +269,12 @@ func StagePromptText(composeName, text, containerPath string) error {
 
 // buildSupervisorArgs constructs the command-line arguments for supervisor.mjs.
 func buildSupervisorArgs(params LaunchParams, cfg *config.Config) []string {
-	args := []string{
-		"--role", params.Role,
-		"--prompt-file", params.PromptFile,
+	args := []string{"--role", params.Role}
+
+	if params.ResumeSessionID != "" {
+		args = append(args, "--resume-session", params.ResumeSessionID)
+	} else {
+		args = append(args, "--prompt-file", params.PromptFile)
 	}
 
 	if params.Role == RoleAgent {

@@ -3,7 +3,7 @@ LDFLAGS         := -ldflags "-X github.com/elliottregan/cspace/internal/cli.Vers
 LDFLAGS_RELEASE := -ldflags "-s -w -X github.com/elliottregan/cspace/internal/cli.Version=$(VERSION)"
 GOBIN           := ./bin/cspace-go
 
-.PHONY: build build-linux clean test vet sync-embedded fmt fmt-check lint check install-tools setup-hooks
+.PHONY: build build-linux clean test test-node vet sync-embedded fmt fmt-check lint check install-tools setup-hooks
 
 # Sync lib/ contents into internal/assets/embedded/ for go:embed
 sync-embedded:
@@ -16,6 +16,7 @@ sync-embedded:
 	@cp -r lib/agent-supervisor internal/assets/embedded/
 	@rm -rf internal/assets/embedded/agent-supervisor/node_modules
 	@cp -r lib/skills internal/assets/embedded/
+	@cp -r lib/commands internal/assets/embedded/
 	@cp lib/defaults.json internal/assets/embedded/
 
 build: sync-embedded
@@ -26,8 +27,12 @@ build-linux: sync-embedded
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS_RELEASE) -o dist/cspace-linux-amd64 ./cmd/cspace
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(LDFLAGS_RELEASE) -o dist/cspace-linux-arm64 ./cmd/cspace
 
-test: sync-embedded
+test: sync-embedded test-node
 	go test ./...
+
+# Run Node tests in lib/agent-supervisor. node:test runner, no extra deps.
+test-node:
+	cd lib/agent-supervisor && node --test
 
 vet: sync-embedded
 	go vet ./...

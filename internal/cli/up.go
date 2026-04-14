@@ -32,6 +32,7 @@ Use --no-claude to provision the container without launching Claude.`,
 	cmd.Flags().String("prompt", "", "Inline prompt text for autonomous agent")
 	cmd.Flags().String("prompt-file", "", "Path to a prompt file for autonomous agent")
 	cmd.Flags().String("base", "", "Override base branch")
+	cmd.Flags().String("teleport-from", "", "Seed the instance from a teleport session dir (internal; used by /cspace-teleport)")
 
 	return cmd
 }
@@ -41,14 +42,26 @@ func runUp(cmd *cobra.Command, args []string) error {
 	prompt, _ := cmd.Flags().GetString("prompt")
 	promptFile, _ := cmd.Flags().GetString("prompt-file")
 	baseOverride, _ := cmd.Flags().GetString("base")
+	teleportFrom, _ := cmd.Flags().GetString("teleport-from")
 
 	// Validate flags
 	if prompt != "" && promptFile != "" {
 		return fmt.Errorf("--prompt and --prompt-file are mutually exclusive")
 	}
+	if teleportFrom != "" && (prompt != "" || promptFile != "") {
+		return fmt.Errorf("--teleport-from cannot be combined with --prompt or --prompt-file")
+	}
+	if teleportFrom != "" && noClaude {
+		return fmt.Errorf("--teleport-from implies launching Claude in resume mode; --no-claude is incompatible")
+	}
 	if promptFile != "" {
 		if _, err := os.Stat(promptFile); err != nil {
 			return fmt.Errorf("prompt file not found: %s", promptFile)
+		}
+	}
+	if teleportFrom != "" {
+		if _, err := os.Stat(teleportFrom); err != nil {
+			return fmt.Errorf("teleport-from dir not found: %s", teleportFrom)
 		}
 	}
 
@@ -80,12 +93,20 @@ func runUp(cmd *cobra.Command, args []string) error {
 		branch = baseOverride
 	}
 
-	return runUpWithArgs(name, branch, noClaude, prompt, promptFile)
+	return runUpWithArgs(name, branch, noClaude, prompt, promptFile, teleportFrom)
 }
 
 // runUpWithArgs is the shared implementation for the up command, callable from
 // both the CLI handler and the TUI menu.
-func runUpWithArgs(name, branch string, noClaude bool, prompt, promptFile string) error {
+func runUpWithArgs(name, branch string, noClaude bool, prompt, promptFile, teleportFrom string) error {
+	if teleportFrom != "" {
+		return provision.TeleportRun(provision.TeleportParams{
+			Name:         name,
+			TeleportFrom: teleportFrom,
+			Cfg:          cfg,
+		})
+	}
+
 	// Provision the instance
 	_, err := provision.Run(provision.Params{
 		Name:   name,
@@ -98,7 +119,9 @@ func runUpWithArgs(name, branch string, noClaude bool, prompt, promptFile string
 
 	// Skip Claude onboarding
 	composeName := cfg.ComposeName(name)
-	_ = instance.SkipOnboarding(composeName)
+	if err := instance.SkipOnboarding(composeName); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: skip onboarding: %v\n", err)
+	}
 
 	// Show port mappings
 	instance.ShowPorts(name, cfg)

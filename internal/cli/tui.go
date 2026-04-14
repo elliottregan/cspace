@@ -154,7 +154,7 @@ func tuiNew() error {
 		fmt.Printf("Instance name: %s\n", name)
 	}
 
-	return runUpWithArgs(name, "", false, "", "")
+	return runUpWithArgs(name, "", false, "", "", "")
 }
 
 // tuiConnect shows a sub-menu for connecting to a running instance.
@@ -185,7 +185,7 @@ func tuiConnect(details []instance.Detail) error {
 	composeName := cfg.ComposeName(name)
 	switch action {
 	case tuiActionConnect:
-		return runUpWithArgs(name, "", false, "", "")
+		return runUpWithArgs(name, "", false, "", "", "")
 	case tuiActionSSH:
 		return instance.DcExecInteractive(composeName, "bash")
 	case tuiActionPorts:
