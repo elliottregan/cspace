@@ -1,6 +1,10 @@
 package provision
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestValidateName(t *testing.T) {
 	tests := []struct {
@@ -54,5 +58,27 @@ func TestGitRemoteURL(t *testing.T) {
 				t.Errorf("stripCredentials(%q) = %q, want %q", tt.input, result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestEnsureTeleportDir(t *testing.T) {
+	tmp := t.TempDir()
+	dir := filepath.Join(tmp, "teleport")
+
+	if err := ensureTeleportDir(dir); err != nil {
+		t.Fatalf("ensureTeleportDir returned error: %v", err)
+	}
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat after ensure: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("expected directory, got mode %v", info.Mode())
+	}
+
+	// Second call must be idempotent.
+	if err := ensureTeleportDir(dir); err != nil {
+		t.Fatalf("second ensureTeleportDir call: %v", err)
 	}
 }

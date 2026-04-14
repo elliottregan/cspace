@@ -120,6 +120,14 @@ func Run(p Params) (Result, error) {
 			fmt.Fprintf(os.Stderr, "warning: connecting proxy to project network: %v\n", err)
 		}
 
+		// Ensure the teleport transfer directory exists and is exported
+		// to the compose environment for the bind mount.
+		tpDir := teleportHostDir()
+		if err := ensureTeleportDir(tpDir); err != nil {
+			return Result{}, err
+		}
+		os.Setenv("CSPACE_TELEPORT_DIR", tpDir)
+
 		// 7. Start instance containers
 		if err := compose.Run(name, cfg, "up", "-d"); err != nil {
 			return Result{}, fmt.Errorf("starting container: %w", err)
@@ -229,6 +237,30 @@ func stripCredentials(url string) string {
 		}
 	}
 	return url
+}
+
+// ensureTeleportDir creates the host-side teleport transfer directory if
+// it does not already exist. This path is bind-mounted into every cspace
+// container at /teleport so teleport can move bundles and transcripts
+// between source and target without going through docker cp.
+func ensureTeleportDir(dir string) error {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating teleport dir %s: %w", dir, err)
+	}
+	return nil
+}
+
+// teleportHostDir returns the host-side path used for the /teleport bind
+// mount. Defaults to ~/.cspace/teleport; overridable via CSPACE_TELEPORT_DIR.
+func teleportHostDir() string {
+	if v := os.Getenv("CSPACE_TELEPORT_DIR"); v != "" {
+		return v
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "/tmp/cspace-teleport"
+	}
+	return filepath.Join(home, ".cspace", "teleport")
 }
 
 // gitBundleCreate creates a git bundle of the entire repo.

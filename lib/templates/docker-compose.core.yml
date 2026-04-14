@@ -42,6 +42,7 @@ services:
       - cspace-memory:/home/dev/.claude/projects/-workspace/memory
       - gh-config:/home/dev/.config/gh
       - cspace-logs:/logs
+      - ${CSPACE_TELEPORT_DIR:-/tmp/cspace-teleport}:/teleport
       - /var/run/docker.sock:/var/run/docker.sock
 
     env_file:
