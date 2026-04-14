@@ -88,9 +88,8 @@ func TeleportRun(p TeleportParams) error {
 	fmt.Printf("Teleporting session %s from %s to %s...\n", manifest.SessionID, manifest.Source, p.Name)
 
 	// Refuse to overwrite an existing stopped container with the same name.
-	containerName := cfg.ComposeName(p.Name)
 	for _, suffix := range []string{"", ".browser"} {
-		if err := docker.RemoveOrphanContainer(containerName + suffix); err != nil {
+		if err := docker.RemoveOrphanContainer(composeName + suffix); err != nil {
 			return fmt.Errorf("refusing to teleport into '%s': %w", p.Name, err)
 		}
 	}
