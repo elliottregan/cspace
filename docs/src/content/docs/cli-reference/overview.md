@@ -20,7 +20,6 @@ cspace provides a comprehensive set of commands for managing devcontainer instan
 | [`cspace down`](/cli-reference/instance-management/#cspace-down) | Destroy instance and volumes |
 | [`cspace warm`](/cli-reference/instance-management/#cspace-warm) | Pre-provision containers without launching Claude |
 | [`cspace rebuild`](/cli-reference/instance-management/#cspace-rebuild) | Rebuild the container image |
-| [`cspace sync-context`](/cli-reference/instance-management/#cspace-sync-context) | Generate milestone context document |
 
 ### Autonomous Agents
 
