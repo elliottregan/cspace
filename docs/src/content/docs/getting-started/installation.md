@@ -107,6 +107,27 @@ cspace down <TAB>     # suggests running instance names
 Shell completions are only installed for zsh. Bash and other shells are not currently supported for tab completion.
 :::
 
+## Developer tooling
+
+If you're working on cspace itself, install the lint/format/test toolchain and git hooks:
+
+```bash
+make install-tools   # installs golangci-lint v2, goimports, lefthook (requires Go)
+make setup-hooks     # wires pre-commit and pre-push hooks via lefthook
+```
+
+Install `shellcheck` separately via your system package manager:
+
+- macOS: `brew install shellcheck`
+- Debian/Ubuntu: `sudo apt-get install shellcheck`
+- Alpine: `sudo apk add shellcheck`
+
+Run the same checks CI runs:
+
+```bash
+make check   # fmt-check + vet + lint + test
+```
+
 ## Updating
 
 To update cspace to the latest version:
