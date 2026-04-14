@@ -64,7 +64,28 @@ For each unblocked issue, **render the implementer prompt** then launch.
 
 ### Render the prompt
 
-Use bash to substitute the template variables. The implementer playbook contains placeholders like `${NUMBER}`, `${BASE_BRANCH}`, `${VERIFY_COMMAND}`, `${E2E_COMMAND}`, and `${STRATEGIC_CONTEXT_PREAMBLE}`. Read the verify/e2e commands from the project config:
+Before launching each agent, **build the strategic context preamble** by calling the `read_context` MCP tool (from the `cspace-context` server) for `direction` and `roadmap`:
+
+```
+# Pseudocode — the exact call depends on your MCP tool invocation syntax.
+preamble = read_context(sections=["direction", "roadmap"])
+```
+
+Write the preamble to a file:
+
+```bash
+cat > /tmp/preamble-$N.md <<EOF
+## Project Context
+
+$preamble
+
+_Call \`read_context\` with \`sections: ["decisions", "discoveries"]\` if your task touches architecture or prior design choices._
+
+---
+EOF
+```
+
+Then substitute template variables. The implementer playbook has placeholders like `${NUMBER}`, `${BASE_BRANCH}`, `${VERIFY_COMMAND}`, `${E2E_COMMAND}`, and `${STRATEGIC_CONTEXT_PREAMBLE}`. Read the verify/e2e commands from the project config:
 
 ```bash
 N=42
@@ -76,17 +97,25 @@ E2E=$(jq -r '.verify.e2e // ""' /workspace/.cspace.json 2>/dev/null || echo "")
 PLAYBOOK=/opt/cspace/lib/agents/implementer.md
 [ -f /workspace/.cspace/agents/implementer.md ] && PLAYBOOK=/workspace/.cspace/agents/implementer.md
 
-sed \
+# Inline the preamble file — avoids sed line-break headaches.
+PREAMBLE=$(cat /tmp/preamble-$N.md)
+
+# Use python3 for a multi-line-safe substitution of the preamble, then sed for the rest.
+python3 -c "
+import sys, pathlib
+p = pathlib.Path('$PLAYBOOK').read_text()
+p = p.replace('\${STRATEGIC_CONTEXT_PREAMBLE}', '''$PREAMBLE''')
+sys.stdout.write(p)
+" | sed \
   -e "s|\${NUMBER}|$N|g" \
   -e "s|\${BASE_BRANCH}|$BASE|g" \
   -e "s|\${VERIFY_COMMAND}|$VERIFY|g" \
   -e "s|\${E2E_COMMAND}|$E2E|g" \
   -e "s|\${MILESTONE_FLAG}||g" \
-  -e "s|\${STRATEGIC_CONTEXT_PREAMBLE}||g" \
-  "$PLAYBOOK" > /tmp/implementer-$N.txt
+  > /tmp/implementer-$N.txt
 ```
 
-If you have strategic context (a milestone doc), prepend it manually instead of substituting `${STRATEGIC_CONTEXT_PREAMBLE}` — sed handles single-line substitutions cleanly but multi-line preambles are awkward to inline.
+If `read_context` is unavailable (tool not registered), substitute `${STRATEGIC_CONTEXT_PREAMBLE}` with an empty string and continue — sub-agents can still call `read_context` themselves at runtime if the container's MCP config exposes it.
 
 ### Launch
 
