@@ -5,7 +5,7 @@ set -euo pipefail
 
 BUNDLE="${1:?Usage: init-workspace.sh <bundle> <branch> <remote-url>}"
 BRANCH="${2:?}"
-REMOTE_URL="${3:?}"
+REMOTE_URL="${3-}"
 WORKSPACE="/workspace"
 
 # Skip if already initialized
@@ -22,7 +22,9 @@ cp -a /tmp/_clone/. "$WORKSPACE/"
 rm -rf /tmp/_clone
 
 cd "$WORKSPACE"
-git remote set-url origin "$REMOTE_URL"
+if [ -n "$REMOTE_URL" ]; then
+    git remote set-url origin "$REMOTE_URL"
+fi
 
 # Install dependencies (skip postinstall — may need env vars not yet available)
 if [ -f package.json ]; then

@@ -10,12 +10,13 @@ import (
 func TestReadTeleportManifest(t *testing.T) {
 	dir := t.TempDir()
 	m := teleportManifest{
-		Source:       "mercury",
-		Target:       "mars",
-		SessionID:    "abc-123",
-		CreatedAt:    "2026-04-14T00:00:00Z",
-		SourceHead:   "deadbeef",
-		SourceBranch: "main",
+		Source:          "mercury",
+		Target:          "mars",
+		SessionID:       "abc-123",
+		CreatedAt:       "2026-04-14T00:00:00Z",
+		SourceHead:      "deadbeef",
+		SourceBranch:    "main",
+		SourceRemoteURL: "https://github.com/example/repo.git",
 	}
 	b, _ := json.Marshal(m)
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), b, 0644); err != nil {
@@ -31,6 +32,9 @@ func TestReadTeleportManifest(t *testing.T) {
 	}
 	if got.Target != "mars" {
 		t.Errorf("Target = %q, want mars", got.Target)
+	}
+	if got.SourceRemoteURL != "https://github.com/example/repo.git" {
+		t.Errorf("SourceRemoteURL = %q, want https://github.com/example/repo.git", got.SourceRemoteURL)
 	}
 }
 

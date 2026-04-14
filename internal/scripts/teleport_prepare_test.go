@@ -117,6 +117,14 @@ func TestTeleportPrepareHappyPath(t *testing.T) {
 		t.Errorf("bundle verify: %v\n%s", err, out)
 	}
 
+	manifestBytes, err := os.ReadFile(filepath.Join(sessionDir, "manifest.json"))
+	if err != nil {
+		t.Fatalf("reading manifest.json: %v", err)
+	}
+	if !strings.Contains(string(manifestBytes), "source_remote_url") {
+		t.Errorf("manifest.json missing source_remote_url key: %s", string(manifestBytes))
+	}
+
 	// Verify cspace stub was invoked with the right shape.
 	args, err := os.ReadFile(argsLog)
 	if err != nil {

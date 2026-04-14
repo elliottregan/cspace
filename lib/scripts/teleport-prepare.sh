@@ -60,6 +60,7 @@ cp "$LATEST_TRANSCRIPT" "$SESSION_DIR/session.jsonl"
 # 4. Write the manifest.
 SOURCE_HEAD=$(git -C "$WORKSPACE" rev-parse HEAD 2>/dev/null || echo "")
 SOURCE_BRANCH=$(git -C "$WORKSPACE" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+SOURCE_REMOTE_URL=$(git -C "$WORKSPACE" remote get-url origin 2>/dev/null || echo "")
 CREATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 cat > "$SESSION_DIR/manifest.json" <<JSON
@@ -69,7 +70,8 @@ cat > "$SESSION_DIR/manifest.json" <<JSON
   "session_id": "$SESSION_ID",
   "created_at": "$CREATED_AT",
   "source_head": "$SOURCE_HEAD",
-  "source_branch": "$SOURCE_BRANCH"
+  "source_branch": "$SOURCE_BRANCH",
+  "source_remote_url": "$SOURCE_REMOTE_URL"
 }
 JSON
 

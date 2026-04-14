@@ -27,12 +27,13 @@ type TeleportParams struct {
 
 // teleportManifest is the JSON shape written by lib/scripts/teleport-prepare.sh.
 type teleportManifest struct {
-	Source       string `json:"source"`
-	Target       string `json:"target"`
-	SessionID    string `json:"session_id"`
-	CreatedAt    string `json:"created_at"`
-	SourceHead   string `json:"source_head"`
-	SourceBranch string `json:"source_branch"`
+	Source          string `json:"source"`
+	Target          string `json:"target"`
+	SessionID       string `json:"session_id"`
+	CreatedAt       string `json:"created_at"`
+	SourceHead      string `json:"source_head"`
+	SourceBranch    string `json:"source_branch"`
+	SourceRemoteURL string `json:"source_remote_url"`
 }
 
 func readTeleportManifest(dir string) (teleportManifest, error) {
@@ -130,10 +131,9 @@ func TeleportRun(p TeleportParams) error {
 
 	// Seed workspace from the teleport bundle. init-workspace.sh takes
 	// (bundle, branch, remote-url); branch defaults to the source HEAD's
-	// branch; remote-url is blank because the teleport bundle already
-	// carries every ref. init-workspace.sh tolerates a blank remote URL
-	// (it calls `git remote set-url` with whatever we give it).
-	if err := initWorkspace(composeName, bundle, manifest.SourceBranch, ""); err != nil {
+	// branch; remote-url comes from the source container's origin remote
+	// and is carried in the manifest.
+	if err := initWorkspace(composeName, bundle, manifest.SourceBranch, manifest.SourceRemoteURL); err != nil {
 		return fmt.Errorf("initializing workspace: %w", err)
 	}
 	configureGit(composeName, cfg.ProjectRoot)
