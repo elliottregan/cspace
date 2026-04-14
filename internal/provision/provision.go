@@ -95,7 +95,7 @@ func Run(p Params) (Result, error) {
 		if err := gitBundleCreate(cfg.ProjectRoot, bundlePath); err != nil {
 			return Result{}, fmt.Errorf("creating git bundle: %w", err)
 		}
-		defer os.Remove(bundlePath)
+		defer func() { _ = os.Remove(bundlePath) }()
 
 		// 4. Create shared volumes
 		if err := ensureVolumes(cfg); err != nil {
@@ -306,6 +306,7 @@ func setupGHAuth(composeName, projectRoot string) error {
 	// message accurately describes the failure.
 	if _, err := instance.DcExec(composeName, "bash", "-c",
 		`[ -n "${GH_TOKEN:-}" ]`); err != nil {
+		//nolint:staticcheck // Multi-line user-facing error; formatting trumps ST1005.
 		return fmt.Errorf(`GH_TOKEN is not set in the container.
 
 Agents in this instance will not be able to push, pull, or open PRs.

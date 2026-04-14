@@ -191,8 +191,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 		if !strings.Contains(string(data), ".cspace.local.json") {
 			f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_WRONLY, 0644)
 			if err == nil {
-				fmt.Fprintln(f, ".cspace.local.json")
-				f.Close()
+				_, _ = fmt.Fprintln(f, ".cspace.local.json")
+				_ = f.Close()
 				fmt.Println("Added .cspace.local.json to .gitignore")
 			}
 		}

@@ -54,7 +54,7 @@ lint: sync-embedded
 check: fmt-check vet lint test
 
 install-tools:
-	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 	go install golang.org/x/tools/cmd/goimports@latest
 	go install github.com/evilmartians/lefthook@latest
 	@echo "Install shellcheck via your package manager (brew install shellcheck / apt install shellcheck)."
