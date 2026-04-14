@@ -147,8 +147,11 @@ func Run(p Params) (Result, error) {
 			fmt.Fprintf(os.Stderr, "warning: hosts injection: %v\n", err)
 		}
 
-		// 9. Fix volume ownership
-		if _, err := instance.DcExecRoot(composeName, "chown", "-R", "dev:dev", "/workspace", "/home/dev/.claude"); err != nil {
+		// 9. Fix volume ownership. /teleport is a host bind mount that Docker
+		// auto-creates as root when the host path doesn't already exist (common
+		// in nested DinD setups), so explicitly fix it alongside the named
+		// volumes to ensure the dev user can write bundles there.
+		if _, err := instance.DcExecRoot(composeName, "chown", "-R", "dev:dev", "/workspace", "/home/dev/.claude", "/teleport"); err != nil {
 			return Result{}, fmt.Errorf("fixing ownership: %w", err)
 		}
 
