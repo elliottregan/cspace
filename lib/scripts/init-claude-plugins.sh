@@ -184,6 +184,19 @@ if [ -n "${CSPACE_MCP_SERVERS:-}" ] && [ "$CSPACE_MCP_SERVERS" != "{}" ] && [ "$
     done
 fi
 
+# --- Copy shipped slash commands into user's claude commands dir ---
+# Idempotent: always overwrite so updates to shipped commands take effect.
+SHIPPED_COMMANDS="$CSPACE_HOME/lib/commands"
+USER_COMMANDS="/home/dev/.claude/commands"
+if [ -d "$SHIPPED_COMMANDS" ]; then
+    mkdir -p "$USER_COMMANDS"
+    # Copy only regular files; skip .gitkeep and hidden files
+    find "$SHIPPED_COMMANDS" -maxdepth 1 -type f -name '*.md' -print0 \
+        | xargs -0 -I{} cp {} "$USER_COMMANDS/"
+    chown -R dev:dev "$USER_COMMANDS"
+    echo "Shipped slash commands installed."
+fi
+
 touch "$MARKER_FILE"
 chown -R dev:dev "$PLUGINS_DIR"
 

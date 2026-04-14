@@ -2,6 +2,7 @@ package assets
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -213,4 +214,13 @@ func TestExtractTo_ReExtractsOnVersionChange(t *testing.T) {
 	if string(data) == "modified" {
 		t.Error("expected re-extraction to overwrite modified file")
 	}
+}
+
+func TestCommandsDirectoryEmbedded(t *testing.T) {
+	entries, err := fs.ReadDir(EmbeddedFS, "embedded/commands")
+	if err != nil {
+		t.Fatalf("reading embedded commands dir: %v", err)
+	}
+	// Directory exists; contents checked by later tests.
+	_ = entries
 }
