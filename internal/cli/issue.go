@@ -92,16 +92,16 @@ func runIssue(cmd *cobra.Command, args []string) error {
 	}
 
 	composeName := cfg.ComposeName(name)
-	instance.SkipOnboarding(composeName)
+	_ = instance.SkipOnboarding(composeName)
 	instance.ShowPorts(name, cfg)
 
 	// Git operations
-	instance.DcExec(composeName, "git", "fetch", "--prune", "--quiet")
+	_, _ = instance.DcExec(composeName, "git", "fetch", "--prune", "--quiet")
 	if baseBranch != "" {
 		if _, err := instance.DcExec(composeName, "git", "checkout", baseBranch); err != nil {
-			instance.DcExec(composeName, "git", "checkout", "-b", baseBranch, "origin/"+baseBranch)
+			_, _ = instance.DcExec(composeName, "git", "checkout", "-b", baseBranch, "origin/"+baseBranch)
 		}
-		instance.DcExec(composeName, "git", "reset", "--hard", "origin/"+baseBranch)
+		_, _ = instance.DcExec(composeName, "git", "reset", "--hard", "origin/"+baseBranch)
 	}
 
 	if err := supervisor.StagePromptText(composeName, prompt, supervisor.ContainerPromptPath); err != nil {

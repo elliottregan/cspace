@@ -198,7 +198,7 @@ func downloadReleaseAsset(release *ghRelease, assetName, targetPath string) erro
 	// macOS requires binaries to be signed. Cross-compiled binaries from CI
 	// have no signature, so apply an ad-hoc signature to satisfy Gatekeeper.
 	if runtime.GOOS == "darwin" {
-		exec.Command("codesign", "-s", "-", targetPath).Run()
+		_ = exec.Command("codesign", "-s", "-", targetPath).Run()
 	}
 
 	return nil

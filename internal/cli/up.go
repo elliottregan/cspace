@@ -98,21 +98,21 @@ func runUpWithArgs(name, branch string, noClaude bool, prompt, promptFile string
 
 	// Skip Claude onboarding
 	composeName := cfg.ComposeName(name)
-	instance.SkipOnboarding(composeName)
+	_ = instance.SkipOnboarding(composeName)
 
 	// Show port mappings
 	instance.ShowPorts(name, cfg)
 
 	// Git operations — fetch and checkout/pull
-	instance.DcExec(composeName, "git", "fetch", "--prune", "--quiet")
+	_, _ = instance.DcExec(composeName, "git", "fetch", "--prune", "--quiet")
 	if branch != "" {
 		// Try checkout existing branch, then create tracking branch
 		if _, err := instance.DcExec(composeName, "git", "checkout", branch); err != nil {
-			instance.DcExec(composeName, "git", "checkout", "-b", branch, "origin/"+branch)
+			_, _ = instance.DcExec(composeName, "git", "checkout", "-b", branch, "origin/"+branch)
 		}
-		instance.DcExec(composeName, "git", "reset", "--hard", "origin/"+branch)
+		_, _ = instance.DcExec(composeName, "git", "reset", "--hard", "origin/"+branch)
 	} else {
-		instance.DcExec(composeName, "git", "pull", "--ff-only", "--quiet")
+		_, _ = instance.DcExec(composeName, "git", "pull", "--ff-only", "--quiet")
 	}
 
 	if noClaude {

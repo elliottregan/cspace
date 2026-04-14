@@ -44,7 +44,7 @@ type Result struct {
 //  6. Start global reverse proxy, connect to project network
 //  7. docker compose up -d
 //  8. Wait for container readiness
-//  8b. Inject /etc/hosts for cspace.local resolution inside containers
+//     8b. Inject /etc/hosts for cspace.local resolution inside containers
 //  9. Fix volume ownership
 //  10. Copy bundle into container, init workspace
 //  11. Configure git identity
@@ -270,17 +270,17 @@ func initWorkspace(composeName, bundlePath, branch, remoteURL string) error {
 	if _, err := instance.DcExec(composeName, "init-workspace.sh", "/tmp/repo.bundle", branch, remoteURL); err != nil {
 		return fmt.Errorf("init-workspace.sh: %w", err)
 	}
-	instance.DcExecRoot(composeName, "rm", "-f", "/tmp/repo.bundle")
+	_, _ = instance.DcExecRoot(composeName, "rm", "-f", "/tmp/repo.bundle")
 	return nil
 }
 
 // configureGit sets git user.name and user.email inside the container from host config.
 func configureGit(composeName, projectRoot string) {
 	if name := gitConfigValue(projectRoot, "user.name"); name != "" {
-		instance.DcExec(composeName, "git", "config", "--global", "user.name", name)
+		_, _ = instance.DcExec(composeName, "git", "config", "--global", "user.name", name)
 	}
 	if email := gitConfigValue(projectRoot, "user.email"); email != "" {
-		instance.DcExec(composeName, "git", "config", "--global", "user.email", email)
+		_, _ = instance.DcExec(composeName, "git", "config", "--global", "user.email", email)
 	}
 }
 
@@ -294,7 +294,7 @@ func copyEnvFile(composeName, projectRoot, filename string) {
 		fmt.Fprintf(os.Stderr, "warning: copying %s: %v\n", filename, err)
 		return
 	}
-	instance.DcExecRoot(composeName, "chown", "dev:dev", "/workspace/"+filename)
+	_, _ = instance.DcExecRoot(composeName, "chown", "dev:dev", "/workspace/"+filename)
 	fmt.Printf("Copied %s\n", filename)
 }
 
@@ -369,10 +369,10 @@ func installPlugins(composeName string, cfg *config.Config) error {
 	for _, plugin := range cfg.Plugins.Install {
 		fmt.Printf("  - %s\n", plugin)
 		// Ignore individual plugin install errors (matching bash behavior)
-		instance.DcExec(composeName, "claude", "plugin", "install", plugin)
+		_, _ = instance.DcExec(composeName, "claude", "plugin", "install", plugin)
 	}
 
-	instance.DcExec(composeName, "touch", marker)
+	_, _ = instance.DcExec(composeName, "touch", marker)
 	fmt.Println("Plugin installation complete.")
 	return nil
 }
@@ -402,11 +402,11 @@ func runPostSetup(composeName string, cfg *config.Config) error {
 	if err := instance.DcCp(composeName, src, "/tmp/post-setup.sh"); err != nil {
 		return fmt.Errorf("copying post-setup script: %w", err)
 	}
-	instance.DcExecRoot(composeName, "chmod", "+x", "/tmp/post-setup.sh")
+	_, _ = instance.DcExecRoot(composeName, "chmod", "+x", "/tmp/post-setup.sh")
 	if err := instance.DcExecStream(composeName, "bash", "/tmp/post-setup.sh"); err != nil {
 		return fmt.Errorf("running post-setup script: %w", err)
 	}
-	instance.DcExec(composeName, "touch", marker)
+	_, _ = instance.DcExec(composeName, "touch", marker)
 	fmt.Println("Post-setup complete.")
 	return nil
 }

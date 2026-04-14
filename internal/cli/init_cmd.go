@@ -226,7 +226,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 		// Copy agent playbooks
 		agentsDir := filepath.Join(cspaceDir, "agents")
-		os.MkdirAll(agentsDir, 0755)
+		if err := os.MkdirAll(agentsDir, 0755); err != nil {
+			return fmt.Errorf("creating agents dir: %w", err)
+		}
 		for _, agent := range []string{"implementer.md", "coordinator.md"} {
 			data, err := fs.ReadFile(subFS, "agents/"+agent)
 			if err != nil {
