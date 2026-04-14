@@ -47,7 +47,7 @@ func runContextServer(cmd *cobra.Command, args []string) error {
 func registerContextTools(server *mcp.Server, store *contextstore.Store) {
 	mcp.AddTool[readContextArgs, readContextOut](server, &mcp.Tool{
 		Name:        "read_context",
-		Description: "Read the project brain: direction, principles, roadmap, and recent decisions/discoveries. Returns everything by default; filter with `sections`.",
+		Description: "Read the project brain: direction, principles, roadmap, and recent decisions/discoveries. Returns everything by default; filter with `sections`. On a fresh repo where the context files have not yet been seeded, human-owned sections return empty strings and agent-owned sections return empty arrays — read calls do not create files. The first `log_decision` or `log_discovery` call seeds the templates.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in readContextArgs) (*mcp.CallToolResult, readContextOut, error) {
 		out, err := handleReadContext(store, in)
 		if err != nil {
@@ -256,7 +256,7 @@ func (a listEntriesArgs) toOptions() (contextstore.ListOptions, error) {
 
 type removeEntryArgs struct {
 	Kind string `json:"kind" jsonschema:"decision | discovery"`
-	Slug string `json:"slug" jsonschema:"entry slug (filename without .md)"`
+	Slug string `json:"slug" jsonschema:"on-disk filename, with or without .md (e.g. 2026-04-13-use-go-mcp-sdk); must contain only [a-z0-9-]"`
 }
 
 // handleReadContext builds the readContextOut, honoring section filters and limits.

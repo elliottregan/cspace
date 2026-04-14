@@ -54,3 +54,4 @@ cspace provides a comprehensive set of commands for managing devcontainer instan
 | `cspace` | Interactive TUI menu (requires `gum`) |
 | `cspace version` | Show cspace version |
 | `cspace help` | Show help text |
+| `cspace context-server` | Stdio MCP server exposing `docs/context/` (launched by Claude via `.mcp.json`, not invoked directly) |

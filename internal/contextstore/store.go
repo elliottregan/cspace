@@ -179,16 +179,22 @@ type EntrySummary struct {
 	Path  string
 }
 
-// ListEntries returns metadata for matching entries, newest first.
-func (s *Store) ListEntries(opts ListOptions) ([]EntrySummary, error) {
+// scannedEntry pairs a parsed Entry with the file path it came from.
+type scannedEntry struct {
+	Entry
+	Path string
+}
+
+// scanEntries reads and parses every entry file under the selected kinds
+// exactly once, applying Since/Until filters, sort, and Limit.
+func (s *Store) scanEntries(opts ListOptions) ([]scannedEntry, error) {
 	kinds := []Kind{KindDecision, KindDiscovery}
 	if opts.Kind != "" {
 		kinds = []Kind{opts.Kind}
 	}
-	var out []EntrySummary
+	var out []scannedEntry
 	for _, k := range kinds {
-		subdir := subdirFor(k)
-		dir := filepath.Join(s.ContextDir(), subdir)
+		dir := filepath.Join(s.ContextDir(), subdirFor(k))
 		entries, err := os.ReadDir(dir)
 		if os.IsNotExist(err) {
 			continue
@@ -215,41 +221,46 @@ func (s *Store) ListEntries(opts ListOptions) ([]EntrySummary, error) {
 			if opts.Until != nil && e.Date.After(*opts.Until) {
 				continue
 			}
-			slug := strings.TrimSuffix(de.Name(), ".md")
-			out = append(out, EntrySummary{
-				Kind:  k,
-				Date:  e.Date,
-				Slug:  slug,
-				Title: e.Title,
-				Path:  path,
-			})
+			e.Kind = k
+			e.Slug = strings.TrimSuffix(de.Name(), ".md")
+			out = append(out, scannedEntry{Entry: e, Path: path})
 		}
 	}
-	sortSummaries(out)
+	sortScanned(out)
 	if opts.Limit > 0 && len(out) > opts.Limit {
 		out = out[:opts.Limit]
 	}
 	return out, nil
 }
 
-// ReadEntries returns full entry bodies matching opts, newest first.
-func (s *Store) ReadEntries(opts ListOptions) ([]Entry, error) {
-	summaries, err := s.ListEntries(opts)
+// ListEntries returns metadata for matching entries, newest first.
+func (s *Store) ListEntries(opts ListOptions) ([]EntrySummary, error) {
+	scanned, err := s.scanEntries(opts)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Entry, 0, len(summaries))
-	for _, sum := range summaries {
-		raw, err := os.ReadFile(sum.Path)
-		if err != nil {
-			return nil, err
-		}
-		e, err := ParseEntry(string(raw))
-		if err != nil {
-			continue
-		}
-		e.Slug = sum.Slug
-		out = append(out, e)
+	out := make([]EntrySummary, 0, len(scanned))
+	for _, se := range scanned {
+		out = append(out, EntrySummary{
+			Kind:  se.Kind,
+			Date:  se.Date,
+			Slug:  se.Slug,
+			Title: se.Title,
+			Path:  se.Path,
+		})
+	}
+	return out, nil
+}
+
+// ReadEntries returns full entry bodies matching opts, newest first.
+func (s *Store) ReadEntries(opts ListOptions) ([]Entry, error) {
+	scanned, err := s.scanEntries(opts)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Entry, 0, len(scanned))
+	for _, se := range scanned {
+		out = append(out, se.Entry)
 	}
 	return out, nil
 }
@@ -271,14 +282,41 @@ func (s *Store) ReadHuman(section string) (string, error) {
 	return string(b), nil
 }
 
-// RemoveEntry deletes an entry by slug. Slug may include or omit the .md suffix.
+// RemoveEntry deletes an entry by its full filename. The slug argument is the
+// on-disk filename (with or without .md); it must match the charset produced
+// by Slugify (lowercase letters, digits, and hyphens). Callers cannot pass a
+// bare title-slug — the date prefix is part of the identifier.
 func (s *Store) RemoveEntry(kind Kind, slug string) error {
 	slug = strings.TrimSuffix(slug, ".md")
+	if !isValidFilenameSlug(slug) {
+		return fmt.Errorf("invalid slug: %q (must be non-empty and contain only [a-z0-9-])", slug)
+	}
 	path := filepath.Join(s.ContextDir(), subdirFor(kind), slug+".md")
 	if _, err := os.Stat(path); err != nil {
-		return fmt.Errorf("entry not found: %s/%s", kind, slug)
+		if os.IsNotExist(err) {
+			return fmt.Errorf("entry not found: %s/%s", kind, slug)
+		}
+		return fmt.Errorf("stat %s: %w", path, err)
 	}
 	return os.Remove(path)
+}
+
+// isValidFilenameSlug returns true when slug is a safe on-disk name:
+// non-empty, composed only of the characters Slugify emits.
+func isValidFilenameSlug(slug string) bool {
+	if slug == "" {
+		return false
+	}
+	for _, r := range slug {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func subdirFor(k Kind) string {
@@ -299,17 +337,17 @@ func isHumanSection(name string) bool {
 	return false
 }
 
-func sortSummaries(s []EntrySummary) {
+func sortScanned(s []scannedEntry) {
 	for i := 1; i < len(s); i++ {
 		j := i
-		for j > 0 && lessSummary(s[j], s[j-1]) {
+		for j > 0 && lessScanned(s[j], s[j-1]) {
 			s[j], s[j-1] = s[j-1], s[j]
 			j--
 		}
 	}
 }
 
-func lessSummary(a, b EntrySummary) bool {
+func lessScanned(a, b scannedEntry) bool {
 	if !a.Date.Equal(b.Date) {
 		return a.Date.After(b.Date)
 	}

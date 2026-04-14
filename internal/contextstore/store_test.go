@@ -167,3 +167,73 @@ func TestRemoveEntry(t *testing.T) {
 		t.Error("expected error for missing slug")
 	}
 }
+
+func TestRemoveEntryRejectsInvalidSlugs(t *testing.T) {
+	s := newStore(t)
+	if err := os.MkdirAll(filepath.Join(s.ContextDir(), "discoveries"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	invalidSlugs := []string{
+		"../../outside/secret",
+		"../decisions/foo",
+		"foo/bar",
+		"foo\\bar",
+		".",
+		"..",
+		"",
+		"FOO",     // uppercase — not produced by Slugify
+		"foo.bar", // inner "." is not allowed
+	}
+	for _, bad := range invalidSlugs {
+		err := s.RemoveEntry(KindDiscovery, bad)
+		if err == nil {
+			t.Errorf("RemoveEntry(%q): expected error, got nil", bad)
+			continue
+		}
+		// Validation must happen before the filesystem stat — "entry not found"
+		// implies we attempted a lookup with the unsafe input.
+		if strings.Contains(err.Error(), "entry not found") {
+			t.Errorf("RemoveEntry(%q): got %q, want invalid-slug error (validation must precede stat)", bad, err)
+		}
+	}
+}
+
+func TestRemoveEntryCannotReachSiblingKind(t *testing.T) {
+	s := newStore(t)
+
+	// Plant a decision file.
+	decisionPath, err := s.LogDecision(LogDecisionInput{Title: "Keep me", Context: "c", Decision: "d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Path traversal from discoveries/ to decisions/ should be rejected, not
+	// silently normalized into a successful delete of a sibling-kind file.
+	_ = s.RemoveEntry(KindDiscovery, "../decisions/2026-04-13-keep-me")
+
+	if _, err := os.Stat(decisionPath); err != nil {
+		t.Errorf("decision file was deleted via cross-kind traversal: %v", err)
+	}
+}
+
+func TestRemoveEntryDistinguishesNotFoundFromOtherErrors(t *testing.T) {
+	s := newStore(t)
+
+	// Make docs/context/decisions a regular file so any stat on a child path
+	// returns ENOTDIR (a non-NotExist error).
+	if err := os.MkdirAll(s.ContextDir(), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.ContextDir(), "decisions"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := s.RemoveEntry(KindDecision, "2026-04-13-anything")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "entry not found") {
+		t.Errorf("non-NotExist error masked as 'entry not found': %v", err)
+	}
+}

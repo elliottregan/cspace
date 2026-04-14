@@ -34,6 +34,8 @@ Version-controlled. Travels with the repo. Agent-written entries are isolated in
 
 On first call to any write tool, the server creates `docs/context/` and the subdirectories if missing, and seeds `direction.md`, `principles.md`, and `roadmap.md` with commented templates explaining what goes in each. No separate init command.
 
+`read_context` deliberately does **not** trigger seeding: on a fresh repo it returns empty strings for the human-owned sections and empty arrays for decisions/discoveries. This keeps read calls side-effect-free so a human or tool can inspect the current state without accidentally creating files. Callers that need the templates to exist should call `log_decision` or `log_discovery` first (or edit the files by hand).
+
 ## Ownership model
 
 | Section          | Owner  | Read     | Write                       |
@@ -120,7 +122,7 @@ Deletes a decision or discovery by slug. For human curation passes.
 
 Inputs:
 - `kind` — `decisions | discoveries`.
-- `slug` — file slug without date prefix or extension, or the full filename.
+- `slug` — the on-disk filename, with or without the `.md` extension (e.g. `2026-04-13-use-go-mcp-sdk` or `2026-04-13-use-go-mcp-sdk.md`). Must contain only `[a-z0-9-]`; bare title slugs without a date prefix are not accepted.
 
 ### What agents should NOT log
 

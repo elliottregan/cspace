@@ -97,16 +97,31 @@ E2E=$(jq -r '.verify.e2e // ""' /workspace/.cspace.json 2>/dev/null || echo "")
 PLAYBOOK=/opt/cspace/lib/agents/implementer.md
 [ -f /workspace/.cspace/agents/implementer.md ] && PLAYBOOK=/workspace/.cspace/agents/implementer.md
 
-# Inline the preamble file — avoids sed line-break headaches.
-PREAMBLE=$(cat /tmp/preamble-$N.md)
-
-# Use python3 for a multi-line-safe substitution of the preamble, then sed for the rest.
-python3 -c "
-import sys, pathlib
-p = pathlib.Path('$PLAYBOOK').read_text()
-p = p.replace('\${STRATEGIC_CONTEXT_PREAMBLE}', '''$PREAMBLE''')
-sys.stdout.write(p)
-" | sed \
+# Substitute ${STRATEGIC_CONTEXT_PREAMBLE} with awk (literal string replacement,
+# safe for any preamble content), then the remaining placeholders with sed.
+# The preamble path is passed via -v and read from disk inside awk, so nothing
+# from the preamble is ever interpreted by the shell or a scripting language.
+awk \
+  -v PRE="/tmp/preamble-$N.md" \
+  -v PH='${STRATEGIC_CONTEXT_PREAMBLE}' \
+  '
+    BEGIN {
+      loaded = 0
+      while ((getline line < PRE) > 0) {
+        p = p (loaded ? ORS : "") line
+        loaded = 1
+      }
+      close(PRE)
+    }
+    {
+      out = ""
+      while ((i = index($0, PH)) > 0) {
+        out = out substr($0, 1, i - 1) p
+        $0 = substr($0, i + length(PH))
+      }
+      print out $0
+    }
+  ' "$PLAYBOOK" | sed \
   -e "s|\${NUMBER}|$N|g" \
   -e "s|\${BASE_BRANCH}|$BASE|g" \
   -e "s|\${VERIFY_COMMAND}|$VERIFY|g" \
