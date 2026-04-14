@@ -155,3 +155,82 @@ func TestTeleportPrepareAbortsWithoutSession(t *testing.T) {
 		t.Errorf("expected abort message, got:\n%s", out)
 	}
 }
+
+func TestTeleportPrepareKeepsSourceWhenUpFails(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Fake HOME with an active Claude session transcript.
+	home := filepath.Join(tmp, "home")
+	projects := filepath.Join(home, ".claude", "projects", "-workspace")
+	if err := os.MkdirAll(projects, 0755); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "abc123"
+	transcript := filepath.Join(projects, sessionID+".jsonl")
+	if err := os.WriteFile(transcript, []byte(`{"type":"user"}`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fake /workspace with a minimal git repo.
+	workspace := filepath.Join(tmp, "workspace")
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range [][]string{
+		{"git", "init", "-q", "-b", "main"},
+		{"git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-q", "-m", "init"},
+	} {
+		c := exec.Command(cmd[0], cmd[1:]...)
+		c.Dir = workspace
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s", cmd, out)
+		}
+	}
+
+	teleport := filepath.Join(tmp, "teleport")
+	if err := os.MkdirAll(teleport, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stub cspace: fails (exit 1) when first positional arg is "up";
+	// records all args to the log regardless.
+	binDir := filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	argsLog := filepath.Join(tmp, "cspace.args")
+	stubSrc := "#!/usr/bin/env bash\n" +
+		"printf '%s\\n' \"$@\" >> " + argsLog + "\n" +
+		"if [ \"$1\" = \"up\" ]; then exit 1; fi\n" +
+		"exit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "cspace"), []byte(stubSrc), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	script := writeScript(t, repoRoot(t), "teleport-prepare.sh", tmp)
+
+	cmd := exec.Command("bash", script, "venus")
+	cmd.Env = append(os.Environ(),
+		"HOME="+home,
+		"CSPACE_TELEPORT_WORKSPACE="+workspace,
+		"CSPACE_TELEPORT_DIR="+teleport,
+		"CSPACE_INSTANCE_NAME=mercury",
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+	)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit when `cspace up` fails, got success:\n%s", out)
+	}
+
+	args, readErr := os.ReadFile(argsLog)
+	if readErr != nil {
+		t.Fatalf("reading stub log: %v", readErr)
+	}
+	argStr := string(args)
+	if !strings.Contains(argStr, "up") {
+		t.Errorf("expected `up` in stub args (the up attempt should have happened); got:\n%s", argStr)
+	}
+	if strings.Contains(argStr, "stop") {
+		t.Errorf("expected no `stop` in stub args (source must not be stopped when up fails); got:\n%s", argStr)
+	}
+}

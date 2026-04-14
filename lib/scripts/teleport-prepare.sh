@@ -43,6 +43,13 @@ SESSION_ID=$(basename "$LATEST_TRANSCRIPT" .jsonl)
 SESSION_DIR="$TELEPORT_DIR/$SESSION_ID"
 mkdir -p "$SESSION_DIR"
 
+if [ -f "$SESSION_DIR/manifest.json" ]; then
+    echo "teleport: session $SESSION_ID is already staged at $SESSION_DIR" >&2
+    echo "teleport: if a prior teleport is still in progress, wait for it to finish;" >&2
+    echo "teleport: otherwise remove $SESSION_DIR and retry" >&2
+    exit 1
+fi
+
 # 2. Bundle the workspace.
 echo "teleport: bundling workspace..."
 git -C "$WORKSPACE" bundle create "$SESSION_DIR/workspace.bundle" --all
