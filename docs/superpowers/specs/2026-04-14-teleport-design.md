@@ -48,7 +48,7 @@ Data that travels from source to target:
 
 1. **Workspace git state** — `git bundle create --all` from `/workspace`. Every branch, tag, and HEAD.
 2. **Session transcript** — the JSONL file at `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`, copied verbatim.
-3. **Session id** — resolved the same way existing hooks resolve it. Two known mechanisms in-tree today: hooks receive it via stdin JSON (`jq -r '.session_id'` — see `lib/hooks/claude-transcript-copy.sh`), and `/tmp/claude-session-id.txt` is written by an existing hook and read by `lib/hooks/copy-transcript-on-exit.sh`. The teleport script reuses the `/tmp/claude-session-id.txt` file as its primary source, with a fallback of picking the most recently modified `.jsonl` file under `~/.claude/projects/<encoded-cwd>/`. If neither is available, the script aborts.
+3. **Session id** — inferred from the active transcript file. Claude Code writes the in-progress conversation to `$HOME/.claude/projects/-workspace/<session-id>.jsonl` (the `-workspace` encoding of `/workspace` is stable inside every cspace container — see `lib/hooks/copy-transcript-on-exit.sh`). The teleport script picks the most recently modified `.jsonl` in that directory and derives the session id from its basename. If the directory is empty or missing, the script aborts with "teleport requires a live Claude session."
 
 Data that does **not** travel (by design in v1):
 
@@ -73,7 +73,7 @@ When a user types `/cspace:teleport mars` inside mercury's conversation:
 1. **Slash command body** (`lib/commands/teleport.md`) expands to a short prompt instructing Claude to run `/opt/cspace/bin/teleport-prepare.sh mars`. The slash command contains zero logic — it's a trampoline, so all real work is testable standalone.
 
 2. **`teleport-prepare.sh`** (new, `lib/scripts/`) runs inside the source container:
-   - Resolves the session id (primary: `/tmp/claude-session-id.txt`; fallback: newest `.jsonl` under `~/.claude/projects/<encoded-cwd>/`) and the transcript path at `~/.claude/projects/<encoded-cwd>/<session>.jsonl`. Aborts with a clear error if either is missing.
+   - Resolves the session id and transcript path by picking the newest `.jsonl` in `$HOME/.claude/projects/-workspace/`. The basename (without `.jsonl`) is the session id. Aborts with a clear error if the directory is empty.
    - `git bundle create /teleport/<session>/workspace.bundle --all` from `/workspace`.
    - `cp <transcript> /teleport/<session>/session.jsonl`.
    - Writes `/teleport/<session>/manifest.json` with `{source, target, session_id, created_at, source_head, source_branch}`.
