@@ -6,6 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **cspace** is a CLI for managing isolated Claude Code devcontainer instances. It spins up Docker containers with independent workspaces, browser sidecars, and network firewalls, then runs autonomous Claude agents against GitHub issues. Written in Go (CLI) with a Node.js agent supervisor component.
 
+## Project Context
+
+The `docs/context/` directory holds layered planning context accessible via the `cspace-context` MCP server.
+
+- `direction.md`, `principles.md`, `roadmap.md` — human-owned. Edit directly.
+- `decisions/` and `discoveries/` — agent-owned. Written by agents via `log_decision` / `log_discovery`. Curate with the `remove_entry` tool or by deleting files.
+
+Agents call `read_context` at the start of non-trivial work. See `docs/superpowers/specs/2026-04-13-context-mcp-server-design.md` for the full contract.
+
 ## Development
 
 The CLI is built with Go using the Cobra framework. The agent supervisor is Node.js ESM.
