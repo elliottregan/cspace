@@ -13,8 +13,8 @@ RUN apk add --no-cache \
     docker-cli docker-cli-compose \
     # Go toolchain
     go \
-    # Task runner
-    just \
+    # Task runner (project uses Makefile)
+    make \
     # Python 3 — used by hook scripts and the coordinator preamble renderer
     python3 && \
     npm install -g pnpm
