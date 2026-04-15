@@ -60,7 +60,8 @@ Node.js process (ESM) that wraps the Claude Agent SDK's `query()` with:
 - An async-queue-backed prompt stream for injecting user turns mid-session
 - A Unix socket server (`/logs/messages/{instance}/supervisor.sock`) for host->container commands (`send`, `respond`, `interrupt`)
 - NDJSON event streaming to stdout, processed by Go's `ProcessStream()` for terminal rendering
-- MCP tools for inter-agent communication (`ask_orchestrator`, `notify_orchestrator` for agents; `list_agent_questions`, `respond_to_agent`, `send_directive` for coordinators)
+- MCP tools for inter-agent communication (`ask_orchestrator`, `notify_orchestrator` for agents; `list_agent_questions`, `respond_to_agent`, `send_directive`, `agent_health`, `agent_recent_activity`, `read_agent_stream`, `restart_agent` for coordinators)
+- Persistent event logs at `/logs/events/{instance}/session-*.ndjson` — the same SDK events `cspace up` renders to stderr, captured to disk so coordinators can reconstruct a child's stream via `read_agent_stream` even after BashOutput is lost
 
 Key dependency: `@anthropic-ai/claude-agent-sdk`
 

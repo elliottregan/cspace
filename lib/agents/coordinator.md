@@ -142,18 +142,40 @@ cspace up issue-$N --base $BASE --prompt-file /tmp/implementer-$N.txt
 
 Use `run_in_background: true` with a 60-minute timeout. Launch all ready agents in a **single message** with multiple Bash tool calls.
 
+**Each `cspace up` call is a blocking streaming command.** It does not return until the agent exits, and its combined stdout+stderr emits the agent's entire event stream as it happens (thinking, tool calls, tool results, final result). With `run_in_background: true`, that whole stream accumulates in the Bash call's BashOutput and is what you read to monitor the agent — exactly like watching a foreground `cspace up` in a terminal. Save the background task ID for each agent; you'll need it to read BashOutput in Phase 3.
+
 **Do not launch blocked agents.** They will be launched in Phase 4b when their deps complete.
 
 ## Phase 3 — Monitor
 
-**Do not poll.** Wait for background task completion notifications.
+Each agent has a BashOutput stream (the background `cspace up` call you started in Phase 2). That stream is your primary monitoring channel — it contains every tool call and thinking block in real time, one line per event as `[N] -> ToolName` entries.
 
-When an agent completes, read the **full output file** (not just the tail). Extract:
-- **PR URL**: grep for `github.com/.*/pull/`
-- **Pass/fail**: exit code 0 = success, non-zero = failure. Also check for "Done" vs "FAILED" in output.
-- **Session ID**: appears as "Session: <uuid>" near the top
+### Primary: read each agent's BashOutput directly
 
-Report each completion to the user immediately — don't wait for all agents.
+- For a live check, read the BashOutput of that agent's `cspace up` task. You'll see exactly what a human watching a terminal would see.
+- When the background task completes, its exit code tells you success/failure (0 or 141 = success, anything else = failure) and its full output is your post-mortem log. Read the **full output** on completion, not just the tail — the PR URL, session ID, and any error diagnostics all live there.
+  - **PR URL**: grep for `github.com/.*/pull/`
+  - **Session ID**: appears as `Session: <uuid>` near the top
+
+### Fallback: `read_agent_stream` MCP tool
+
+If an agent's BashOutput is truncated, lost, or you need to re-inspect after a coordinator restart, call `read_agent_stream` with the instance name. It reads the same data from the persisted event log at `/logs/events/<instance>/session-*.ndjson`. Use `since: <last_ts>` to poll incrementally.
+
+### Watchdog: catch silent failures
+
+An agent that crashes — e.g., Playwright transport wedged, container OOM, uncaught exception — may never call `notify_orchestrator` and may leave its BashOutput looking frozen for long stretches. If an agent has had no new events for >5 minutes and hasn't completed:
+
+1. Check its BashOutput for an error near the tail.
+2. If BashOutput is empty or ambiguous, call `read_agent_stream` with `types: ["result", "assistant"]` to inspect recent activity.
+3. If it's genuinely stuck, use `restart_agent` (unwinds and relaunches) or `cspace send` with targeted instructions. Do not just wait longer.
+
+Report each completion or failure to the user as soon as you notice it — don't batch reports across agents.
+
+### Anti-patterns (don't do these)
+
+- ❌ **`until docker exec <instance> test -f /some/marker; do sleep N; done`** — the `cspace up` background call already blocks to completion. A polling loop on top of it is redundant, produces no output, and masks failures.
+- ❌ **Relying solely on `cspace ask` / `cspace watch`** — those show only questions and notifications the agent chose to send, not the full tool stream. They miss silent crashes.
+- ❌ **Assuming "no new notification" means "agent is still working"** — it can also mean "agent died before it could send one." Always cross-check against the BashOutput or `read_agent_stream`.
 
 ### Code Review
 
