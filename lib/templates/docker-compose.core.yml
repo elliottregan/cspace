@@ -39,7 +39,11 @@ services:
     volumes:
       - workspace:/workspace
       - claude-home:/home/dev/.claude
-      - cspace-memory:/home/dev/.claude/projects/-workspace/memory
+      # Project-shared Claude memory, bind-mounted from the host so it's
+      # committed alongside code and survives volume wipes / container rebuilds.
+      # Host pre-creates ${PROJECT_ROOT}/.cspace/memory before `docker compose
+      # up` so it's owned by the invoking user, not root-owned by Docker.
+      - ${PROJECT_ROOT:-.}/.cspace/memory:/home/dev/.claude/projects/-workspace/memory
       - gh-config:/home/dev/.config/gh
       - cspace-logs:/logs
       - ${CSPACE_TELEPORT_DIR:-/tmp/cspace-teleport}:/teleport
@@ -124,9 +128,6 @@ services:
 volumes:
   workspace:
   claude-home:
-  cspace-memory:
-    name: ${CSPACE_MEMORY_VOLUME:-cspace-memory}
-    external: true
   gh-config:
   cspace-logs:
     name: ${CSPACE_LOGS_VOLUME:-cspace-logs}

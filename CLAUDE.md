@@ -96,6 +96,8 @@ Shell scripts fired by Claude Code's hook system: progress logging on `PostToolU
 
 **Embedded assets**: Templates, scripts, hooks, and agents are embedded via `go:embed` in `internal/assets/`. Run `make sync-embedded` (automatic with `make build`) to copy `lib/` contents into `internal/assets/embedded/` before building.
 
+**Agent memory**: Each project's `.cspace/memory/` directory is bind-mounted into every container at `/home/dev/.claude/projects/-workspace/memory`. Committed to git so learnings persist across volume wipes, container rebuilds, and fresh clones. Agents read/write via Claude Code's built-in memory system (four types: user, feedback, project, reference); `MEMORY.md` is the index. `cspace up` creates the directory with an empty stub on first provision. If you have pre-existing memory in the legacy `cspace-<project>-memory` Docker volume, run `cspace memory migrate` once to copy it into the repo. Concurrent-write caveat: multiple agents in the same project can race on `MEMORY.md` (last-writer-wins, no corruption since writes are tmp-then-rename); in practice memory writes are infrequent and small, but avoid explicit parallel `/remember` operations across containers.
+
 ## Commit Style
 
 Short imperative sentences describing what changed and why. Examples from history:

@@ -130,6 +130,13 @@ func Run(p Params) (Result, error) {
 			return Result{}, fmt.Errorf("exporting CSPACE_TELEPORT_DIR: %w", err)
 		}
 
+		// Ensure .cspace/memory/ exists on the host with the invoking
+		// user's ownership before compose bind-mounts it — otherwise
+		// Docker auto-creates it root-owned and agents can't write.
+		if err := ensureMemoryDir(cfg.ProjectRoot); err != nil {
+			return Result{}, err
+		}
+
 		// 7. Start instance containers
 		if err := compose.Run(name, cfg, "up", "-d"); err != nil {
 			return Result{}, fmt.Errorf("starting container: %w", err)
@@ -255,6 +262,41 @@ func ensureTeleportDir(dir string) error {
 	return nil
 }
 
+// memoryStub is written to .cspace/memory/MEMORY.md on first provision so
+// agents' first "read MEMORY.md" call finds the expected file. The header
+// also explains the convention to humans browsing the repo.
+const memoryStub = `<!--
+This directory holds project-shared Claude Code memory.
+
+It is bind-mounted into every cspace container at:
+  /home/dev/.claude/projects/-workspace/memory
+
+Agents read and write here via the built-in memory system (four types:
+user, feedback, project, reference). Committed to git so learnings
+survive volume wipes and propagate to fresh clones.
+
+See CLAUDE.md for the full convention.
+-->
+`
+
+// ensureMemoryDir creates ${ProjectRoot}/.cspace/memory/ with host-user
+// ownership before compose bind-mounts it into the container. Docker's
+// auto-create on bind-mount makes the dir root-owned, which breaks the
+// agent's ability to write. Also seeds MEMORY.md if missing.
+func ensureMemoryDir(projectRoot string) error {
+	dir := filepath.Join(projectRoot, ".cspace", "memory")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating memory dir %s: %w", dir, err)
+	}
+	stubPath := filepath.Join(dir, "MEMORY.md")
+	if _, err := os.Stat(stubPath); os.IsNotExist(err) {
+		if err := os.WriteFile(stubPath, []byte(memoryStub), 0644); err != nil {
+			return fmt.Errorf("writing memory stub %s: %w", stubPath, err)
+		}
+	}
+	return nil
+}
+
 // teleportHostDir returns the host-side path used for the /teleport bind
 // mount. Defaults to ~/.cspace/teleport; overridable via CSPACE_TELEPORT_DIR.
 func teleportHostDir() string {
@@ -283,8 +325,10 @@ func gitConfigValue(projectRoot, key string) string {
 }
 
 // ensureVolumes creates the shared external volumes if they don't already exist.
+// Memory is NOT an external volume — it's bind-mounted from the project's
+// .cspace/memory/ directory so learnings persist in git. See ensureMemoryDir.
 func ensureVolumes(cfg *config.Config) error {
-	for _, vol := range []string{cfg.MemoryVolume(), cfg.LogsVolume()} {
+	for _, vol := range []string{cfg.LogsVolume()} {
 		if err := docker.VolumeCreate(vol); err != nil {
 			// Log but don't fail — volume may already exist
 			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
