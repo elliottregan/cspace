@@ -21,5 +21,9 @@ bin/cspace-go-linux-arm64
 bin/cspace-linux
 dist/
 
-# Embedded assets (generated from lib/ by make sync-embedded)
-internal/assets/embedded/
+# Embedded assets (generated from lib/ by make sync-embedded).
+# .gitkeep is tracked so `go:embed all:embedded` has at least one match
+# on fresh checkouts — without it, `go vet` / `go build` fail before
+# `make sync-embedded` has ever run.
+internal/assets/embedded/*
+!internal/assets/embedded/.gitkeep

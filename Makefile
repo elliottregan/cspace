@@ -9,6 +9,7 @@ GOBIN           := ./bin/cspace-go
 sync-embedded:
 	@rm -rf internal/assets/embedded
 	@mkdir -p internal/assets/embedded
+	@touch internal/assets/embedded/.gitkeep
 	@cp -r lib/templates internal/assets/embedded/
 	@cp -r lib/scripts internal/assets/embedded/
 	@cp -r lib/hooks internal/assets/embedded/
