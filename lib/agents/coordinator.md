@@ -149,14 +149,24 @@ Use `run_in_background: true` with a 60-minute timeout. Launch all ready agents 
 
 **Do not launch blocked agents.** They will be launched in Phase 4b when their deps complete.
 
-## Phase 3 — Monitor
+## Phase 3 — Monitor and wait for completions
 
-Each agent has a BashOutput stream (the background `cspace up` call you started in Phase 2). That stream is your primary monitoring channel — it contains every tool call and thinking block in real time, one line per event as `[N] -> ToolName` entries.
+**Your session stays open.** After dispatching agents, do NOT produce a final summary and exit. Workers will send you completion messages via `cspace send _coordinator` when they finish. You will receive these as new user turns automatically — no polling needed.
 
-### Primary: read each agent's BashOutput directly
+Each message will look like:
 
-- For a live check, read the BashOutput of that agent's `cspace up` task. You'll see exactly what a human watching a terminal would see.
-- When the background task completes, its exit code tells you success/failure (0 or 141 = success, anything else = failure) and its full output is your post-mortem log. Read the **full output** on completion, not just the tail — the PR URL, session ID, and any error diagnostics all live there.
+```
+Worker issue-42 complete. Status: success. PR: https://github.com/.../pull/123. Summary: Added retry logic to webhook pipeline
+```
+
+Process each completion as it arrives: update your status table, read the agent's BashOutput for the full story, and report to the user immediately. Only move to Phase 5 after all dispatched workers have reported (or you've given up on stuck ones).
+
+### Monitoring while you wait
+
+Each agent also has a BashOutput stream (the background `cspace up` call you started in Phase 2). That stream contains every tool call and thinking block in real time as `[N] -> ToolName` entries.
+
+- For a live check, read the BashOutput of that agent's `cspace up` task.
+- When the background task completes, its exit code tells you success/failure (0 or 141 = success, anything else = failure). Read the **full output** on completion, not just the tail — the PR URL, session ID, and any error diagnostics all live there.
   - **PR URL**: grep for `github.com/.*/pull/`
   - **Session ID**: appears as `Session: <uuid>` near the top
 
@@ -166,29 +176,27 @@ If an agent's BashOutput is truncated, lost, or you need to re-inspect after a c
 
 ### Watchdog: catch silent failures
 
-An agent that crashes — e.g., Playwright transport wedged, container OOM, uncaught exception — may never call `notify_orchestrator` and may leave its BashOutput looking frozen for long stretches. If an agent has had no new events for >5 minutes and hasn't completed:
+An agent that crashes may never send its `cspace send _coordinator` message. If an agent has had no new BashOutput events for >5 minutes and you haven't received its completion:
 
-1. Check its BashOutput for an error near the tail.
-2. If BashOutput is empty or ambiguous, call `read_agent_stream` with `types: ["result", "assistant"]` to inspect recent activity.
-3. If it's genuinely stuck, use `restart_agent` (unwinds and relaunches) or `cspace send` with targeted instructions. Do not just wait longer.
-
-Report each completion or failure to the user as soon as you notice it — don't batch reports across agents.
+1. Check its BashOutput tail for errors.
+2. If ambiguous, call `read_agent_stream` with `types: ["result", "assistant"]`.
+3. If genuinely stuck, use `cspace restart-supervisor <instance> --reason "..."` or `cspace send <instance>` with targeted instructions. Do not just wait longer.
 
 ### Anti-patterns (don't do these)
 
-- ❌ **`until docker exec <instance> test -f /some/marker; do sleep N; done`** — the `cspace up` background call already blocks to completion. A polling loop on top of it is redundant, produces no output, and masks failures.
-- ❌ **Relying solely on `cspace ask` / `cspace watch`** — those show only questions and notifications the agent chose to send, not the full tool stream. They miss silent crashes.
-- ❌ **Assuming "no new notification" means "agent is still working"** — it can also mean "agent died before it could send one." Always cross-check against the BashOutput or `read_agent_stream`.
+- ❌ **Exiting before all workers report.** Your session stays alive specifically to receive worker completions. Producing a "dispatch summary" and stopping is the #1 cause of missed completions.
+- ❌ **Polling loops** (`until docker exec ... test -f /some/marker; do sleep N; done`) — redundant with the completion messages you'll receive.
+- ❌ **Assuming silence means progress** — it can also mean the agent crashed before sending its completion. Always cross-check BashOutput or `read_agent_stream` if a worker is overdue.
 
 ### Code Review
 
-After each agent completes successfully (has a draft PR), dispatch a code review in the **same container** by sending a follow-up directive via the messenger:
+After each agent completes successfully (has a draft PR), dispatch a code review in the **same container**:
 
 ```
-cspace send issue-<N> "Run /code-review on the open draft PR for issue #<N>. Review the diff against the issue requirements. Fix any issues found, commit, and push. Then mark the PR as ready with: gh pr ready"
+cspace send issue-<N> "Run /code-review on the open draft PR for issue #<N>. Review the diff against the issue requirements. Fix any issues found, commit, and push. Then mark the PR as ready with: gh pr ready. When done, send your result: cspace send _coordinator 'Code review for issue-<N> complete. Status: <pass|fail>.'"
 ```
 
-Watch for completion via `cspace ask issue-<N>` (notifications).
+The agent will report back via `cspace send _coordinator` when the review is done.
 
 ### AC Verification
 

@@ -162,41 +162,24 @@ func RelaunchDetached(params LaunchParams, cfg *config.Config, ignoreInboxBefore
 func RestartSupervisor(name, reason string, cfg *config.Config) error {
 	composeName := cfg.ComposeName(name)
 
-	logsPath := resolveLogsVolumePath(cfg)
+	logsPath := ResolveLogsVolumePath(cfg)
 	if logsPath == "" {
 		return fmt.Errorf("cannot resolve cspace-logs volume path")
 	}
 
-	startMs := time.Now().UnixMilli()
-
 	fmt.Printf("Interrupting supervisor for %s...\n", name)
 	_ = Dispatch(composeName, "interrupt", name)
 
-	// Wait for completion notification (up to 30s)
-	completionDir := filepath.Join(logsPath, "_coordinator", "inbox")
-	completionPattern := fmt.Sprintf("completion-%s-*", name)
+	// Wait for the old supervisor's socket to disappear (cleanup() unlinks
+	// it before process exit). This replaces the old approach of polling
+	// for a completion notification file in the coordinator's inbox.
+	sockPath := filepath.Join(logsPath, name, "supervisor.sock")
 
 	found := false
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		entries, err := os.ReadDir(completionDir)
-		if err == nil {
-			for _, e := range entries {
-				matched, _ := filepath.Match(completionPattern, e.Name())
-				if !matched {
-					continue
-				}
-				info, err := e.Info()
-				if err != nil {
-					continue
-				}
-				if info.ModTime().UnixMilli() >= startMs {
-					found = true
-					break
-				}
-			}
-		}
-		if found {
+		if _, err := os.Stat(sockPath); os.IsNotExist(err) {
+			found = true
 			break
 		}
 		time.Sleep(250 * time.Millisecond)
@@ -232,7 +215,7 @@ cat %s
 		StderrLog:  ContainerAgentStderrLog,
 	}
 
-	if err := RelaunchDetached(params, cfg, startMs); err != nil {
+	if err := RelaunchDetached(params, cfg, 0); err != nil {
 		return fmt.Errorf("relaunching supervisor: %w", err)
 	}
 
@@ -302,9 +285,10 @@ func buildSupervisorArgs(params LaunchParams, cfg *config.Config) []string {
 	return args
 }
 
-// resolveLogsVolumePath finds the host-side mountpoint of the cspace-logs
-// Docker volume.
-func resolveLogsVolumePath(cfg *config.Config) string {
+// ResolveLogsVolumePath finds the host-side mountpoint of the cspace-logs
+// Docker volume. Returns the path to the messages/ subdirectory, or ""
+// if the volume cannot be found.
+func ResolveLogsVolumePath(cfg *config.Config) string {
 	if info, err := os.Stat("/logs/messages"); err == nil && info.IsDir() {
 		return "/logs/messages"
 	}

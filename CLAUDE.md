@@ -59,9 +59,9 @@ Go binary built with Cobra. Entry point is `cmd/cspace/main.go`, which calls `cl
 
 Node.js process (ESM) that wraps the Claude Agent SDK's `query()` with:
 - An async-queue-backed prompt stream for injecting user turns mid-session
-- A Unix socket server (`/logs/messages/{instance}/supervisor.sock`) for host->container commands (`send`, `respond`, `interrupt`)
+- A Unix socket server (`/logs/messages/{instance}/supervisor.sock`) for host->container commands (`send`, `interrupt`, `status`)
 - NDJSON event streaming to stdout, processed by Go's `ProcessStream()` for terminal rendering
-- MCP tools for inter-agent communication (`ask_orchestrator`, `notify_orchestrator` for agents; `list_agent_questions`, `respond_to_agent`, `send_directive`, `agent_health`, `agent_recent_activity`, `read_agent_stream`, `restart_agent` for coordinators)
+- MCP tools for coordinator diagnostics (`agent_health`, `agent_recent_activity`, `read_agent_stream`). All inter-agent messaging goes through `cspace send` via the socket — workers report completion with `cspace send _coordinator`, coordinators direct workers with `cspace send <instance>`
 - Persistent event logs at `/logs/events/{instance}/session-*.ndjson` — the same SDK events `cspace up` renders to stderr, captured to disk so coordinators can reconstruct a child's stream via `read_agent_stream` even after BashOutput is lost
 
 Key dependency: `@anthropic-ai/claude-agent-sdk`

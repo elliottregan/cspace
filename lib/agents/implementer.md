@@ -73,3 +73,8 @@ If the `cspace-context` MCP server is available (you'll see `mcp__cspace_context
 18. Take screenshots of the new/changed features using Playwright MCP browser tools against the running preview server, then post them as a comment on the PR using gh cli.
 19. Review your own PR using /code-review — fix any issues found, commit, and push again.
 20. **AC verification**: Re-read the issue (`gh issue view ${NUMBER}`) and compare every acceptance criterion against your actual changes. For each AC item, confirm it is met or note what's missing. If anything is missing, go back and implement it before finishing.
+21. **Report completion to the coordinator.** This is the last thing you do — the coordinator is waiting for this message to know you're done:
+    ```bash
+    cspace send _coordinator "Worker issue-${NUMBER} complete. Status: <success|failed>. PR: <url or 'none'>. Summary: <one-line description of what was done>" 2>/dev/null || true
+    ```
+    If you failed and could not produce a PR, still send the message with `Status: failed` and a brief explanation. If the send fails (no coordinator running), that's fine — it means you were launched standalone.

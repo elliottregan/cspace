@@ -98,9 +98,6 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 
 		// Supervisor
 		newSendCmd(),
-		newRespondCmd(),
-		newAskCmd(),
-		newWatchCmd(),
 		newInterruptCmd(),
 		newAgentStatusCmd(),
 		newRestartSupervisorCmd(),

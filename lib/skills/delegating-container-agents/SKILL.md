@@ -71,8 +71,8 @@ things. Rule of thumb: *"copy changes in a few files, plus some CSS fixes,
 plus a one-line bugfix"* is still a single `cspace up`.
 
 Ships the prompt directly to one supervisor-backed agent. No coordinator
-overhead. The host-side `cspace send` / `cspace respond` / `cspace interrupt`
-commands all work directly against the named instance.
+overhead. The host-side `cspace send` / `cspace interrupt` commands all work
+directly against the named instance.
 
 ```bash
 cat > /tmp/work-prompt.txt <<'EOF'
@@ -168,12 +168,9 @@ All of these route through the supervisor sockets. Same quoting rules apply
 |---|---|
 | `cspace list --all` | Show all running instances across every project |
 | `cspace ports <name>` | Show port mappings for an instance |
-| `cspace ask` | Show pending questions from agents (all instances) |
-| `cspace ask <name>` | Show pending questions from one instance |
-| `cspace watch [name]` | Stream notifications and questions live |
-| `cspace respond <name> <id> "<msg>"` | Answer a pending question |
-| `cspace send <name> "<msg>"` | Inject a proactive directive mid-run |
-| `cspace interrupt <name>` | Interrupt the tool loop via the supervisor socket |
+| `cspace send <name> "<msg>"` | Inject a user turn into a running agent session |
+| `cspace send _coordinator "<msg>"` | Send a message to the coordinator |
+| `cspace interrupt <name>` | Interrupt the current tool call via supervisor socket |
 | `cspace agent-status <name>` | Show supervisor status JSON |
 | `cspace ssh <name>` | Shell into an instance (debugging) |
 
