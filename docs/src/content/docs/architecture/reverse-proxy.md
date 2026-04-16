@@ -1,6 +1,8 @@
 ---
 title: Reverse Proxy
 description: How cspace provides per-instance hostnames via Traefik and CoreDNS
+sidebar:
+  order: 7
 ---
 
 ## Overview
@@ -31,7 +33,7 @@ Two containers run as a global shared service on the host:
 - **Traefik** (`cspace-proxy`) — listens on host port 80, auto-discovers instance containers via Docker labels, and routes HTTP requests by hostname to the correct container and port.
 - **CoreDNS** (`cspace-dns`) — listens on host port 53, resolves all `*.cspace.local` queries to `127.0.0.1`.
 
-Both are defined in a single compose stack at `lib/templates/proxy/docker-compose.yml`.
+Both are defined in a single compose stack. The source templates live at `lib/templates/proxy/`, but at runtime they are **copied to `~/.cspace/proxy/`** and docker compose runs from there. This ensures the bind-mounted Corefile is under `$HOME`, which is always in Docker Desktop's default shared file paths on macOS. See [Directory Structure](/architecture/directory-structure/#proxy) for details.
 
 ## How it works
 
