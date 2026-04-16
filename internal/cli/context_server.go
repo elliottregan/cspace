@@ -15,8 +15,8 @@ import (
 func newContextServerCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "context-server",
-		Short: "Run the docs/context MCP server over stdio",
-		Long: `Expose docs/context/ (direction, principles, roadmap, decisions, discoveries)
+		Short: "Run the .cspace/context MCP server over stdio",
+		Long: `Expose .cspace/context/ (direction, principles, roadmap, decisions, discoveries)
 as an MCP server over stdio. Typically invoked by Claude Code via .mcp.json
 or the container's Claude MCP config, not by humans directly.`,
 		GroupID: "other",

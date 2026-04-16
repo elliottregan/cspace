@@ -10,16 +10,16 @@ import (
 )
 
 // Store is the filesystem-backed context store. Root is the repo root;
-// files live under Root/docs/context/. Now returns "today" for entry dating
+// files live under Root/.cspace/context/. Now returns "today" for entry dating
 // (overridable for tests).
 type Store struct {
 	Root string
 	Now  func() time.Time
 }
 
-// ContextDir returns the absolute docs/context path.
+// ContextDir returns the absolute .cspace/context path.
 func (s *Store) ContextDir() string {
-	return filepath.Join(s.Root, "docs", "context")
+	return filepath.Join(s.Root, ".cspace", "context")
 }
 
 func (s *Store) now() time.Time {
@@ -311,7 +311,7 @@ func (s *Store) writeEntry(e Entry, subdir string) (string, error) {
 	}
 	resolved := ResolveCollision(base, taken)
 
-	// Two cspace containers sharing docs/context/ via bind mount can
+	// Two cspace containers sharing .cspace/context/ via bind mount can
 	// both reach here for the same title concurrently, both resolve
 	// to the same filename (neither sees the other's write yet), and
 	// an unguarded os.WriteFile would have one clobber the other.
@@ -373,7 +373,7 @@ Agents use this to understand where the current task fits.
 `,
 }
 
-// ensureSeeded creates docs/context/ and seeds human-owned files if missing.
+// ensureSeeded creates .cspace/context/ and seeds human-owned files if missing.
 // Existing files are never overwritten.
 func (s *Store) ensureSeeded() error {
 	if err := os.MkdirAll(s.ContextDir(), 0755); err != nil {

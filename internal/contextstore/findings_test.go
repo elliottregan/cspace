@@ -21,7 +21,7 @@ func TestLogFindingDefaultsStatusOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LogFinding: %v", err)
 	}
-	want := filepath.Join(s.Root, "docs/context/findings/2026-04-13-onboarding-step-x-confusion.md")
+	want := filepath.Join(s.Root, ".cspace/context/findings/2026-04-13-onboarding-step-x-confusion.md")
 	if path != want {
 		t.Errorf("path: got %q, want %q", path, want)
 	}
@@ -208,7 +208,7 @@ func TestAppendToFindingRefusesToTouchNonFinding(t *testing.T) {
 	s := newStore(t)
 	// Create a decision and try to append to it using its slug. Even though
 	// the slugs share the namespace visually, AppendToFinding always resolves
-	// under docs/context/findings/, so the attempt should fail as "not found."
+	// under .cspace/context/findings/, so the attempt should fail as "not found."
 	dPath, err := s.LogDecision(LogDecisionInput{Title: "X"})
 	if err != nil {
 		t.Fatal(err)

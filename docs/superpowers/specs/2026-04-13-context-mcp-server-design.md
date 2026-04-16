@@ -11,16 +11,16 @@ Agents and humans need a shared, persistent project brain that survives across s
 
 ## Solution
 
-A local MCP server, shipped as a `cspace` subcommand, that abstracts a `docs/context/` directory in the repo behind a small tool interface. The directory holds layered planning context with structured ownership: humans own direction and roadmap, agents own decisions and discoveries.
+A local MCP server, shipped as a `cspace` subcommand, that abstracts a `.cspace/context/` directory in the repo behind a small tool interface. The directory holds layered planning context with structured ownership: humans own direction and roadmap, agents own decisions and discoveries.
 
 The coordinator injects direction + roadmap into each sub-agent's prompt at dispatch time. Sub-agents pull decisions and discoveries on demand via the `read_context` tool.
 
 ## Storage
 
-All context lives in the repo at `docs/context/`:
+All context lives in the repo at `.cspace/context/`:
 
 ```
-docs/context/
+.cspace/context/
   direction.md              ← human-owned
   principles.md             ← human-owned
   roadmap.md                ← human-owned
@@ -32,7 +32,7 @@ docs/context/
 
 Version-controlled. Travels with the repo. Agent-written entries are isolated in their own subdirectories so human curation is easy.
 
-On first call to any write tool, the server creates `docs/context/` and the subdirectories if missing, and seeds `direction.md`, `principles.md`, and `roadmap.md` with commented templates explaining what goes in each. No separate init command.
+On first call to any write tool, the server creates `.cspace/context/` and the subdirectories if missing, and seeds `direction.md`, `principles.md`, and `roadmap.md` with commented templates explaining what goes in each. No separate init command.
 
 `read_context` deliberately does **not** trigger seeding: on a fresh repo it returns empty strings for the human-owned sections and empty arrays for decisions/discoveries. This keeps read calls side-effect-free so a human or tool can inspect the current state without accidentally creating files. Callers that need the templates to exist should call `log_decision` or `log_discovery` first (or edit the files by hand).
 
@@ -50,7 +50,7 @@ The MCP server enforces ownership by not exposing write tools for direction, pri
 
 ## Architecture
 
-A new Go subcommand `cspace context-server` runs a stdio MCP server using `github.com/modelcontextprotocol/go-sdk` (the official SDK). It reads and writes files under `docs/context/` in the repo root. It has no knowledge of cspace runtime state — just files.
+A new Go subcommand `cspace context-server` runs a stdio MCP server using `github.com/modelcontextprotocol/go-sdk` (the official SDK). It reads and writes files under `.cspace/context/` in the repo root. It has no knowledge of cspace runtime state — just files.
 
 Wired into two places:
 
@@ -93,7 +93,7 @@ Inputs:
 - `decision` — what was chosen.
 - `consequences` — what follows from this choice.
 
-Writes `docs/context/decisions/YYYY-MM-DD-<slug>.md`. Returns the file path.
+Writes `.cspace/context/decisions/YYYY-MM-DD-<slug>.md`. Returns the file path.
 
 ### `log_discovery`
 
@@ -104,7 +104,7 @@ Inputs:
 - `finding` — what was found.
 - `impact` — why it matters for future work.
 
-Writes `docs/context/discoveries/YYYY-MM-DD-<slug>.md`. Returns the file path.
+Writes `.cspace/context/discoveries/YYYY-MM-DD-<slug>.md`. Returns the file path.
 
 ### `list_entries`
 
@@ -204,7 +204,7 @@ _Call `read_context` with `sections: ["decisions", "discoveries"]` if your task 
 
 ### CLAUDE.md
 
-Short section pointing humans at `docs/context/` and describing ownership. Replaces the removed "Strategic Context" pointer to `docs/milestone-context.md`.
+Short section pointing humans at `.cspace/context/` and describing ownership. Replaces the removed "Strategic Context" pointer to `docs/milestone-context.md`.
 
 ## Wiring
 
@@ -223,7 +223,7 @@ Short section pointing humans at `docs/context/` and describing ownership. Repla
 
 **Container** — `lib/scripts/init-claude-plugins.sh` writes the same entry into the MCP config it generates. The `cspace` binary is already on PATH in the container.
 
-**Working directory** — the server resolves `docs/context/` relative to the current working directory. Both host and container invocations start in the project root, so no flag is needed. If an override is ever needed, add `--root <path>`.
+**Working directory** — the server resolves `.cspace/context/` relative to the current working directory. Both host and container invocations start in the project root, so no flag is needed. If an override is ever needed, add `--root <path>`.
 
 ## Testing
 

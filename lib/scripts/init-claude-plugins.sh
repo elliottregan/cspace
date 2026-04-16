@@ -115,7 +115,7 @@ if [ -n "$CSPACE_CONTAINER_NAME" ]; then
     fi
 fi
 
-# cspace-context MCP — project context brain (docs/context/)
+# cspace-context MCP — project context brain (.cspace/context/)
 # Independent of the browser sidecar; runs as a subprocess in the agent container.
 echo "  - cspace-context: registering"
 if ! sudo -u dev "$CLAUDE_BIN" mcp add --scope user cspace-context -- \

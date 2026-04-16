@@ -28,7 +28,7 @@ func TestLogDecisionWritesFileAndSeeds(t *testing.T) {
 		t.Fatalf("LogDecision: %v", err)
 	}
 
-	want := filepath.Join(s.Root, "docs/context/decisions/2026-04-13-use-go-mcp-sdk.md")
+	want := filepath.Join(s.Root, ".cspace/context/decisions/2026-04-13-use-go-mcp-sdk.md")
 	if path != want {
 		t.Errorf("path = %q, want %q", path, want)
 	}
@@ -42,7 +42,7 @@ func TestLogDecisionWritesFileAndSeeds(t *testing.T) {
 
 	// Seeding side effect: direction/principles/roadmap created.
 	for _, name := range []string{"direction.md", "principles.md", "roadmap.md"} {
-		p := filepath.Join(s.Root, "docs/context", name)
+		p := filepath.Join(s.Root, ".cspace/context", name)
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("seed missing: %v", err)
 		}
@@ -74,7 +74,7 @@ func TestSeedOnlyRunsOnce(t *testing.T) {
 	if _, err := s.LogDiscovery(LogDiscoveryInput{Title: "T", Finding: "f", Impact: "i"}); err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(s.Root, "docs/context/direction.md")
+	dir := filepath.Join(s.Root, ".cspace/context/direction.md")
 	if err := os.WriteFile(dir, []byte("custom direction"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestRemoveEntryCannotReachSiblingKind(t *testing.T) {
 func TestRemoveEntryDistinguishesNotFoundFromOtherErrors(t *testing.T) {
 	s := newStore(t)
 
-	// Make docs/context/decisions a regular file so any stat on a child path
+	// Make .cspace/context/decisions a regular file so any stat on a child path
 	// returns ENOTDIR (a non-NotExist error).
 	if err := os.MkdirAll(s.ContextDir(), 0755); err != nil {
 		t.Fatal(err)

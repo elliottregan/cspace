@@ -145,7 +145,7 @@ func Run(p Params) (Result, error) {
 			return Result{}, err
 		}
 
-		// Ensure docs/context/ exists on the host for the cspace-context
+		// Ensure .cspace/context/ exists on the host for the cspace-context
 		// bind mount. Every container for this project shares one view
 		// of decisions/discoveries/findings via this directory.
 		if err := ensureContextDir(cfg.ProjectRoot); err != nil {
@@ -326,7 +326,7 @@ func ensureSessionsDir(sessionsDir string) error {
 	return nil
 }
 
-// ensureContextDir creates ${ProjectRoot}/docs/context/ with host-user
+// ensureContextDir creates ${ProjectRoot}/.cspace/context/ with host-user
 // ownership before compose bind-mounts it. This is the cspace-context
 // MCP server's store; bind-mounting gives every container in the
 // project a shared, live view of decisions, discoveries, and findings.

@@ -189,7 +189,7 @@ log_decision(
 **Result:**
 
 ```yaml
-path: /workspace/docs/context/decisions/2026-04-14-webhook-retry-dead-letters-via-ongiveup-callback.md
+path: /workspace/.cspace/context/decisions/2026-04-14-webhook-retry-dead-letters-via-ongiveup-callback.md
 ```
 
 **What the agent does next:**
@@ -223,7 +223,7 @@ log_discovery(
 **Result:**
 
 ```yaml
-path: /workspace/docs/context/discoveries/2026-04-14-circular-import-between-retry-and-httpclient.md
+path: /workspace/.cspace/context/discoveries/2026-04-14-circular-import-between-retry-and-httpclient.md
 ```
 
 The next implementer to work in `internal/retry/` will see this discovery in their pre-exploration `read_context` call and avoid the trap.
@@ -232,9 +232,9 @@ The next implementer to work in `internal/retry/` will see this discovery in the
 
 ## Example 5 — Human curation: removing a stale entry
 
-**Setup:** A maintainer is reviewing `docs/context/decisions/` and notices a 6-month-old entry that's been superseded by a more recent architectural shift. They want to remove it so it doesn't mislead future agents.
+**Setup:** A maintainer is reviewing `.cspace/context/decisions/` and notices a 6-month-old entry that's been superseded by a more recent architectural shift. They want to remove it so it doesn't mislead future agents.
 
-The usual path is just `rm docs/context/decisions/2025-10-11-foo.md` — the files are plain markdown under git. But the MCP tool is also available for programmatic curation passes:
+The usual path is just `rm .cspace/context/decisions/2025-10-11-foo.md` — the files are plain markdown under git. But the MCP tool is also available for programmatic curation passes:
 
 **Tool call:**
 
@@ -269,7 +269,7 @@ The charset guard keeps an AI caller (which can hallucinate plausible-looking pa
 
 ## Example 6 — First write on a fresh repo
 
-**Setup:** Someone has just set up cspace on a new project. No `docs/context/` directory exists yet. An implementer starts a task and tries to read context.
+**Setup:** Someone has just set up cspace on a new project. No `.cspace/context/` directory exists yet. An implementer starts a task and tries to read context.
 
 **Tool call:**
 
@@ -301,7 +301,7 @@ log_decision(
 **After this call, the repo looks like:**
 
 ```
-docs/context/
+.cspace/context/
 ├── direction.md       ← seeded template with a comment placeholder
 ├── principles.md      ← seeded template with a comment placeholder
 ├── roadmap.md         ← seeded template with a comment placeholder

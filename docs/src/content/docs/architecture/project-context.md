@@ -11,10 +11,10 @@ Claude Code agents are stateless between sessions. Each `cspace up` starts a fre
 
 ## Data model
 
-All context lives under `docs/context/` in the project repository:
+All context lives under `.cspace/context/` in the project repository:
 
 ```
-docs/context/
+.cspace/context/
 ├── direction.md        Human-owned: what we're building and why
 ├── principles.md       Human-owned: non-negotiable constraints
 ├── roadmap.md          Human-owned: what's coming next
@@ -130,7 +130,7 @@ sudo -u dev "$CLAUDE_BIN" mcp add --scope user cspace-context -- \
     cspace context-server --root /workspace
 ```
 
-Because the binary uses `--root <path>` to resolve `docs/context/`, the host and container invocations both read and write the same files (via the bind-mounted workspace volume).
+Because the binary uses `--root <path>` to resolve `.cspace/context/`, the host and container invocations both read and write the same files (via the bind-mounted workspace volume).
 
 ## How agents use it
 

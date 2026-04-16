@@ -46,7 +46,7 @@ func TestContextServerE2E(t *testing.T) {
 		t.Fatalf("log_decision: %v", err)
 	}
 
-	matches, _ := filepath.Glob(filepath.Join(root, "docs/context/decisions/*.md"))
+	matches, _ := filepath.Glob(filepath.Join(root, ".cspace/context/decisions/*.md"))
 	if len(matches) != 1 {
 		t.Fatalf("want 1 decision file, got %d", len(matches))
 	}
@@ -105,7 +105,7 @@ func TestContextServerE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("log_finding: %v", err)
 	}
-	findingMatches, _ := filepath.Glob(filepath.Join(root, "docs/context/findings/*.md"))
+	findingMatches, _ := filepath.Glob(filepath.Join(root, ".cspace/context/findings/*.md"))
 	if len(findingMatches) != 1 {
 		t.Fatalf("want 1 finding file, got %d", len(findingMatches))
 	}
@@ -198,7 +198,7 @@ func TestContextServerE2E(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("remove_entry (finding): %v", err)
 	}
-	if got, _ := filepath.Glob(filepath.Join(root, "docs/context/findings/*.md")); len(got) != 0 {
+	if got, _ := filepath.Glob(filepath.Join(root, ".cspace/context/findings/*.md")); len(got) != 0 {
 		// .lock file is OK to leave behind; only real .md should be gone.
 		for _, g := range got {
 			if strings.HasSuffix(g, ".md") {
@@ -218,7 +218,7 @@ func TestContextServerE2E(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("remove_entry: %v", err)
 	}
-	if got, _ := filepath.Glob(filepath.Join(root, "docs/context/discoveries/*.md")); len(got) != 0 {
+	if got, _ := filepath.Glob(filepath.Join(root, ".cspace/context/discoveries/*.md")); len(got) != 0 {
 		t.Errorf("discovery not removed: %v", got)
 	}
 }
@@ -270,7 +270,7 @@ func toText(r *mcp.CallToolResult) string {
 
 func mustGlobOne(t *testing.T, root, subdir string) string {
 	t.Helper()
-	got, err := filepath.Glob(filepath.Join(root, "docs/context", subdir, "*.md"))
+	got, err := filepath.Glob(filepath.Join(root, ".cspace/context", subdir, "*.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
