@@ -54,7 +54,7 @@ All instances use the same Docker image, built from the cspace Dockerfile (`lib/
 - **Firewall**: `iptables`, `ipset`, `bind-tools`, `jq`
 - **Docker CLI**: `docker-cli`, `docker-cli-compose` (for the Docker-outside-Docker pattern)
 - **SSH**: `openssh` with password auth enabled
-- **Task runner**: `just`
+- **Task runner**: `make` (used by the cspace repo's own build; containers don't run it at runtime)
 - **Package managers**: `pnpm`
 
 **Claude Code**: Installed as the `dev` user from the official install script. Git is configured to use HTTPS (containers have no access to the host SSH agent).

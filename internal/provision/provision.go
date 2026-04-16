@@ -513,7 +513,12 @@ func runPostSetup(composeName string, cfg *config.Config) error {
 		return nil
 	}
 
-	marker := "/workspace/.cspace-post-setup-done"
+	// Marker lives outside /workspace so it doesn't appear as an
+	// untracked file in the agent's git status. /home/dev is inside the
+	// per-instance claude-home volume, so the marker persists across
+	// container restarts but is re-created on a fresh instance (matching
+	// the "run once per container lifetime" semantics we want).
+	marker := "/home/dev/.cspace-post-setup-done"
 	if _, err := instance.DcExec(composeName, "test", "-f", marker); err == nil {
 		fmt.Println("Post-setup already completed.")
 		return nil
