@@ -102,21 +102,21 @@ Each supervisor listens on a Unix domain socket for host-side commands:
 | Command | Behavior |
 |---------|----------|
 | `send_user_message` | Injects a new user turn into the running session |
-| `respond_to_question` | Answers a question the agent asked via `ask_orchestrator` |
 | `interrupt` | Gracefully cancels the current query |
 | `status` | Returns session ID, turn count, idle time |
 | `shutdown` | Closes the prompt queue and exits cleanly |
 
-Socket path: `/logs/messages/{instance}/supervisor.sock`
+Socket path: `/logs/messages/{instance}/supervisor.sock` (agents) or `/logs/messages/_coordinator/supervisor.sock` (coordinator).
 
-### MCP tools for communication
+### Communication via `cspace send`
 
-The supervisor provides in-process MCP tools for agent-coordinator communication:
+All inter-agent messaging uses `cspace send` through the Unix socket:
 
-- **`ask_orchestrator`** — blocks until the coordinator responds (up to 10 minutes). Used for genuinely ambiguous decisions with significant trade-offs.
-- **`notify_orchestrator`** — fire-and-forget status update. Used for milestones like "branch created", "PR opened", "tests passing".
+- **Coordinator → agent**: `cspace send <instance> "directive text"` — arrives as a new user turn in the agent's conversation
+- **Agent → coordinator**: `cspace send _coordinator "Worker issue-42 complete. Status: success. PR: ..."` — the agent's final step, reporting completion
+- **Human → anyone**: `cspace send <instance> "message"` or `cspace send _coordinator "message"` from the host
 
-Directives from the coordinator arrive as new user turns in the conversation — the agent does not need to poll for them.
+The coordinator's session is multi-turn — it stays alive after dispatching workers, waiting for their completion messages to arrive as new user turns. Each worker completion triggers the coordinator to update its status table and start follow-up work.
 
 ### Event logging
 
@@ -137,36 +137,18 @@ Each line is a self-describing envelope:
 }
 ```
 
-### Completion notifications
-
-When an agent finishes (success or failure), the supervisor writes a completion notification to the coordinator's inbox at `/logs/messages/_coordinator/inbox/`:
-
-```json
-{
-  "type": "completion",
-  "instance": "mercury",
-  "status": "success",
-  "exitCode": 0,
-  "sessionId": "abc-123",
-  "turns": 47,
-  "durationMs": 180000,
-  "costUsd": 12.50,
-  "summary": "Implemented the login page..."
-}
-```
-
-The coordinator watches this inbox directory and receives completion notifications as automatic user turns — no polling required.
+The diagnostics server (`cspace diagnostics-server`) tails these logs in real time and exposes agent state over WebSocket for dashboards and over MCP for coordinator diagnostic tools (`agent_health`, `agent_recent_activity`, `read_agent_stream`).
 
 ### Idle watchdog
 
-If the SDK emits no events for 10 minutes (configurable via `--idle-timeout-ms`), the supervisor assumes the agent is stuck — typically on a hung MCP tool call (e.g., a crashed browser sidecar). It calls `interrupt()` on the query to unwind gracefully, and the agent exits with an `idle_timeout` status so the coordinator can decide whether to retry.
+If the SDK emits no events for 10 minutes (configurable via `--idle-timeout-ms`), the supervisor assumes the agent is stuck — typically on a hung MCP tool call (e.g., a crashed browser sidecar). For agents, it calls `interrupt()` on the query to unwind gracefully and exits with `idle_timeout` status. For coordinators, it closes the prompt queue for a clean shutdown (no worker messages arrived within the timeout).
 
 ### Error recovery
 
 The agent system prompt instructs agents to handle errors pragmatically:
 
-- **Persistent tool errors** — investigate briefly (2–3 attempts), then escalate via `ask_orchestrator` or exit cleanly with a diagnostic summary
+- **Persistent tool errors** — investigate briefly (2–3 attempts), then exit cleanly with a diagnostic summary
 - **Environmental failures** (MCP unreachable, browser hung, repeated identical errors) — do not retry indefinitely
 - **Final message** — always include enough diagnostic context for the coordinator to decide next steps
 
-The coordinator sees the agent's final message in the completion notification and can restart the agent in a fresh session if needed.
+The coordinator can restart a stuck agent with `cspace restart-supervisor <instance> --reason "..."`, which preserves the workspace and launches a fresh session.

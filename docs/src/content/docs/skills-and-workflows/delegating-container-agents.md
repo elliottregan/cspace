@@ -51,7 +51,7 @@ cspace up mars --prompt-file /tmp/work-prompt.txt
 
 If you omit the name, the next free planet name is auto-assigned (`mercury`, `venus`, `earth`, `mars`, ...).
 
-The host-side `cspace send` / `cspace respond` / `cspace interrupt` commands all work directly against the named instance.
+The host-side `cspace send` / `cspace interrupt` commands work directly against the named instance.
 
 ### `cspace coordinate` — Multi-chunk coordinated work
 
@@ -110,21 +110,19 @@ cspace coordinate --prompt-file /tmp/coord-prompt.txt
 
 Do not poll — you will be notified when the command completes. Use the host-side monitoring commands below if you need to interact with the running agents.
 
-## Monitoring running agents
+## Monitoring and interacting with running agents
 
-All commands route through the supervisor sockets:
+All commands route through the supervisor sockets — instant delivery, no polling:
 
 | Command | Purpose |
 |---------|---------|
 | `cspace list --all` | Show all running instances across every project |
 | `cspace ports <name>` | Show port mappings for an instance |
-| `cspace ask` | Show pending questions from agents (all instances) |
-| `cspace ask <name>` | Show pending questions from one instance |
-| `cspace watch [name]` | Stream notifications and questions live |
-| `cspace respond <name> <id> "<msg>"` | Answer a pending question |
-| `cspace send <name> "<msg>"` | Inject a proactive directive mid-run |
-| `cspace interrupt <name>` | Interrupt the tool loop via the supervisor socket |
+| `cspace send <name> "<msg>"` | Inject a user turn into a running agent session |
+| `cspace send _coordinator "<msg>"` | Send a message to the coordinator |
+| `cspace interrupt <name>` | Interrupt the current tool call via supervisor socket |
 | `cspace agent-status <name>` | Show supervisor status JSON |
+| `cspace restart-supervisor <name>` | Restart a stuck agent (workspace preserved) |
 | `cspace ssh <name>` | Shell into an instance (debugging) |
 
 ## Cleanup
