@@ -11,9 +11,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 The `docs/context/` directory holds layered planning context accessible via the `cspace-context` MCP server.
 
 - `direction.md`, `principles.md`, `roadmap.md` — human-owned. Edit directly.
-- `decisions/` and `discoveries/` — agent-owned. Written by agents via `log_decision` / `log_discovery`. Curate with the `remove_entry` tool or by deleting files.
+- `decisions/` and `discoveries/` — agent-owned terminal records. Written by agents via `log_decision` / `log_discovery`. Immutable once written; curate with `remove_entry`.
+- `findings/` — agent-owned lifecycle records (bugs, observations, refactor proposals). Written by `log_finding`, grown by `append_to_finding` (append-only audit trail), queried by `list_findings` / `read_finding`. Each has a `status` that transitions through `open → acknowledged → resolved|wontfix`. When a commit resolves a finding, append `(cs-finding:<slug>)` to the commit message and call `append_to_finding(..., status="resolved")`.
 
-Agents call `read_context` at the start of non-trivial work. See `docs/superpowers/specs/2026-04-13-context-mcp-server-design.md` for the full contract.
+Agents call `read_context` at the start of non-trivial work. See `docs/superpowers/specs/2026-04-13-context-mcp-server-design.md` for the full contract (findings are a later extension of that spec).
 
 ## Development
 

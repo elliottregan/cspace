@@ -21,6 +21,7 @@ If the `cspace-context` MCP server is available (you'll see `mcp__cspace_context
 
 - Direction and roadmap may already be at the top of this prompt under `## Project Context`. If not, call `read_context` with `sections: ["direction", "roadmap"]`.
 - Before designing (Phase 3), if the task touches architecture, existing abstractions, or prior design choices, call `read_context` with `sections: ["decisions", "discoveries"]` to avoid re-litigating settled questions.
+- If the task touches an area that might have open bugs or pending refactor proposals, call `list_findings` with `status: ["open", "acknowledged"]` and any relevant `tags` or `category` filter. Read any matches with `read_finding` and surface them as context — you may end up closing one as part of this task, or deliberately deferring it.
 
 ## Phase 2 — Codebase Exploration
 
@@ -64,6 +65,8 @@ If the `cspace-context` MCP server is available (you'll see `mcp__cspace_context
 16. Take PR out of draft mode: `gh pr ready`
 17. **Do NOT use `gh pr edit --body`.** It triggers a GitHub Projects GraphQL permission error. If you need to update the PR description, use the REST API: `gh api repos/{owner}/{repo}/pulls/{number} -X PATCH -f body="..."`. But updating the description is optional.
 17a. **Log what's worth preserving.** If you made a significant design decision, call `log_decision` (title, context, alternatives, decision, consequences). If you learned something non-obvious about the code or infrastructure, call `log_discovery` (title, finding, impact). Only log things that would save a future session time — not every minor implementation choice. Do not log code conventions, commands, or anything already obvious from the diff or git history.
+
+17b. **Report bugs / observations / refactor opportunities you encounter outside this task's scope.** Call `log_finding` with `category` ∈ {bug, observation, refactor}, a title, summary, and details. Do NOT fix them inline — that expands the PR. A finding is a commitment to remember, not to do right now. If your commit happens to resolve an existing finding, append `(cs-finding:<slug>)` to the commit message and call `append_to_finding(slug, note, status="resolved")` so the Updates log reflects the fix.
 
 ## Phase 7 — Review
 

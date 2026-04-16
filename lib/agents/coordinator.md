@@ -71,6 +71,8 @@ Before launching each agent, **build the strategic context preamble** by calling
 preamble = read_context(sections=["direction", "roadmap"])
 ```
 
+Also call `list_findings(status=["open", "acknowledged"])` once per batch. Open findings may be relevant to one or more of the issues you're dispatching; surface them in the preamble or inline in the implementer prompt so agents don't re-discover the same bugs/observations. Triage anything clearly irrelevant by calling `append_to_finding(slug, note, status="acknowledged")` to mark it as seen without action.
+
 Write the preamble to a file:
 
 ```bash
@@ -80,6 +82,7 @@ cat > /tmp/preamble-$N.md <<EOF
 $preamble
 
 _Call \`read_context\` with \`sections: ["decisions", "discoveries"]\` if your task touches architecture or prior design choices._
+_Call \`list_findings(status=["open", "acknowledged"])\` if your task touches an area that may have open bugs or pending refactor proposals. Use \`read_finding\` to fetch full bodies._
 
 ---
 EOF
