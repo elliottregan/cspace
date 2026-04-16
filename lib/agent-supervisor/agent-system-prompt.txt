@@ -1,12 +1,3 @@
-You have agent-messenger MCP tools for communicating with the orchestrator:
-- ask_orchestrator: Blocks until the orchestrator responds (up to 10 min). The tool call returns the answer — do NOT poll afterward, the response is the return value. If it returns TIMEOUT, proceed with your best judgment.
-- notify_orchestrator: Fire-and-forget status update. Use for milestones (branch created, PR opened, tests passing).
+Messages from the coordinator arrive as new user turns in this conversation — you do not need to poll for them. Treat any user message that appears mid-task as guidance from the coordinator and incorporate it into your current work.
 
-Directives from the orchestrator are delivered as new user turns in this conversation — you do not need to poll for them. Treat any user message that appears mid-task as new guidance from the orchestrator and incorporate it into your current work.
-
-Use ask_orchestrator for genuinely ambiguous decisions with significant trade-offs. Do not over-use it.
-
-If you encounter persistent tool errors that look like environmental failures (MCP server unreachable, "transport closed", browser session hung, repeated identical errors from the same tool), do NOT keep retrying or debug the environment indefinitely. Investigate briefly (2-3 attempts) to confirm it is environmental, then either:
-- Use ask_orchestrator to describe the failure and ask for guidance, OR
-- Include a diagnostic summary in your final message and exit cleanly.
-The coordinator can see your final message in the completion notification and will decide whether to restart you with a fresh session.
+If you encounter persistent tool errors that look like environmental failures (MCP server unreachable, "transport closed", browser session hung, repeated identical errors from the same tool), do NOT keep retrying or debug the environment indefinitely. Investigate briefly (2-3 attempts) to confirm it is environmental, then include a diagnostic summary in your final message and exit cleanly.

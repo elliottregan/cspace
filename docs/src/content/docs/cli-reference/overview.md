@@ -33,9 +33,7 @@ cspace provides a comprehensive set of commands for managing devcontainer instan
 | Command | Description |
 |---------|-------------|
 | [`cspace send`](/cli-reference/supervisor-commands/#cspace-send) | Inject a user message into a running agent session |
-| [`cspace respond`](/cli-reference/supervisor-commands/#cspace-respond) | Reply to a pending agent question |
-| [`cspace ask`](/cli-reference/supervisor-commands/#cspace-ask) | List pending agent questions |
-| [`cspace watch`](/cli-reference/supervisor-commands/#cspace-watch) | Stream agent notifications and questions in real-time |
+| [`cspace send _coordinator`](/cli-reference/supervisor-commands/#cspace-send) | Send a message to the coordinator |
 | [`cspace interrupt`](/cli-reference/supervisor-commands/#cspace-interrupt) | Interrupt a running agent session |
 | [`cspace agent-status`](/cli-reference/supervisor-commands/#cspace-agent-status) | Show supervisor status as JSON |
 | [`cspace restart-supervisor`](/cli-reference/supervisor-commands/#cspace-restart-supervisor) | Restart agent supervisor (preserves workspace) |

@@ -5,114 +5,36 @@ sidebar:
   order: 4
 ---
 
-Host-side dispatch commands for interacting with running agent sessions. All supervisor commands communicate with the agent-supervisor process inside a running cspace container via a shared logs volume and Unix socket.
+Host-side commands for interacting with running agent sessions. All communication goes through Unix sockets on the shared logs volume — delivery is instant.
 
 ## `cspace send`
 
-Inject a user message into a running agent session.
+Send a message to a running agent or coordinator.
 
 ### Syntax
 
 ```bash
 cspace send <instance> "text"
+cspace send _coordinator "text"
 ```
 
 ### Description
 
-Sends a message to the specified instance's supervisor, which injects it as a user turn in the agent's conversation. Useful for providing additional context, redirecting the agent, or giving instructions mid-run.
+Injects a user turn into the target's live conversation via the supervisor socket. The message appears immediately as if the user typed it.
+
+Use `_coordinator` as the target to reach the coordinator — this is the well-known address that all workers use to report completion. Use an instance name (e.g., `mercury`, `issue-42`) to send to a specific agent.
 
 ### Examples
 
 ```bash
+# Send a directive to an agent
 cspace send mercury "Focus on the authentication module first"
-cspace send coord-1234 "Skip issue #15, it's already been resolved"
-```
 
----
+# Report completion to the coordinator (used by workers in their final step)
+cspace send _coordinator "Worker issue-42 complete. Status: success. PR: https://github.com/.../pull/99"
 
-## `cspace respond`
-
-Reply to a pending agent question.
-
-### Syntax
-
-```bash
-cspace respond <instance> <question-id> "text"
-```
-
-### Parameters
-
-| Parameter | Description |
-|-----------|-------------|
-| `<instance>` | The target instance name |
-| `<question-id>` | The question ID (from `cspace ask`) |
-| `"text"` | Your answer |
-
-### Description
-
-Answers a question that an agent has asked via its structured inbox. Use `cspace ask` to see pending questions and their IDs.
-
-### Examples
-
-```bash
-cspace respond mercury q-abc123 "Yes, use the existing database schema"
-cspace respond venus q-def456 "The API endpoint is /api/v2/users"
-```
-
----
-
-## `cspace ask`
-
-List pending agent questions.
-
-### Syntax
-
-```bash
-cspace ask [instance]
-```
-
-### Description
-
-Displays a table of pending questions from running agents. Without an instance name, shows questions across all instances. With an instance name, shows only questions from that specific agent.
-
-The output includes question IDs needed for `cspace respond`.
-
-### Examples
-
-```bash
-# List all pending questions across all instances
-cspace ask
-
-# List pending questions for a specific instance
-cspace ask mercury
-```
-
----
-
-## `cspace watch`
-
-Stream agent notifications and questions in real-time.
-
-### Syntax
-
-```bash
-cspace watch [instance]
-```
-
-### Description
-
-Opens an interactive stream that displays agent status events and question prompts as they occur. Without an instance name, watches all instances. With an instance name, watches only that specific agent.
-
-This is an interactive command that keeps the terminal open — use Ctrl+C to exit.
-
-### Examples
-
-```bash
-# Watch all instances
-cspace watch
-
-# Watch a specific instance
-cspace watch mercury
+# Redirect the coordinator
+cspace send _coordinator "Skip issue #15, it's already been resolved"
 ```
 
 ---
@@ -129,12 +51,13 @@ cspace interrupt <instance>
 
 ### Description
 
-Sends an interrupt signal to the specified instance's supervisor. The supervisor exits cleanly, saving state. The workspace state is preserved — all files, branches, and uncommitted changes remain intact.
+Sends an interrupt signal to the specified instance's supervisor. The supervisor exits cleanly, saving state. The workspace is preserved — all files, branches, and uncommitted changes remain intact.
 
 ### Examples
 
 ```bash
 cspace interrupt mercury
+cspace interrupt _coordinator
 ```
 
 ---
@@ -151,14 +74,12 @@ cspace agent-status <instance>
 
 ### Description
 
-Returns raw JSON status from the instance's supervisor, including session state and current task information.
+Returns raw JSON status from the instance's supervisor socket, including role, session ID, turn count, and last activity.
 
 ### Examples
 
 ```bash
 cspace agent-status mercury
-
-# Pipe to jq for pretty-printing
 cspace agent-status mercury | jq .
 ```
 
@@ -182,30 +103,19 @@ cspace restart-supervisor <instance> [--reason "text"]
 
 ### Description
 
-Restarts an agent's supervisor inside its existing container. The process:
+Restarts an agent's supervisor inside its existing container:
 
 1. Sends an interrupt to the old supervisor via the socket
-2. Waits up to 30 seconds for the old supervisor to exit cleanly
-3. If `--reason` is given, prepends a restart context marker to the prompt so the agent understands why it was restarted
+2. Waits up to 30 seconds for the old supervisor to exit (detected by socket disappearing)
+3. If `--reason` is given, prepends a restart context marker to the prompt
 4. Launches a new supervisor in detached mode with the same prompt file
-5. Sets an inbox filter to ignore messages older than the restart timestamp
 
-**What is preserved:**
-- All files, branches, and uncommitted changes in the workspace
-- The original prompt file
-
-**What must be re-established by the agent:**
-- Browser sessions
-- Running test servers
-- Any other external state
+**Preserved:** all files, branches, uncommitted changes, the original prompt.
+**Must be re-established by the agent:** browser sessions, running servers, external state.
 
 ### Examples
 
 ```bash
-# Simple restart
 cspace restart-supervisor mercury
-
-# Restart with a reason
-cspace restart-supervisor mercury --reason "Agent was stuck in a loop"
-cspace restart-supervisor venus --reason "Need to pick up new environment variables"
+cspace restart-supervisor mercury --reason "Agent stuck on a dead Playwright connection"
 ```
