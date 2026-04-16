@@ -20,7 +20,6 @@ cspace provides a comprehensive set of commands for managing devcontainer instan
 | [`cspace down`](/cli-reference/instance-management/#cspace-down) | Destroy instance and volumes |
 | [`cspace warm`](/cli-reference/instance-management/#cspace-warm) | Pre-provision containers without launching Claude |
 | [`cspace rebuild`](/cli-reference/instance-management/#cspace-rebuild) | Rebuild the container image |
-| [`cspace sync-context`](/cli-reference/instance-management/#cspace-sync-context) | Generate milestone context document |
 
 ### Autonomous Agents
 
@@ -34,9 +33,7 @@ cspace provides a comprehensive set of commands for managing devcontainer instan
 | Command | Description |
 |---------|-------------|
 | [`cspace send`](/cli-reference/supervisor-commands/#cspace-send) | Inject a user message into a running agent session |
-| [`cspace respond`](/cli-reference/supervisor-commands/#cspace-respond) | Reply to a pending agent question |
-| [`cspace ask`](/cli-reference/supervisor-commands/#cspace-ask) | List pending agent questions |
-| [`cspace watch`](/cli-reference/supervisor-commands/#cspace-watch) | Stream agent notifications and questions in real-time |
+| [`cspace send _coordinator`](/cli-reference/supervisor-commands/#cspace-send) | Send a message to the coordinator |
 | [`cspace interrupt`](/cli-reference/supervisor-commands/#cspace-interrupt) | Interrupt a running agent session |
 | [`cspace agent-status`](/cli-reference/supervisor-commands/#cspace-agent-status) | Show supervisor status as JSON |
 | [`cspace restart-supervisor`](/cli-reference/supervisor-commands/#cspace-restart-supervisor) | Restart agent supervisor (preserves workspace) |
@@ -55,3 +52,4 @@ cspace provides a comprehensive set of commands for managing devcontainer instan
 | `cspace` | Interactive TUI menu (requires `gum`) |
 | `cspace version` | Show cspace version |
 | `cspace help` | Show help text |
+| `cspace context-server` | Stdio MCP server exposing `.cspace/context/` (launched by Claude via `.mcp.json`, not invoked directly). See [Project Context](/architecture/project-context/). |

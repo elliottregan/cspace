@@ -130,6 +130,28 @@ func Run(p Params) (Result, error) {
 			return Result{}, fmt.Errorf("exporting CSPACE_TELEPORT_DIR: %w", err)
 		}
 
+		// Ensure .cspace/memory/ exists on the host with the invoking
+		// user's ownership before compose bind-mounts it — otherwise
+		// Docker auto-creates it root-owned and agents can't write.
+		if err := ensureMemoryDir(cfg.ProjectRoot); err != nil {
+			return Result{}, err
+		}
+
+		// Ensure the shared sessions dir exists for the same reason.
+		// All containers for this project bind-mount this to their
+		// /home/dev/.claude/projects/-workspace, so sessions survive
+		// container rebuild and teleport can skip the JSONL copy.
+		if err := ensureSessionsDir(cfg.SessionsDir()); err != nil {
+			return Result{}, err
+		}
+
+		// Ensure .cspace/context/ exists on the host for the cspace-context
+		// bind mount. Every container for this project shares one view
+		// of decisions/discoveries/findings via this directory.
+		if err := ensureContextDir(cfg.ProjectRoot); err != nil {
+			return Result{}, err
+		}
+
 		// 7. Start instance containers
 		if err := compose.Run(name, cfg, "up", "-d"); err != nil {
 			return Result{}, fmt.Errorf("starting container: %w", err)
@@ -255,6 +277,73 @@ func ensureTeleportDir(dir string) error {
 	return nil
 }
 
+// memoryStub is written to .cspace/memory/MEMORY.md on first provision so
+// agents' first "read MEMORY.md" call finds the expected file. The header
+// also explains the convention to humans browsing the repo.
+const memoryStub = `<!--
+This directory holds project-shared Claude Code memory.
+
+It is bind-mounted into every cspace container at:
+  /home/dev/.claude/projects/-workspace/memory
+
+Agents read and write here via the built-in memory system (four types:
+user, feedback, project, reference). Committed to git so learnings
+survive volume wipes and propagate to fresh clones.
+
+See CLAUDE.md for the full convention.
+-->
+`
+
+// ensureMemoryDir creates ${ProjectRoot}/.cspace/memory/ with host-user
+// ownership before compose bind-mounts it into the container. Docker's
+// auto-create on bind-mount makes the dir root-owned, which breaks the
+// agent's ability to write. Also seeds MEMORY.md if missing.
+func ensureMemoryDir(projectRoot string) error {
+	dir := filepath.Join(projectRoot, ".cspace", "memory")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating memory dir %s: %w", dir, err)
+	}
+	stubPath := filepath.Join(dir, "MEMORY.md")
+	if _, err := os.Stat(stubPath); os.IsNotExist(err) {
+		if err := os.WriteFile(stubPath, []byte(memoryStub), 0644); err != nil {
+			return fmt.Errorf("writing memory stub %s: %w", stubPath, err)
+		}
+	}
+	return nil
+}
+
+// ensureSessionsDir creates the shared host-side sessions directory
+// (default $HOME/.cspace/sessions/<project>/) with invoking-user
+// ownership before compose bind-mounts it. All containers for this
+// project share this directory — it holds every Claude Code session
+// JSONL transcript, survives volume wipes, and makes teleport a
+// trivial "resume by session ID" rather than a JSONL shipping dance.
+// No stub file: Claude Code creates its own session files on first run.
+func ensureSessionsDir(sessionsDir string) error {
+	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
+		return fmt.Errorf("creating sessions dir %s: %w", sessionsDir, err)
+	}
+	return nil
+}
+
+// ensureContextDir creates ${ProjectRoot}/.cspace/context/ with host-user
+// ownership before compose bind-mounts it. This is the cspace-context
+// MCP server's store; bind-mounting gives every container in the
+// project a shared, live view of decisions, discoveries, and findings.
+// The directory is committed to git, so agent writes here show up in
+// the host's `git status` ready to be committed.
+//
+// contextstore.ensureSeeded() will lay down the three human-owned
+// template files (direction/principles/roadmap) on first write; we
+// just need the directory itself to exist and be writable.
+func ensureContextDir(projectRoot string) error {
+	dir := filepath.Join(projectRoot, "docs", "context")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating context dir %s: %w", dir, err)
+	}
+	return nil
+}
+
 // teleportHostDir returns the host-side path used for the /teleport bind
 // mount. Defaults to ~/.cspace/teleport; overridable via CSPACE_TELEPORT_DIR.
 func teleportHostDir() string {
@@ -283,8 +372,10 @@ func gitConfigValue(projectRoot, key string) string {
 }
 
 // ensureVolumes creates the shared external volumes if they don't already exist.
+// Memory is NOT an external volume — it's bind-mounted from the project's
+// .cspace/memory/ directory so learnings persist in git. See ensureMemoryDir.
 func ensureVolumes(cfg *config.Config) error {
-	for _, vol := range []string{cfg.MemoryVolume(), cfg.LogsVolume()} {
+	for _, vol := range []string{cfg.LogsVolume()} {
 		if err := docker.VolumeCreate(vol); err != nil {
 			// Log but don't fail — volume may already exist
 			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
@@ -447,7 +538,12 @@ func runPostSetup(composeName string, cfg *config.Config) error {
 		return nil
 	}
 
-	marker := "/workspace/.cspace-post-setup-done"
+	// Marker lives outside /workspace so it doesn't appear as an
+	// untracked file in the agent's git status. /home/dev is inside the
+	// per-instance claude-home volume, so the marker persists across
+	// container restarts but is re-created on a fresh instance (matching
+	// the "run once per container lifetime" semantics we want).
+	marker := "/home/dev/.cspace-post-setup-done"
 	if _, err := instance.DcExec(composeName, "test", "-f", marker); err == nil {
 		fmt.Println("Post-setup already completed.")
 		return nil

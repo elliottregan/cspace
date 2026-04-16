@@ -166,8 +166,13 @@ func TestDeepMerge_DoesNotMutateInputs(t *testing.T) {
 }
 
 // setupTestProject creates a minimal git repo with optional config files.
+// It also clears the CSPACE_PROJECT_* env vars that Load treats as top-priority
+// overrides, so tests running inside a cspace devcontainer (where these vars
+// are always set) see the same behavior as tests in CI.
 func setupTestProject(t *testing.T, projectConfig, localConfig string) string {
 	t.Helper()
+	t.Setenv("CSPACE_PROJECT_NAME", "")
+	t.Setenv("CSPACE_PROJECT_REPO", "")
 	dir := t.TempDir()
 
 	// Create .git directory to make it look like a git repo

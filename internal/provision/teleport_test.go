@@ -75,11 +75,9 @@ func TestTeleportRunRejectsManifestTargetMismatch(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), data, 0644); err != nil {
 		t.Fatal(err)
 	}
-	// Satisfy the bundle+transcript existence checks.
+	// Satisfy the bundle existence check — session JSONL now rides via
+	// the shared sessions bind mount, not this transfer dir.
 	if err := os.WriteFile(filepath.Join(dir, "workspace.bundle"), []byte("fake"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte("{}"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -129,9 +127,6 @@ func TestValidateTeleportInputsRejectsMissingBundle(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), data, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte("{}"), 0644); err != nil {
-		t.Fatal(err)
-	}
 	// No workspace.bundle.
 
 	_, err := validateTeleportInputs(TeleportParams{
@@ -143,30 +138,15 @@ func TestValidateTeleportInputsRejectsMissingBundle(t *testing.T) {
 	}
 }
 
-func TestValidateTeleportInputsRejectsMissingTranscript(t *testing.T) {
-	dir := t.TempDir()
-	manifest := teleportManifest{Target: "mars", SessionID: "abc"}
-	data, _ := json.Marshal(manifest)
-	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), data, 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "workspace.bundle"), []byte("fake"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	// No session.jsonl.
+// NOTE: Since switching to shared sessions (bind-mounted via
+// $HOME/.cspace/sessions/<project>/), the teleport transfer no longer
+// carries session.jsonl. A corresponding "rejects missing transcript"
+// test was removed — the bundle + manifest are now the only required
+// ride-alongs.
 
-	_, err := validateTeleportInputs(TeleportParams{
-		Name:         "mars",
-		TeleportFrom: dir,
-	})
-	if err == nil {
-		t.Fatal("expected error for missing session.jsonl")
-	}
-}
-
-// writeValidTransferDir populates dir with the three files a teleport transfer
-// expects — manifest targeting `target`, an empty workspace.bundle, and an
-// empty session.jsonl. Used by tests that want to exercise a later failure.
+// writeValidTransferDir populates dir with the two files a teleport
+// transfer expects — manifest targeting `target` and a workspace.bundle.
+// Used by tests that want to exercise a later failure.
 func writeValidTransferDir(t *testing.T, dir, target string) {
 	t.Helper()
 	manifest := teleportManifest{Target: target, SessionID: "abc"}
@@ -175,9 +155,6 @@ func writeValidTransferDir(t *testing.T, dir, target string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "workspace.bundle"), []byte("fake"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte("{}"), 0644); err != nil {
 		t.Fatal(err)
 	}
 }

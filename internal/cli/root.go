@@ -34,7 +34,7 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			// Skip config/asset loading for commands that don't need a project context
 			switch cmd.Name() {
-			case "version", "help", "completion", "init", "self-update":
+			case "version", "help", "completion", "init", "self-update", "context-server", "diagnostics-server":
 				return nil
 			}
 
@@ -98,18 +98,18 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 
 		// Supervisor
 		newSendCmd(),
-		newRespondCmd(),
-		newAskCmd(),
-		newWatchCmd(),
 		newInterruptCmd(),
 		newAgentStatusCmd(),
 		newRestartSupervisorCmd(),
 
 		// Project Setup
 		newInitCmd(),
+		newMemoryCmd(),
+		newSessionsCmd(),
 
 		// Other
-		newSyncContextCmd(),
+		newContextServerCmd(),
+		newDiagnosticsServerCmd(),
 		newSelfUpdateCmd(),
 		newVersionCmd(),
 		newCompletionCmd(),

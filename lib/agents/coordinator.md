@@ -64,7 +64,31 @@ For each unblocked issue, **render the implementer prompt** then launch.
 
 ### Render the prompt
 
-Use bash to substitute the template variables. The implementer playbook contains placeholders like `${NUMBER}`, `${BASE_BRANCH}`, `${VERIFY_COMMAND}`, `${E2E_COMMAND}`, and `${STRATEGIC_CONTEXT_PREAMBLE}`. Read the verify/e2e commands from the project config:
+Before launching each agent, **build the strategic context preamble** by calling the `read_context` MCP tool (from the `cspace-context` server) for `direction` and `roadmap`:
+
+```
+# Pseudocode — the exact call depends on your MCP tool invocation syntax.
+preamble = read_context(sections=["direction", "roadmap"])
+```
+
+Also call `list_findings(status=["open", "acknowledged"])` once per batch. Open findings may be relevant to one or more of the issues you're dispatching; surface them in the preamble or inline in the implementer prompt so agents don't re-discover the same bugs/observations. Triage anything clearly irrelevant by calling `append_to_finding(slug, note, status="acknowledged")` to mark it as seen without action.
+
+Write the preamble to a file:
+
+```bash
+cat > /tmp/preamble-$N.md <<EOF
+## Project Context
+
+$preamble
+
+_Call \`read_context\` with \`sections: ["decisions", "discoveries"]\` if your task touches architecture or prior design choices._
+_Call \`list_findings(status=["open", "acknowledged"])\` if your task touches an area that may have open bugs or pending refactor proposals. Use \`read_finding\` to fetch full bodies._
+
+---
+EOF
+```
+
+Then substitute template variables. The implementer playbook has placeholders like `${NUMBER}`, `${BASE_BRANCH}`, `${VERIFY_COMMAND}`, `${E2E_COMMAND}`, and `${STRATEGIC_CONTEXT_PREAMBLE}`. Read the verify/e2e commands from the project config:
 
 ```bash
 N=42
@@ -76,17 +100,42 @@ E2E=$(jq -r '.verify.e2e // ""' /workspace/.cspace.json 2>/dev/null || echo "")
 PLAYBOOK=/opt/cspace/lib/agents/implementer.md
 [ -f /workspace/.cspace/agents/implementer.md ] && PLAYBOOK=/workspace/.cspace/agents/implementer.md
 
-sed \
+# Substitute ${STRATEGIC_CONTEXT_PREAMBLE} with awk (literal string replacement,
+# safe for any preamble content), then the remaining placeholders with sed.
+# The preamble path is passed via -v and read from disk inside awk, so nothing
+# from the preamble is ever interpreted by the shell or a scripting language.
+awk \
+  -v PRE="/tmp/preamble-$N.md" \
+  -v PH='${STRATEGIC_CONTEXT_PREAMBLE}' \
+  '
+    BEGIN {
+      # Append ORS after each line so the reconstructed preamble ends with
+      # a newline, matching the file-on-disk representation. Without this
+      # the placeholder replacement would run the preamble into whatever
+      # follows on the same line of the playbook.
+      while ((getline line < PRE) > 0) {
+        p = p line ORS
+      }
+      close(PRE)
+    }
+    {
+      out = ""
+      while ((i = index($0, PH)) > 0) {
+        out = out substr($0, 1, i - 1) p
+        $0 = substr($0, i + length(PH))
+      }
+      print out $0
+    }
+  ' "$PLAYBOOK" | sed \
   -e "s|\${NUMBER}|$N|g" \
   -e "s|\${BASE_BRANCH}|$BASE|g" \
   -e "s|\${VERIFY_COMMAND}|$VERIFY|g" \
   -e "s|\${E2E_COMMAND}|$E2E|g" \
   -e "s|\${MILESTONE_FLAG}||g" \
-  -e "s|\${STRATEGIC_CONTEXT_PREAMBLE}||g" \
-  "$PLAYBOOK" > /tmp/implementer-$N.txt
+  > /tmp/implementer-$N.txt
 ```
 
-If you have strategic context (a milestone doc), prepend it manually instead of substituting `${STRATEGIC_CONTEXT_PREAMBLE}` — sed handles single-line substitutions cleanly but multi-line preambles are awkward to inline.
+If `read_context` is unavailable (tool not registered), substitute `${STRATEGIC_CONTEXT_PREAMBLE}` with an empty string and continue — sub-agents can still call `read_context` themselves at runtime if the container's MCP config exposes it.
 
 ### Launch
 
@@ -96,28 +145,58 @@ cspace up issue-$N --base $BASE --prompt-file /tmp/implementer-$N.txt
 
 Use `run_in_background: true` with a 60-minute timeout. Launch all ready agents in a **single message** with multiple Bash tool calls.
 
+**Each `cspace up` call is a blocking streaming command.** It does not return until the agent exits, and its combined stdout+stderr emits the agent's entire event stream as it happens (thinking, tool calls, tool results, final result). With `run_in_background: true`, that whole stream accumulates in the Bash call's BashOutput and is what you read to monitor the agent — exactly like watching a foreground `cspace up` in a terminal. Save the background task ID for each agent; you'll need it to read BashOutput in Phase 3.
+
 **Do not launch blocked agents.** They will be launched in Phase 4b when their deps complete.
 
-## Phase 3 — Monitor
+## Phase 3 — Monitor and wait for completions
 
-**Do not poll.** Wait for background task completion notifications.
+**Your session stays open.** After dispatching agents, do NOT produce a final summary and exit. Workers will send you completion messages via `cspace send _coordinator` when they finish. You will receive these as new user turns automatically — no polling needed.
 
-When an agent completes, read the **full output file** (not just the tail). Extract:
-- **PR URL**: grep for `github.com/.*/pull/`
-- **Pass/fail**: exit code 0 = success, non-zero = failure. Also check for "Done" vs "FAILED" in output.
-- **Session ID**: appears as "Session: <uuid>" near the top
+Each message will look like:
 
-Report each completion to the user immediately — don't wait for all agents.
+```
+Worker issue-42 complete. Status: success. PR: https://github.com/.../pull/123. Summary: Added retry logic to webhook pipeline
+```
+
+Process each completion as it arrives: update your status table, read the agent's BashOutput for the full story, and report to the user immediately. Only move to Phase 5 after all dispatched workers have reported (or you've given up on stuck ones).
+
+### Monitoring while you wait
+
+Each agent also has a BashOutput stream (the background `cspace up` call you started in Phase 2). That stream contains every tool call and thinking block in real time as `[N] -> ToolName` entries.
+
+- For a live check, read the BashOutput of that agent's `cspace up` task.
+- When the background task completes, its exit code tells you success/failure (0 or 141 = success, anything else = failure). Read the **full output** on completion, not just the tail — the PR URL, session ID, and any error diagnostics all live there.
+  - **PR URL**: grep for `github.com/.*/pull/`
+  - **Session ID**: appears as `Session: <uuid>` near the top
+
+### Fallback: `read_agent_stream` MCP tool
+
+If an agent's BashOutput is truncated, lost, or you need to re-inspect after a coordinator restart, call `read_agent_stream` with the instance name. It reads the same data from the persisted event log at `/logs/events/<instance>/session-*.ndjson`. Use `since: <last_ts>` to poll incrementally.
+
+### Watchdog: catch silent failures
+
+An agent that crashes may never send its `cspace send _coordinator` message. If an agent has had no new BashOutput events for >5 minutes and you haven't received its completion:
+
+1. Check its BashOutput tail for errors.
+2. If ambiguous, call `read_agent_stream` with `types: ["result", "assistant"]`.
+3. If genuinely stuck, use `cspace restart-supervisor <instance> --reason "..."` or `cspace send <instance>` with targeted instructions. Do not just wait longer.
+
+### Anti-patterns (don't do these)
+
+- ❌ **Exiting before all workers report.** Your session stays alive specifically to receive worker completions. Producing a "dispatch summary" and stopping is the #1 cause of missed completions.
+- ❌ **Polling loops** (`until docker exec ... test -f /some/marker; do sleep N; done`) — redundant with the completion messages you'll receive.
+- ❌ **Assuming silence means progress** — it can also mean the agent crashed before sending its completion. Always cross-check BashOutput or `read_agent_stream` if a worker is overdue.
 
 ### Code Review
 
-After each agent completes successfully (has a draft PR), dispatch a code review in the **same container** by sending a follow-up directive via the messenger:
+After each agent completes successfully (has a draft PR), dispatch a code review in the **same container**:
 
 ```
-cspace send issue-<N> "Run /code-review on the open draft PR for issue #<N>. Review the diff against the issue requirements. Fix any issues found, commit, and push. Then mark the PR as ready with: gh pr ready"
+cspace send issue-<N> "Run /code-review on the open draft PR for issue #<N>. Review the diff against the issue requirements. Fix any issues found, commit, and push. Then mark the PR as ready with: gh pr ready. When done, send your result: cspace send _coordinator 'Code review for issue-<N> complete. Status: <pass|fail>.'"
 ```
 
-Watch for completion via `cspace ask issue-<N>` (notifications).
+The agent will report back via `cspace send _coordinator` when the review is done.
 
 ### AC Verification
 

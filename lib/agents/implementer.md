@@ -15,6 +15,14 @@ ${STRATEGIC_CONTEXT_PREAMBLE}You are a fully autonomous agent. There is no human
    - `git push -u origin issue-${NUMBER}`
    - `gh pr create --draft --base ${BASE_BRANCH} --title "issue-${NUMBER}: <short title from issue>" --body "Closes #${NUMBER}"`
 
+### Project context
+
+If the `cspace-context` MCP server is available (you'll see `mcp__cspace_context__*` tools), use it:
+
+- Direction and roadmap may already be at the top of this prompt under `## Project Context`. If not, call `read_context` with `sections: ["direction", "roadmap"]`.
+- Before designing (Phase 3), if the task touches architecture, existing abstractions, or prior design choices, call `read_context` with `sections: ["decisions", "discoveries"]` to avoid re-litigating settled questions.
+- If the task touches an area that might have open bugs or pending refactor proposals, call `list_findings` with `status: ["open", "acknowledged"]` and any relevant `tags` or `category` filter. Read any matches with `read_finding` and surface them as context — you may end up closing one as part of this task, or deliberately deferring it.
+
 ## Phase 2 — Codebase Exploration
 
 **Goal**: Understand relevant existing code and patterns at both high and low levels.
@@ -56,9 +64,17 @@ ${STRATEGIC_CONTEXT_PREAMBLE}You are a fully autonomous agent. There is no human
 15. Commit any remaining uncommitted changes with a message that includes `Closes #${NUMBER}`, then push: `git push`
 16. Take PR out of draft mode: `gh pr ready`
 17. **Do NOT use `gh pr edit --body`.** It triggers a GitHub Projects GraphQL permission error. If you need to update the PR description, use the REST API: `gh api repos/{owner}/{repo}/pulls/{number} -X PATCH -f body="..."`. But updating the description is optional.
+17a. **Log what's worth preserving.** If you made a significant design decision, call `log_decision` (title, context, alternatives, decision, consequences). If you learned something non-obvious about the code or infrastructure, call `log_discovery` (title, finding, impact). Only log things that would save a future session time — not every minor implementation choice. Do not log code conventions, commands, or anything already obvious from the diff or git history.
+
+17b. **Report bugs / observations / refactor opportunities you encounter outside this task's scope.** Call `log_finding` with `category` ∈ {bug, observation, refactor}, a title, summary, and details. Do NOT fix them inline — that expands the PR. A finding is a commitment to remember, not to do right now. If your commit happens to resolve an existing finding, append `(cs-finding:<slug>)` to the commit message and call `append_to_finding(slug, note, status="resolved")` so the Updates log reflects the fix.
 
 ## Phase 7 — Review
 
 18. Take screenshots of the new/changed features using Playwright MCP browser tools against the running preview server, then post them as a comment on the PR using gh cli.
 19. Review your own PR using /code-review — fix any issues found, commit, and push again.
 20. **AC verification**: Re-read the issue (`gh issue view ${NUMBER}`) and compare every acceptance criterion against your actual changes. For each AC item, confirm it is met or note what's missing. If anything is missing, go back and implement it before finishing.
+21. **Report completion to the coordinator.** This is the last thing you do — the coordinator is waiting for this message to know you're done:
+    ```bash
+    cspace send _coordinator "Worker issue-${NUMBER} complete. Status: <success|failed>. PR: <url or 'none'>. Summary: <one-line description of what was done>" 2>/dev/null || true
+    ```
+    If you failed and could not produce a PR, still send the message with `Status: failed` and a brief explanation. If the send fails (no coordinator running), that's fine — it means you were launched standalone.

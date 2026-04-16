@@ -287,25 +287,3 @@ The image is tagged as `cspace-{project.name}` based on the project name in `.cs
 ```bash
 cspace rebuild
 ```
-
----
-
-## `cspace sync-context`
-
-Generate a milestone context document.
-
-### Syntax
-
-```bash
-cspace sync-context
-```
-
-### Description
-
-Generates documentation of the current milestone state from the GitHub API.
-
-### Examples
-
-```bash
-cspace sync-context
-```

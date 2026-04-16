@@ -2,6 +2,10 @@
 # Initialize Claude plugins and settings for cspace devcontainers.
 # Configurable via CSPACE_CLAUDE_MODEL and CSPACE_CLAUDE_EFFORT env vars.
 
+# Propagate exit codes through pipes so `if ! cmd | sed ...` detects cmd's
+# failure rather than sed's (sed nearly always succeeds).
+set -o pipefail
+
 # Ensure claude CLI is in PATH (installed to ~/.local/bin by Claude Code installer,
 # but entrypoint.sh runs this script before profile is sourced).
 export PATH="/home/dev/.local/bin:$PATH"
@@ -80,30 +84,43 @@ cat > "$USER_SETTINGS" <<HOOKS_EOF
 HOOKS_EOF
 chown dev:dev "$USER_SETTINGS"
 
-# --- Built-in browser MCP servers ---
+# --- Built-in MCP servers ---
 # Always registered (runs every startup, not gated by marker).
-# Both run inside the browser sidecar via docker exec, which has unrestricted
-# network access (no firewall). The agent container communicates with them
-# over stdio through the docker exec pipe.
+# Run as dev user so claude writes to /home/dev/.claude.json, not /root/.
+CLAUDE_BIN="/home/dev/.local/bin/claude"
+
+# Browser MCPs run inside the browser sidecar via docker exec, which has
+# unrestricted network access (no firewall). The agent container communicates
+# with them over stdio through the docker exec pipe.
 BROWSER_CONTAINER="${CSPACE_CONTAINER_NAME}.browser"
 if [ -n "$CSPACE_CONTAINER_NAME" ]; then
     echo "Registering browser MCP servers..."
 
     # Playwright MCP — browser automation via the sidecar's Chrome instance
-    # Runs as dev user so claude writes to /home/dev/.claude.json, not /root/
-    CLAUDE_BIN="/home/dev/.local/bin/claude"
     echo "  - playwright: registering"
-    sudo -u dev "$CLAUDE_BIN" mcp add --scope user playwright -- \
+    if ! sudo -u dev "$CLAUDE_BIN" mcp add --scope user playwright -- \
         docker exec -i "$BROWSER_CONTAINER" \
         npx --yes @playwright/mcp@latest \
-        --cdp-endpoint http://localhost:9222 --no-sandbox 2>&1 | sed 's/^/      /' || true
+        --cdp-endpoint http://localhost:9222 --no-sandbox 2>&1 | sed 's/^/      /'; then
+        echo "  - playwright: registration failed (continuing)"
+    fi
 
     # Chrome DevTools MCP — page inspection via CDP
     echo "  - chrome-devtools: registering"
-    sudo -u dev "$CLAUDE_BIN" mcp add --scope user chrome-devtools -- \
+    if ! sudo -u dev "$CLAUDE_BIN" mcp add --scope user chrome-devtools -- \
         docker exec -i "$BROWSER_CONTAINER" \
         npx --yes chrome-devtools-mcp@latest \
-        --browserUrl http://localhost:9222 2>&1 | sed 's/^/      /' || true
+        --browserUrl http://localhost:9222 2>&1 | sed 's/^/      /'; then
+        echo "  - chrome-devtools: registration failed (continuing)"
+    fi
+fi
+
+# cspace-context MCP — project context brain (.cspace/context/)
+# Independent of the browser sidecar; runs as a subprocess in the agent container.
+echo "  - cspace-context: registering"
+if ! sudo -u dev "$CLAUDE_BIN" mcp add --scope user cspace-context -- \
+    cspace context-server --root /workspace 2>&1 | sed 's/^/      /'; then
+    echo "  - cspace-context: registration failed (continuing)"
 fi
 
 # Skip plugin init if already done

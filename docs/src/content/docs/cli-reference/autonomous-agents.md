@@ -39,7 +39,7 @@ Creates a dedicated coordinator instance and launches the coordinator agent. The
 5. Launches the agent supervisor with `--role coordinator`
 6. Streams real-time status output to the terminal
 
-The coordinator's Unix control socket is reachable for mid-run interaction via `cspace send`, `cspace respond`, and `cspace interrupt`.
+The coordinator's Unix control socket is reachable for mid-run interaction via `cspace send _coordinator` and `cspace interrupt _coordinator`. Only one coordinator can run per project — attempting to start a second will fail with an error.
 
 ### Examples
 
@@ -74,10 +74,10 @@ cspace up [name] --prompt-file <path>
 
 Unlike the interactive mode (plain `cspace up`), the autonomous path:
 - Routes through the agent supervisor with `--role agent`
-- Enables messenger MCP tools for inter-agent communication
-- Creates a Unix control socket for `cspace send`/`cspace respond`/`cspace interrupt`
+- Creates a Unix control socket for `cspace send`/`cspace interrupt`
 - Streams NDJSON status events to the Go CLI for rendering
-- Writes structured logs to the shared logs volume
+- Writes structured event logs to the shared logs volume
+- On completion, reports to the coordinator (if running) via `cspace send _coordinator`
 
 ### Examples
 

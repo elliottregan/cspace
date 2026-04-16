@@ -1,3 +1,5 @@
+rc: export PATH="$HOME/go/bin:$PATH"
+
 pre-commit:
   parallel: true
   commands:
@@ -15,5 +17,7 @@ pre-commit:
 pre-push:
   parallel: false
   commands:
-    check:
-      run: make check
+    lint:
+      run: golangci-lint run ./...
+    test:
+      run: go test ./...

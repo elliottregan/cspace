@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "cspace-context": {
+      "command": "cspace",
+      "args": ["context-server"]
+    }
+  }
+}

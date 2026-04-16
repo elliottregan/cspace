@@ -143,19 +143,23 @@ Status transitions:
 
 ## Communication model
 
-The coordinator communicates with agents through two channels:
+All inter-agent messaging uses `cspace send` via Unix sockets — instant delivery, no filesystem polling.
 
-**Filesystem messages** (cross-container):
-- Agent completion notifications land in `/logs/messages/_coordinator/inbox/`
-- The coordinator watches this directory and receives completions as automatic user turns
-- Directives are written to `/logs/messages/{instance}/inbox/`
+**Coordinator → agent** (directives):
+```bash
+cspace send issue-<N> "Rebase onto the latest feature branch and resolve conflicts."
+```
 
-**`cspace send` commands** (host-side dispatch):
-- `cspace send issue-<N> "instructions"` — inject a directive into a running agent
-- `cspace ask issue-<N>` — check for pending questions from an agent
-- `cspace respond issue-<N> "answer"` — answer an agent's question
+**Agent → coordinator** (completion reports):
+```bash
+cspace send _coordinator "Worker issue-42 complete. Status: success. PR: https://..."
+```
 
-The coordinator never polls for status. Agent completions are delivered as structured user turns in its own conversation, including status, exit code, session ID, turn count, duration, cost, and a summary of the agent's final message.
+The `_coordinator` target is a well-known address — all workers use it to report back. Only one coordinator can run per project (enforced by `cspace coordinate`).
+
+The coordinator's session is **multi-turn**: it stays alive after dispatching workers, waiting for completion messages to arrive as new user turns. Each message triggers the coordinator to update its status table and start follow-up work. The session exits when the idle timeout fires (no messages for 10 minutes) or on explicit shutdown.
+
+For diagnostics, the coordinator has MCP tools (`agent_health`, `agent_recent_activity`, `read_agent_stream`) that read from event logs to inspect what agents are doing. To restart a stuck agent: `cspace restart-supervisor <instance> --reason "description"`.
 
 ## Coordinator rules
 

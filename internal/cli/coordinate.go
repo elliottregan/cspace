@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -56,11 +58,48 @@ func runCoordinate(cmd *cobra.Command, args []string) error {
 	return runCoordinateWithArgs(prompt, promptFile, name)
 }
 
+// coordinatorIsAlive checks whether a coordinator supervisor is already
+// running by probing the well-known _coordinator socket with a status
+// command. Returns true only if the socket responds successfully.
+func coordinatorIsAlive() bool {
+	logsPath := supervisor.ResolveLogsVolumePath(cfg)
+	if logsPath == "" {
+		return false
+	}
+	sockPath := filepath.Join(logsPath, "_coordinator", "supervisor.sock")
+	conn, err := net.DialTimeout("unix", sockPath, 2*time.Second)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	req, _ := json.Marshal(map[string]string{"cmd": "status"})
+	_, _ = conn.Write(append(req, '\n'))
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil || n == 0 {
+		return false
+	}
+	var reply struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal(buf[:n], &reply); err != nil {
+		return false
+	}
+	return reply.OK
+}
+
 // runCoordinateWithArgs is the shared implementation for the coordinate command,
 // callable from both the CLI handler and the TUI menu.
 func runCoordinateWithArgs(prompt, promptFile, name string) error {
 	if name == "" {
 		name = "coord-" + strconv.FormatInt(time.Now().Unix(), 10)
+	}
+
+	if coordinatorIsAlive() {
+		return fmt.Errorf("a coordinator is already running (socket at _coordinator/supervisor.sock is alive).\n" +
+			"Only one coordinator can run per project. Use 'cspace send _coordinator' to communicate with it,\n" +
+			"or stop it first with 'cspace interrupt _coordinator'")
 	}
 
 	_, err := provision.Run(provision.Params{

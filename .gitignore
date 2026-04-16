@@ -9,6 +9,11 @@
 
 # Agent supervisor — node_modules is installed inside the container at build time
 lib/agent-supervisor/node_modules/
+
+# Per-machine config override only — .cspace/ is otherwise tracked. In
+# particular, .cspace/memory/ is the project-shared Claude Code memory
+# and MUST stay in git (see CLAUDE.md "Agent memory"). Do not blanket-
+# ignore .cspace/.
 .cspace.local.json
 
 .env
