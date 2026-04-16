@@ -38,6 +38,14 @@ services:
 
     volumes:
       - workspace:/workspace
+      # docs/context/ is the cspace-context MCP server's store —
+      # decisions, discoveries, findings, and human-owned direction /
+      # principles / roadmap. Bind-mount from the host so every
+      # container in the project shares one live view: agent A's
+      # log_finding in mercury is visible to agent B in venus without
+      # git push/pull. Host pre-creates this dir in provision.Run so
+      # it's owned by the invoking user, not Docker's auto-created root.
+      - ${PROJECT_ROOT:-.}/docs/context:/workspace/docs/context
       - claude-home:/home/dev/.claude
       # Project-shared Claude sessions: one host directory holds every
       # session JSONL for this project, so teleport doesn't need to copy

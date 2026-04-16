@@ -311,12 +311,41 @@ func (s *Store) writeEntry(e Entry, subdir string) (string, error) {
 	}
 	resolved := ResolveCollision(base, taken)
 
-	path := filepath.Join(dir, resolved+".md")
-	e.Slug = resolved
-	if err := os.WriteFile(path, []byte(e.Render()), 0644); err != nil {
-		return "", err
+	// Two cspace containers sharing docs/context/ via bind mount can
+	// both reach here for the same title concurrently, both resolve
+	// to the same filename (neither sees the other's write yet), and
+	// an unguarded os.WriteFile would have one clobber the other.
+	// O_EXCL creates the file atomically or fails with EEXIST; on
+	// EEXIST we mark that name taken and retry collision resolution.
+	// The bound is tight — the same title is unlikely to produce more
+	// than a handful of collisions even under heavy parallelism.
+	const maxRetries = 50
+	for i := 0; i < maxRetries; i++ {
+		path := filepath.Join(dir, resolved+".md")
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+		if err == nil {
+			_, werr := f.Write([]byte(e.Render()))
+			cerr := f.Close()
+			if werr != nil {
+				_ = os.Remove(path)
+				return "", werr
+			}
+			if cerr != nil {
+				_ = os.Remove(path)
+				return "", cerr
+			}
+			e.Slug = resolved
+			return path, nil
+		}
+		if !os.IsExist(err) {
+			return "", err
+		}
+		// Collision with a concurrent writer since our scan. Mark the
+		// conflicting name taken and bump the suffix.
+		taken[resolved+".md"] = true
+		resolved = ResolveCollision(base, taken)
 	}
-	return path, nil
+	return "", fmt.Errorf("giving up after %d collision retries for base %q", maxRetries, base)
 }
 
 // humanSeeds are initial templates for human-owned files. Only written if missing.

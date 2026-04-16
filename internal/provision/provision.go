@@ -145,6 +145,13 @@ func Run(p Params) (Result, error) {
 			return Result{}, err
 		}
 
+		// Ensure docs/context/ exists on the host for the cspace-context
+		// bind mount. Every container for this project shares one view
+		// of decisions/discoveries/findings via this directory.
+		if err := ensureContextDir(cfg.ProjectRoot); err != nil {
+			return Result{}, err
+		}
+
 		// 7. Start instance containers
 		if err := compose.Run(name, cfg, "up", "-d"); err != nil {
 			return Result{}, fmt.Errorf("starting container: %w", err)
@@ -315,6 +322,24 @@ func ensureMemoryDir(projectRoot string) error {
 func ensureSessionsDir(sessionsDir string) error {
 	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
 		return fmt.Errorf("creating sessions dir %s: %w", sessionsDir, err)
+	}
+	return nil
+}
+
+// ensureContextDir creates ${ProjectRoot}/docs/context/ with host-user
+// ownership before compose bind-mounts it. This is the cspace-context
+// MCP server's store; bind-mounting gives every container in the
+// project a shared, live view of decisions, discoveries, and findings.
+// The directory is committed to git, so agent writes here show up in
+// the host's `git status` ready to be committed.
+//
+// contextstore.ensureSeeded() will lay down the three human-owned
+// template files (direction/principles/roadmap) on first write; we
+// just need the directory itself to exist and be writable.
+func ensureContextDir(projectRoot string) error {
+	dir := filepath.Join(projectRoot, "docs", "context")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating context dir %s: %w", dir, err)
 	}
 	return nil
 }

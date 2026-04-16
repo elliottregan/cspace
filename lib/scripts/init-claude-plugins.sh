@@ -30,13 +30,6 @@ transcript_hook="/workspace/.cspace/hooks/claude-transcript-copy.sh"
 block_self_destruct_hook="/workspace/.cspace/hooks/block-self-destruct.sh"
 [ -x "$block_self_destruct_hook" ] || block_self_destruct_hook="$CSPACE_HOME/lib/hooks/block-self-destruct.sh"
 
-# Reconciler: rebuilds MEMORY.md from all memory-file frontmatter after
-# every write tool call. Keeps the index consistent when multiple
-# cspace containers write to the same bind-mounted memory dir
-# concurrently. Idempotent and lock-free.
-reconcile_memory_hook="/workspace/.cspace/hooks/reconcile-memory.sh"
-[ -x "$reconcile_memory_hook" ] || reconcile_memory_hook="$CSPACE_HOME/lib/hooks/reconcile-memory.sh"
-
 # Status line — project override takes precedence over the cspace default
 statusline_cmd="/workspace/.cspace/scripts/statusline.sh"
 [ -x "$statusline_cmd" ] || statusline_cmd="$CSPACE_HOME/lib/scripts/statusline.sh"
@@ -56,20 +49,13 @@ cat > "$USER_SETTINGS" <<HOOKS_EOF
     "SessionStart": [
       {
         "matcher": "",
-        "hooks": [
-          { "type": "command", "command": "$progress_hook" },
-          { "type": "command", "command": "$reconcile_memory_hook" }
-        ]
+        "hooks": [{ "type": "command", "command": "$progress_hook" }]
       }
     ],
     "PostToolUse": [
       {
         "matcher": "",
         "hooks": [{ "type": "command", "command": "$progress_hook" }]
-      },
-      {
-        "matcher": "Write|Edit|MultiEdit",
-        "hooks": [{ "type": "command", "command": "$reconcile_memory_hook" }]
       }
     ],
     "Notification": [

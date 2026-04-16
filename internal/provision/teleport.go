@@ -142,11 +142,14 @@ func TeleportRun(p TeleportParams) error {
 
 	// Matching Run(): pre-create the host-side bind mount sources so
 	// Docker doesn't auto-create them root-owned. memory is in-repo;
-	// sessions is in $HOME.
+	// sessions is in $HOME; context is in-repo under docs/context/.
 	if err := ensureMemoryDir(cfg.ProjectRoot); err != nil {
 		return err
 	}
 	if err := ensureSessionsDir(cfg.SessionsDir()); err != nil {
+		return err
+	}
+	if err := ensureContextDir(cfg.ProjectRoot); err != nil {
 		return err
 	}
 
