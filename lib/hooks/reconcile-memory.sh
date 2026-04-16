@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Rebuild MEMORY.md from the frontmatter of every *.md file in the
-# shared memory directory. Fires as a Claude Code PostToolUse hook so
-# that any write to a memory file (via /remember, Write, or Edit)
-# yields a correct, up-to-date index — even when multiple cspace
-# containers are writing concurrently to the same bind-mounted dir.
+# shared memory directory. Fires as a Claude Code PostToolUse hook
+# (matcher: Write|Edit|MultiEdit) and as a SessionStart hook so the
+# index stays correct under concurrent writes from sibling cspace
+# containers — without racing on read-modify-write of MEMORY.md.
 #
 # Idempotent + lock-free: the rebuild is pure function of filesystem
 # state. Two containers reconciling at the same moment produce identical
@@ -11,17 +11,36 @@
 # self-consistent file. A lost-update window can only lose a line that
 # the next reconcile will regenerate.
 #
-# Claude Code PostToolUse hooks receive a small JSON payload on stdin
-# describing the tool call. We don't currently inspect it — every write
-# tool call in a container triggers one rebuild, which takes <5ms for
-# realistic memory dirs (dozens of small files).
+# Claude Code hook stdin is a JSON payload. For PostToolUse we peek at
+# tool_input.file_path and exit quickly (no scan, no I/O) unless the
+# write targeted the memory directory — so the hook is effectively
+# free for the 99% of Write/Edit calls that edit project code rather
+# than memory. SessionStart payloads have no file_path; we fall
+# through to reconcile so a freshly-launched agent picks up sibling
+# writes that landed while it was booting.
 
 set -euo pipefail
 
 MEMORY_DIR="${CLAUDE_MEMORY_DIR:-/home/dev/.claude/projects/-workspace/memory}"
 
-# Drain stdin so Claude Code doesn't EPIPE on us.
-cat >/dev/null 2>&1 || true
+# Capture stdin (small JSON payload). Done up-front so Claude Code
+# doesn't EPIPE on us regardless of which exit path we take.
+payload="$(cat 2>/dev/null || true)"
+
+# Path filter: if the payload identifies a specific file (Write/Edit/
+# MultiEdit) and that file is outside MEMORY_DIR, there's nothing for
+# us to reconcile. Exit before scanning. When file_path is absent
+# (SessionStart, or malformed payload) we fall through and reconcile
+# — those are rare events where a full rebuild is the right behavior.
+if [ -n "$payload" ] && command -v jq >/dev/null 2>&1; then
+    file_path="$(printf '%s' "$payload" | jq -r '.tool_input.file_path // empty' 2>/dev/null || printf '')"
+    if [ -n "$file_path" ]; then
+        case "$file_path" in
+            "$MEMORY_DIR"/*|"$MEMORY_DIR") ;;  # targets memory — reconcile
+            *) exit 0 ;;                         # anything else — done
+        esac
+    fi
+fi
 
 # Fast no-op paths: missing dir, unreadable, or no entries.
 if [ ! -d "$MEMORY_DIR" ] || [ ! -r "$MEMORY_DIR" ]; then
