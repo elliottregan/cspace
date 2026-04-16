@@ -103,11 +103,19 @@ func TestTeleportPrepareHappyPath(t *testing.T) {
 	}
 
 	sessionDir := filepath.Join(teleport, sessionID)
-	for _, f := range []string{"workspace.bundle", "session.jsonl", "manifest.json"} {
+	// session.jsonl is no longer staged — it travels via the shared
+	// $HOME/.cspace/sessions/<project>/ bind mount instead, so the
+	// teleport bundle only carries workspace state + manifest.
+	for _, f := range []string{"workspace.bundle", "manifest.json"} {
 		p := filepath.Join(sessionDir, f)
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("expected %s: %v", p, err)
 		}
+	}
+	// Assert that session.jsonl is NOT staged (regression: catches future
+	// reintroduction of the copy that the shared-sessions mount obsoletes).
+	if _, err := os.Stat(filepath.Join(sessionDir, "session.jsonl")); err == nil {
+		t.Error("session.jsonl should not be in the teleport bundle anymore")
 	}
 
 	// Verify bundle is valid.

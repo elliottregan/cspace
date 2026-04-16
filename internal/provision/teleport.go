@@ -1,7 +1,8 @@
 // Package provision — teleport path. Moves an in-flight Claude Code
 // session from a source cspace instance to a freshly provisioned target
-// instance by seeding the workspace from a git bundle, copying the
-// transcript into the target, and launching the supervisor in resume mode.
+// instance by seeding the workspace from a git bundle and launching the
+// supervisor in resume mode. The session JSONL itself travels for free
+// via the shared $HOME/.cspace/sessions/<project>/ bind mount.
 package provision
 
 import (
@@ -71,12 +72,13 @@ func validateTeleportInputs(p TeleportParams) (teleportManifest, error) {
 			manifest.Target, p.Name)
 	}
 
+	// Only the workspace bundle has to ride along — the session JSONL
+	// now lives in the project's shared $HOME/.cspace/sessions/ directory
+	// which both containers bind-mount, so resume-by-session-id finds it
+	// without a copy.
 	bundle := filepath.Join(p.TeleportFrom, "workspace.bundle")
-	transcript := filepath.Join(p.TeleportFrom, "session.jsonl")
-	for _, f := range []string{bundle, transcript} {
-		if _, err := os.Stat(f); err != nil {
-			return teleportManifest{}, fmt.Errorf("teleport transfer missing %s: %w", f, err)
-		}
+	if _, err := os.Stat(bundle); err != nil {
+		return teleportManifest{}, fmt.Errorf("teleport transfer missing %s: %w", bundle, err)
 	}
 
 	return manifest, nil
@@ -84,14 +86,14 @@ func validateTeleportInputs(p TeleportParams) (teleportManifest, error) {
 
 // TeleportRun provisions a new target instance seeded from a teleport
 // transfer directory. Steps:
-//  1. Validate name, read manifest, verify bundle + transcript exist,
+//  1. Validate name, read manifest, verify the workspace bundle exists,
 //     reject running targets, and clear any stopped orphan containers
-//  2. Ensure volumes and networks (same as Run)
-//  3. docker compose up -d the target
+//  2. Ensure volumes, networks, and host-side bind mount sources
+//  3. docker compose up -d the target (inheriting the shared sessions
+//     bind mount so the target already sees the source's session JSONL)
 //  4. Copy bundle into target, run init-workspace.sh against it
-//  5. Copy transcript into target's ~/.claude/projects/-workspace/
-//  6. Launch supervisor with ResumeSessionID; session comes up idle
-//  7. Clean up the transfer directory
+//  5. Launch supervisor with ResumeSessionID; session comes up idle
+//  6. Clean up the transfer directory
 func TeleportRun(p TeleportParams) error {
 	manifest, err := validateTeleportInputs(p)
 	if err != nil {
@@ -99,7 +101,6 @@ func TeleportRun(p TeleportParams) error {
 	}
 
 	bundle := filepath.Join(p.TeleportFrom, "workspace.bundle")
-	transcript := filepath.Join(p.TeleportFrom, "session.jsonl")
 
 	cfg := p.Cfg
 	composeName := cfg.ComposeName(p.Name)
@@ -139,6 +140,16 @@ func TeleportRun(p TeleportParams) error {
 		return fmt.Errorf("exporting CSPACE_TELEPORT_DIR: %w", err)
 	}
 
+	// Matching Run(): pre-create the host-side bind mount sources so
+	// Docker doesn't auto-create them root-owned. memory is in-repo;
+	// sessions is in $HOME.
+	if err := ensureMemoryDir(cfg.ProjectRoot); err != nil {
+		return err
+	}
+	if err := ensureSessionsDir(cfg.SessionsDir()); err != nil {
+		return err
+	}
+
 	if err := compose.Run(p.Name, cfg, "up", "-d"); err != nil {
 		return fmt.Errorf("starting container: %w", err)
 	}
@@ -165,18 +176,10 @@ func TeleportRun(p TeleportParams) error {
 	}
 	configureGit(composeName, cfg.ProjectRoot)
 
-	// Copy the transcript into the target's projects dir so Claude Code
-	// can find it when the supervisor resumes.
-	targetTranscript := "/home/dev/.claude/projects/-workspace/" + manifest.SessionID + ".jsonl"
-	if _, err := instance.DcExecRoot(composeName, "mkdir", "-p", "/home/dev/.claude/projects/-workspace"); err != nil {
-		return fmt.Errorf("creating projects dir in target: %w", err)
-	}
-	if err := instance.DcCp(composeName, transcript, targetTranscript); err != nil {
-		return fmt.Errorf("copying transcript into target: %w", err)
-	}
-	if _, err := instance.DcExecRoot(composeName, "chown", "dev:dev", targetTranscript); err != nil {
-		return fmt.Errorf("chown transcript: %w", err)
-	}
+	// No transcript copy — the session JSONL lives in the shared
+	// $HOME/.cspace/sessions/<project>/ directory, which both the source
+	// and target containers bind-mount. Claude Code's resume-by-session-id
+	// finds <session-id>.jsonl at the expected path without any plumbing.
 
 	// Idempotent tail stages (plugins, post-setup) — same as Run().
 	if err := ensureMarketplace(composeName); err != nil {

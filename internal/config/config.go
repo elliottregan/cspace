@@ -272,6 +272,25 @@ func (c *Config) LogsVolume() string {
 	return appPrefix + "-" + c.Project.Name + "-logs"
 }
 
+// SessionsDir returns the host-side directory where this project's Claude
+// Code session files (JSONL transcripts) are stored. Every container for
+// the project bind-mounts this into /home/dev/.claude/projects/-workspace,
+// so sessions persist across container rebuilds, survive volume wipes, and
+// can be audited/resumed from any instance.
+//
+// Default: $HOME/.cspace/sessions/<project-name>. Overridable via
+// CSPACE_SESSIONS_DIR for users with non-standard layouts.
+func (c *Config) SessionsDir() string {
+	if v := os.Getenv("CSPACE_SESSIONS_DIR"); v != "" {
+		return v
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join("/tmp", "cspace-sessions", c.Project.Name)
+	}
+	return filepath.Join(home, ".cspace", "sessions", c.Project.Name)
+}
+
 // InstanceLabel returns the Docker label for this project's instances.
 func (c *Config) InstanceLabel() string {
 	return appPrefix + ".project=" + c.Project.Name

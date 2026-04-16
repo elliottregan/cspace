@@ -39,10 +39,18 @@ services:
     volumes:
       - workspace:/workspace
       - claude-home:/home/dev/.claude
+      # Project-shared Claude sessions: one host directory holds every
+      # session JSONL for this project, so teleport doesn't need to copy
+      # transcripts, `cspace resume <instance> <session-id>` works from any
+      # instance, and sessions survive volume wipes / container rebuilds.
+      # Outside the repo (contains conversation history, potentially large
+      # and sensitive — not suitable for git).
+      - ${CSPACE_SESSIONS_DIR}:/home/dev/.claude/projects/-workspace
       # Project-shared Claude memory, bind-mounted from the host so it's
-      # committed alongside code and survives volume wipes / container rebuilds.
-      # Host pre-creates ${PROJECT_ROOT}/.cspace/memory before `docker compose
-      # up` so it's owned by the invoking user, not root-owned by Docker.
+      # committed alongside code. Nested under the sessions mount above
+      # (docker layers per-path, specific-wins), so memory stays in the
+      # repo while sessions live in $HOME. Host pre-creates both before
+      # `docker compose up` so they're owned by the invoking user.
       - ${PROJECT_ROOT:-.}/.cspace/memory:/home/dev/.claude/projects/-workspace/memory
       - gh-config:/home/dev/.config/gh
       - cspace-logs:/logs
@@ -62,7 +70,11 @@ services:
       - CSPACE_CONTAINER_NAME=${CSPACE_CONTAINER_NAME:-}
       - CSPACE_INSTANCE_NAME=${CSPACE_INSTANCE_NAME:-}
       - CSPACE_PROJECT_NAME=${CSPACE_PROJECT_NAME:-}
-      - CSPACE_TELEPORT_DIR=${CSPACE_TELEPORT_DIR:-}
+      # CSPACE_TELEPORT_DIR is deliberately NOT exported into the container.
+      # It names a host-side path used only as the /teleport bind-mount
+      # source; in-container scripts always use /teleport directly. Exporting
+      # it previously leaked macOS paths into Linux containers and broke
+      # teleport-prepare.sh (mkdir /Users/... EACCES).
       - CSPACE_FIREWALL_DOMAINS=${CSPACE_FIREWALL_DOMAINS:-}
       - CSPACE_CLAUDE_MODEL=${CSPACE_CLAUDE_MODEL:-claude-opus-4-6[1m]}
       - CSPACE_CLAUDE_EFFORT=${CSPACE_CLAUDE_EFFORT:-max}

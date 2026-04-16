@@ -1,30 +1,39 @@
 #!/usr/bin/env bash
-# Prepare a teleport: bundle workspace + transcript, then invoke
+# Prepare a teleport: bundle workspace state, then invoke
 # `cspace up <target> --teleport-from <dir>` on the host CLI.
 #
 # Usage: teleport-prepare.sh <target-instance>
 #
 # Env vars (defaults match the in-container deployment):
 #   CSPACE_TELEPORT_WORKSPACE   path to the repo to bundle (default: /workspace)
-#   CSPACE_TELEPORT_DIR         path to the shared teleport transfer dir
-#                                 (default: /teleport)
+#   CSPACE_TELEPORT_DIR         OVERRIDE for the transfer directory. In
+#                                 production this is unset — docker-compose.core.yml
+#                                 no longer exports it into the container, so
+#                                 macOS host paths can't leak in. The script
+#                                 falls back to /teleport (the in-container
+#                                 bind-mount destination). Tests set this to
+#                                 a tmpdir to exercise the script on the host.
 #   CSPACE_INSTANCE_NAME        name of the source instance, recorded in the
 #                                 manifest. Injected by docker-compose.core.yml.
 #   HOME                        used to find ~/.claude/projects/-workspace
+#   - The session JSONL no longer travels via the teleport bundle. Sessions
+#     live in the project's shared $HOME/.cspace/sessions/<project>/ on the
+#     host, which every cspace container in the project bind-mounts. The
+#     target already sees the source's JSONL at the right path — resume by
+#     session ID "just works."
 #
-# Requires on PATH: cspace, git
+# Requires on PATH: cspace, git, jq
 #
-# On success: writes <dir>/<session>/{workspace.bundle,session.jsonl,manifest.json},
+# On success: writes /teleport/<session>/{workspace.bundle,manifest.json},
 # invokes `cspace up`, prints the reconnect message, exits 0.
-#
-# On failure (before the success message is printed): the source container
-# is never modified beyond creating files under CSPACE_TELEPORT_DIR. On
-# success, the source container is stopped (but not removed).
 set -euo pipefail
 
 TARGET="${1:?Usage: teleport-prepare.sh <target-instance>}"
 
 WORKSPACE="${CSPACE_TELEPORT_WORKSPACE:-/workspace}"
+# Default to the in-container bind-mount destination. Tests may override
+# with CSPACE_TELEPORT_DIR; production containers never have that var set
+# (see docker-compose.core.yml for the deliberate omission).
 TELEPORT_DIR="${CSPACE_TELEPORT_DIR:-/teleport}"
 SOURCE_NAME="${CSPACE_INSTANCE_NAME:-unknown}"
 PROJECTS_DIR="${HOME}/.claude/projects/-workspace"
@@ -40,9 +49,7 @@ if [ ! -r "$PROJECTS_DIR" ]; then
 fi
 
 # nullglob: if no matches, the array is empty instead of containing the
-# literal glob. Toggle the option around the assignment so it doesn't leak
-# into later code (piping through a subshell+printf would collapse an empty
-# match into a single empty-string element, which we don't want).
+# literal glob. Toggle the option around the assignment so it doesn't leak.
 shopt -s nullglob
 TRANSCRIPTS=( "$PROJECTS_DIR"/*.jsonl )
 shopt -u nullglob
@@ -80,14 +87,13 @@ if [ -f "$SESSION_DIR/manifest.json" ]; then
     exit 1
 fi
 
-# 2. Bundle the workspace.
+# 2. Bundle the workspace. This is the only thing that needs to ride along
+#    in the teleport transfer — the session JSONL is already visible to the
+#    target via the shared sessions bind mount.
 echo "teleport: bundling workspace..."
 git -C "$WORKSPACE" bundle create "$SESSION_DIR/workspace.bundle" --all
 
-# 3. Copy the transcript.
-cp "$LATEST_TRANSCRIPT" "$SESSION_DIR/session.jsonl"
-
-# 4. Write the manifest. Use jq --arg to safely serialize values that may
+# 3. Write the manifest. Use jq --arg to safely serialize values that may
 # contain characters requiring JSON escaping (branch names, URLs, etc.).
 SOURCE_HEAD=$(git -C "$WORKSPACE" rev-parse HEAD 2>/dev/null || echo "")
 SOURCE_BRANCH=$(git -C "$WORKSPACE" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
@@ -112,19 +118,19 @@ jq -n \
         source_remote_url: $source_remote_url,
     }' > "$SESSION_DIR/manifest.json"
 
-# 5. Invoke the host CLI. We run `cspace up` synchronously so any failure
+# 4. Invoke the host CLI. We run `cspace up` synchronously so any failure
 #    surfaces in the script's exit code and the source stays functional.
 echo "teleport: provisioning $TARGET..."
 cspace up "$TARGET" --teleport-from "$SESSION_DIR"
 
-# 6. Print the success message BEFORE stopping the source. The `cspace stop`
+# 5. Print the success message BEFORE stopping the source. The `cspace stop`
 #    below tells docker to stop this very container (we're running inside
 #    the source), which may race with bash's stdout flush and swallow the
 #    reconnect instructions. Print first, stop last.
 echo ""
 echo "Teleport complete. Reconnect with: cspace resume $TARGET"
 
-# 7. Stop the source container (volumes survive; user can `cspace start` or
+# 6. Stop the source container (volumes survive; user can `cspace start` or
 #    `cspace rm` at their leisure). Skip when SOURCE_NAME is "unknown" —
 #    that means we're running outside a real cspace instance (e.g., test
 #    harness), and there's nothing to stop.

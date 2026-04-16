@@ -137,6 +137,14 @@ func Run(p Params) (Result, error) {
 			return Result{}, err
 		}
 
+		// Ensure the shared sessions dir exists for the same reason.
+		// All containers for this project bind-mount this to their
+		// /home/dev/.claude/projects/-workspace, so sessions survive
+		// container rebuild and teleport can skip the JSONL copy.
+		if err := ensureSessionsDir(cfg.SessionsDir()); err != nil {
+			return Result{}, err
+		}
+
 		// 7. Start instance containers
 		if err := compose.Run(name, cfg, "up", "-d"); err != nil {
 			return Result{}, fmt.Errorf("starting container: %w", err)
@@ -293,6 +301,20 @@ func ensureMemoryDir(projectRoot string) error {
 		if err := os.WriteFile(stubPath, []byte(memoryStub), 0644); err != nil {
 			return fmt.Errorf("writing memory stub %s: %w", stubPath, err)
 		}
+	}
+	return nil
+}
+
+// ensureSessionsDir creates the shared host-side sessions directory
+// (default $HOME/.cspace/sessions/<project>/) with invoking-user
+// ownership before compose bind-mounts it. All containers for this
+// project share this directory — it holds every Claude Code session
+// JSONL transcript, survives volume wipes, and makes teleport a
+// trivial "resume by session ID" rather than a JSONL shipping dance.
+// No stub file: Claude Code creates its own session files on first run.
+func ensureSessionsDir(sessionsDir string) error {
+	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
+		return fmt.Errorf("creating sessions dir %s: %w", sessionsDir, err)
 	}
 	return nil
 }
