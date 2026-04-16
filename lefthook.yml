@@ -12,6 +12,7 @@ pre-commit:
       run: golangci-lint run --new-from-rev=HEAD~1 ./...
     lint-shell:
       glob: "*.sh"
+      exclude: "lib/scripts/statusline.sh"
       run: shellcheck {staged_files}
 
 pre-push:

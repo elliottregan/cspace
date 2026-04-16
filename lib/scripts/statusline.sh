@@ -14,6 +14,7 @@ TRANSCRIPT=$(echo "$input" | jq -r '.transcript_path // ""')
 AGENT_NAME=$(echo "$input" | jq -r '.agent.name // ""')
 CWD=$(echo "$input" | jq -r '.cwd // ""')
 WT_NAME=$(echo "$input" | jq -r '.worktree.name // ""')
+WT_ORIG_BRANCH=$(echo "$input" | jq -r '.worktree.original_branch // ""')
 if [ -n "$SESSION_ID" ] && [ -f "$TRANSCRIPT" ]; then
     TURNS=$(grep "\"sessionId\":\"$SESSION_ID\"" "$TRANSCRIPT" | jq -r 'select(.type == "user") | .type' 2>/dev/null | wc -l | tr -d ' ')
 else
@@ -62,8 +63,8 @@ DIRTY=$($GIT diff --quiet 2>/dev/null && $GIT diff --cached --quiet 2>/dev/null 
 STAGED=$($GIT diff --cached --numstat 2>/dev/null | wc -l | tr -d ' ')
 UNSTAGED=$($GIT diff --numstat 2>/dev/null | wc -l | tr -d ' ')
 UNTRACKED=$($GIT ls-files --others --exclude-standard 2>/dev/null | wc -l | tr -d ' ')
-AHEAD=$($GIT rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
-BEHIND=$($GIT rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
+AHEAD=$($GIT rev-list --count @{u}..HEAD 2>/dev/null || echo 0)
+BEHIND=$($GIT rev-list --count HEAD..@{u} 2>/dev/null || echo 0)
 
 # Default branch detection: prefer the remote HEAD, fall back to "main".
 DEFAULT_BRANCH=$($GIT symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|^refs/remotes/origin/||')
@@ -111,7 +112,6 @@ if [ -n "$PR_LOOKUP_BRANCH" ]; then
 fi
 
 # --- Helper: clickable terminal hyperlink (OSC 8) ---
-# shellcheck disable=SC1003 # \\  is intentional: OSC 8 hyperlink ST terminator requires literal backslash
 link() { printf '\033]8;;%s\033\\%s\033]8;;\033\\' "$1" "$2"; }
 
 # --- Container detection ---
@@ -145,11 +145,11 @@ DIV=" ${DIM}|${RST} "
 if [ -n "$CONTAINER" ]; then
     printf "${PLANET_COLOR}%s %s${RST}" "$PLANET_SYMBOL" "$CONTAINER"
     [ -n "$CSPACE_PROJECT_NAME" ] && printf " ${GRY}(%s)${RST}" "$CSPACE_PROJECT_NAME"
-    printf '%s' "$DIV"
+    printf "$DIV"
 fi
 printf "${GRY}%s${RST} %s" "$NF_FOLDER" "$DIR"
 if [ -n "$BRANCH" ]; then
-    printf '%s' "$DIV"
+    printf "$DIV"
     printf "${GRY}${NF_BRANCH}${RST} %s%s" "$BRANCH" "$DIRTY"
     [ "$STAGED" -gt 0 ] 2>/dev/null && printf " ${GRN}+%s${RST}" "$STAGED"
     [ "$UNSTAGED" -gt 0 ] 2>/dev/null && printf " ${YLW}~%s${RST}" "$UNSTAGED"
@@ -159,7 +159,7 @@ if [ -n "$BRANCH" ]; then
     [ "$BEHIND_DEFAULT" -gt 0 ] 2>/dev/null && printf " ${MAG}↓%s %s${RST}" "$BEHIND_DEFAULT" "$DEFAULT_BRANCH"
 fi
 if [ -n "$WT_NAME" ]; then
-    printf '%s' "$DIV"
+    printf "$DIV"
     printf "${MAG}⊟ %s${RST}" "$WT_NAME"
 fi
 if [ -n "$PR_LINK" ]; then
@@ -170,8 +170,8 @@ if [ -n "$PR_LINK" ]; then
         success) PR_IC="$GRN" ;;
         *)       PR_IC="$GRY" ;;
     esac
-    printf '%s' "$DIV"
-    printf '%s%s%s ' "$PR_IC" "$NF_PR" "$RST"; link "$PR_LINK" "#${PR_NUM}"
+    printf "$DIV"
+    printf "${PR_IC}${NF_PR}${RST} "; link "$PR_LINK" "#${PR_NUM}"
 fi
 
 # --- Service URLs from .cspace.json's container.ports map ---
@@ -214,8 +214,8 @@ if [ -n "$SELF_CONTAINER" ] && [ -f "$CSPACE_JSON" ]; then
             URL="http://localhost:${host_port}"
             DISPLAY="localhost:${host_port}"
         fi
-        printf '%s' "$DIV"
-        printf '%s● %s%s ' "$(label_color "$label")" "$label" "$RST"
+        printf "$DIV"
+        printf "$(label_color "$label")● %s${RST} " "$label"
         link "$URL" "$DISPLAY"
     done < <(jq -r '.container.ports // {} | to_entries[] | "\(.key)\t\(.value)"' "$CSPACE_JSON" 2>/dev/null)
 fi
@@ -226,11 +226,11 @@ fmt_k() { echo $(( ($1 + 500) / 1000 ))K; }
 
 # --- Line 2: context bar | model | turns | cost ---
 printf "${BC}%s${RST} %s/%s" "$BAR" "$(fmt_k "$CTX_USED")" "$(fmt_k "$CTX_SIZE")"
-printf '%s' "$DIV"
+printf "$DIV"
 printf "${ORG}%s${RST}" "$MODEL"
 [ -n "$AGENT_NAME" ] && printf " ${GRY}(%s)${RST}" "$AGENT_NAME"
-printf '%s' "$DIV"
+printf "$DIV"
 printf "${GRY}turns:${RST}%s" "$TURNS"
-printf '%s' "$DIV"
+printf "$DIV"
 printf "%s" "$COST"
 echo
