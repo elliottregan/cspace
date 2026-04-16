@@ -129,8 +129,34 @@ const ProxyContainerName = "cspace-proxy"
 // EnsureProxy starts the global Traefik + CoreDNS proxy stack if not already
 // running. Runs `docker compose up -d` unconditionally because it's idempotent
 // and will restart any crashed services (e.g., CoreDNS down while Traefik up).
+//
+// The proxy compose file and Corefile are copied to ~/.cspace/proxy/ before
+// starting. This ensures the bind-mounted Corefile is under $HOME, which is
+// always in Docker Desktop's default shared file paths on macOS. Without this,
+// Docker silently mounts an empty directory and CoreDNS crash-loops.
 func EnsureProxy(assetsDir string) error {
-	composePath := filepath.Join(assetsDir, "templates", "proxy", "docker-compose.yml")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolving home dir: %w", err)
+	}
+	proxyDir := filepath.Join(home, ".cspace", "proxy")
+	if err := os.MkdirAll(proxyDir, 0755); err != nil {
+		return fmt.Errorf("creating proxy dir: %w", err)
+	}
+
+	// Copy compose file and Corefile to the shared-path-safe directory.
+	srcDir := filepath.Join(assetsDir, "templates", "proxy")
+	for _, name := range []string{"docker-compose.yml", "Corefile"} {
+		data, err := os.ReadFile(filepath.Join(srcDir, name))
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(proxyDir, name), data, 0644); err != nil {
+			return fmt.Errorf("writing %s: %w", name, err)
+		}
+	}
+
+	composePath := filepath.Join(proxyDir, "docker-compose.yml")
 	cmd := exec.Command("docker", "compose",
 		"-f", composePath,
 		"-p", "cspace-proxy",
