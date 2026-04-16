@@ -127,7 +127,7 @@ func TestAppendToFindingPreservesPriorUpdates(t *testing.T) {
 	if seedIdx < 0 || firstIdx < 0 || secondIdx < 0 {
 		t.Fatalf("expected all three timestamps in file:\n%s", got)
 	}
-	if !(seedIdx < firstIdx && firstIdx < secondIdx) {
+	if seedIdx >= firstIdx || firstIdx >= secondIdx {
 		t.Errorf("update order wrong: seed=%d first=%d second=%d", seedIdx, firstIdx, secondIdx)
 	}
 	// Notes are preserved.

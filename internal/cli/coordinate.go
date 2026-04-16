@@ -71,7 +71,7 @@ func coordinatorIsAlive() bool {
 	if err != nil {
 		return false
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
 	req, _ := json.Marshal(map[string]string{"cmd": "status"})
 	_, _ = conn.Write(append(req, '\n'))
@@ -80,7 +80,9 @@ func coordinatorIsAlive() bool {
 	if err != nil || n == 0 {
 		return false
 	}
-	var reply struct{ OK bool `json:"ok"` }
+	var reply struct {
+		OK bool `json:"ok"`
+	}
 	if err := json.Unmarshal(buf[:n], &reply); err != nil {
 		return false
 	}

@@ -122,7 +122,7 @@ func registerContextTools(server *mcp.Server, store *contextstore.Store) {
 	})
 
 	mcp.AddTool[logFindingArgs, logFindingOut](server, &mcp.Tool{
-		Name: "log_finding",
+		Name:        "log_finding",
 		Description: "Open a new finding. Findings are lifecycle-aware entries for bug reports, observations, and refactor proposals — things that need tracking and follow-up, unlike decisions/discoveries which are terminal learnings. `category` must be one of: bug, observation, refactor. `status` defaults to 'open' and is one of: open, acknowledged, resolved, wontfix. The Updates section is seeded with the opening subheading; later `append_to_finding` calls add more.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in logFindingArgs) (*mcp.CallToolResult, logFindingOut, error) {
 		path, err := store.LogFinding(contextstore.LogFindingInput{
@@ -137,7 +137,7 @@ func registerContextTools(server *mcp.Server, store *contextstore.Store) {
 	})
 
 	mcp.AddTool[appendFindingArgs, appendFindingOut](server, &mcp.Tool{
-		Name: "append_to_finding",
+		Name:        "append_to_finding",
 		Description: "Append a timestamped update to an existing finding and optionally transition its status. Slug is required (list_findings first if you don't know it). Prior updates are preserved; this is append-only. Status must be one of: open, acknowledged, resolved, wontfix.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in appendFindingArgs) (*mcp.CallToolResult, appendFindingOut, error) {
 		path, newStatus, err := store.AppendToFinding(contextstore.AppendFindingInput{

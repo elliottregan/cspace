@@ -30,7 +30,7 @@ func TestContextServerE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	// log_decision
 	if _, err := session.CallTool(ctx, &mcp.CallToolParams{

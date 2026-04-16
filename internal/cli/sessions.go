@@ -166,7 +166,7 @@ echo "c=$c s=$s"
 	c, s := 0, 0
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		if strings.HasPrefix(line, "c=") {
-			fmt.Sscanf(line, "c=%d s=%d", &c, &s)
+			_, _ = fmt.Sscanf(line, "c=%d s=%d", &c, &s)
 		}
 	}
 	return c, s, nil
