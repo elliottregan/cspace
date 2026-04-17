@@ -202,7 +202,6 @@ func TestComposeEnvNoFirewallDomains(t *testing.T) {
 	}
 }
 
-
 func TestWriteServiceURLsOverrideNoopWhenEmpty(t *testing.T) {
 	cfg := &config.Config{Project: config.ProjectConfig{Name: "p", Prefix: "p"}}
 
