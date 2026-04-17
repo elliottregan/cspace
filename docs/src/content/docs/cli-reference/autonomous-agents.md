@@ -91,3 +91,20 @@ cspace up mercury --prompt-file ./tasks/refactor-auth.md
 # Auto-named one-shot agent
 cspace up --prompt-file ./tasks/fix-tests.md
 ```
+
+## Configuring the agent's model and effort
+
+Autonomous runs use the Claude model and reasoning effort declared in `.cspace.json`:
+
+```json title=".cspace.json"
+{
+  "claude": {
+    "model": "opus[1m]",
+    "effort": "max"
+  }
+}
+```
+
+Defaults are `opus[1m]` (latest Opus + 1M context) and `max` effort — suitable for long, unsupervised tasks. cspace passes these to the supervisor as `--model` / `--effort` flags, which map to SDK `options.model` / `options.effort` and apply only to the autonomous query.
+
+These settings do **not** affect interactive `claude` sessions — those follow project `.claude/settings.json`. See [Configuration reference](/configuration/configuration-reference/#claude) for the full precedence rules and accepted values.

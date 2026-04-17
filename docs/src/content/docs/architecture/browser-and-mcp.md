@@ -21,7 +21,7 @@ The browser sidecar has **unrestricted network access** (no firewall), so it can
 ┌─────────────────────────────────────────────────────┐
 │ Host (macOS)                                        │
 │                                                     │
-│  Browser ──► mercury.resume-redux.cspace.local      │
+│  Browser ──► dev.mercury.resume-redux.cspace.local  │
 │              ↓ (CoreDNS → 127.0.0.1)               │
 │              ↓ (Traefik routes by hostname)          │
 │                                                     │
@@ -66,7 +66,7 @@ Both browser MCP servers are **automatically registered** during container provi
 **Chrome DevTools MCP** (`chrome-devtools-mcp`) — page inspection for reading DOM state, network requests, console logs, and performance data. Also connects to Chrome at `localhost:9222`.
 
 Since both run inside the unrestricted browser sidecar, they can navigate to:
-- Container-hosted sites (`mercury.resume-redux.cspace.local`)
+- Container-hosted sites (`dev.mercury.resume-redux.cspace.local`)
 - External URLs (`https://example.com`)
 - Project services (`convex.mercury.resume-redux.cspace.local`)
 
@@ -76,7 +76,7 @@ Developers access container-hosted sites from their browser using `cspace.local`
 
 | Service | URL |
 |---------|-----|
-| Dev server | `http://mercury.resume-redux.cspace.local` |
+| Dev server | `http://dev.mercury.resume-redux.cspace.local` |
 | Preview server | `http://preview.mercury.resume-redux.cspace.local` |
 | Convex backend | `http://convex.mercury.resume-redux.cspace.local` |
 
@@ -116,3 +116,23 @@ convex-backend:
 ```
 
 This routes `convex.mercury.resume-redux.cspace.local` to the Convex backend on port 3210. The `convex-nuxt` project template includes these labels out of the box.
+
+### Injecting service URLs into the dev container
+
+Traefik routes make the URL reachable; `serviceUrls` in `.cspace.json` wires it into your app's framework env var. For example:
+
+```json title=".cspace.json"
+{
+  "serviceUrls": {
+    "convex": ["VITE_CONVEX_URL"],
+    "convex-site": ["VITE_CONVEX_SITE_URL"]
+  }
+}
+```
+
+cspace generates a compose override at instance start and injects, into the dev container:
+
+- `CSPACE_SERVICE_CONVEX_URL=http://convex.mercury.resume-redux.cspace.local` (canonical name)
+- `VITE_CONVEX_URL=http://convex.mercury.resume-redux.cspace.local` (framework alias — Vite picks it up on boot without a `.env.local` entry)
+
+The URL is the same one the host browser, sidecar browser, and Playwright all resolve to, so there's one correct value and no stale-bundle debugging. See [Configuration reference](/configuration/configuration-reference/#serviceurls) for schema details.

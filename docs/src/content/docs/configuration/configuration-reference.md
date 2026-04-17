@@ -35,8 +35,8 @@ Every cspace project is configured through a `.cspace.json` file in the reposito
     ]
   },
   "claude": {
-    "model": "claude-opus-4-7[1m]",
-    "effort": "xhigh"
+    "model": "opus[1m]",
+    "effort": "max"
   },
   "mcpServers": {},
   "plugins": {
@@ -154,7 +154,26 @@ Controls autonomous agent behavior.
 |-----|------|---------|-------------|
 | `services` | `string` | `""` | Path to a Docker Compose file with project-specific services (e.g., `".cspace/docker-compose.yml"`). See [Project Services](/configuration/project-services/). |
 | `post_setup` | `string` | `""` | Path to a shell script that runs after container initialization (e.g., `".cspace/post-setup.sh"`). See [Project Services](/configuration/project-services/). |
-| `serviceUrls` | `object` | `{}` | Map of Traefik subdomain label → list of env var aliases. cspace injects each URL as `CSPACE_SERVICE_<LABEL>_URL` plus every alias, so e.g. `{"convex": ["VITE_CONVEX_URL"]}` exports `VITE_CONVEX_URL=http://convex.<instance>.<project>.cspace.local` into the main container. Eliminates `.env.local` juggling for cross-service wiring. |
+
+### `serviceUrls`
+
+Map of Traefik subdomain label → list of framework env var aliases. For each entry, cspace generates a compose override at instance start and injects:
+
+- `CSPACE_SERVICE_<LABEL>_URL` — the canonical env var name.
+- Every alias listed in the array, set to the same URL — lets frameworks pick it up on boot without a `.env.local` entry.
+
+The URL is always `http://<label>.<instance>.<project>.cspace.local` — the same hostname the host browser, container sidecars, and Playwright all resolve to via Traefik, so there's one correct value regardless of where the request originates.
+
+```json title=".cspace.json"
+{
+  "serviceUrls": {
+    "convex": ["VITE_CONVEX_URL", "CONVEX_URL"],
+    "convex-site": ["VITE_CONVEX_SITE_URL"]
+  }
+}
+```
+
+The subdomain labels must match the `Host(\`<label>.<instance>.<project>.cspace.local\`)` rule on the corresponding service container's Traefik labels. See [Browser & MCP](/architecture/browser-and-mcp/#exposing-project-services) for an example `docker-compose.yml` snippet.
 
 ## Config merging
 
