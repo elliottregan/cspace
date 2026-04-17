@@ -15,10 +15,22 @@ const (
 // character selected from a phase-specific palette.
 type Shape = [ShapeRows][ShapeCols]float64
 
-// sphereShape produces a Lambertian-shaded elliptical disk centered at
-// (cx, cy) with semi-axes (rx, ry) in unit space. Shading uses sqrt(1 - d²)
-// to mimic diffuse illumination of a 3D sphere: 1.0 where the surface
-// normal faces the viewer (center), falling smoothly to 0 at the terminator.
+// lightDir points from the sphere surface toward the directional key light.
+// Slightly up-left-of-viewer so the bright spot sits in the upper-left
+// quadrant of the disk and the terminator shadow falls toward the lower
+// right — a classic 3D-sphere lighting setup.
+var lightDir = [3]float64{-0.40, -0.30, 0.85}
+
+// ambient is the base illumination on the shadowed hemisphere. Above 0 so
+// the silhouette stays visible past the terminator; low enough that the
+// directional shadow is clearly asymmetric.
+const ambient = 0.18
+
+// sphereShape produces a directionally lit elliptical disk centered at
+// (cx, cy) with semi-axes (rx, ry) in unit space. Each in-disk cell is
+// treated as a point on a 3D unit sphere: surface normal N = (dx, dy, z),
+// shade = ambient + (1 - ambient) · max(0, N · lightDir). This offsets the
+// bright spot from geometric center, producing a visible shadow.
 func sphereShape(cx, cy, rx, ry float64) Shape {
 	var s Shape
 	for r := 0; r < ShapeRows; r++ {
@@ -31,7 +43,16 @@ func sphereShape(cx, cy, rx, ry float64) Shape {
 			if d2 >= 1 {
 				continue
 			}
-			s[r][c] = math.Sqrt(1 - d2)
+			z := math.Sqrt(1 - d2)
+			dot := dx*lightDir[0] + dy*lightDir[1] + z*lightDir[2]
+			if dot < 0 {
+				dot = 0
+			}
+			shade := ambient + (1-ambient)*dot
+			if shade > 1 {
+				shade = 1
+			}
+			s[r][c] = shade
 		}
 	}
 	return s
