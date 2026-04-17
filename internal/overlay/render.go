@@ -29,8 +29,14 @@ const haloThreshold = 0.08
 
 // maxBlurIters caps the iterative 3x3 box-blur passes applied to the
 // target shape at phase 1 (the most defocused frame). 0 iterations at
-// phase == total gives the sharp target image.
-const maxBlurIters = 6
+// phase == total gives the sharp target image. Scales roughly with grid
+// size — doubled from 6 when the shape grid grew from 24² to 48².
+const maxBlurIters = 12
+
+// viewportBg is the panel-interior background every planet cell paints,
+// so the blur tails blend into the enclosing black viewport regardless
+// of the user's terminal theme.
+var viewportBg = [3]uint8{0, 0, 0}
 
 // upperHalf and lowerHalf are the Unicode half-block characters we use
 // to pack two vertical sub-pixels into one terminal cell. upperHalf
@@ -85,13 +91,13 @@ func scaleColor(rgb [3]uint8, shade float64) [3]uint8 {
 
 const ansiReset = "\x1b[0m"
 
-func fgAnsi(rgb [3]uint8) string {
-	return fmt.Sprintf("\x1b[38;2;%d;%d;%dm", rgb[0], rgb[1], rgb[2])
-}
-
 func fgBgAnsi(fg, bg [3]uint8) string {
 	return fmt.Sprintf("\x1b[38;2;%d;%d;%d;48;2;%d;%d;%dm",
 		fg[0], fg[1], fg[2], bg[0], bg[1], bg[2])
+}
+
+func bgAnsi(bg [3]uint8) string {
+	return fmt.Sprintf("\x1b[48;2;%d;%d;%dm", bg[0], bg[1], bg[2])
 }
 
 // RenderPlanet returns one frame of the focus-pull animation. Blur
@@ -127,7 +133,9 @@ func RenderPlanet(shape planets.Shape, p planets.Planet, phase, total int) strin
 
 			switch {
 			case !topOn && !botOn:
+				line.WriteString(bgAnsi(viewportBg))
 				line.WriteByte(' ')
+				line.WriteString(ansiReset)
 			case topOn && botOn:
 				topColor := scaleColor(baseColor, top)
 				botColor := scaleColor(baseColor, bot)
@@ -136,12 +144,12 @@ func RenderPlanet(shape planets.Shape, p planets.Planet, phase, total int) strin
 				line.WriteString(ansiReset)
 			case topOn:
 				topColor := scaleColor(baseColor, top)
-				line.WriteString(fgAnsi(topColor))
+				line.WriteString(fgBgAnsi(topColor, viewportBg))
 				line.WriteString(upperHalf)
 				line.WriteString(ansiReset)
 			case botOn:
 				botColor := scaleColor(baseColor, bot)
-				line.WriteString(fgAnsi(botColor))
+				line.WriteString(fgBgAnsi(botColor, viewportBg))
 				line.WriteString(lowerHalf)
 				line.WriteString(ansiReset)
 			}

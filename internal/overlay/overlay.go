@@ -117,7 +117,11 @@ func NewModel(cfg ModelConfig) Model {
 		cfg.Total = 14
 	}
 	sp := spinner.New()
-	sp.Spinner = spinner.Dot
+	sp.Spinner = spinner.Spinner{
+		Frames: []string{"◐", "◓", "◑", "◒"},
+		FPS:    time.Second / 4,
+	}
+	sp.Style = hudAccentStyle
 	return Model{
 		cfg:     cfg,
 		start:   cfg.Now(),
@@ -222,58 +226,170 @@ func (m Model) View() string {
 	return m.loadingView()
 }
 
-var nameStyle = lipgloss.NewStyle().Bold(true)
+// sciFiLabels styles each provisioning phase as a terse 2001-style status
+// word. Falls back to the raw phase name when unknown (e.g. custom labels
+// like "Reusing running container" that are also present in the map).
+var sciFiLabels = map[string]string{
+	"Validating name":           "DESIGNATE",
+	"Reusing running container": "RESUME SEQUENCE",
+	"Removing orphans":          "CLEARING VECTOR",
+	"Bundling repo":             "PACKAGE PAYLOAD",
+	"Creating volumes":          "FORMAT BANKS",
+	"Creating network":          "LINK SUBSTRATE",
+	"Starting reverse proxy":    "ENGAGE UPLINK",
+	"Setting up directories":    "ALIGN BULKHEAD",
+	"Starting containers":       "IGNITION",
+	"Waiting for container":     "HANDSHAKE",
+	"Configuring hosts":         "CROSSLINK",
+	"Setting permissions":       "ACCESS CALIBRATE",
+	"Initializing workspace":    "BOOT SEQUENCE",
+	"Configuring git & env":     "CODE UPLINK",
+	"Installing plugins":        "LOAD MODULES",
+}
+
+func sciFiLabelFor(phase string) string {
+	if s, ok := sciFiLabels[phase]; ok {
+		return s
+	}
+	return strings.ToUpper(phase)
+}
+
+// Cold monochrome HUD palette. Planet art carries per-planet color; every
+// other chrome element uses these greys so the interface feels like a
+// single cold instrument panel.
+var (
+	viewportBgColor = lipgloss.Color("#000000")
+	hudAccent       = lipgloss.Color("#d4d4d4") // bright silver — borders, focus words
+	hudBase         = lipgloss.Color("#9a9a9a") // mid silver — regular text
+	hudDim          = lipgloss.Color("#606060") // dim silver — subtext, empty bar cells
+	errorAccent     = lipgloss.Color("#e05555") // warm red — fault chrome only
+)
+
+var (
+	panelStyle = lipgloss.NewStyle().
+			Border(lipgloss.DoubleBorder()).
+			BorderForeground(hudAccent).
+			BorderBackground(viewportBgColor).
+			Background(viewportBgColor).
+			Padding(1, 4)
+
+	panelInnerStyle = lipgloss.NewStyle().
+			Background(viewportBgColor)
+
+	hudBaseStyle = lipgloss.NewStyle().
+			Foreground(hudBase).
+			Background(viewportBgColor)
+
+	hudAccentStyle = lipgloss.NewStyle().
+			Foreground(hudAccent).
+			Background(viewportBgColor).
+			Bold(true)
+
+	hudDimStyle = lipgloss.NewStyle().
+			Foreground(hudDim).
+			Background(viewportBgColor)
+
+	nameStyle = lipgloss.NewStyle().
+			Bold(true).
+			Background(viewportBgColor)
+
+	errorPanelStyle = lipgloss.NewStyle().
+			Border(lipgloss.DoubleBorder()).
+			BorderForeground(errorAccent).
+			BorderBackground(viewportBgColor).
+			Background(viewportBgColor).
+			Padding(1, 4)
+)
+
+// progressBarWidth is the character count of the filled+empty segments
+// (brackets excluded). 24 fits comfortably under a 48-col planet.
+const progressBarWidth = 24
+
+// renderProgressBar draws a solid-filled bar: [██████████░░░░░░░░░░░░░░]
+// with bright silver for filled cells and dim silver for empty ones, plus
+// a trailing percentage. Progress is clamped to [0, 1].
+func renderProgressBar(progress float64) string {
+	if progress < 0 {
+		progress = 0
+	}
+	if progress > 1 {
+		progress = 1
+	}
+	filled := int(progress * float64(progressBarWidth))
+	if filled > progressBarWidth {
+		filled = progressBarWidth
+	}
+	empty := progressBarWidth - filled
+
+	filledStr := hudAccentStyle.Render(strings.Repeat("█", filled))
+	emptyStr := hudDimStyle.Render(strings.Repeat("░", empty))
+	bracket := hudBaseStyle.Render
+	pct := hudAccentStyle.Render(fmt.Sprintf(" %05.1f%%", progress*100))
+
+	return bracket("[") + filledStr + emptyStr + bracket("]") + pct
+}
 
 func (m Model) loadingView() string {
 	shape := planets.GetShape(m.cfg.Name)
 	art := RenderPlanet(shape, m.cfg.Planet, m.phaseNum, m.cfg.Total)
 
+	planetColor := lipgloss.Color(fmt.Sprintf("#%02x%02x%02x",
+		m.cfg.Planet.Color[0], m.cfg.Planet.Color[1], m.cfg.Planet.Color[2]))
+	nameLine := nameStyle.Foreground(planetColor).
+		Render(strings.ToUpper(m.cfg.Name))
+
+	progress := 0.0
+	if m.cfg.Total > 0 {
+		progress = float64(m.phaseNum) / float64(m.cfg.Total)
+	}
+	progressLine := renderProgressBar(progress)
+
+	sciFi := sciFiLabelFor(m.phase)
+	statusTop := hudAccentStyle.Render(m.spinner.View()+"  ") + hudAccentStyle.Render(sciFi)
+	statusBot := hudDimStyle.Render("    " + m.phase)
+
 	elapsed := m.cfg.Now().Sub(m.start)
 	mm := int(elapsed.Minutes())
 	ss := int(elapsed.Seconds()) % 60
-	timer := fmt.Sprintf("%02d:%02d", mm, ss)
+	stats := hudBaseStyle.Render(fmt.Sprintf("PH %02d/%02d    T+ %02d:%02d",
+		m.phaseNum, m.cfg.Total, mm, ss))
 
-	planetColor := lipgloss.Color(fmt.Sprintf("#%02x%02x%02x",
-		m.cfg.Planet.Color[0], m.cfg.Planet.Color[1], m.cfg.Planet.Color[2]))
-	nameLine := nameStyle.Foreground(planetColor).Render(m.cfg.Name)
-
-	phaseLine := fmt.Sprintf("%s  %s", m.spinner.View(), m.phase)
-
-	content := strings.Join([]string{
+	inner := lipgloss.JoinVertical(lipgloss.Center,
 		art,
-		"",
+		panelInnerStyle.Render(""),
 		nameLine,
-		"",
-		phaseLine,
-		"",
-		timer,
-	}, "\n")
+		panelInnerStyle.Render(""),
+		progressLine,
+		panelInnerStyle.Render(""),
+		statusTop,
+		statusBot,
+		panelInnerStyle.Render(""),
+		stats,
+	)
 
+	panel := panelStyle.Render(inner)
 	if m.width == 0 || m.height == 0 {
-		// No WindowSizeMsg yet; return un-centered.
-		return content
+		return panel
 	}
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, panel)
 }
-
-var errorPanelStyle = lipgloss.NewStyle().
-	Border(lipgloss.RoundedBorder()).
-	BorderForeground(lipgloss.Color("9")).
-	Padding(1, 2)
 
 func (m Model) errorView() string {
 	lines := []string{
-		"✗  Provisioning failed",
-		"",
+		hudAccentStyle.Render("✕  MISSION ABORT"),
+		panelInnerStyle.Render(""),
 	}
 	if m.errPhase != "" {
-		lines = append(lines, fmt.Sprintf("Phase: %s", m.errPhase), "")
+		lines = append(lines,
+			hudBaseStyle.Render("FAULT IN PHASE: "+strings.ToUpper(sciFiLabelFor(m.errPhase))),
+			hudDimStyle.Render(m.errPhase),
+			panelInnerStyle.Render(""),
+		)
 	}
 	lines = append(lines,
-		"For the full log, run:",
-		fmt.Sprintf("  cspace up %s --verbose", m.cfg.Name),
-		"",
-		"Press any key to exit",
+		hudBaseStyle.Render("»  cspace up "+m.cfg.Name+" --verbose"),
+		panelInnerStyle.Render(""),
+		hudDimStyle.Render("[ANY KEY] TO DISENGAGE"),
 	)
 	panel := errorPanelStyle.Render(strings.Join(lines, "\n"))
 	if m.width == 0 || m.height == 0 {

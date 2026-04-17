@@ -24,8 +24,8 @@ func TestViewShowsInstanceName(t *testing.T) {
 	m.phase = "Validating"
 	m.phaseNum = 1
 	out := m.View()
-	if !strings.Contains(out, "mercury") {
-		t.Error("expected instance name in view")
+	if !strings.Contains(out, "MERCURY") {
+		t.Error("expected instance name (upper-cased) in view")
 	}
 }
 
@@ -68,10 +68,10 @@ func TestViewErrorPanel(t *testing.T) {
 	m.errPhase = "Starting containers"
 	out := m.View()
 	for _, want := range []string{
-		"Provisioning failed",
+		"MISSION ABORT",
 		"Starting containers",
 		"--verbose",
-		"Press any key",
+		"DISENGAGE",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("error panel missing %q\nfull view:\n%s", want, out)

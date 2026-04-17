@@ -2,15 +2,15 @@ package planets
 
 import "math"
 
-// Shape dimensions: 24 rows × 24 cols of SUB-pixels. Rendering pairs
+// Shape dimensions: 48 rows × 48 cols of SUB-pixels. Rendering pairs
 // consecutive rows into one terminal line using the ▀/▄ half-block
-// characters, so output is ShapeRows/2 terminal rows tall. With
+// characters, so output is ShapeRows/2 = 24 terminal rows tall. With
 // subpixels counted as 1 visual unit and terminal chars as 1 unit wide
 // × 2 units tall, this gives a square unit space and a visually round
 // disk when rx == ry in sphereShape.
 const (
-	ShapeRows = 24
-	ShapeCols = 24
+	ShapeRows = 48
+	ShapeCols = 48
 )
 
 // Shape is a row × col grid of shade values in [0.0, 1.0]. 0.0 = empty,
@@ -122,20 +122,21 @@ func applyRings(s Shape, bodyRx float64) Shape {
 }
 
 // applyContinents darkens a scattered set of interior cells to suggest
-// landmasses. Coordinates scale proportionally to the grid so the patches
-// stay inside the earth disk.
+// landmasses. Patch centers are normalized so they stay inside the disk
+// across any grid size.
 func applyContinents(s Shape) Shape {
-	// Normalized patch centers (x, y) in [0,1] unit space.
 	patches := [][2]float64{
 		{0.35, 0.35}, {0.40, 0.30}, {0.30, 0.45},
 		{0.62, 0.40}, {0.68, 0.55}, {0.55, 0.65},
 		{0.42, 0.62}, {0.72, 0.30}, {0.48, 0.75},
 	}
+	dRow := ShapeRows / 24
+	dCol := ShapeCols / 12
 	for _, p := range patches {
 		rc := int(p[1] * float64(ShapeRows))
 		cc := int(p[0] * float64(ShapeCols))
-		for dr := -1; dr <= 1; dr++ {
-			for dc := -2; dc <= 2; dc++ {
+		for dr := -dRow; dr <= dRow; dr++ {
+			for dc := -dCol; dc <= dCol; dc++ {
 				r, c := rc+dr, cc+dc
 				if r < 0 || r >= ShapeRows || c < 0 || c >= ShapeCols {
 					continue
@@ -153,8 +154,8 @@ var (
 	mercurySimpleSphere = sphereShape(0.5, 0.5, 0.46, 0.46)
 	venusUniformHaze    = sphereShape(0.5, 0.5, 0.47, 0.47)
 	earthContinents     = applyContinents(sphereShape(0.5, 0.5, 0.45, 0.45))
-	marsPolarCap        = applyPolarCap(sphereShape(0.5, 0.5, 0.43, 0.43), 5, 1.25)
-	jupiterBands        = applyBands(sphereShape(0.5, 0.5, 0.47, 0.47), 3, 0.70)
+	marsPolarCap        = applyPolarCap(sphereShape(0.5, 0.5, 0.43, 0.43), 10, 1.25)
+	jupiterBands        = applyBands(sphereShape(0.5, 0.5, 0.47, 0.47), 6, 0.70)
 	saturnRings         = applyRings(sphereShape(0.5, 0.5, 0.32, 0.32), 0.32)
 	uranusSmallSphere   = sphereShape(0.5, 0.5, 0.40, 0.40)
 	neptuneDenseCore    = sphereShape(0.5, 0.5, 0.40, 0.40)

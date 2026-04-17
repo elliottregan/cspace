@@ -210,7 +210,7 @@ func shouldUseOverlay(verbose bool) bool {
 		return false
 	}
 	w, h, err := term.GetSize(int(os.Stdout.Fd()))
-	if err != nil || w < 40 || h < 30 {
+	if err != nil || w < 64 || h < 36 {
 		return false
 	}
 	return true
