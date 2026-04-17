@@ -132,21 +132,13 @@ func ComposeEnv(name string, cfg *config.Config) []string {
 		env = append(env, "CSPACE_FIREWALL_DOMAINS="+strings.Join(cfg.Firewall.Domains, " "))
 	}
 
-	// Claude model and effort are plumbed into the container as the first-class
-	// Claude Code env vars (ANTHROPIC_MODEL, CLAUDE_CODE_EFFORT_LEVEL) so they
-	// override settings.json and the /effort command without needing a second
-	// layer of cspace-specific keys. See https://code.claude.com/docs/en/env-vars.
-	//
-	// Model: left empty when the user hasn't configured one, so the Claude CLI
-	// falls through to the account default. Effort: defaults to "xhigh" — solid
-	// reasoning in interactive use; the supervisor bumps autonomous runs to
-	// "max" via --effort (see internal/supervisor/launch.go).
-	env = append(env, "CSPACE_ANTHROPIC_MODEL="+cfg.Claude.Model)
-	effort := cfg.Claude.Effort
-	if effort == "" {
-		effort = "xhigh"
-	}
-	env = append(env, "CSPACE_CLAUDE_CODE_EFFORT_LEVEL="+effort)
+	// Claude model and effort are NOT exported as container env vars.
+	// ANTHROPIC_MODEL and CLAUDE_CODE_EFFORT_LEVEL would override project
+	// .claude/settings.json for every interactive `claude` run — we want
+	// project settings to win there. Autonomous supervisor runs pick up
+	// cfg.Claude.{Model,Effort} via explicit --model / --effort CLI args
+	// in internal/supervisor/launch.go, which map to SDK Options and take
+	// precedence for that one query without leaking into interactive use.
 
 	// MCP servers as compact JSON (nil map marshals to "null", normalize to "{}")
 	mcpJSON, _ := json.Marshal(cfg.MCPServers)

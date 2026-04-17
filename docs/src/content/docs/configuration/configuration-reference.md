@@ -95,12 +95,16 @@ Egress firewall configuration. GitHub, npm, and Anthropic domains are always all
 
 ### `claude`
 
-Claude Code agent configuration. Both keys are plumbed into the container as the first-class Claude Code env vars ([`ANTHROPIC_MODEL`](https://code.claude.com/docs/en/env-vars) and `CLAUDE_CODE_EFFORT_LEVEL`) — they override `settings.json` and the `/effort` command.
+Autonomous supervisor settings. These keys are passed as `--model` / `--effort` flags to supervisor.mjs when cspace launches an agent, which maps them to the Claude Agent SDK's `options.model` / `options.effort` — taking precedence for that single query.
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `claude.model` | `string` | `"opus[1m]"` | Claude model to use. The `opus` alias always resolves to the latest Opus model; `[1m]` enables the 1M-token context window. Pin a specific version with e.g. `"claude-opus-4-7[1m]"` or switch classes with `"sonnet"`. Set to `""` to fall back to the Claude CLI account default. |
-| `claude.effort` | `string` | `""` | Reasoning effort level. Accepted values: `low`, `medium`, `high`, `xhigh`, `max`, `auto`. When empty, the container env var defaults to `xhigh` for interactive use; autonomous supervisor runs bump to `max`. Any explicit value here applies everywhere. |
+They are **deliberately not** set as container env vars, because [`ANTHROPIC_MODEL`](https://code.claude.com/docs/en/env-vars) and `CLAUDE_CODE_EFFORT_LEVEL` override project `.claude/settings.json`. Interactive `claude` sessions in an ssh shell instead pick up whatever the project's `settings.json` (or user's `~/.claude/settings.json`, or account default) specifies — the normal Claude Code precedence.
+
+| Key | Type | Default | Scope | Description |
+|-----|------|---------|-------|-------------|
+| `claude.model` | `string` | `"opus[1m]"` | autonomous only | Claude model for supervisor-launched agents. `opus` alias resolves to the latest Opus; `[1m]` enables the 1M-token context window. Pin a version with `"claude-opus-4-7[1m]"` or switch classes with `"sonnet"`. Set to `""` to fall back to the CLI account default. |
+| `claude.effort` | `string` | `""` (→ `max`) | autonomous only | Reasoning effort for supervisor-launched agents. Accepted: `low`, `medium`, `high`, `xhigh`, `max`, `auto`. Empty means `max` (the autonomous default). |
+
+To control the **interactive** `claude` model/effort in a project, commit a `.claude/settings.json` with `model` / `effortLevel` entries to the repo — standard Claude Code configuration.
 
 ### `mcpServers`
 

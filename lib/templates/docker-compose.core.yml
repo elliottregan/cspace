@@ -84,12 +84,14 @@ services:
       # it previously leaked macOS paths into Linux containers and broke
       # teleport-prepare.sh (mkdir /Users/... EACCES).
       - CSPACE_FIREWALL_DOMAINS=${CSPACE_FIREWALL_DOMAINS:-}
-      # Claude Code env vars — https://code.claude.com/docs/en/env-vars
-      # ANTHROPIC_MODEL empty → CLI uses the account default (latest Opus).
-      # CLAUDE_CODE_EFFORT_LEVEL defaults to xhigh; supervisor overrides
-      # autonomous runs to max via --effort.
-      - ANTHROPIC_MODEL=${CSPACE_ANTHROPIC_MODEL:-}
-      - CLAUDE_CODE_EFFORT_LEVEL=${CSPACE_CLAUDE_CODE_EFFORT_LEVEL:-xhigh}
+      # NOTE: Claude Code env vars (ANTHROPIC_MODEL, CLAUDE_CODE_EFFORT_LEVEL)
+      # are deliberately NOT set here. Those env vars take precedence over
+      # project .claude/settings.json (per Claude Code's precedence rules),
+      # so setting them at the container level would stomp whatever the user
+      # configured for the project. Interactive `claude` runs inherit from
+      # project settings instead. Autonomous supervisor runs get model/effort
+      # via explicit --model and --effort CLI args (see internal/supervisor/
+      # launch.go), which map to SDK Options and still win for that query.
       - CSPACE_MCP_SERVERS=${CSPACE_MCP_SERVERS:-}
       - TERM_PROGRAM=${TERM_PROGRAM:-}
       - COLORTERM=${COLORTERM:-}

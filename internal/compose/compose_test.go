@@ -136,13 +136,21 @@ func TestComposeEnvProvisioningVars(t *testing.T) {
 		t.Errorf("CSPACE_FIREWALL_DOMAINS = %q, want %q", got, "api.example.com cdn.example.com")
 	}
 
-	// Claude model and effort are exported as the first-class Claude Code env
-	// var names (CSPACE_* prefix is just the compose-yaml bridge indirection).
-	if got := m["CSPACE_ANTHROPIC_MODEL"]; got != "claude-opus-4-7[1m]" {
-		t.Errorf("CSPACE_ANTHROPIC_MODEL = %q, want %q", got, "claude-opus-4-7[1m]")
+	// Claude model and effort must NOT leak into the container env — they
+	// would override project .claude/settings.json for interactive runs.
+	// Autonomous supervisor runs pick them up via --model/--effort CLI
+	// args instead (see internal/supervisor/launch.go).
+	if _, ok := m["CSPACE_ANTHROPIC_MODEL"]; ok {
+		t.Errorf("CSPACE_ANTHROPIC_MODEL must not be set as a container env var (would override project settings.json)")
 	}
-	if got := m["CSPACE_CLAUDE_CODE_EFFORT_LEVEL"]; got != "max" {
-		t.Errorf("CSPACE_CLAUDE_CODE_EFFORT_LEVEL = %q, want %q", got, "max")
+	if _, ok := m["CSPACE_CLAUDE_CODE_EFFORT_LEVEL"]; ok {
+		t.Errorf("CSPACE_CLAUDE_CODE_EFFORT_LEVEL must not be set as a container env var (would override project settings.json)")
+	}
+	if _, ok := m["ANTHROPIC_MODEL"]; ok {
+		t.Errorf("ANTHROPIC_MODEL must not be set as a container env var (would override project settings.json)")
+	}
+	if _, ok := m["CLAUDE_CODE_EFFORT_LEVEL"]; ok {
+		t.Errorf("CLAUDE_CODE_EFFORT_LEVEL must not be set as a container env var (would override project settings.json)")
 	}
 
 	// MCP servers (should be compact JSON)
@@ -194,21 +202,6 @@ func TestComposeEnvNoFirewallDomains(t *testing.T) {
 	}
 }
 
-func TestComposeEnvEffortDefaultsToXhigh(t *testing.T) {
-	cfg := &config.Config{
-		Project: config.ProjectConfig{Name: "p", Prefix: "p"},
-		Claude:  config.ClaudeConfig{}, // Effort unset
-	}
-
-	env := ComposeEnv("mercury", cfg)
-
-	for _, e := range env {
-		if e == "CSPACE_CLAUDE_CODE_EFFORT_LEVEL=xhigh" {
-			return
-		}
-	}
-	t.Errorf("expected CSPACE_CLAUDE_CODE_EFFORT_LEVEL=xhigh in env when Effort is empty, got: %v", env)
-}
 
 func TestWriteServiceURLsOverrideNoopWhenEmpty(t *testing.T) {
 	cfg := &config.Config{Project: config.ProjectConfig{Name: "p", Prefix: "p"}}
