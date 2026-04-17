@@ -4,11 +4,19 @@ package docker
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 )
+
+// ProxyComposeProject is the compose project name used for the global
+// Traefik + CoreDNS proxy stack. The proxy containers carry
+// `com.docker.compose.project=<this>` labels, which EnsureProxy uses to
+// distinguish compose-managed containers from orphans left by older
+// cspace versions that started them via raw `docker run`.
+const ProxyComposeProject = "cspace-proxy"
 
 // VolumeCreate creates a named Docker volume. Idempotent -- does not
 // error if the volume already exists.
@@ -156,10 +164,19 @@ func EnsureProxy(assetsDir string) error {
 		}
 	}
 
+	// Remove any pre-existing proxy containers that aren't owned by this
+	// compose project. Older cspace versions started them via raw `docker
+	// run` (no compose labels), which causes a name-collision error when
+	// the current compose stack tries to create them. Containers already
+	// managed by the proxy project are left alone so compose can reuse them.
+	for _, name := range []string{ProxyContainerName, "cspace-dns"} {
+		removeOrphanProxyContainer(name)
+	}
+
 	composePath := filepath.Join(proxyDir, "docker-compose.yml")
 	cmd := exec.Command("docker", "compose",
 		"-f", composePath,
-		"-p", "cspace-proxy",
+		"-p", ProxyComposeProject,
 		"up", "-d",
 	)
 	cmd.Stdout = os.Stdout
@@ -168,6 +185,40 @@ func EnsureProxy(assetsDir string) error {
 		return fmt.Errorf("starting cspace proxy: %w", err)
 	}
 	return nil
+}
+
+// removeOrphanProxyContainer removes a container with the given name if it
+// exists and is not already managed by the cspace-proxy compose project. This
+// prevents conflicts when a previous cspace version left the container behind
+// without compose labels (classic failure after upgrading across the era when
+// the proxy stack's shape changed).
+//
+// Silent no-op when the container doesn't exist or is already compose-managed.
+func removeOrphanProxyContainer(name string) {
+	inspect := exec.Command(
+		"docker", "inspect", name,
+		"--format", `{{index .Config.Labels "com.docker.compose.project"}}`,
+	)
+	inspect.Stderr = io.Discard // quiet the "No such container" on fresh setups
+	out, err := inspect.Output()
+	if err != nil {
+		return // container doesn't exist; compose will create it cleanly
+	}
+	project := strings.TrimSpace(string(out))
+	if project == ProxyComposeProject {
+		return // already managed correctly; compose up will reuse
+	}
+
+	if project == "" {
+		fmt.Fprintf(os.Stderr, "cspace: removing orphan %q (started outside compose) so the proxy stack can recreate it\n", name)
+	} else {
+		fmt.Fprintf(os.Stderr, "cspace: removing %q (owned by compose project %q) so cspace-proxy can take ownership\n", name, project)
+	}
+
+	rm := exec.Command("docker", "rm", "-f", name)
+	rm.Stdout = io.Discard
+	rm.Stderr = io.Discard
+	_ = rm.Run()
 }
 
 // GetContainerIP returns a container's IP address on the given network.
