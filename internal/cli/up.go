@@ -31,6 +31,10 @@ Use --no-claude to provision the container without launching Claude.`,
 	cmd.Flags().Bool("no-claude", false, "Create instance without launching Claude")
 	cmd.Flags().String("prompt", "", "Inline prompt text for autonomous agent")
 	cmd.Flags().String("prompt-file", "", "Path to a prompt file for autonomous agent")
+	cmd.Flags().Bool("persistent", false,
+		"Keep the agent alive between responses so `cspace send <name>` can "+
+			"drive multi-turn conversations. Without this flag, the agent exits "+
+			"after its first result (the default one-shot behavior).")
 	cmd.Flags().String("base", "", "Override base branch")
 	cmd.Flags().String("teleport-from", "", "Seed the instance from a teleport session dir (internal; used by /cspace-teleport)")
 
@@ -41,6 +45,7 @@ func runUp(cmd *cobra.Command, args []string) error {
 	noClaude, _ := cmd.Flags().GetBool("no-claude")
 	prompt, _ := cmd.Flags().GetString("prompt")
 	promptFile, _ := cmd.Flags().GetString("prompt-file")
+	persistent, _ := cmd.Flags().GetBool("persistent")
 	baseOverride, _ := cmd.Flags().GetString("base")
 	teleportFrom, _ := cmd.Flags().GetString("teleport-from")
 
@@ -53,6 +58,9 @@ func runUp(cmd *cobra.Command, args []string) error {
 	}
 	if teleportFrom != "" && noClaude {
 		return fmt.Errorf("--teleport-from implies launching Claude in resume mode; --no-claude is incompatible")
+	}
+	if persistent && prompt == "" && promptFile == "" {
+		return fmt.Errorf("--persistent requires an initial --prompt or --prompt-file")
 	}
 	if promptFile != "" {
 		if _, err := os.Stat(promptFile); err != nil {
@@ -93,12 +101,12 @@ func runUp(cmd *cobra.Command, args []string) error {
 		branch = baseOverride
 	}
 
-	return runUpWithArgs(name, branch, noClaude, prompt, promptFile, teleportFrom)
+	return runUpWithArgs(name, branch, noClaude, prompt, promptFile, teleportFrom, persistent)
 }
 
 // runUpWithArgs is the shared implementation for the up command, callable from
 // both the CLI handler and the TUI menu.
-func runUpWithArgs(name, branch string, noClaude bool, prompt, promptFile, teleportFrom string) error {
+func runUpWithArgs(name, branch string, noClaude bool, prompt, promptFile, teleportFrom string, persistent bool) error {
 	if teleportFrom != "" {
 		return provision.TeleportRun(provision.TeleportParams{
 			Name:         name,
@@ -164,5 +172,6 @@ func runUpWithArgs(name, branch string, noClaude bool, prompt, promptFile, telep
 		Role:       supervisor.RoleAgent,
 		PromptFile: supervisor.ContainerPromptPath,
 		StderrLog:  supervisor.ContainerAgentStderrLog,
+		Persistent: persistent,
 	}, cfg)
 }

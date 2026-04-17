@@ -111,6 +111,37 @@ func TestBuildSupervisorArgsEffortDefaultsToMaxForAutonomous(t *testing.T) {
 	}
 }
 
+func TestBuildSupervisorArgsPersistent(t *testing.T) {
+	cfg := &config.Config{}
+	params := LaunchParams{
+		Name:       "venus",
+		Role:       RoleAgent,
+		PromptFile: "/tmp/p.txt",
+		StderrLog:  "/tmp/x.log",
+		Persistent: true,
+	}
+	args := buildSupervisorArgs(params, cfg)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--persistent") {
+		t.Errorf("expected --persistent flag when LaunchParams.Persistent is true, got: %s", joined)
+	}
+}
+
+func TestBuildSupervisorArgsOmitsPersistentByDefault(t *testing.T) {
+	cfg := &config.Config{}
+	params := LaunchParams{
+		Name:       "venus",
+		Role:       RoleAgent,
+		PromptFile: "/tmp/p.txt",
+		StderrLog:  "/tmp/x.log",
+	}
+	args := buildSupervisorArgs(params, cfg)
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "--persistent") {
+		t.Errorf("expected no --persistent flag by default, got: %s", joined)
+	}
+}
+
 func TestBuildSupervisorArgsEffortHonorsExplicitOverride(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Claude.Effort = "high"

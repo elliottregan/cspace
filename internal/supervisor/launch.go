@@ -30,6 +30,13 @@ type LaunchParams struct {
 	// precedence over the project-level .cspace/agent-supervisor/<role>-system-prompt.txt
 	// override. Staged by the caller via StagePromptText.
 	SystemPromptFile string
+
+	// Persistent, when true, keeps the supervisor's prompt queue open after
+	// each result so external callers (`cspace send <instance> …`) can drive
+	// the agent through multiple turns. Default is the one-shot behavior —
+	// the supervisor closes the queue after the first result and exits.
+	// Only meaningful for RoleAgent; RoleCoordinator is always persistent.
+	Persistent bool
 }
 
 // LaunchSupervisor runs the agent-supervisor inside the named instance
@@ -281,6 +288,10 @@ func buildSupervisorArgs(params LaunchParams, cfg *config.Config) []string {
 		effort = "max"
 	}
 	args = append(args, "--effort", effort)
+
+	if params.Persistent {
+		args = append(args, "--persistent")
+	}
 
 	// System prompt resolution, highest-precedence first:
 	//   1. Per-invocation override via LaunchParams.SystemPromptFile
