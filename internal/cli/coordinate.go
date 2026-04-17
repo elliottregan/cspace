@@ -30,6 +30,10 @@ instructions, either inline or from a file.`,
 
 	cmd.Flags().String("prompt-file", "", "Load prompt from file instead of inline")
 	cmd.Flags().String("name", "", "Use a specific instance name (resumable)")
+	cmd.Flags().String("system-prompt-file", "",
+		"Override the coordinator's system prompt and skip the coordinator.md playbook. "+
+			"Lets the coordinator role run an ad-hoc task (e.g. an interactive chat test) "+
+			"without inheriting the default orchestration framing.")
 
 	return cmd
 }
@@ -37,6 +41,7 @@ instructions, either inline or from a file.`,
 func runCoordinate(cmd *cobra.Command, args []string) error {
 	promptFile, _ := cmd.Flags().GetString("prompt-file")
 	name, _ := cmd.Flags().GetString("name")
+	systemPromptFile, _ := cmd.Flags().GetString("system-prompt-file")
 
 	var prompt string
 	if len(args) > 0 {
@@ -44,7 +49,7 @@ func runCoordinate(cmd *cobra.Command, args []string) error {
 	}
 
 	if prompt == "" && promptFile == "" {
-		return fmt.Errorf("usage: cspace coordinate \"<instructions>\" [--name <name>]\n       cspace coordinate --prompt-file <path> [--name <name>]")
+		return fmt.Errorf("usage: cspace coordinate \"<instructions>\" [--name <name>] [--system-prompt-file <path>]\n       cspace coordinate --prompt-file <path> [--name <name>] [--system-prompt-file <path>]")
 	}
 	if prompt != "" && promptFile != "" {
 		return fmt.Errorf("pass either an inline prompt or --prompt-file, not both")
@@ -54,8 +59,13 @@ func runCoordinate(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("prompt file not found: %s", promptFile)
 		}
 	}
+	if systemPromptFile != "" {
+		if _, err := os.Stat(systemPromptFile); err != nil {
+			return fmt.Errorf("system prompt file not found: %s", systemPromptFile)
+		}
+	}
 
-	return runCoordinateWithArgs(prompt, promptFile, name)
+	return runCoordinateWithArgs(prompt, promptFile, name, systemPromptFile)
 }
 
 // coordinatorIsAlive checks whether a coordinator supervisor is already
@@ -91,7 +101,13 @@ func coordinatorIsAlive() bool {
 
 // runCoordinateWithArgs is the shared implementation for the coordinate command,
 // callable from both the CLI handler and the TUI menu.
-func runCoordinateWithArgs(prompt, promptFile, name string) error {
+//
+// When systemPromptFile is non-empty, the coordinator.md playbook is skipped
+// and the user's prompt becomes the entire first user turn. The system prompt
+// file is copied into the container and passed to supervisor.mjs via
+// --system-prompt-file, letting the coordinator role run ad-hoc tasks
+// without inheriting the default orchestration framing.
+func runCoordinateWithArgs(prompt, promptFile, name, systemPromptFile string) error {
 	if name == "" {
 		name = "coord-" + strconv.FormatInt(time.Now().Unix(), 10)
 	}
@@ -120,13 +136,7 @@ func runCoordinateWithArgs(prompt, promptFile, name string) error {
 		_, _ = instance.DcExecRoot(composeName, "chown", "dev:dev", "/workspace/.env")
 	}
 
-	// Build the full coordinator prompt: playbook + user instructions
-	playbookFile := cfg.ResolveAgent("coordinator.md")
-	playbookBytes, err := os.ReadFile(playbookFile)
-	if err != nil {
-		return fmt.Errorf("reading coordinator playbook: %w", err)
-	}
-
+	// User instructions (inline or from file).
 	var userBody string
 	if promptFile != "" {
 		bodyBytes, err := os.ReadFile(promptFile)
@@ -138,16 +148,40 @@ func runCoordinateWithArgs(prompt, promptFile, name string) error {
 		userBody = prompt
 	}
 
-	fullPrompt := string(playbookBytes) + "\n\nUSER INSTRUCTIONS:\n\n" + userBody
+	// Build the first user turn. Default: coordinator.md playbook as the
+	// framing, then the user's instructions. When a custom system prompt
+	// is supplied, the playbook is redundant (and potentially counter to
+	// what the user is trying to do), so the user's prompt stands alone.
+	var fullPrompt string
+	containerSystemPrompt := ""
+	if systemPromptFile != "" {
+		fullPrompt = userBody
+		systemBytes, err := os.ReadFile(systemPromptFile)
+		if err != nil {
+			return fmt.Errorf("reading system prompt file: %w", err)
+		}
+		if err := supervisor.StagePromptText(composeName, string(systemBytes), supervisor.ContainerSystemPromptPath); err != nil {
+			return err
+		}
+		containerSystemPrompt = supervisor.ContainerSystemPromptPath
+	} else {
+		playbookFile := cfg.ResolveAgent("coordinator.md")
+		playbookBytes, err := os.ReadFile(playbookFile)
+		if err != nil {
+			return fmt.Errorf("reading coordinator playbook: %w", err)
+		}
+		fullPrompt = string(playbookBytes) + "\n\nUSER INSTRUCTIONS:\n\n" + userBody
+	}
 
 	if err := supervisor.StagePromptText(composeName, fullPrompt, supervisor.ContainerCoordPromptPath); err != nil {
 		return err
 	}
 
 	return supervisor.LaunchSupervisor(supervisor.LaunchParams{
-		Name:       name,
-		Role:       supervisor.RoleCoordinator,
-		PromptFile: supervisor.ContainerCoordPromptPath,
-		StderrLog:  supervisor.ContainerCoordStderrLog,
+		Name:             name,
+		Role:             supervisor.RoleCoordinator,
+		PromptFile:       supervisor.ContainerCoordPromptPath,
+		StderrLog:        supervisor.ContainerCoordStderrLog,
+		SystemPromptFile: containerSystemPrompt,
 	}, cfg)
 }

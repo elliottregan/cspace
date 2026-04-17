@@ -264,7 +264,7 @@ func tuiCoordinate() error {
 		return nil
 	}
 
-	return runCoordinateWithArgs(prompt, "", name)
+	return runCoordinateWithArgs(prompt, "", name, "")
 }
 
 // tuiRebuild confirms and triggers a rebuild.

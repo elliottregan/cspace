@@ -15,11 +15,12 @@ const (
 
 // Well-known container paths used by the supervisor protocol.
 const (
-	ContainerPromptPath      = "/tmp/claude-prompt.txt"
-	ContainerCoordPromptPath = "/tmp/coordinator-prompt.txt"
-	ContainerAgentStderrLog  = "/tmp/agent-stderr.log"
-	ContainerCoordStderrLog  = "/tmp/coordinator-stderr.log"
-	ContainerRestartPrompt   = "/tmp/restart-prompt.txt"
+	ContainerPromptPath       = "/tmp/claude-prompt.txt"
+	ContainerCoordPromptPath  = "/tmp/coordinator-prompt.txt"
+	ContainerAgentStderrLog   = "/tmp/agent-stderr.log"
+	ContainerCoordStderrLog   = "/tmp/coordinator-stderr.log"
+	ContainerRestartPrompt    = "/tmp/restart-prompt.txt"
+	ContainerSystemPromptPath = "/tmp/coordinator-system-prompt.txt"
 
 	cliMjsPath = "/opt/cspace/lib/agent-supervisor/cli.mjs"
 )

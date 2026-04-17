@@ -24,6 +24,12 @@ type LaunchParams struct {
 	PromptFile      string // Container-side path to prompt file. Required unless ResumeSessionID is set.
 	StderrLog       string // Container-side path for stderr log
 	ResumeSessionID string // If set, supervisor resumes this session instead of starting from PromptFile.
+
+	// SystemPromptFile, when non-empty, is a container-side path that
+	// overrides the supervisor's default (role-based) system prompt. Takes
+	// precedence over the project-level .cspace/agent-supervisor/<role>-system-prompt.txt
+	// override. Staged by the caller via StagePromptText.
+	SystemPromptFile string
 }
 
 // LaunchSupervisor runs the agent-supervisor inside the named instance
@@ -276,12 +282,23 @@ func buildSupervisorArgs(params LaunchParams, cfg *config.Config) []string {
 	}
 	args = append(args, "--effort", effort)
 
-	// Check for per-role system prompt override inside the container
-	systemPromptFile := filepath.Join("/workspace/.cspace/agent-supervisor",
-		params.Role+"-system-prompt.txt")
-	composeName := cfg.ComposeName(params.Name)
-	if _, err := instance.DcExec(composeName, "test", "-f", systemPromptFile); err == nil {
-		args = append(args, "--system-prompt-file", systemPromptFile)
+	// System prompt resolution, highest-precedence first:
+	//   1. Per-invocation override via LaunchParams.SystemPromptFile
+	//      (populated from `cspace coordinate --system-prompt-file <path>`
+	//      and similar).
+	//   2. Per-project override at .cspace/agent-supervisor/<role>-system-prompt.txt
+	//      inside the container, if present.
+	//   3. Supervisor's built-in default (picked inside supervisor.mjs
+	//      based on role).
+	if params.SystemPromptFile != "" {
+		args = append(args, "--system-prompt-file", params.SystemPromptFile)
+	} else {
+		projectOverride := filepath.Join("/workspace/.cspace/agent-supervisor",
+			params.Role+"-system-prompt.txt")
+		composeName := cfg.ComposeName(params.Name)
+		if _, err := instance.DcExec(composeName, "test", "-f", projectOverride); err == nil {
+			args = append(args, "--system-prompt-file", projectOverride)
+		}
 	}
 
 	return args
