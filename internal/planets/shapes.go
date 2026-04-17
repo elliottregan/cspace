@@ -195,37 +195,19 @@ func applyRings(s Shape, bodyRx float64) Shape {
 	return s
 }
 
-// earthCloudShape generates large, overlapping, wispy cloud formations
-// that read as weather systems rather than discrete spots. The result
-// is additive — overlapping formations accumulate into bigger cloud
-// masses — and modulated by multi-scale sine noise for turbulent
-// fringes and finer positional noise for stippled edges.
-func earthCloudShape() Shape {
-	// Wide, elongated formations. Horizontal > vertical so they read as
-	// atmospheric bands and fronts rather than round puffs. Placed to
-	// overlap in clusters.
-	formations := []struct{ cx, cy, rx, ry, intensity float64 }{
-		// Tropical/equatorial band (overlapping cluster crossing the disk)
-		{0.22, 0.40, 0.16, 0.06, 0.72},
-		{0.36, 0.36, 0.15, 0.05, 0.82},
-		{0.48, 0.42, 0.18, 0.06, 0.88},
-		{0.60, 0.38, 0.17, 0.05, 0.80},
-		{0.72, 0.44, 0.13, 0.07, 0.70},
-		// Northern mid-latitudes — storm track
-		{0.28, 0.22, 0.13, 0.05, 0.70},
-		{0.42, 0.18, 0.11, 0.04, 0.60},
-		{0.58, 0.24, 0.16, 0.05, 0.72},
-		// Southern hemisphere front
-		{0.24, 0.64, 0.15, 0.06, 0.72},
-		{0.40, 0.72, 0.19, 0.05, 0.82},
-		{0.58, 0.68, 0.16, 0.06, 0.76},
-		{0.72, 0.62, 0.12, 0.05, 0.62},
-		// Polar wisps — thin broad streaks near the silhouette
-		{0.50, 0.12, 0.20, 0.04, 0.55},
-		{0.50, 0.86, 0.20, 0.04, 0.55},
-	}
+// formationCenter defines one soft patch contributing to a wispy surface
+// feature. Many overlapping centers produce clouds/craters/storm
+// patterns depending on the color they're rendered in.
+type formationCenter struct {
+	cx, cy, rx, ry, intensity float64
+}
 
-	const bodyR = 0.45
+// buildFormationShape applies the cloud/formation noise algorithm
+// (additive gaussian patches + 3-octave sine wisps + per-cell speckle)
+// to a list of formation centers, constrained to a disk of radius
+// bodyR centered at (0.5, 0.5). Reusable across planets to produce
+// coherent surface textures.
+func buildFormationShape(formations []formationCenter, bodyR float64) Shape {
 	var s Shape
 	for r := 0; r < ShapeRows; r++ {
 		for c := 0; c < ShapeCols; c++ {
@@ -237,9 +219,6 @@ func earthCloudShape() Shape {
 				continue
 			}
 
-			// Additive accumulation of formation contributions. Gentle
-			// Gaussian falloff reaches past d²=1 so edges taper softly;
-			// per-formation weight keeps overlaps from clipping too fast.
 			var intensity float64
 			for _, p := range formations {
 				dx := (x - p.cx) / p.rx
@@ -251,20 +230,13 @@ func earthCloudShape() Shape {
 				intensity += 0.55 * p.intensity * math.Exp(-d2*1.1)
 			}
 
-			// Multi-scale sine noise gives turbulent wispy edges. Three
-			// octaves with decreasing amplitude / increasing frequency.
 			wisp := 0.14 * math.Sin(8*x+4*y+0.7)
 			wisp += 0.08 * math.Sin(16*x-6*y+2.3)
 			wisp += 0.05 * math.Sin(24*x+11*y+4.1)
-
-			// Apply wispy modulation stronger where clouds already
-			// exist so it shapes the fringes rather than creating
-			// random puffs in clear sky.
 			if intensity > 0.04 {
 				intensity += wisp * math.Min(1.0, intensity*1.8)
 			}
 
-			// Fine per-cell noise for stippled edge detail.
 			intensity += (shapeHash(r, c) - 0.5) * 0.10
 
 			if intensity < 0 {
@@ -274,6 +246,175 @@ func earthCloudShape() Shape {
 				intensity = 1
 			}
 			s[r][c] = intensity
+		}
+	}
+	return s
+}
+
+// earthCloudShape — big wispy weather systems across tropical, mid-
+// latitude and polar bands.
+func earthCloudShape() Shape {
+	return buildFormationShape([]formationCenter{
+		{0.22, 0.40, 0.16, 0.06, 0.72},
+		{0.36, 0.36, 0.15, 0.05, 0.82},
+		{0.48, 0.42, 0.18, 0.06, 0.88},
+		{0.60, 0.38, 0.17, 0.05, 0.80},
+		{0.72, 0.44, 0.13, 0.07, 0.70},
+		{0.28, 0.22, 0.13, 0.05, 0.70},
+		{0.42, 0.18, 0.11, 0.04, 0.60},
+		{0.58, 0.24, 0.16, 0.05, 0.72},
+		{0.24, 0.64, 0.15, 0.06, 0.72},
+		{0.40, 0.72, 0.19, 0.05, 0.82},
+		{0.58, 0.68, 0.16, 0.06, 0.76},
+		{0.72, 0.62, 0.12, 0.05, 0.62},
+		{0.50, 0.12, 0.20, 0.04, 0.55},
+		{0.50, 0.86, 0.20, 0.04, 0.55},
+	}, 0.45)
+}
+
+// mercurySurfaceShape — many small dark crater basins scattered across
+// the surface. Rendered with a near-black overlay to read as shadowed
+// impact craters against the grey body.
+func mercurySurfaceShape() Shape {
+	return buildFormationShape([]formationCenter{
+		{0.22, 0.28, 0.05, 0.03, 0.70},
+		{0.35, 0.40, 0.06, 0.04, 0.68},
+		{0.18, 0.58, 0.04, 0.03, 0.55},
+		{0.45, 0.30, 0.07, 0.04, 0.78},
+		{0.64, 0.35, 0.05, 0.03, 0.60},
+		{0.73, 0.52, 0.06, 0.04, 0.72},
+		{0.30, 0.72, 0.05, 0.03, 0.55},
+		{0.56, 0.66, 0.06, 0.04, 0.72},
+		{0.70, 0.72, 0.04, 0.03, 0.52},
+		{0.40, 0.55, 0.05, 0.03, 0.62},
+		{0.58, 0.20, 0.04, 0.03, 0.50},
+		{0.28, 0.46, 0.03, 0.02, 0.48},
+		{0.50, 0.80, 0.05, 0.03, 0.58},
+		{0.78, 0.30, 0.04, 0.03, 0.50},
+		{0.18, 0.38, 0.04, 0.03, 0.55},
+		{0.48, 0.48, 0.05, 0.03, 0.62},
+	}, 0.46)
+}
+
+// marsSurfaceShape — large dusty basins and storm streaks. Rendered
+// with a dark rust color so regions look like deep Martian terrain
+// (Hellas Planitia, Valles Marineris) against the lighter orange body.
+func marsSurfaceShape() Shape {
+	return buildFormationShape([]formationCenter{
+		{0.28, 0.38, 0.13, 0.06, 0.70},
+		{0.54, 0.46, 0.16, 0.05, 0.75}, // Valles-like east-west stripe
+		{0.72, 0.32, 0.09, 0.05, 0.60},
+		{0.20, 0.62, 0.10, 0.06, 0.62},
+		{0.45, 0.68, 0.12, 0.06, 0.68},
+		{0.66, 0.66, 0.08, 0.05, 0.55},
+		{0.34, 0.52, 0.07, 0.04, 0.50},
+		{0.58, 0.22, 0.08, 0.04, 0.55},
+	}, 0.43)
+}
+
+// uranusHazeShape — soft wide haze formations for the otherwise
+// featureless methane atmosphere. Rendered with a brighter cyan so it
+// reads as high-altitude haze.
+func uranusHazeShape() Shape {
+	return buildFormationShape([]formationCenter{
+		{0.28, 0.38, 0.24, 0.08, 0.62},
+		{0.58, 0.52, 0.22, 0.09, 0.68},
+		{0.44, 0.66, 0.20, 0.07, 0.55},
+		{0.52, 0.28, 0.19, 0.06, 0.52},
+		{0.72, 0.36, 0.14, 0.06, 0.48},
+	}, 0.40)
+}
+
+// neptuneStormShape — compact dark storms (à la Great Dark Spot) in
+// the upper cloud deck, overlaid with a brighter blue so they read as
+// distinct weather systems.
+func neptuneStormShape() Shape {
+	return buildFormationShape([]formationCenter{
+		{0.32, 0.40, 0.11, 0.05, 0.75}, // Great Dark Spot analog
+		{0.64, 0.54, 0.10, 0.04, 0.62},
+		{0.52, 0.30, 0.08, 0.04, 0.55},
+		{0.36, 0.66, 0.09, 0.04, 0.62},
+		{0.62, 0.28, 0.07, 0.03, 0.48},
+		{0.50, 0.52, 0.06, 0.03, 0.45},
+	}, 0.40)
+}
+
+// saturnRingOverlayMask returns a cell-level mask of where Saturn's
+// bright ring bands are visible (front half over sphere, both halves
+// outside sphere body). Used by an overlay to tint ring cells toward
+// a pale ring color instead of the planet's gold. The Cassini gap is
+// deliberately excluded so the gap keeps the planet-body color and
+// the band structure stays readable.
+func saturnRingOverlayMask(bodyRx float64) Shape {
+	const (
+		ringRx = 0.48
+		ringRy = 0.10
+	)
+	innerU := bodyRx/ringRx + 0.08
+	brightBands := []struct{ inner, outer float64 }{
+		{innerU, innerU + 0.18},      // A ring
+		{innerU + 0.26, 0.98},        // B ring
+	}
+	var s Shape
+	for r := 0; r < ShapeRows; r++ {
+		for c := 0; c < ShapeCols; c++ {
+			y := (float64(r) + 0.5) / float64(ShapeRows)
+			x := (float64(c) + 0.5) / float64(ShapeCols)
+			dx := (x - 0.5) / ringRx
+			dy := (y - 0.5) / ringRy
+			u := math.Sqrt(dx*dx + dy*dy)
+
+			onBand := false
+			for _, b := range brightBands {
+				if u >= b.inner && u <= b.outer {
+					onBand = true
+					break
+				}
+			}
+			if !onBand {
+				continue
+			}
+
+			// Respect sphere occlusion: ring above the sphere's equator
+			// passes behind the body, so we hide it inside the sphere.
+			frontSide := y > 0.5
+			sDx := (x - 0.5) / bodyRx
+			sDy := (y - 0.5) / bodyRx
+			inSphere := sDx*sDx+sDy*sDy < 1
+			if inSphere && !frontSide {
+				continue
+			}
+
+			s[r][c] = 0.82
+		}
+	}
+	return s
+}
+
+// saturnShadowMask returns a thin horizontal band of shadow across the
+// planet's surface where the rings block sunlight. Rendered with a
+// near-black overlay so cells on the sphere dim.
+func saturnShadowMask(bodyRx float64) Shape {
+	var s Shape
+	const (
+		shadowCenterY   = 0.485 // slightly above equator — ring is tilted
+		shadowHalfHt    = 0.020
+	)
+	for r := 0; r < ShapeRows; r++ {
+		y := (float64(r) + 0.5) / float64(ShapeRows)
+		dist := math.Abs(y - shadowCenterY)
+		if dist > shadowHalfHt {
+			continue
+		}
+		taper := 1 - dist/shadowHalfHt // 1 at band center, 0 at edge
+		for c := 0; c < ShapeCols; c++ {
+			x := (float64(c) + 0.5) / float64(ShapeCols)
+			sDx := (x - 0.5) / bodyRx
+			sDy := (y - 0.5) / bodyRx
+			if sDx*sDx+sDy*sDy >= 1 {
+				continue
+			}
+			s[r][c] = taper * 0.55
 		}
 	}
 	return s
@@ -384,12 +525,22 @@ func GetShape(name string) Shape {
 }
 
 // planetOverlays holds per-planet surface features that color-blend
-// onto the base terrain during rendering. Earth gets white clouds,
-// Venus gets warm haze, Jupiter gets a red spot.
+// onto the base terrain during rendering. Each overlay's shade at a
+// given cell controls how much the cell's rendered color leans toward
+// the overlay color. Order matters — earlier overlays are applied
+// first, so later overlays can tint on top of darkened/shadowed cells.
 var planetOverlays = map[string][]Overlay{
-	"earth":   {{Shape: earthCloudShape(), Color: [3]uint8{250, 250, 250}}},
+	"mercury": {{Shape: mercurySurfaceShape(), Color: [3]uint8{40, 40, 40}}},
 	"venus":   {{Shape: venusCloudShape(), Color: [3]uint8{255, 240, 200}}},
-	"jupiter": {{Shape: jupiterRedSpotShape(), Color: [3]uint8{175, 55, 35}}},
+	"earth":   {{Shape: earthCloudShape(), Color: [3]uint8{250, 250, 250}}},
+	"mars":    {{Shape: marsSurfaceShape(), Color: [3]uint8{95, 30, 10}}},
+	"jupiter": {{Shape: jupiterRedSpotShape(), Color: [3]uint8{170, 95, 50}}},
+	"saturn": {
+		{Shape: saturnShadowMask(0.26), Color: [3]uint8{10, 10, 10}},
+		{Shape: saturnRingOverlayMask(0.26), Color: [3]uint8{235, 218, 195}},
+	},
+	"uranus":  {{Shape: uranusHazeShape(), Color: [3]uint8{195, 245, 245}}},
+	"neptune": {{Shape: neptuneStormShape(), Color: [3]uint8{110, 145, 230}}},
 }
 
 // GetOverlays returns the per-planet color overlays, or nil if the
