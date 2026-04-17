@@ -19,6 +19,7 @@ sync-embedded:
 	@cp -r lib/skills internal/assets/embedded/
 	@cp -r lib/commands internal/assets/embedded/
 	@cp lib/defaults.json internal/assets/embedded/
+	@cp lib/planets.json internal/assets/embedded/
 
 build: sync-embedded
 	go build $(LDFLAGS) -o $(GOBIN) ./cmd/cspace
