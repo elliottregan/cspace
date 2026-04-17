@@ -265,13 +265,16 @@ func (m Model) errorView() string {
 	lines := []string{
 		"✗  Provisioning failed",
 		"",
-		fmt.Sprintf("Phase: %s", m.errPhase),
-		"",
+	}
+	if m.errPhase != "" {
+		lines = append(lines, fmt.Sprintf("Phase: %s", m.errPhase), "")
+	}
+	lines = append(lines,
 		"For the full log, run:",
 		fmt.Sprintf("  cspace up %s --verbose", m.cfg.Name),
 		"",
 		"Press any key to exit",
-	}
+	)
 	panel := errorPanelStyle.Render(strings.Join(lines, "\n"))
 	if m.width == 0 || m.height == 0 {
 		return panel
