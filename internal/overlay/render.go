@@ -141,8 +141,39 @@ func pickBraille(r, c int) string {
 	return string(rune(0x2800 + mask))
 }
 
-// RenderPlanet returns one frame of the focus-pull animation.
+// RenderOptions lets the preview tool tweak the image parameters at
+// request time without recompiling. Zero values are replaced with the
+// package defaults by DefaultRenderOptions.
+type RenderOptions struct {
+	MaxBlockSize    int
+	HaloThreshold   float64
+	TextureStart    float64
+	TextureDensity  float64
+	TextureContrast float64
+	GreyStart       [3]uint8
+}
+
+// DefaultRenderOptions returns the package defaults used by RenderPlanet.
+func DefaultRenderOptions() RenderOptions {
+	return RenderOptions{
+		MaxBlockSize:    maxBlockSize,
+		HaloThreshold:   haloThreshold,
+		TextureStart:    textureStart,
+		TextureDensity:  textureDensity,
+		TextureContrast: textureContrast,
+		GreyStart:       greyStart,
+	}
+}
+
+// RenderPlanet returns one frame of the focus-pull animation using the
+// package-default RenderOptions.
 func RenderPlanet(shape planets.Shape, p planets.Planet, phase, total int) string {
+	return RenderPlanetWith(shape, p, phase, total, DefaultRenderOptions())
+}
+
+// RenderPlanetWith is RenderPlanet with tweakable options — useful for
+// the preview server at cmd/overlay-web.
+func RenderPlanetWith(shape planets.Shape, p planets.Planet, phase, total int, opts RenderOptions) string {
 	if total <= 0 {
 		total = 1
 	}
@@ -155,18 +186,18 @@ func RenderPlanet(shape planets.Shape, p planets.Planet, phase, total int) strin
 	}
 
 	// Pixelation: chunky at phase 1, pixel-perfect at phase total.
-	blockSize := int(math.Round(float64(maxBlockSize) * (1 - focus)))
+	blockSize := int(math.Round(float64(opts.MaxBlockSize) * (1 - focus)))
 	if blockSize < 1 {
 		blockSize = 1
 	}
 	frame := pixelateShape(shape, blockSize)
 
-	baseColor := LerpColor(greyStart, p.Color, focus)
+	baseColor := LerpColor(opts.GreyStart, p.Color, focus)
 
-	// Texture ramp: 0 until textureStart, then linearly up to textureDensity.
+	// Texture ramp: 0 until TextureStart, then linearly up to TextureDensity.
 	var textureFrac float64
-	if focus > textureStart {
-		textureFrac = (focus - textureStart) / (1 - textureStart) * textureDensity
+	if focus > opts.TextureStart && opts.TextureStart < 1 {
+		textureFrac = (focus - opts.TextureStart) / (1 - opts.TextureStart) * opts.TextureDensity
 	}
 
 	termRows := planets.ShapeRows / 2
@@ -176,8 +207,8 @@ func RenderPlanet(shape planets.Shape, p planets.Planet, phase, total int) strin
 		for c := 0; c < planets.ShapeCols; c++ {
 			top := frame[r*2][c]
 			bot := frame[r*2+1][c]
-			topOn := top >= haloThreshold
-			botOn := bot >= haloThreshold
+			topOn := top >= opts.HaloThreshold
+			botOn := bot >= opts.HaloThreshold
 
 			switch {
 			case !topOn && !botOn:
@@ -185,11 +216,11 @@ func RenderPlanet(shape planets.Shape, p planets.Planet, phase, total int) strin
 				line.WriteByte(' ')
 				line.WriteString(ansiReset)
 			case topOn && botOn:
-				// Braille texture overlay on fully-lit cells past textureStart.
+				// Braille texture overlay on fully-lit cells past TextureStart.
 				if textureFrac > 0 && hash2(r, c) < textureFrac {
 					mid := (top + bot) * 0.5
 					bg := scaleColor(baseColor, mid)
-					fg := scaleColor(baseColor, math.Min(1, mid+textureContrast))
+					fg := scaleColor(baseColor, math.Min(1, mid+opts.TextureContrast))
 					line.WriteString(fgBgAnsi(fg, bg))
 					line.WriteString(pickBraille(r, c))
 				} else {

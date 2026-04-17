@@ -248,6 +248,13 @@ var sciFiLabels = map[string]string{
 }
 
 func sciFiLabelFor(phase string) string {
+	return SciFiLabelFor(phase)
+}
+
+// SciFiLabelFor returns the stylized status word the overlay shows for a
+// provisioning phase (e.g. "Configuring hosts" → "CROSSLINK"). Exported
+// so the preview tool in cmd/overlay-web can label frames consistently.
+func SciFiLabelFor(phase string) string {
 	if s, ok := sciFiLabels[phase]; ok {
 		return s
 	}

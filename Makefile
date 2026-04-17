@@ -3,7 +3,7 @@ LDFLAGS         := -ldflags "-X github.com/elliottregan/cspace/internal/cli.Vers
 LDFLAGS_RELEASE := -ldflags "-s -w -X github.com/elliottregan/cspace/internal/cli.Version=$(VERSION)"
 GOBIN           := ./bin/cspace-go
 
-.PHONY: build build-linux clean test test-node vet sync-embedded overlay-demo fmt fmt-check lint check install-tools setup-hooks
+.PHONY: build build-linux clean test test-node vet sync-embedded overlay-demo overlay-web fmt fmt-check lint check install-tools setup-hooks
 
 # Sync lib/ contents into internal/assets/embedded/ for go:embed
 sync-embedded:
@@ -29,6 +29,12 @@ build: sync-embedded
 # extra args through ARGS, e.g. `make overlay-demo ARGS="--planet=jupiter"`.
 overlay-demo: sync-embedded
 	@go run ./cmd/overlay-demo/ $(ARGS)
+
+# Serve a browser preview of the overlay at http://localhost:8080/ with
+# sliders for the main image parameters. Faster visual iteration than
+# the TUI demo. Override the port with ARGS="-addr :9000".
+overlay-web: sync-embedded
+	@go run ./cmd/overlay-web/ $(ARGS)
 
 build-linux: sync-embedded
 	@mkdir -p dist
