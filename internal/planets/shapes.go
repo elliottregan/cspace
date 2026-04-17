@@ -195,21 +195,36 @@ func applyRings(s Shape, bodyRx float64) Shape {
 	return s
 }
 
-// earthCloudShape generates soft wispy cloud patches scattered across
-// the disk — used as an Overlay to produce bright white puffs over the
-// blue base.
+// earthCloudShape generates large, overlapping, wispy cloud formations
+// that read as weather systems rather than discrete spots. The result
+// is additive — overlapping formations accumulate into bigger cloud
+// masses — and modulated by multi-scale sine noise for turbulent
+// fringes and finer positional noise for stippled edges.
 func earthCloudShape() Shape {
-	patches := []struct{ cx, cy, rx, ry, intensity float64 }{
-		{0.28, 0.32, 0.10, 0.05, 0.85},
-		{0.52, 0.24, 0.11, 0.04, 0.72},
-		{0.68, 0.44, 0.11, 0.05, 0.80},
-		{0.40, 0.52, 0.09, 0.05, 0.60},
-		{0.24, 0.52, 0.08, 0.04, 0.62},
-		{0.60, 0.60, 0.12, 0.05, 0.72},
-		{0.38, 0.72, 0.10, 0.05, 0.65},
-		{0.72, 0.30, 0.08, 0.03, 0.50},
-		{0.48, 0.40, 0.07, 0.03, 0.55},
+	// Wide, elongated formations. Horizontal > vertical so they read as
+	// atmospheric bands and fronts rather than round puffs. Placed to
+	// overlap in clusters.
+	formations := []struct{ cx, cy, rx, ry, intensity float64 }{
+		// Tropical/equatorial band (overlapping cluster crossing the disk)
+		{0.22, 0.40, 0.16, 0.06, 0.72},
+		{0.36, 0.36, 0.15, 0.05, 0.82},
+		{0.48, 0.42, 0.18, 0.06, 0.88},
+		{0.60, 0.38, 0.17, 0.05, 0.80},
+		{0.72, 0.44, 0.13, 0.07, 0.70},
+		// Northern mid-latitudes — storm track
+		{0.28, 0.22, 0.13, 0.05, 0.70},
+		{0.42, 0.18, 0.11, 0.04, 0.60},
+		{0.58, 0.24, 0.16, 0.05, 0.72},
+		// Southern hemisphere front
+		{0.24, 0.64, 0.15, 0.06, 0.72},
+		{0.40, 0.72, 0.19, 0.05, 0.82},
+		{0.58, 0.68, 0.16, 0.06, 0.76},
+		{0.72, 0.62, 0.12, 0.05, 0.62},
+		// Polar wisps — thin broad streaks near the silhouette
+		{0.50, 0.12, 0.20, 0.04, 0.55},
+		{0.50, 0.86, 0.20, 0.04, 0.55},
 	}
+
 	const bodyR = 0.45
 	var s Shape
 	for r := 0; r < ShapeRows; r++ {
@@ -221,22 +236,37 @@ func earthCloudShape() Shape {
 			if bdx*bdx+bdy*bdy >= 1 {
 				continue
 			}
+
+			// Additive accumulation of formation contributions. Gentle
+			// Gaussian falloff reaches past d²=1 so edges taper softly;
+			// per-formation weight keeps overlaps from clipping too fast.
 			var intensity float64
-			for _, p := range patches {
+			for _, p := range formations {
 				dx := (x - p.cx) / p.rx
 				dy := (y - p.cy) / p.ry
 				d2 := dx*dx + dy*dy
-				if d2 >= 1 {
+				if d2 >= 1.8 {
 					continue
 				}
-				v := p.intensity * math.Exp(-d2*2.5)
-				if v > intensity {
-					intensity = v
-				}
+				intensity += 0.55 * p.intensity * math.Exp(-d2*1.1)
 			}
-			// Wispy positional noise.
-			noise := (shapeHash(r, c) - 0.5) * 0.18
-			intensity += noise
+
+			// Multi-scale sine noise gives turbulent wispy edges. Three
+			// octaves with decreasing amplitude / increasing frequency.
+			wisp := 0.14 * math.Sin(8*x+4*y+0.7)
+			wisp += 0.08 * math.Sin(16*x-6*y+2.3)
+			wisp += 0.05 * math.Sin(24*x+11*y+4.1)
+
+			// Apply wispy modulation stronger where clouds already
+			// exist so it shapes the fringes rather than creating
+			// random puffs in clear sky.
+			if intensity > 0.04 {
+				intensity += wisp * math.Min(1.0, intensity*1.8)
+			}
+
+			// Fine per-cell noise for stippled edge detail.
+			intensity += (shapeHash(r, c) - 0.5) * 0.10
+
 			if intensity < 0 {
 				intensity = 0
 			}
