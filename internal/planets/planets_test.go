@@ -41,12 +41,12 @@ func TestGetShapeDimensions(t *testing.T) {
 	names := []string{"mercury", "venus", "earth", "mars", "jupiter", "saturn", "uranus", "neptune"}
 	for _, name := range names {
 		s := GetShape(name)
-		if len(s) != 6 {
-			t.Errorf("%s: got %d rows, want 6", name, len(s))
+		if len(s) != ShapeRows {
+			t.Errorf("%s: got %d rows, want %d", name, len(s), ShapeRows)
 		}
 		for r, row := range s {
-			if len(row) != 12 {
-				t.Errorf("%s row %d: got %d cols, want 12", name, r, len(row))
+			if len(row) != ShapeCols {
+				t.Errorf("%s row %d: got %d cols, want %d", name, r, len(row), ShapeCols)
 			}
 		}
 	}
@@ -56,17 +56,20 @@ func TestGetShapeUnknown(t *testing.T) {
 	// Unknown names should fall back to the mercury shape so custom
 	// instance names still render something.
 	s := GetShape("ci-bot")
-	if len(s) != 6 {
-		t.Errorf("fallback shape: got %d rows, want 6", len(s))
+	if len(s) != ShapeRows {
+		t.Errorf("fallback shape: got %d rows, want %d", len(s), ShapeRows)
 	}
 }
 
 func TestShapeValuesInRange(t *testing.T) {
-	s := GetShape("mercury")
-	for r, row := range s {
-		for c, v := range row {
-			if v < 0 || v > 1 {
-				t.Errorf("mercury[%d][%d] = %v, must be in [0,1]", r, c, v)
+	names := []string{"mercury", "venus", "earth", "mars", "jupiter", "saturn", "uranus", "neptune"}
+	for _, name := range names {
+		s := GetShape(name)
+		for r, row := range s {
+			for c, v := range row {
+				if v < 0 || v > 1 {
+					t.Errorf("%s[%d][%d] = %v, must be in [0,1]", name, r, c, v)
+				}
 			}
 		}
 	}

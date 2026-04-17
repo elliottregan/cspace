@@ -1,89 +1,130 @@
 package planets
 
-// Shape is a 6-row × 12-col grid of shade values in [0.0, 1.0] describing
-// how a planet renders. Each cell is one terminal character. 0.0 = empty,
-// 1.0 = maximum intensity.
-type Shape = [6][12]float64
+import "math"
 
-// mercurySimpleSphere — featureless silvery sphere, linear falloff.
-var mercurySimpleSphere = Shape{
-	{0.0, 0.0, 0.0, 0.2, 0.5, 0.6, 0.6, 0.5, 0.2, 0.0, 0.0, 0.0},
-	{0.0, 0.0, 0.4, 0.7, 0.8, 0.9, 0.9, 0.8, 0.7, 0.4, 0.0, 0.0},
-	{0.0, 0.3, 0.7, 0.9, 1.0, 1.0, 1.0, 0.9, 0.7, 0.5, 0.2, 0.0},
-	{0.0, 0.3, 0.7, 0.9, 1.0, 1.0, 1.0, 0.9, 0.7, 0.5, 0.2, 0.0},
-	{0.0, 0.0, 0.4, 0.7, 0.8, 0.9, 0.9, 0.8, 0.7, 0.4, 0.0, 0.0},
-	{0.0, 0.0, 0.0, 0.2, 0.5, 0.6, 0.6, 0.5, 0.2, 0.0, 0.0, 0.0},
+// Shape dimensions: 10 rows × 24 cols. The 2.4:1 column:row ratio
+// compensates for typical terminal char aspect (~0.5 w/h), yielding
+// a visually round disk.
+const (
+	ShapeRows = 10
+	ShapeCols = 24
+)
+
+// Shape is a row × col grid of shade values in [0.0, 1.0]. 0.0 = empty,
+// 1.0 = maximum intensity. Consumers render each cell as one terminal
+// character selected from a phase-specific palette.
+type Shape = [ShapeRows][ShapeCols]float64
+
+// sphereShape produces a Lambertian-shaded elliptical disk centered at
+// (cx, cy) with semi-axes (rx, ry) in unit space. Shading uses sqrt(1 - d²)
+// to mimic diffuse illumination of a 3D sphere: 1.0 where the surface
+// normal faces the viewer (center), falling smoothly to 0 at the terminator.
+func sphereShape(cx, cy, rx, ry float64) Shape {
+	var s Shape
+	for r := 0; r < ShapeRows; r++ {
+		for c := 0; c < ShapeCols; c++ {
+			y := (float64(r) + 0.5) / float64(ShapeRows)
+			x := (float64(c) + 0.5) / float64(ShapeCols)
+			dx := (x - cx) / rx
+			dy := (y - cy) / ry
+			d2 := dx*dx + dy*dy
+			if d2 >= 1 {
+				continue
+			}
+			s[r][c] = math.Sqrt(1 - d2)
+		}
+	}
+	return s
 }
 
-// venusUniformHaze — thick bright atmosphere, nearly uniform disk.
-var venusUniformHaze = Shape{
-	{0.0, 0.0, 0.0, 0.4, 0.6, 0.7, 0.7, 0.6, 0.4, 0.0, 0.0, 0.0},
-	{0.0, 0.0, 0.5, 0.8, 0.9, 0.9, 0.9, 0.9, 0.8, 0.5, 0.0, 0.0},
-	{0.0, 0.4, 0.8, 0.9, 0.9, 1.0, 1.0, 0.9, 0.9, 0.7, 0.3, 0.0},
-	{0.0, 0.4, 0.8, 0.9, 0.9, 1.0, 1.0, 0.9, 0.9, 0.7, 0.3, 0.0},
-	{0.0, 0.0, 0.5, 0.8, 0.9, 0.9, 0.9, 0.9, 0.8, 0.5, 0.0, 0.0},
-	{0.0, 0.0, 0.0, 0.4, 0.6, 0.7, 0.7, 0.6, 0.4, 0.0, 0.0, 0.0},
+// applyBands dims every other band of `period` rows by `dim`, producing
+// the horizontal stripes characteristic of gas giants.
+func applyBands(s Shape, period int, dim float64) Shape {
+	for r := 0; r < ShapeRows; r++ {
+		if (r/period)%2 == 0 {
+			continue
+		}
+		for c := 0; c < ShapeCols; c++ {
+			s[r][c] *= dim
+		}
+	}
+	return s
 }
 
-// earthContinents — irregular shading suggests land/sea contrast.
-var earthContinents = Shape{
-	{0.0, 0.0, 0.0, 0.3, 0.6, 0.7, 0.7, 0.6, 0.3, 0.0, 0.0, 0.0},
-	{0.0, 0.0, 0.5, 0.8, 0.7, 0.9, 0.9, 0.8, 0.6, 0.3, 0.0, 0.0},
-	{0.0, 0.3, 0.6, 0.7, 0.9, 1.0, 0.8, 0.9, 0.7, 0.4, 0.1, 0.0},
-	{0.0, 0.2, 0.7, 0.9, 0.8, 1.0, 1.0, 0.7, 0.8, 0.5, 0.2, 0.0},
-	{0.0, 0.0, 0.4, 0.7, 0.9, 0.8, 0.9, 0.8, 0.6, 0.3, 0.0, 0.0},
-	{0.0, 0.0, 0.0, 0.2, 0.5, 0.6, 0.6, 0.5, 0.2, 0.0, 0.0, 0.0},
+// applyPolarCap brightens the top `rows` rows of a shape by `boost`,
+// clamping to 1.0. Used for Mars's northern ice cap.
+func applyPolarCap(s Shape, rows int, boost float64) Shape {
+	for r := 0; r < rows && r < ShapeRows; r++ {
+		for c := 0; c < ShapeCols; c++ {
+			if s[r][c] > 0 {
+				v := s[r][c] * boost
+				if v > 1 {
+					v = 1
+				}
+				s[r][c] = v
+			}
+		}
+	}
+	return s
 }
 
-// marsPolarCap — top row slightly brighter than bottom, hint of northern ice cap.
-var marsPolarCap = Shape{
-	{0.0, 0.0, 0.0, 0.3, 0.6, 0.8, 0.8, 0.6, 0.3, 0.0, 0.0, 0.0},
-	{0.0, 0.0, 0.4, 0.7, 0.8, 0.9, 0.9, 0.8, 0.7, 0.4, 0.0, 0.0},
-	{0.0, 0.3, 0.6, 0.8, 0.9, 1.0, 1.0, 0.9, 0.7, 0.4, 0.1, 0.0},
-	{0.0, 0.2, 0.5, 0.8, 0.9, 1.0, 1.0, 0.9, 0.7, 0.4, 0.1, 0.0},
-	{0.0, 0.0, 0.3, 0.6, 0.7, 0.8, 0.8, 0.7, 0.5, 0.3, 0.0, 0.0},
-	{0.0, 0.0, 0.0, 0.2, 0.4, 0.5, 0.5, 0.4, 0.2, 0.0, 0.0, 0.0},
+// applyRings overlays a thin ring at the equator row, extending outward
+// past the planet body to the frame edges. The ring fades from brighter
+// near the body's terminator toward the outer edge of the frame.
+func applyRings(s Shape, bodyRx float64) Shape {
+	mid := ShapeRows / 2
+	rows := []int{mid - 1, mid}
+	for _, r := range rows {
+		if r < 0 || r >= ShapeRows {
+			continue
+		}
+		for c := 0; c < ShapeCols; c++ {
+			x := (float64(c) + 0.5) / float64(ShapeCols)
+			d := math.Abs(x - 0.5)
+			// Ring extends from just outside the body (d > bodyRx) to
+			// near the frame edge (d < 0.48).
+			if d <= bodyRx || d >= 0.48 {
+				continue
+			}
+			// Brighter near body, fading to 0.4 at outer edge.
+			t := (d - bodyRx) / (0.48 - bodyRx)
+			shade := 0.8 - 0.4*t
+			if shade > s[r][c] {
+				s[r][c] = shade
+			}
+		}
+	}
+	return s
 }
 
-// jupiterBands — alternating rows with different core intensity read as horizontal bands.
-var jupiterBands = Shape{
-	{0.0, 0.0, 0.0, 0.4, 0.6, 0.7, 0.7, 0.6, 0.4, 0.0, 0.0, 0.0},
-	{0.0, 0.2, 0.5, 0.8, 1.0, 1.0, 1.0, 0.9, 0.6, 0.2, 0.0, 0.0},
-	{0.0, 0.2, 0.6, 0.8, 0.9, 1.0, 1.0, 0.8, 0.7, 0.4, 0.1, 0.0},
-	{0.0, 0.1, 0.5, 0.8, 1.0, 1.0, 1.0, 0.9, 0.6, 0.3, 0.0, 0.0},
-	{0.0, 0.0, 0.4, 0.7, 0.8, 0.9, 0.9, 0.8, 0.7, 0.4, 0.0, 0.0},
-	{0.0, 0.0, 0.0, 0.4, 0.6, 0.7, 0.7, 0.6, 0.4, 0.0, 0.0, 0.0},
+// applyContinents darkens a handful of interior cells to suggest land
+// masses against the ocean fill.
+func applyContinents(s Shape) Shape {
+	patches := [][2]int{
+		{3, 8}, {3, 9}, {4, 7}, {4, 10}, {4, 11},
+		{5, 14}, {5, 15}, {6, 15},
+		{3, 17}, {4, 18},
+		{6, 11}, {7, 10},
+	}
+	for _, p := range patches {
+		r, c := p[0], p[1]
+		if r >= 0 && r < ShapeRows && c >= 0 && c < ShapeCols && s[r][c] > 0 {
+			s[r][c] *= 0.55
+		}
+	}
+	return s
 }
 
-// saturnRings — sphere in middle 4 rows, ring extends to cols 0-1 and 10-11 on the equator.
-var saturnRings = Shape{
-	{0.0, 0.0, 0.0, 0.0, 0.4, 0.6, 0.6, 0.4, 0.0, 0.0, 0.0, 0.0},
-	{0.0, 0.0, 0.2, 0.6, 0.9, 1.0, 1.0, 0.9, 0.6, 0.2, 0.0, 0.0},
-	{0.3, 0.4, 0.5, 0.7, 0.9, 1.0, 1.0, 0.9, 0.7, 0.5, 0.4, 0.3},
-	{0.3, 0.4, 0.5, 0.7, 0.9, 1.0, 1.0, 0.9, 0.7, 0.5, 0.4, 0.3},
-	{0.0, 0.0, 0.2, 0.6, 0.9, 1.0, 1.0, 0.9, 0.6, 0.2, 0.0, 0.0},
-	{0.0, 0.0, 0.0, 0.0, 0.4, 0.6, 0.6, 0.4, 0.0, 0.0, 0.0, 0.0},
-}
-
-// uranusSmallSphere — smaller, uniform disk (Uranus reads as a featureless blue-green ball).
-var uranusSmallSphere = Shape{
-	{0.0, 0.0, 0.0, 0.2, 0.5, 0.6, 0.6, 0.5, 0.2, 0.0, 0.0, 0.0},
-	{0.0, 0.0, 0.3, 0.7, 0.8, 0.9, 0.9, 0.8, 0.7, 0.3, 0.0, 0.0},
-	{0.0, 0.2, 0.6, 0.8, 0.9, 1.0, 1.0, 0.9, 0.8, 0.6, 0.2, 0.0},
-	{0.0, 0.2, 0.6, 0.8, 0.9, 1.0, 1.0, 0.9, 0.8, 0.6, 0.2, 0.0},
-	{0.0, 0.0, 0.3, 0.7, 0.8, 0.9, 0.9, 0.8, 0.7, 0.3, 0.0, 0.0},
-	{0.0, 0.0, 0.0, 0.2, 0.5, 0.6, 0.6, 0.5, 0.2, 0.0, 0.0, 0.0},
-}
-
-// neptuneDenseCore — smaller, darker-edged disk with bright concentrated core.
-var neptuneDenseCore = Shape{
-	{0.0, 0.0, 0.0, 0.0, 0.3, 0.5, 0.5, 0.3, 0.0, 0.0, 0.0, 0.0},
-	{0.0, 0.0, 0.2, 0.5, 0.7, 0.8, 0.8, 0.7, 0.5, 0.2, 0.0, 0.0},
-	{0.0, 0.1, 0.5, 0.7, 0.8, 0.9, 0.9, 0.8, 0.7, 0.5, 0.1, 0.0},
-	{0.0, 0.1, 0.5, 0.7, 0.8, 0.9, 0.9, 0.8, 0.7, 0.5, 0.1, 0.0},
-	{0.0, 0.0, 0.2, 0.5, 0.7, 0.8, 0.8, 0.7, 0.5, 0.2, 0.0, 0.0},
-	{0.0, 0.0, 0.0, 0.0, 0.3, 0.5, 0.5, 0.3, 0.0, 0.0, 0.0, 0.0},
-}
+var (
+	mercurySimpleSphere = sphereShape(0.5, 0.5, 0.46, 0.46)
+	venusUniformHaze    = sphereShape(0.5, 0.5, 0.47, 0.47)
+	earthContinents     = applyContinents(sphereShape(0.5, 0.5, 0.45, 0.45))
+	marsPolarCap        = applyPolarCap(sphereShape(0.5, 0.5, 0.43, 0.43), 2, 1.25)
+	jupiterBands        = applyBands(sphereShape(0.5, 0.5, 0.47, 0.47), 1, 0.72)
+	saturnRings         = applyRings(sphereShape(0.5, 0.5, 0.32, 0.32), 0.32)
+	uranusSmallSphere   = sphereShape(0.5, 0.5, 0.40, 0.40)
+	neptuneDenseCore    = sphereShape(0.5, 0.5, 0.40, 0.40)
+)
 
 var shapes = map[string]Shape{
 	"mercury": mercurySimpleSphere,
@@ -96,8 +137,8 @@ var shapes = map[string]Shape{
 	"neptune": neptuneDenseCore,
 }
 
-// GetShape returns the shade grid for the named planet. Unknown names fall
-// back to the mercury sphere so custom instance names still render.
+// GetShape returns the shade grid for the named planet. Unknown names
+// fall back to the mercury sphere so custom instance names still render.
 func GetShape(name string) Shape {
 	if s, ok := shapes[name]; ok {
 		return s

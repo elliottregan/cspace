@@ -34,27 +34,22 @@ func TestLerpColorReverseDirection(t *testing.T) {
 }
 
 func TestShadeToCharZero(t *testing.T) {
-	for phase := 1; phase <= 6; phase++ {
-		if got := ShadeToChar(0, phase); got != " " {
-			t.Errorf("phase %d shade 0: got %q, want \" \"", phase, got)
-		}
+	if got := ShadeToChar(0); got != " " {
+		t.Errorf("shade 0: got %q, want \" \"", got)
 	}
 }
 
-func TestShadeToCharNonZero(t *testing.T) {
-	for phase := 1; phase <= 6; phase++ {
-		if got := ShadeToChar(1.0, phase); got == " " {
-			t.Errorf("phase %d shade 1.0: got space, want non-space", phase)
-		}
+func TestShadeToCharBelowHaloThreshold(t *testing.T) {
+	// Dim blur tails below the halo threshold collapse to space so the
+	// halo fades to empty rather than fringing with ░.
+	if got := ShadeToChar(haloThreshold / 2); got != " " {
+		t.Errorf("sub-threshold shade: got %q, want \" \"", got)
 	}
 }
 
-func TestShadeToCharPhase1Binary(t *testing.T) {
-	// Phase 1 palette has only "█" for non-zero shade.
-	for _, v := range []float64{0.1, 0.5, 0.9, 1.0} {
-		if got := ShadeToChar(v, 1); got != "█" {
-			t.Errorf("phase 1 shade %.1f: got %q, want \"█\"", v, got)
-		}
+func TestShadeToCharFullShadeReturnsDensest(t *testing.T) {
+	if got := ShadeToChar(1.0); got != "█" {
+		t.Errorf("shade 1.0: got %q, want \"█\"", got)
 	}
 }
 
@@ -63,18 +58,20 @@ func TestRenderPlanetDimensions(t *testing.T) {
 	shape := planets.GetShape("mercury")
 	out := RenderPlanet(shape, p, 1, 14)
 	lines := strings.Split(out, "\n")
-	if len(lines) != 6 {
-		t.Errorf("got %d lines, want 6", len(lines))
+	if len(lines) != planets.ShapeRows {
+		t.Errorf("got %d lines, want %d", len(lines), planets.ShapeRows)
 	}
 }
 
-func TestRenderPlanetChangesAcrossPhases(t *testing.T) {
+func TestRenderPlanetBlurryAtPhaseOne(t *testing.T) {
+	// At phase 1 the shape is maximally blurred, so the bright center cells
+	// of the sharp shape should render dimmer than they do at phase=total.
 	p := planets.MustGet("mercury")
 	shape := planets.GetShape("mercury")
 	early := RenderPlanet(shape, p, 1, 14)
 	late := RenderPlanet(shape, p, 14, 14)
 	if early == late {
-		t.Error("expected render to differ between phase 1 and phase 14")
+		t.Error("expected render to differ between phase 1 (blurry) and phase 14 (sharp)")
 	}
 }
 
