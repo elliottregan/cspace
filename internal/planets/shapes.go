@@ -318,8 +318,8 @@ func mercuryRaysShape() Shape {
 		rayCount      int     // N-fold symmetric ray pattern
 		phaseOffset   float64 // rotation of the ray pattern
 	}{
-		{0.58, 0.62, 0.32, 0.85, 14, 0.7},
-		{0.34, 0.38, 0.22, 0.55, 11, 1.9},
+		{0.58, 0.62, 0.32, 0.60, 14, 0.7},
+		{0.34, 0.38, 0.22, 0.45, 11, 1.9},
 	}
 
 	var s Shape
@@ -647,7 +647,7 @@ func GetShape(name string) Shape {
 var planetOverlays = map[string][]Overlay{
 	"mercury": {
 		{Shape: mercuryCratersShape(), Color: [3]uint8{95, 95, 95}},
-		{Shape: mercuryRaysShape(), Color: [3]uint8{225, 225, 222}},
+		{Shape: mercuryRaysShape(), Color: [3]uint8{205, 205, 202}},
 	},
 	"venus": {{Shape: venusCloudShape(), Color: [3]uint8{255, 240, 200}}},
 	"earth": {{Shape: earthCloudShape(), Color: [3]uint8{250, 250, 250}}},
