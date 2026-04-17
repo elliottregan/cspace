@@ -265,16 +265,38 @@ var (
 	errorAccent     = lipgloss.Color("#e05555") // warm red — fault chrome only
 )
 
+// Panel geometry. Planet art is ShapeCols wide × ShapeRows/2 rows tall.
+// HUD column sits to its right. Panel width = planet + gap + hud + padding
+// + border; the outer frame renders in a 4:3-ish landscape proportion.
+const (
+	hudColWidth    = 32
+	gapWidth       = 4
+	panelPaddingX  = 3
+	panelPaddingY  = 1
+	labelColWidth  = 10 // left column in the stat grid
+	valueColWidth  = hudColWidth - labelColWidth
+	progressBarLen = hudColWidth - 12 // leave room for percentage
+)
+
 var (
 	panelStyle = lipgloss.NewStyle().
 			Border(lipgloss.DoubleBorder()).
 			BorderForeground(hudAccent).
 			BorderBackground(viewportBgColor).
 			Background(viewportBgColor).
-			Padding(1, 4)
+			Padding(panelPaddingY, panelPaddingX)
 
-	panelInnerStyle = lipgloss.NewStyle().
-			Background(viewportBgColor)
+	// panelFill paints the viewport black across the exact cell width so
+	// there's no transparent gutter between styled text and panel border.
+	panelFill = lipgloss.NewStyle().Background(viewportBgColor)
+
+	hudColStyle = lipgloss.NewStyle().
+			Background(viewportBgColor).
+			Width(hudColWidth)
+
+	gapStyle = lipgloss.NewStyle().
+			Background(viewportBgColor).
+			Width(gapWidth)
 
 	hudBaseStyle = lipgloss.NewStyle().
 			Foreground(hudBase).
@@ -289,25 +311,33 @@ var (
 			Foreground(hudDim).
 			Background(viewportBgColor)
 
-	nameStyle = lipgloss.NewStyle().
+	labelStyle = lipgloss.NewStyle().
+			Foreground(hudDim).
+			Background(viewportBgColor).
+			Width(labelColWidth)
+
+	valueStyle = lipgloss.NewStyle().
+			Foreground(hudAccent).
+			Background(viewportBgColor).
 			Bold(true).
-			Background(viewportBgColor)
+			Width(valueColWidth)
+
+	nameValueStyle = lipgloss.NewStyle().
+			Background(viewportBgColor).
+			Bold(true).
+			Width(valueColWidth)
 
 	errorPanelStyle = lipgloss.NewStyle().
 			Border(lipgloss.DoubleBorder()).
 			BorderForeground(errorAccent).
 			BorderBackground(viewportBgColor).
 			Background(viewportBgColor).
-			Padding(1, 4)
+			Padding(panelPaddingY, panelPaddingX).
+			Width(hudColWidth + gapWidth + planets.ShapeCols)
 )
 
-// progressBarWidth is the character count of the filled+empty segments
-// (brackets excluded). 24 fits comfortably under a 48-col planet.
-const progressBarWidth = 24
-
-// renderProgressBar draws a solid-filled bar: [██████████░░░░░░░░░░░░░░]
-// with bright silver for filled cells and dim silver for empty ones, plus
-// a trailing percentage. Progress is clamped to [0, 1].
+// renderProgressBar draws a solid-filled bar: [██████████░░░░░░░░]  050.0%
+// with bright silver filled cells and dim silver empty cells.
 func renderProgressBar(progress float64) string {
 	if progress < 0 {
 		progress = 0
@@ -315,87 +345,121 @@ func renderProgressBar(progress float64) string {
 	if progress > 1 {
 		progress = 1
 	}
-	filled := int(progress * float64(progressBarWidth))
-	if filled > progressBarWidth {
-		filled = progressBarWidth
+	filled := int(progress * float64(progressBarLen))
+	if filled > progressBarLen {
+		filled = progressBarLen
 	}
-	empty := progressBarWidth - filled
+	empty := progressBarLen - filled
 
-	filledStr := hudAccentStyle.Render(strings.Repeat("█", filled))
-	emptyStr := hudDimStyle.Render(strings.Repeat("░", empty))
-	bracket := hudBaseStyle.Render
-	pct := hudAccentStyle.Render(fmt.Sprintf(" %05.1f%%", progress*100))
+	return hudBaseStyle.Render("[") +
+		hudAccentStyle.Render(strings.Repeat("█", filled)) +
+		hudDimStyle.Render(strings.Repeat("░", empty)) +
+		hudBaseStyle.Render("]") +
+		hudBaseStyle.Render(" ") +
+		hudAccentStyle.Render(fmt.Sprintf("%05.1f%%", progress*100))
+}
 
-	return bracket("[") + filledStr + emptyStr + bracket("]") + pct
+// renderStatRow produces one `LABEL    value` line sized to the HUD column.
+func renderStatRow(label, value string, accent lipgloss.Style) string {
+	labelPart := labelStyle.Render(label)
+	valuePart := accent.Render(value)
+	return hudColStyle.Render(labelPart + valuePart)
+}
+
+// hudLines returns the stacked HUD rows used in the loading view.
+func (m Model) hudLines() []string {
+	planetHex := fmt.Sprintf("#%02x%02x%02x",
+		m.cfg.Planet.Color[0], m.cfg.Planet.Color[1], m.cfg.Planet.Color[2])
+	planetStyle := nameValueStyle.Foreground(lipgloss.Color(planetHex))
+
+	progress := 0.0
+	if m.cfg.Total > 0 {
+		progress = float64(m.phaseNum) / float64(m.cfg.Total)
+	}
+	elapsed := m.cfg.Now().Sub(m.start)
+	mm := int(elapsed.Minutes())
+	ss := int(elapsed.Seconds()) % 60
+
+	blank := hudColStyle.Render("")
+	header := hudColStyle.Render(
+		hudAccentStyle.Render(m.spinner.View()+"  ") +
+			hudAccentStyle.Render("CSPACE // ORBITAL INIT"),
+	)
+	rule := hudColStyle.Render(hudDimStyle.Render(strings.Repeat("─", hudColWidth-2)))
+
+	return []string{
+		blank,
+		header,
+		blank,
+		rule,
+		blank,
+		renderStatRow("TARGET", strings.ToUpper(m.cfg.Name), planetStyle),
+		renderStatRow("PHASE", fmt.Sprintf("%02d / %02d", m.phaseNum, m.cfg.Total), valueStyle),
+		renderStatRow("T+", fmt.Sprintf("%02d:%02d", mm, ss), valueStyle),
+		renderStatRow("STATE", sciFiLabelFor(m.phase), valueStyle),
+		blank,
+		hudColStyle.Render(renderProgressBar(progress)),
+		blank,
+		hudColStyle.Render(hudBaseStyle.Render("›  ") + hudBaseStyle.Render(m.phase)),
+	}
 }
 
 func (m Model) loadingView() string {
 	shape := planets.GetShape(m.cfg.Name)
 	art := RenderPlanet(shape, m.cfg.Planet, m.phaseNum, m.cfg.Total)
 
-	planetColor := lipgloss.Color(fmt.Sprintf("#%02x%02x%02x",
-		m.cfg.Planet.Color[0], m.cfg.Planet.Color[1], m.cfg.Planet.Color[2]))
-	nameLine := nameStyle.Foreground(planetColor).
-		Render(strings.ToUpper(m.cfg.Name))
-
-	progress := 0.0
-	if m.cfg.Total > 0 {
-		progress = float64(m.phaseNum) / float64(m.cfg.Total)
+	artHeight := planets.ShapeRows / 2
+	hud := m.hudLines()
+	// Pad HUD to match planet height so JoinHorizontal aligns cleanly and
+	// the black viewport fills from planet-top to planet-bottom.
+	for len(hud) < artHeight {
+		hud = append(hud, hudColStyle.Render(""))
 	}
-	progressLine := renderProgressBar(progress)
+	if len(hud) > artHeight {
+		hud = hud[:artHeight]
+	}
+	hudBlock := strings.Join(hud, "\n")
 
-	sciFi := sciFiLabelFor(m.phase)
-	statusTop := hudAccentStyle.Render(m.spinner.View()+"  ") + hudAccentStyle.Render(sciFi)
-	statusBot := hudDimStyle.Render("    " + m.phase)
+	gap := strings.Repeat(gapStyle.Render("")+"\n", artHeight-1) + gapStyle.Render("")
 
-	elapsed := m.cfg.Now().Sub(m.start)
-	mm := int(elapsed.Minutes())
-	ss := int(elapsed.Seconds()) % 60
-	stats := hudBaseStyle.Render(fmt.Sprintf("PH %02d/%02d    T+ %02d:%02d",
-		m.phaseNum, m.cfg.Total, mm, ss))
+	combined := lipgloss.JoinHorizontal(lipgloss.Top, art, gap, hudBlock)
+	panel := panelStyle.Render(combined)
 
-	inner := lipgloss.JoinVertical(lipgloss.Center,
-		art,
-		panelInnerStyle.Render(""),
-		nameLine,
-		panelInnerStyle.Render(""),
-		progressLine,
-		panelInnerStyle.Render(""),
-		statusTop,
-		statusBot,
-		panelInnerStyle.Render(""),
-		stats,
-	)
-
-	panel := panelStyle.Render(inner)
 	if m.width == 0 || m.height == 0 {
 		return panel
 	}
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, panel)
+	return lipgloss.Place(m.width, m.height,
+		lipgloss.Center, lipgloss.Center,
+		panel,
+		lipgloss.WithWhitespaceBackground(lipgloss.Color("#000000")),
+	)
 }
 
 func (m Model) errorView() string {
 	lines := []string{
 		hudAccentStyle.Render("✕  MISSION ABORT"),
-		panelInnerStyle.Render(""),
+		panelFill.Render(""),
 	}
 	if m.errPhase != "" {
 		lines = append(lines,
-			hudBaseStyle.Render("FAULT IN PHASE: "+strings.ToUpper(sciFiLabelFor(m.errPhase))),
+			hudBaseStyle.Render("FAULT IN PHASE: ")+hudAccentStyle.Render(strings.ToUpper(sciFiLabelFor(m.errPhase))),
 			hudDimStyle.Render(m.errPhase),
-			panelInnerStyle.Render(""),
+			panelFill.Render(""),
 		)
 	}
 	lines = append(lines,
-		hudBaseStyle.Render("»  cspace up "+m.cfg.Name+" --verbose"),
-		panelInnerStyle.Render(""),
+		hudBaseStyle.Render("»  ")+hudAccentStyle.Render("cspace up "+m.cfg.Name+" --verbose"),
+		panelFill.Render(""),
 		hudDimStyle.Render("[ANY KEY] TO DISENGAGE"),
 	)
 	panel := errorPanelStyle.Render(strings.Join(lines, "\n"))
 	if m.width == 0 || m.height == 0 {
 		return panel
 	}
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, panel)
+	return lipgloss.Place(m.width, m.height,
+		lipgloss.Center, lipgloss.Center,
+		panel,
+	)
 }
 
 // Run starts the bubbletea program in alt-screen mode and blocks until

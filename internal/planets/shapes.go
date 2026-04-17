@@ -92,29 +92,59 @@ func applyPolarCap(s Shape, rows int, boost float64) Shape {
 	return s
 }
 
-// applyRings overlays a thin ring at the equator row, extending outward
-// past the planet body to the frame edges. The ring fades from brighter
-// near the body's terminator toward the outer edge of the frame.
+// applyRings overlays Saturn-like rings centered on the equator, one
+// subpixel row thick. Three bands plus a Cassini-style gap:
+//
+//	[body] | A-ring (bright) | gap (dim) | B-ring (medium) | taper
+//
+// The body's shadow passes in front of the rings naturally because
+// sphereShape has already filled the body rows at a higher shade than
+// the ring shades, so `if shade > s[row][c]` preserves the body.
 func applyRings(s Shape, bodyRx float64) Shape {
-	mid := ShapeRows / 2
-	rows := []int{mid - 1, mid}
-	for _, r := range rows {
-		if r < 0 || r >= ShapeRows {
+	// Two thin equatorial subpixel rows; very thin elliptical disc.
+	midRow := ShapeRows / 2
+	rows := []int{midRow - 1, midRow}
+
+	// Ring bands: (innerX, outerX, shade). Measured from center; symmetric
+	// around x=0.5.
+	bands := []struct{ inner, outer, shade float64 }{
+		{bodyRx + 0.015, bodyRx + 0.065, 0.90}, // inner bright ring (A)
+		{bodyRx + 0.075, bodyRx + 0.090, 0.30}, // Cassini gap
+		{bodyRx + 0.100, 0.470, 0.75},          // outer ring (B)
+	}
+
+	for i, row := range rows {
+		if row < 0 || row >= ShapeRows {
 			continue
+		}
+		// Upper and lower subpixel rows at the equator get slightly less
+		// intensity than the true center row so the ring reads as very
+		// thin rather than a solid slab.
+		rowScale := 1.0
+		if i == 0 {
+			rowScale = 0.55
 		}
 		for c := 0; c < ShapeCols; c++ {
 			x := (float64(c) + 0.5) / float64(ShapeCols)
 			d := math.Abs(x - 0.5)
-			// Ring extends from just outside the body (d > bodyRx) to
-			// near the frame edge (d < 0.48).
-			if d <= bodyRx || d >= 0.48 {
-				continue
-			}
-			// Brighter near body, fading to 0.4 at outer edge.
-			t := (d - bodyRx) / (0.48 - bodyRx)
-			shade := 0.8 - 0.4*t
-			if shade > s[r][c] {
-				s[r][c] = shade
+			for _, b := range bands {
+				if d < b.inner || d > b.outer {
+					continue
+				}
+				// Fade at extreme outer edge so rings don't hard-cut at
+				// the frame edge.
+				taper := 1.0
+				if d > 0.42 {
+					taper = (0.47 - d) / 0.05
+					if taper < 0 {
+						taper = 0
+					}
+				}
+				shade := b.shade * rowScale * taper
+				if shade > s[row][c] {
+					s[row][c] = shade
+				}
+				break
 			}
 		}
 	}

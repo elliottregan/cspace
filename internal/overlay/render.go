@@ -1,14 +1,19 @@
 // Package overlay renders the bubbletea provisioning overlay — a planet
-// "coming into focus" as provisioning advances. The focus-pull effect uses
-// two axes: (1) the shape is blurred heavily at phase 1 and iteratively
-// sharpened toward the target image, and (2) the color lerps from a dim
-// grey toward the planet's canonical RGB.
+// "coming into focus" as provisioning advances.
 //
-// Each output cell uses the ▀/▄ half-block character with independent
-// foreground and background truecolors, so every terminal cell encodes
-// TWO vertically stacked sub-pixels — doubling effective vertical
-// resolution. Per-subpixel color is derived from its shade value via
-// truecolor scaling, so gradients are smooth (no density-palette banding).
+// Focus-pull uses three axes:
+//   - Pixelation: at phase 1 the shape is sampled at a coarse block size
+//     so the planet reads as a chunky mosaic of solid-color squares;
+//     block size drops linearly to 1 at phase=total.
+//   - Color saturation: base color lerps from dim grey toward the planet's
+//     canonical RGB as phase advances.
+//   - Surface texture: past 70% focus, a braille-dither overlay stipples
+//     subtle shadow/highlight variation across lit cells, ramping up with
+//     focus. Contrast is intentionally small — just enough to suggest
+//     surface detail without looking like random noise.
+//
+// Every cell paints explicit black bg so the planet always sits inside a
+// consistent black viewport regardless of terminal theme.
 package overlay
 
 import (
@@ -23,32 +28,41 @@ import (
 // interpolating toward the planet's canonical color as phases advance.
 var greyStart = [3]uint8{110, 110, 110}
 
-// haloThreshold suppresses dim blur tails below this shade value so the
-// halo stays bounded rather than flood-filling the frame at early phases.
+// haloThreshold suppresses dim tails below this shade so the silhouette
+// collapses cleanly to black rather than fringing.
 const haloThreshold = 0.08
 
-// maxBlurIters caps the iterative 3x3 box-blur passes applied to the
-// target shape at phase 1 (the most defocused frame). 0 iterations at
-// phase == total gives the sharp target image. Scales roughly with grid
-// size — doubled from 6 when the shape grid grew from 24² to 48².
-const maxBlurIters = 12
+// maxBlockSize is the pixelation block size used at phase 1 — big solid
+// squares that shrink toward 1 as focus approaches 1. 8 means at phase 1
+// the planet is effectively rendered at ShapeRows/8 × ShapeCols/8 resolution.
+const maxBlockSize = 8
 
-// viewportBg is the panel-interior background every planet cell paints,
-// so the blur tails blend into the enclosing black viewport regardless
-// of the user's terminal theme.
+// textureStart is the focus value at which braille dither kicks in.
+// Below this focus we render only half-block shapes; above, a growing
+// fraction of lit cells are painted with a braille character to suggest
+// surface texture.
+const textureStart = 0.70
+
+// textureDensity is the fraction of cells that receive braille treatment
+// when focus hits 1.0. Below, the fraction scales linearly from 0.
+const textureDensity = 0.28
+
+// textureContrast is the fg/bg shade differential used by braille cells.
+// Small (fg slightly brighter than bg), so the texture reads as surface
+// detail rather than discrete dots.
+const textureContrast = 0.12
+
+// viewportBg is the panel-interior background every cell paints.
 var viewportBg = [3]uint8{0, 0, 0}
 
-// upperHalf and lowerHalf are the Unicode half-block characters we use
-// to pack two vertical sub-pixels into one terminal cell. upperHalf
-// shows fg on top / bg on bottom; lowerHalf is its mirror.
+// upperHalf / lowerHalf / fullBlock pack two stacked sub-pixels per cell.
 const (
 	upperHalf = "▀"
 	lowerHalf = "▄"
 )
 
 // LerpColor linearly interpolates each channel of from→to by t∈[0,1].
-// Values outside [0,1] are clamped. Arithmetic uses float64 to avoid
-// uint8 underflow when a channel shrinks (e.g. 200 → 50).
+// Values outside [0,1] are clamped.
 func LerpColor(from, to [3]uint8, t float64) [3]uint8 {
 	if t < 0 {
 		t = 0
@@ -73,8 +87,7 @@ func LerpColor(from, to [3]uint8, t float64) [3]uint8 {
 	}
 }
 
-// scaleColor multiplies each channel of rgb by shade ∈ [0,1], producing a
-// darker version of rgb suitable for the unlit portion of a cell.
+// scaleColor multiplies each channel of rgb by shade ∈ [0,1].
 func scaleColor(rgb [3]uint8, shade float64) [3]uint8 {
 	if shade <= 0 {
 		return [3]uint8{0, 0, 0}
@@ -100,10 +113,35 @@ func bgAnsi(bg [3]uint8) string {
 	return fmt.Sprintf("\x1b[48;2;%d;%d;%dm", bg[0], bg[1], bg[2])
 }
 
-// RenderPlanet returns one frame of the focus-pull animation. Blur
-// iterations decrease with phase (target shape sharpens); color lerps from
-// grey toward planet.Color. Output height is planets.ShapeRows/2 terminal
-// rows because each output row represents two stacked sub-pixels.
+// hash2 is a cheap deterministic float in [0,1) keyed on (r, c). Used for
+// per-cell texture decisions so the stipple pattern stays stable across
+// frames instead of twinkling.
+func hash2(r, c int) float64 {
+	h := uint32(r)*73856093 ^ uint32(c)*19349663
+	h ^= h >> 13
+	h *= 0x5bd1e995
+	h ^= h >> 15
+	return float64(h%10000) / 10000.0
+}
+
+// pickBraille chooses a braille character (U+2800..U+28FF) whose dot
+// pattern is a stable function of (r, c). Dot count is biased by the
+// per-cell noise so textured regions vary visibly without clumping.
+func pickBraille(r, c int) string {
+	h := hash2(r, c)
+	// 2..6 dots keeps texture visible without turning cells into solid
+	// blocks (which would defeat the purpose).
+	dots := 2 + int(h*5)
+	mask := 0
+	// Use every other bit position so the resulting braille pattern
+	// spreads across both columns of the 2x4 dot grid.
+	for i := 0; i < dots; i++ {
+		mask |= 1 << ((i * 3) % 8)
+	}
+	return string(rune(0x2800 + mask))
+}
+
+// RenderPlanet returns one frame of the focus-pull animation.
 func RenderPlanet(shape planets.Shape, p planets.Planet, phase, total int) string {
 	if total <= 0 {
 		total = 1
@@ -116,10 +154,20 @@ func RenderPlanet(shape planets.Shape, p planets.Planet, phase, total int) strin
 		focus = 1
 	}
 
-	iters := int(math.Round(float64(maxBlurIters) * (1 - focus)))
-	frame := blurShape(shape, iters)
+	// Pixelation: chunky at phase 1, pixel-perfect at phase total.
+	blockSize := int(math.Round(float64(maxBlockSize) * (1 - focus)))
+	if blockSize < 1 {
+		blockSize = 1
+	}
+	frame := pixelateShape(shape, blockSize)
 
 	baseColor := LerpColor(greyStart, p.Color, focus)
+
+	// Texture ramp: 0 until textureStart, then linearly up to textureDensity.
+	var textureFrac float64
+	if focus > textureStart {
+		textureFrac = (focus - textureStart) / (1 - textureStart) * textureDensity
+	}
 
 	termRows := planets.ShapeRows / 2
 	var rows []string
@@ -137,10 +185,19 @@ func RenderPlanet(shape planets.Shape, p planets.Planet, phase, total int) strin
 				line.WriteByte(' ')
 				line.WriteString(ansiReset)
 			case topOn && botOn:
-				topColor := scaleColor(baseColor, top)
-				botColor := scaleColor(baseColor, bot)
-				line.WriteString(fgBgAnsi(topColor, botColor))
-				line.WriteString(upperHalf)
+				// Braille texture overlay on fully-lit cells past textureStart.
+				if textureFrac > 0 && hash2(r, c) < textureFrac {
+					mid := (top + bot) * 0.5
+					bg := scaleColor(baseColor, mid)
+					fg := scaleColor(baseColor, math.Min(1, mid+textureContrast))
+					line.WriteString(fgBgAnsi(fg, bg))
+					line.WriteString(pickBraille(r, c))
+				} else {
+					topColor := scaleColor(baseColor, top)
+					botColor := scaleColor(baseColor, bot)
+					line.WriteString(fgBgAnsi(topColor, botColor))
+					line.WriteString(upperHalf)
+				}
 				line.WriteString(ansiReset)
 			case topOn:
 				topColor := scaleColor(baseColor, top)
@@ -159,34 +216,35 @@ func RenderPlanet(shape planets.Shape, p planets.Planet, phase, total int) strin
 	return strings.Join(rows, "\n")
 }
 
-// blurShape applies `iters` passes of a 3x3 box blur to s. Each pass smooths
-// edges and spreads shade outward; iterating many passes approximates a
-// Gaussian with sigma ≈ √iters. Out-of-bounds neighbors are treated as 0
-// so the halo fades to black at the frame edges.
-func blurShape(s planets.Shape, iters int) planets.Shape {
-	for i := 0; i < iters; i++ {
-		s = boxBlur3x3(s)
+// pixelateShape returns a new shape where every blockSize×blockSize region
+// of the input is flattened to the region's mean shade. blockSize <= 1
+// returns the input unchanged.
+func pixelateShape(s planets.Shape, blockSize int) planets.Shape {
+	if blockSize <= 1 {
+		return s
 	}
-	return s
-}
-
-func boxBlur3x3(s planets.Shape) planets.Shape {
 	var out planets.Shape
 	rows := planets.ShapeRows
 	cols := planets.ShapeCols
-	for r := 0; r < rows; r++ {
-		for c := 0; c < cols; c++ {
+	for blockR := 0; blockR < rows; blockR += blockSize {
+		for blockC := 0; blockC < cols; blockC += blockSize {
 			var sum float64
-			for dr := -1; dr <= 1; dr++ {
-				for dc := -1; dc <= 1; dc++ {
-					rr, cc := r+dr, c+dc
-					if rr < 0 || rr >= rows || cc < 0 || cc >= cols {
-						continue
-					}
-					sum += s[rr][cc]
+			var count int
+			for r := blockR; r < blockR+blockSize && r < rows; r++ {
+				for c := blockC; c < blockC+blockSize && c < cols; c++ {
+					sum += s[r][c]
+					count++
 				}
 			}
-			out[r][c] = sum / 9
+			mean := 0.0
+			if count > 0 {
+				mean = sum / float64(count)
+			}
+			for r := blockR; r < blockR+blockSize && r < rows; r++ {
+				for c := blockC; c < blockC+blockSize && c < cols; c++ {
+					out[r][c] = mean
+				}
+			}
 		}
 	}
 	return out

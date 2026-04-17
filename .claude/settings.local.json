@@ -1,0 +1,6 @@
+{
+  "enabledMcpjsonServers": [
+    "cspace-context"
+  ],
+  "enableAllProjectMcpServers": true
+}
