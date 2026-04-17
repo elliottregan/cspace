@@ -318,8 +318,8 @@ func mercuryRaysShape() Shape {
 		rayCount      int     // N-fold symmetric ray pattern
 		phaseOffset   float64 // rotation of the ray pattern
 	}{
-		{0.58, 0.62, 0.32, 0.60, 14, 0.7},
-		{0.34, 0.38, 0.22, 0.45, 11, 1.9},
+		{0.50, 0.58, 0.32, 0.60, 14, 0.7},  // central, just below equator
+		{0.66, 0.22, 0.22, 0.45, 11, 1.9},  // near north pole, ~1 o'clock
 	}
 
 	var s Shape
