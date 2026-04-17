@@ -208,9 +208,11 @@ func TestLoad_DefaultsOnly(t *testing.T) {
 		t.Error("expected firewall.enabled=true from defaults")
 	}
 
-	// Claude model should match defaults.json
-	if cfg.Claude.Model != "claude-opus-4-6[1m]" {
-		t.Errorf("expected model=claude-opus-4-6[1m], got %s", cfg.Claude.Model)
+	// Claude model default pins to the "opus" alias so cspace always uses
+	// the latest Opus model (independent of the container's account default,
+	// which may be a lower-tier model like sonnet).
+	if cfg.Claude.Model != "opus[1m]" {
+		t.Errorf("expected model=opus[1m], got %s", cfg.Claude.Model)
 	}
 
 	// Plugins should have the default list
@@ -252,9 +254,10 @@ func TestLoad_WithProjectConfig(t *testing.T) {
 		t.Errorf("expected model=custom-model, got %s", cfg.Claude.Model)
 	}
 
-	// Effort should still come from defaults since project config didn't set it
-	if cfg.Claude.Effort != "max" {
-		t.Errorf("expected effort=max from defaults, got %s", cfg.Claude.Effort)
+	// Effort comes from defaults — empty string means "use cspace's context-aware
+	// default" (xhigh for container env, max for autonomous supervisor).
+	if cfg.Claude.Effort != "" {
+		t.Errorf("expected empty default effort, got %s", cfg.Claude.Effort)
 	}
 }
 

@@ -78,10 +78,6 @@ The generated `.cspace.json` has the following structure:
     "enabled": true,
     "domains": []
   },
-  "claude": {
-    "model": "claude-opus-4-6[1m]",
-    "effort": "max"
-  },
   "verify": {
     "all": "",
     "e2e": ""

@@ -73,7 +73,7 @@ Project config lives in `.cspace.json` (committed) with optional `.cspace.local.
   "project": { "name": "my-project", "repo": "owner/my-project" },
   "container": { "ports": { "3000": "dev server" } },
   "firewall": { "domains": ["api.example.com"] },
-  "claude": { "model": "claude-opus-4-6[1m]" },
+  "claude": { "model": "claude-opus-4-7[1m]" },
   "verify": { "all": "npm run lint && npm run test" }
 }
 ```

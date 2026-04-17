@@ -9,7 +9,7 @@ import (
 
 func TestBuildSupervisorArgsIncludesResumeSession(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.Claude.Model = "claude-opus-4-6"
+	cfg.Claude.Model = "claude-opus-4-7"
 	params := LaunchParams{
 		Name:            "mars",
 		Role:            RoleAgent,
@@ -31,7 +31,7 @@ func TestBuildSupervisorArgsIncludesResumeSession(t *testing.T) {
 
 func TestBuildSupervisorArgsWithoutResumeIncludesPromptFile(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.Claude.Model = "claude-opus-4-6"
+	cfg.Claude.Model = "claude-opus-4-7"
 	params := LaunchParams{
 		Name:       "mars",
 		Role:       RoleAgent,
@@ -50,7 +50,7 @@ func TestBuildSupervisorArgsWithoutResumeIncludesPromptFile(t *testing.T) {
 
 func TestLaunchSupervisorRejectsEmptyParams(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.Claude.Model = "claude-opus-4-6"
+	cfg.Claude.Model = "claude-opus-4-7"
 	params := LaunchParams{
 		Name: "mars",
 		Role: RoleAgent,
@@ -65,8 +65,8 @@ func TestLaunchSupervisorRejectsEmptyParams(t *testing.T) {
 	}
 }
 
-func TestBuildSupervisorArgsModelDefaultsWhenUnset(t *testing.T) {
-	cfg := &config.Config{} // no Model set
+func TestBuildSupervisorArgsOmitsModelWhenUnset(t *testing.T) {
+	cfg := &config.Config{} // no Model set — supervisor should fall through to account default
 	params := LaunchParams{
 		Name:       "mars",
 		Role:       RoleAgent,
@@ -75,14 +75,64 @@ func TestBuildSupervisorArgsModelDefaultsWhenUnset(t *testing.T) {
 	}
 	args := buildSupervisorArgs(params, cfg)
 	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "--model claude-opus-4-6") {
-		t.Errorf("expected default model claude-opus-4-6 in args, got: %s", joined)
+	if strings.Contains(joined, "--model") {
+		t.Errorf("expected no --model flag when Model is unset, got: %s", joined)
+	}
+}
+
+func TestBuildSupervisorArgsPassesModelWhenSet(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Claude.Model = "claude-sonnet-4-6[1m]"
+	params := LaunchParams{
+		Name:       "mars",
+		Role:       RoleAgent,
+		PromptFile: "/tmp/p.txt",
+		StderrLog:  "/tmp/x.log",
+	}
+	args := buildSupervisorArgs(params, cfg)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--model claude-sonnet-4-6[1m]") {
+		t.Errorf("expected --model claude-sonnet-4-6[1m] in args, got: %s", joined)
+	}
+}
+
+func TestBuildSupervisorArgsEffortDefaultsToMaxForAutonomous(t *testing.T) {
+	cfg := &config.Config{} // no Effort set
+	params := LaunchParams{
+		Name:       "mars",
+		Role:       RoleAgent,
+		PromptFile: "/tmp/p.txt",
+		StderrLog:  "/tmp/x.log",
+	}
+	args := buildSupervisorArgs(params, cfg)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--effort max") {
+		t.Errorf("expected autonomous default --effort max, got: %s", joined)
+	}
+}
+
+func TestBuildSupervisorArgsEffortHonorsExplicitOverride(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Claude.Effort = "high"
+	params := LaunchParams{
+		Name:       "mars",
+		Role:       RoleAgent,
+		PromptFile: "/tmp/p.txt",
+		StderrLog:  "/tmp/x.log",
+	}
+	args := buildSupervisorArgs(params, cfg)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--effort high") {
+		t.Errorf("expected explicit --effort high, got: %s", joined)
+	}
+	if strings.Contains(joined, "--effort max") {
+		t.Errorf("explicit high should not leave autonomous max fallback, got: %s", joined)
 	}
 }
 
 func TestLaunchSupervisorRejectsBothSet(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.Claude.Model = "claude-opus-4-6"
+	cfg.Claude.Model = "claude-opus-4-7"
 	params := LaunchParams{
 		Name:            "mars",
 		Role:            RoleAgent,

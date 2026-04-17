@@ -84,8 +84,12 @@ services:
       # it previously leaked macOS paths into Linux containers and broke
       # teleport-prepare.sh (mkdir /Users/... EACCES).
       - CSPACE_FIREWALL_DOMAINS=${CSPACE_FIREWALL_DOMAINS:-}
-      - CSPACE_CLAUDE_MODEL=${CSPACE_CLAUDE_MODEL:-claude-opus-4-6[1m]}
-      - CSPACE_CLAUDE_EFFORT=${CSPACE_CLAUDE_EFFORT:-max}
+      # Claude Code env vars — https://code.claude.com/docs/en/env-vars
+      # ANTHROPIC_MODEL empty → CLI uses the account default (latest Opus).
+      # CLAUDE_CODE_EFFORT_LEVEL defaults to xhigh; supervisor overrides
+      # autonomous runs to max via --effort.
+      - ANTHROPIC_MODEL=${CSPACE_ANTHROPIC_MODEL:-}
+      - CLAUDE_CODE_EFFORT_LEVEL=${CSPACE_CLAUDE_CODE_EFFORT_LEVEL:-xhigh}
       - CSPACE_MCP_SERVERS=${CSPACE_MCP_SERVERS:-}
       - TERM_PROGRAM=${TERM_PROGRAM:-}
       - COLORTERM=${COLORTERM:-}

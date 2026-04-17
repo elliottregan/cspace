@@ -108,7 +108,7 @@ func TestComposeEnvProvisioningVars(t *testing.T) {
 			Domains: []string{"api.example.com", "cdn.example.com"},
 		},
 		Claude: config.ClaudeConfig{
-			Model:  "claude-opus-4-6[1m]",
+			Model:  "claude-opus-4-7[1m]",
 			Effort: "max",
 		},
 		MCPServers: map[string]interface{}{
@@ -135,12 +135,13 @@ func TestComposeEnvProvisioningVars(t *testing.T) {
 		t.Errorf("CSPACE_FIREWALL_DOMAINS = %q, want %q", got, "api.example.com cdn.example.com")
 	}
 
-	// Claude model and effort
-	if got := m["CSPACE_CLAUDE_MODEL"]; got != "claude-opus-4-6[1m]" {
-		t.Errorf("CSPACE_CLAUDE_MODEL = %q, want %q", got, "claude-opus-4-6[1m]")
+	// Claude model and effort are exported as the first-class Claude Code env
+	// var names (CSPACE_* prefix is just the compose-yaml bridge indirection).
+	if got := m["CSPACE_ANTHROPIC_MODEL"]; got != "claude-opus-4-7[1m]" {
+		t.Errorf("CSPACE_ANTHROPIC_MODEL = %q, want %q", got, "claude-opus-4-7[1m]")
 	}
-	if got := m["CSPACE_CLAUDE_EFFORT"]; got != "max" {
-		t.Errorf("CSPACE_CLAUDE_EFFORT = %q, want %q", got, "max")
+	if got := m["CSPACE_CLAUDE_CODE_EFFORT_LEVEL"]; got != "max" {
+		t.Errorf("CSPACE_CLAUDE_CODE_EFFORT_LEVEL = %q, want %q", got, "max")
 	}
 
 	// MCP servers (should be compact JSON)
@@ -190,4 +191,20 @@ func TestComposeEnvNoFirewallDomains(t *testing.T) {
 	if got := m["CSPACE_MCP_SERVERS"]; got != "{}" {
 		t.Errorf("CSPACE_MCP_SERVERS = %q, want %q", got, "{}")
 	}
+}
+
+func TestComposeEnvEffortDefaultsToXhigh(t *testing.T) {
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "p", Prefix: "p"},
+		Claude:  config.ClaudeConfig{}, // Effort unset
+	}
+
+	env := ComposeEnv("mercury", cfg)
+
+	for _, e := range env {
+		if e == "CSPACE_CLAUDE_CODE_EFFORT_LEVEL=xhigh" {
+			return
+		}
+	}
+	t.Errorf("expected CSPACE_CLAUDE_CODE_EFFORT_LEVEL=xhigh in env when Effort is empty, got: %v", env)
 }

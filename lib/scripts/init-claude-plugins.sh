@@ -1,6 +1,9 @@
 #!/bin/bash
 # Initialize Claude plugins and settings for cspace devcontainers.
-# Configurable via CSPACE_CLAUDE_MODEL and CSPACE_CLAUDE_EFFORT env vars.
+#
+# Model and thinking/effort level are configured via ANTHROPIC_MODEL and
+# CLAUDE_CODE_EFFORT_LEVEL — set on the container by docker-compose — so
+# settings.json only carries hooks and statusLine.
 
 # Propagate exit codes through pipes so `if ! cmd | sed ...` detects cmd's
 # failure rather than sed's (sed nearly always succeeds).
@@ -16,9 +19,6 @@ MARKER_FILE="$PLUGINS_DIR/.initialized"
 # CSPACE_HOME is set in the image (ENV in Dockerfile = /opt/cspace).
 # The fallback exists only for sanity if someone runs this script standalone.
 CSPACE_HOME="${CSPACE_HOME:-/opt/cspace}"
-
-MODEL="${CSPACE_CLAUDE_MODEL:-claude-opus-4-6[1m]}"
-EFFORT="${CSPACE_CLAUDE_EFFORT:-max}"
 
 # Determine hook script paths — prefer project overrides, fall back to cspace defaults
 progress_hook="/workspace/.cspace/hooks/claude-progress-logger.sh"
@@ -77,9 +77,7 @@ cat > "$USER_SETTINGS" <<HOOKS_EOF
   "statusLine": {
     "type": "command",
     "command": "$statusline_cmd"
-  },
-  "model": "$MODEL",
-  "effortLevel": "$EFFORT"
+  }
 }
 HOOKS_EOF
 chown dev:dev "$USER_SETTINGS"

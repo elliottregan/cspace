@@ -264,15 +264,17 @@ func buildSupervisorArgs(params LaunchParams, cfg *config.Config) []string {
 		args = append(args, "--instance", params.Name)
 	}
 
-	model := cfg.Claude.Model
-	if model == "" {
-		model = "claude-opus-4-6"
+	if cfg.Claude.Model != "" {
+		args = append(args, "--model", cfg.Claude.Model)
 	}
-	args = append(args, "--model", model)
 
-	if cfg.Claude.Effort != "" && cfg.Claude.Effort != "max" {
-		args = append(args, "--no-effort-max")
+	// Autonomous supervisor runs default to max thinking. An explicit
+	// claude.effort in cspace settings wins, so users can dial it down.
+	effort := cfg.Claude.Effort
+	if effort == "" {
+		effort = "max"
 	}
+	args = append(args, "--effort", effort)
 
 	// Check for per-role system prompt override inside the container
 	systemPromptFile := filepath.Join("/workspace/.cspace/agent-supervisor",
