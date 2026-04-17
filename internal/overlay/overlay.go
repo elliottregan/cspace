@@ -1,7 +1,6 @@
 package overlay
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -40,17 +39,16 @@ type ProvisionEvent struct {
 
 // ChannelReporter implements provision.Reporter by pushing events into a
 // buffered channel. It tracks the most-recent phase name so Error() can
-// report which phase failed.
+// report which phase failed. Not safe for concurrent use — callers must
+// serialize reporter calls.
 type ChannelReporter struct {
 	events    chan<- ProvisionEvent
 	lastPhase string
-	totalHint int
 }
 
-// NewChannelReporter builds a reporter that writes into events. The total
-// hint is the total number of expected phases; callers pass 14 today.
-func NewChannelReporter(events chan<- ProvisionEvent, total int) *ChannelReporter {
-	return &ChannelReporter{events: events, totalHint: total}
+// NewChannelReporter builds a reporter that writes into events.
+func NewChannelReporter(events chan<- ProvisionEvent) *ChannelReporter {
+	return &ChannelReporter{events: events}
 }
 
 // Phase records the current phase name and dispatches a PhaseEvent.
@@ -110,9 +108,7 @@ type Model struct {
 
 // NewModel constructs a Model with sensible defaults. Events must be a
 // channel the caller feeds from provision.Run goroutines. start is seeded
-// to the Unix epoch so tests that bypass Init and render immediately see
-// elapsed computed against cfg.Now()'s absolute value. Init() overwrites
-// start with cfg.Now() so the production timer counts up from zero.
+// from cfg.Now() so the elapsed timer counts up from model construction.
 func NewModel(cfg ModelConfig) Model {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -124,7 +120,7 @@ func NewModel(cfg ModelConfig) Model {
 	sp.Spinner = spinner.Dot
 	return Model{
 		cfg:     cfg,
-		start:   time.Unix(0, 0),
+		start:   cfg.Now(),
 		spinner: sp,
 	}
 }
@@ -132,17 +128,8 @@ func NewModel(cfg ModelConfig) Model {
 // tickMsg fires once per second to keep the elapsed timer fresh.
 type tickMsg time.Time
 
-// startMsg carries the real start time captured at Init to replace the
-// Unix-epoch seed set by NewModel.
-type startMsg time.Time
-
 func tickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
-}
-
-// startCmd returns a command that emits a startMsg with cfg.Now().
-func startCmd(now func() time.Time) tea.Cmd {
-	return func() tea.Msg { return startMsg(now()) }
 }
 
 // waitForEvent returns a command that blocks on the events channel and
@@ -163,7 +150,6 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.spinner.Tick,
 		tickCmd(),
-		startCmd(m.cfg.Now),
 		waitForEvent(m.cfg.Events),
 	)
 }
@@ -194,10 +180,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tickCmd()
 
-	case startMsg:
-		m.start = time.Time(msg)
-		return m, nil
-
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -221,7 +203,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case ErrorEvent:
 			m.err = msg.Err
 			m.errPhase = msg.Phase
-			// Stay on screen until keypress.
+			// Stop draining events; stay on screen until keypress.
+			// Further events pushed into the channel are dropped.
 			return m, nil
 		}
 	}
@@ -296,12 +279,9 @@ func (m Model) errorView() string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, panel)
 }
 
-// Run starts the bubbletea program in alt-screen mode and returns when the
-// user dismisses the error panel or the provisioning completes. The ctx is
-// currently advisory — bubbletea exits on its own signals — but is reserved
-// for future graceful-cancel support.
-func Run(ctx context.Context, cfg ModelConfig) error {
-	_ = ctx
+// Run starts the bubbletea program in alt-screen mode and blocks until
+// the user dismisses the error panel or provisioning completes.
+func Run(cfg ModelConfig) error {
 	p := tea.NewProgram(NewModel(cfg), tea.WithAltScreen())
 	_, err := p.Run()
 	return err

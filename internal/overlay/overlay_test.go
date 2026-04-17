@@ -40,13 +40,19 @@ func TestViewShowsPhaseName(t *testing.T) {
 }
 
 func TestViewShowsElapsed(t *testing.T) {
-	now := time.Unix(0, 0)
+	calls := 0
 	m := NewModel(ModelConfig{
 		Name:   "mercury",
 		Planet: planets.MustGet("mercury"),
 		Total:  14,
 		Events: make(chan ProvisionEvent, 4),
-		Now:    func() time.Time { return now.Add(107 * time.Second) },
+		Now: func() time.Time {
+			defer func() { calls++ }()
+			if calls == 0 {
+				return time.Unix(0, 0) // seeds start at NewModel construction
+			}
+			return time.Unix(107, 0) // every subsequent call (including View)
+		},
 	})
 	m.phase = "Validating"
 	m.phaseNum = 1
