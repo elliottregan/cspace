@@ -151,6 +151,11 @@ func runUpWithArgs(name, branch string, noClaude bool, prompt, promptFile, telep
 		return nil
 	}
 
+	// Warn before handing off to Claude/supervisor when the image is older
+	// than the host CLI — new supervisor flags or prompts won't be honored
+	// until the user runs `cspace rebuild`.
+	printImageVersionWarning(cfg)
+
 	if prompt == "" && promptFile == "" {
 		return supervisor.LaunchInteractive(name, cfg)
 	}

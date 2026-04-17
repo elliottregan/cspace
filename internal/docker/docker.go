@@ -332,12 +332,17 @@ func InjectHosts(composeName, projectNetwork string) error {
 
 // Build runs `docker build` with the given options.
 // image is the tag, dockerfile is the path to the Dockerfile,
-// context is the build context directory.
+// context is the build context directory, version is stamped into the
+// image as the `cspace.version` label so `cspace up` can detect when a
+// container image was built with an older CLI.
 // If noCache is true, --no-cache is passed.
-func Build(image, dockerfile, context string, noCache bool) error {
+func Build(image, dockerfile, context, version string, noCache bool) error {
 	args := []string{"build", "-t", image, "-f", dockerfile}
 	if noCache {
 		args = append(args, "--no-cache")
+	}
+	if version != "" {
+		args = append(args, "--build-arg", "CSPACE_VERSION="+version)
 	}
 	args = append(args, context)
 
@@ -348,4 +353,21 @@ func Build(image, dockerfile, context string, noCache bool) error {
 		return fmt.Errorf("docker build: %w", err)
 	}
 	return nil
+}
+
+// ImageVersion returns the cspace.version label on the given image, or ""
+// if the image doesn't exist, wasn't built by cspace, or predates the
+// version-stamping feature. Used by `cspace up` and the TUI to warn the
+// user when the container image was built with a different CLI version.
+func ImageVersion(image string) string {
+	out, err := exec.Command("docker", "image", "inspect", image,
+		"--format", `{{index .Config.Labels "cspace.version"}}`).Output()
+	if err != nil {
+		return ""
+	}
+	v := strings.TrimSpace(string(out))
+	if v == "<no value>" {
+		return ""
+	}
+	return v
 }

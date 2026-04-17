@@ -45,6 +45,7 @@ func runTUI(cmd *cobra.Command) error {
 		projectDisplay = cwd
 	}
 	fmt.Println(headerStyle.Render("cspace " + Version + ": " + projectDisplay))
+	printImageVersionWarning(cfg)
 	fmt.Println()
 
 	// Query running instances once — reuse for both header display and picker

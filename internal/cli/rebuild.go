@@ -51,7 +51,7 @@ func runRebuild(cmd *cobra.Command, args []string) error {
 	defer func() { _ = os.Remove(linuxBinPath) }()
 
 	fmt.Println("Rebuilding container image...")
-	if err := docker.Build(cfg.ImageName(), dockerfile, cspaceHome, true); err != nil {
+	if err := docker.Build(cfg.ImageName(), dockerfile, cspaceHome, Version, true); err != nil {
 		return err
 	}
 

@@ -1,5 +1,12 @@
 FROM node:alpine
 
+# Stamp the cspace CLI version the image was built with so `cspace up`
+# can warn the user when the host CLI has moved ahead (baked-in supervisor,
+# scripts, and lib/ assets won't know about new flags otherwise). Set by
+# `cspace rebuild` via --build-arg; defaults to "dev" for local iteration.
+ARG CSPACE_VERSION=dev
+LABEL cspace.version="${CSPACE_VERSION}"
+
 # Install system dependencies for Claude Code, SSH, and GitHub CLI
 RUN apk add --no-cache \
     git git-init-template curl ca-certificates openssh sudo github-cli bash \
