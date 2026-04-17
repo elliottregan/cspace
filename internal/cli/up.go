@@ -206,6 +206,9 @@ func shouldUseOverlay(verbose bool) bool {
 	if !isInteractive() {
 		return false
 	}
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		return false
+	}
 	w, h, err := term.GetSize(int(os.Stdout.Fd()))
 	if err != nil || w < 40 || h < 30 {
 		return false
@@ -217,9 +220,9 @@ func provisionWithOverlay(name, branch string) error {
 	events := make(chan overlay.ProvisionEvent, 16)
 	reporter := overlay.NewChannelReporter(events)
 
-	var provErr error
+	done := make(chan error, 1)
 	go func() {
-		_, provErr = provision.Run(provision.Params{
+		_, err := provision.Run(provision.Params{
 			Name:     name,
 			Branch:   branch,
 			Cfg:      cfg,
@@ -228,6 +231,7 @@ func provisionWithOverlay(name, branch string) error {
 			Stderr:   io.Discard,
 		})
 		close(events)
+		done <- err
 	}()
 
 	planet := planets.MustGet(name)
@@ -238,7 +242,13 @@ func provisionWithOverlay(name, branch string) error {
 		Events: events,
 	}
 	if err := overlay.Run(model); err != nil {
+		// Drain the channel so the provision goroutine doesn't block on
+		// its buffered reporter sends when the overlay couldn't render.
+		go func() {
+			for range events {
+			}
+		}()
 		return err
 	}
-	return provErr
+	return <-done
 }
