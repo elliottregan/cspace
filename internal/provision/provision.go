@@ -4,6 +4,7 @@ package provision
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,9 +22,33 @@ var nameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // Params holds everything needed to provision an instance.
 type Params struct {
-	Name   string         // Instance name (validated: alphanumeric + hyphens/underscores)
-	Branch string         // Git branch to checkout (empty = host's current branch)
-	Cfg    *config.Config // Merged configuration
+	Name     string         // Instance name (validated: alphanumeric + hyphens/underscores)
+	Branch   string         // Git branch to checkout (empty = host's current branch)
+	Cfg      *config.Config // Merged configuration
+	Reporter Reporter       // Progress reporter; nil → logReporter{}
+	Stdout   io.Writer      // Subprocess stdout; nil → os.Stdout
+	Stderr   io.Writer      // Subprocess stderr; nil → os.Stderr
+}
+
+func (p Params) reporter() Reporter {
+	if p.Reporter != nil {
+		return p.Reporter
+	}
+	return logReporter{}
+}
+
+func (p Params) stdout() io.Writer {
+	if p.Stdout != nil {
+		return p.Stdout
+	}
+	return os.Stdout
+}
+
+func (p Params) stderr() io.Writer {
+	if p.Stderr != nil {
+		return p.Stderr
+	}
+	return os.Stderr
 }
 
 // Result holds the outcome of a provisioning run.
@@ -35,184 +60,196 @@ type Result struct {
 // Run provisions a cspace devcontainer instance. Idempotent — safe to
 // re-run on a partially configured instance.
 //
-// Steps:
-//  1. Validate instance name
-//  2. If already running, skip container creation
-//  3. Remove orphaned containers, detect branch, create git bundle
-//  4. Create shared Docker volumes
-//  5. Create project network
-//  6. Start global reverse proxy, connect to project network
-//  7. docker compose up -d
-//  8. Wait for container readiness
-//     8b. Inject /etc/hosts for cspace.local resolution inside containers
-//  9. Fix volume ownership
-//  10. Copy bundle into container, init workspace
-//  11. Configure git identity
-//  12. Copy .env files
-//  13. Setup GH_TOKEN + gh auth
-//  14. Idempotent: marketplace, plugins, post-setup hook
-func Run(p Params) (Result, error) {
+// Progress is reported through p.Reporter (defaults to logReporter{}), which
+// receives one Phase call per entry in the Phases slice plus a final Done or
+// Error call. When the container is already running, phases 2–13 are skipped
+// and phase 1 is reported as "Reusing running container"; phase 14 (the
+// idempotent tail: marketplace, plugins, post-setup) always runs.
+//
+// Phases (see the Phases slice for labels):
+//  1. Validating name
+//  2. Removing orphans
+//  3. Bundling repo
+//  4. Creating volumes
+//  5. Creating network
+//  6. Starting reverse proxy
+//  7. Setting up directories (teleport, memory, sessions, context)
+//  8. Starting containers (docker compose up -d)
+//  9. Waiting for container
+//  10. Configuring hosts (inject cspace.local → Traefik)
+//  11. Setting permissions (chown /workspace, /home/dev/.claude, /teleport)
+//  12. Initializing workspace (bundle unpack + init-workspace.sh)
+//  13. Configuring git & env (git identity, .env files, GH_TOKEN)
+//  14. Installing plugins (marketplace + plugins + post-setup)
+func Run(p Params) (result Result, err error) {
+	reporter := p.reporter()
+	currentPhase := ""
+	reportPhase := func(num int, label string) {
+		currentPhase = label
+		reporter.Phase(label, num, len(Phases))
+	}
+	reportWarn := func(msg string) { reporter.Warn(msg) }
+	defer func() {
+		if err != nil {
+			reporter.Error(currentPhase, err)
+			return
+		}
+		reporter.Done()
+	}()
+
 	name := p.Name
 	cfg := p.Cfg
 
-	// 1. Validate instance name
-	if err := validateName(name); err != nil {
+	// Pre-phase validation (no reporter event — failure here is a user
+	// input bug, not a provisioning phase).
+	if err = validateName(name); err != nil {
 		return Result{}, err
 	}
 
 	composeName := cfg.ComposeName(name)
 	created := false
 
-	// 2. Check if already running
 	if instance.IsRunning(composeName) {
-		fmt.Printf("Instance '%s' already running — checking configuration...\n", name)
+		reportPhase(1, "Reusing running container")
 	} else {
 		created = true
-		fmt.Printf("Creating new instance '%s'...\n", name)
 
-		// 3. Remove orphaned containers from a previous instance with the
-		// same name. Handles partial teardowns where docker compose down
-		// didn't fully clean up. Refuses to remove running containers to
-		// prevent accidentally destroying a live instance. Runs before the
-		// expensive git bundle so we fail fast.
-		containerName := cfg.ComposeName(name)
+		// Phase 1: validate (spec label) — note: actual validation
+		// already ran above.
+		reportPhase(1, Phases[0])
+
+		// Phase 2: remove orphaned containers from a previous instance with
+		// the same name. Handles partial teardowns where docker compose
+		// down didn't fully clean up. Refuses to remove running containers
+		// to prevent accidentally destroying a live instance. Runs before
+		// the expensive git bundle so we fail fast.
+		reportPhase(2, Phases[1])
 		for _, suffix := range []string{"", ".browser"} {
-			if err := docker.RemoveOrphanContainer(containerName + suffix); err != nil {
+			if err = docker.RemoveOrphanContainer(composeName + suffix); err != nil {
 				return Result{}, fmt.Errorf("refusing to provision '%s': %w", name, err)
 			}
 		}
 
-		// 4. Detect branch and remote URL
+		// Phase 3: detect branch, remote URL, and create git bundle.
 		branch := p.Branch
 		if branch == "" {
 			branch = gitCurrentBranch(cfg.ProjectRoot)
 		}
 		remoteURL := gitRemoteURL(cfg.ProjectRoot)
-
-		// Create git bundle
 		bundlePath := filepath.Join(os.TempDir(), fmt.Sprintf("cspace-%s.bundle", name))
-		fmt.Printf("Bundling repo (branch: %s)...\n", branch)
-		if err := gitBundleCreate(cfg.ProjectRoot, bundlePath); err != nil {
+		reportPhase(3, Phases[2])
+		if err = gitBundleCreate(cfg.ProjectRoot, bundlePath, p.stdout(), p.stderr()); err != nil {
 			return Result{}, fmt.Errorf("creating git bundle: %w", err)
 		}
 		defer func() { _ = os.Remove(bundlePath) }()
 
-		// 4. Create shared volumes
-		if err := ensureVolumes(cfg); err != nil {
+		// Phase 4: create shared volumes.
+		reportPhase(4, Phases[3])
+		if err = ensureVolumesReported(cfg, reportWarn); err != nil {
 			return Result{}, fmt.Errorf("creating volumes: %w", err)
 		}
 
-		// 5. Ensure the shared project network exists before starting the
-		// Compose stack. The cspace service declares this as an external
-		// network in docker-compose.core.yml, so it must exist before compose up.
-		if err := docker.NetworkCreate(cfg.ProjectNetwork(), cfg.InstanceLabel()); err != nil {
+		// Phase 5: ensure the shared project network exists before
+		// starting the Compose stack. The cspace service declares this as
+		// an external network in docker-compose.core.yml, so it must exist
+		// before compose up.
+		reportPhase(5, Phases[4])
+		if err = docker.NetworkCreate(cfg.ProjectNetwork(), cfg.InstanceLabel()); err != nil {
 			return Result{}, fmt.Errorf("creating project network: %w", err)
 		}
 
-		// 6. Start the global reverse proxy and connect it to the project network.
-		if err := docker.EnsureProxy(cfg.AssetsDir); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: proxy: %v\n", err)
+		// Phase 6: start the global reverse proxy and connect it to the
+		// project network so Traefik can route traffic to instance
+		// containers.
+		reportPhase(6, Phases[5])
+		if perr := docker.EnsureProxy(cfg.AssetsDir); perr != nil {
+			reportWarn(fmt.Sprintf("proxy: %v", perr))
+		}
+		if perr := docker.NetworkConnect(cfg.ProjectNetwork(), docker.ProxyContainerName); perr != nil {
+			reportWarn(fmt.Sprintf("connecting proxy to project network: %v", perr))
 		}
 
-		// Connect the proxy to this project's network so Traefik can
-		// route traffic to instance containers.
-		if err := docker.NetworkConnect(cfg.ProjectNetwork(), docker.ProxyContainerName); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: connecting proxy to project network: %v\n", err)
-		}
-
-		// Ensure the teleport transfer directory exists and is exported
-		// to the compose environment for the bind mount.
+		// Phase 7: set up host-side directories that compose will bind
+		// mount (teleport, memory, sessions, context). Docker auto-creates
+		// missing bind-mount paths as root-owned — we create them first so
+		// they're writable by the invoking user.
+		reportPhase(7, Phases[6])
 		tpDir := teleportHostDir()
-		if err := ensureTeleportDir(tpDir); err != nil {
+		if err = ensureTeleportDir(tpDir); err != nil {
 			return Result{}, err
 		}
-		if err := os.Setenv("CSPACE_TELEPORT_DIR", tpDir); err != nil {
+		if err = os.Setenv("CSPACE_TELEPORT_DIR", tpDir); err != nil {
 			return Result{}, fmt.Errorf("exporting CSPACE_TELEPORT_DIR: %w", err)
 		}
-
-		// Ensure .cspace/memory/ exists on the host with the invoking
-		// user's ownership before compose bind-mounts it — otherwise
-		// Docker auto-creates it root-owned and agents can't write.
-		if err := ensureMemoryDir(cfg.ProjectRoot); err != nil {
+		if err = ensureMemoryDir(cfg.ProjectRoot); err != nil {
+			return Result{}, err
+		}
+		if err = ensureSessionsDir(cfg.SessionsDir()); err != nil {
+			return Result{}, err
+		}
+		if err = ensureContextDir(cfg.ProjectRoot); err != nil {
 			return Result{}, err
 		}
 
-		// Ensure the shared sessions dir exists for the same reason.
-		// All containers for this project bind-mount this to their
-		// /home/dev/.claude/projects/-workspace, so sessions survive
-		// container rebuild and teleport can skip the JSONL copy.
-		if err := ensureSessionsDir(cfg.SessionsDir()); err != nil {
-			return Result{}, err
-		}
-
-		// Ensure .cspace/context/ exists on the host for the cspace-context
-		// bind mount. Every container for this project shares one view
-		// of decisions/discoveries/findings via this directory.
-		if err := ensureContextDir(cfg.ProjectRoot); err != nil {
-			return Result{}, err
-		}
-
-		// 7. Start instance containers
-		if err := compose.Run(name, cfg, "up", "-d"); err != nil {
+		// Phase 8: start instance containers.
+		reportPhase(8, Phases[7])
+		if err = compose.Run(name, cfg, "up", "-d"); err != nil {
 			return Result{}, fmt.Errorf("starting container: %w", err)
 		}
 
-		// 8. Wait for readiness
-		fmt.Println("Waiting for container...")
-		if err := WaitForReady(composeName, 120*time.Second); err != nil {
+		// Phase 9: wait for container readiness.
+		reportPhase(9, Phases[8])
+		if err = WaitForReady(composeName, 120*time.Second); err != nil {
 			return Result{}, err
 		}
 
-		// 8b. Inject /etc/hosts entries so cspace.local hostnames resolve
-		// to Traefik's Docker IP inside all containers.
-		if err := docker.InjectHosts(composeName, cfg.ProjectNetwork()); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: hosts injection: %v\n", err)
+		// Phase 10: inject /etc/hosts entries so cspace.local hostnames
+		// resolve to Traefik's Docker IP inside all containers.
+		reportPhase(10, Phases[9])
+		if herr := docker.InjectHosts(composeName, cfg.ProjectNetwork()); herr != nil {
+			reportWarn(fmt.Sprintf("hosts injection: %v", herr))
 		}
 
-		// 9. Fix volume ownership. /teleport is a host bind mount that Docker
-		// auto-creates as root when the host path doesn't already exist (common
-		// in nested DinD setups), so explicitly fix it alongside the named
-		// volumes to ensure the dev user can write bundles there.
-		if _, err := instance.DcExecRoot(composeName, "chown", "-R", "dev:dev", "/workspace", "/home/dev/.claude", "/teleport"); err != nil {
+		// Phase 11: fix volume ownership. /teleport is a host bind mount
+		// that Docker auto-creates as root when the host path doesn't
+		// already exist (common in nested DinD setups), so explicitly fix
+		// it alongside the named volumes to ensure the dev user can write
+		// bundles there.
+		reportPhase(11, Phases[10])
+		if _, err = instance.DcExecRoot(composeName, "chown", "-R", "dev:dev", "/workspace", "/home/dev/.claude", "/teleport"); err != nil {
 			return Result{}, fmt.Errorf("fixing ownership: %w", err)
 		}
 
-		// 10. Copy bundle and init workspace
-		if err := initWorkspace(composeName, bundlePath, branch, remoteURL); err != nil {
+		// Phase 12: copy bundle and init workspace.
+		reportPhase(12, Phases[11])
+		if err = initWorkspace(composeName, bundlePath, branch, remoteURL); err != nil {
 			return Result{}, fmt.Errorf("initializing workspace: %w", err)
 		}
 
-		// 11. Configure git identity from host
+		// Phase 13: configure git identity, copy .env files, setup
+		// GH_TOKEN + gh auth.
+		reportPhase(13, Phases[12])
 		configureGit(composeName, cfg.ProjectRoot)
-
-		// 12. Copy .env files
 		copyEnvFile(composeName, cfg.ProjectRoot, ".env")
 		copyEnvFile(composeName, cfg.ProjectRoot, ".env.local")
-
-		// 13. Setup GH_TOKEN + gh auth (warn on failure, don't block provisioning)
-		if err := setupGHAuth(composeName, cfg.ProjectRoot); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		if gerr := setupGHAuth(composeName, cfg.ProjectRoot); gerr != nil {
+			reportWarn(gerr.Error())
 		}
 	}
 
-	// --- Idempotent stages (run even if container was already running) ---
-
-	// 14a. Ensure plugin marketplace
-	if err := ensureMarketplace(composeName); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: marketplace setup: %v\n", err)
+	// Phase 14: idempotent tail (marketplace + plugins + post-setup). Runs
+	// for both new and reused containers.
+	reportPhase(14, Phases[13])
+	if merr := ensureMarketplace(composeName); merr != nil {
+		reportWarn(fmt.Sprintf("marketplace setup: %v", merr))
+	}
+	if ierr := installPlugins(composeName, cfg); ierr != nil {
+		reportWarn(fmt.Sprintf("plugin installation: %v", ierr))
+	}
+	if perr := runPostSetup(composeName, cfg); perr != nil {
+		reportWarn(fmt.Sprintf("post-setup: %v", perr))
 	}
 
-	// 14b. Install recommended plugins
-	if err := installPlugins(composeName, cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: plugin installation: %v\n", err)
-	}
-
-	// 14c. Run post-setup hook
-	if err := runPostSetup(composeName, cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: post-setup: %v\n", err)
-	}
-
-	fmt.Println("Setup complete.")
 	return Result{Created: created, Name: name}, nil
 }
 
@@ -358,10 +395,10 @@ func teleportHostDir() string {
 }
 
 // gitBundleCreate creates a git bundle of the entire repo.
-func gitBundleCreate(projectRoot, bundlePath string) error {
+func gitBundleCreate(projectRoot, bundlePath string, stdout, stderr io.Writer) error {
 	cmd := exec.Command("git", "-C", projectRoot, "bundle", "create", bundlePath, "--all")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	return cmd.Run()
 }
 
@@ -379,6 +416,18 @@ func ensureVolumes(cfg *config.Config) error {
 		if err := docker.VolumeCreate(vol); err != nil {
 			// Log but don't fail — volume may already exist
 			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		}
+	}
+	return nil
+}
+
+// ensureVolumesReported is the Reporter-aware variant of ensureVolumes used
+// by provision.Run so warnings flow through the provided reporter instead of
+// directly to stderr. teleport.go still uses ensureVolumes for its own path.
+func ensureVolumesReported(cfg *config.Config, warn func(string)) error {
+	for _, vol := range []string{cfg.LogsVolume()} {
+		if err := docker.VolumeCreate(vol); err != nil {
+			warn(err.Error())
 		}
 	}
 	return nil
