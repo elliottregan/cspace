@@ -272,45 +272,56 @@ func earthCloudShape() Shape {
 	}, 0.45)
 }
 
-// mercuryCratersShape — many small crater basins hash-scattered across
-// the disk so they don't form visible lattice patterns. Rendered with
-// a bright cream overlay to read as highlights/ejecta from impacts
-// against the grey body (real Mercury craters appear brighter than
-// the surrounding regolith).
+// mercuryCratersShape — dense scattering of small crater-rim shadows
+// across the disk. Rendered with a darker overlay so they read as the
+// pockmark texture that dominates real Mercury's appearance.
 func mercuryCratersShape() Shape {
 	const bodyR = 0.46
 	var formations []formationCenter
-	for i := 0; i < 50; i++ {
+	for i := 0; i < 90; i++ {
 		h1 := shapeHash(i*13+1, i*7+19)
 		h2 := shapeHash(i*11+5, i*17+3)
 		h3 := shapeHash(i*19+7, i*23+11)
 		h4 := shapeHash(i*29+13, i*31+17)
 
-		cx := 0.1 + h1*0.8
-		cy := 0.1 + h2*0.8
-		// Rejection-sample to keep craters well inside the disk.
+		cx := 0.08 + h1*0.84
+		cy := 0.08 + h2*0.84
 		dx := (cx - 0.5) / bodyR
 		dy := (cy - 0.5) / bodyR
-		if dx*dx+dy*dy > 0.78 {
+		if dx*dx+dy*dy > 0.82 {
 			continue
 		}
 		formations = append(formations, formationCenter{
 			cx:        cx,
 			cy:        cy,
-			rx:        0.016 + h3*0.034,
-			ry:        0.012 + h4*0.028,
-			intensity: 0.35 + h3*0.30,
+			rx:        0.010 + h3*0.022, // smaller pockmarks
+			ry:        0.008 + h4*0.018,
+			intensity: 0.30 + h3*0.40,
 		})
 	}
 	return buildFormationShape(formations, bodyR)
 }
 
-// mercuryVeinsShape — thin curving "veins" (fault scarps, ejecta rays)
-// traced by the zero-crossings of sine-product fields. Two overlapping
-// wave fields give a web of curves across the disk without visible
-// repetition.
-func mercuryVeinsShape() Shape {
+// mercuryRaysShape — bright impact crater centers with radial ray
+// systems extending outward. This is the dominant visual feature of
+// real Mercury (e.g. Hokusai, Kuiper craters): a small bright crater
+// floor surrounded by long straight ejecta rays that span a significant
+// fraction of the disk.
+func mercuryRaysShape() Shape {
 	const bodyR = 0.46
+
+	// Bright rayed craters. Placed asymmetrically so they feel natural.
+	centers := []struct {
+		cx, cy        float64 // crater position in unit space
+		radius        float64 // outer reach of the rays
+		strength      float64 // peak brightness
+		rayCount      int     // N-fold symmetric ray pattern
+		phaseOffset   float64 // rotation of the ray pattern
+	}{
+		{0.58, 0.62, 0.32, 0.85, 14, 0.7},
+		{0.34, 0.38, 0.22, 0.55, 11, 1.9},
+	}
+
 	var s Shape
 	for r := 0; r < ShapeRows; r++ {
 		for c := 0; c < ShapeCols; c++ {
@@ -321,21 +332,52 @@ func mercuryVeinsShape() Shape {
 			if bdx*bdx+bdy*bdy >= 1 {
 				continue
 			}
-			// Zero-crossing of a product of sines traces a curved line.
-			// Two independent fields give two overlapping sets of veins.
-			v1 := math.Sin(15*x+10*y+1.2) * math.Sin(12*x-17*y+2.3)
-			if th := math.Abs(v1); th < 0.11 {
-				s[r][c] = (1 - th/0.11) * 0.55
-			}
-			v2 := math.Sin(21*x-13*y+3.1) * math.Sin(9*x+15*y+0.7)
-			if th := math.Abs(v2); th < 0.07 {
-				add := (1 - th/0.07) * 0.40
-				if add > s[r][c] {
-					s[r][c] = add
+
+			for _, k := range centers {
+				dx := x - k.cx
+				dy := y - k.cy
+				dist := math.Sqrt(dx*dx + dy*dy)
+
+				// Bright crater disc at the center.
+				const craterR = 0.018
+				if dist < craterR {
+					t := 1 - dist/craterR
+					v := k.strength * (0.4 + 0.6*t)
+					if v > s[r][c] {
+						s[r][c] = v
+					}
+					continue
+				}
+
+				if dist > k.radius {
+					continue
+				}
+
+				// Rays: N-fold-symmetric cosine wave in angle, thresholded
+				// so only the ray peaks show.
+				angle := math.Atan2(dy, dx)
+				ray := math.Cos(float64(k.rayCount)*angle + k.phaseOffset)
+				if ray < 0.55 {
+					continue
+				}
+				// Normalize ray amplitude.
+				rayAmp := (ray - 0.55) / 0.45
+
+				// Fade outward and taper at tips.
+				outer := (dist - craterR) / (k.radius - craterR)
+				if outer > 1 {
+					outer = 1
+				}
+				distFade := 1 - outer
+				widthFade := math.Pow(distFade, 0.6)
+
+				v := rayAmp * widthFade * distFade * k.strength
+				if v > s[r][c] {
+					s[r][c] = v
 				}
 			}
-			// Fade veins near the disk edge so they don't clutter the
-			// silhouette.
+
+			// Fade near disk edge so rays don't bleed off the silhouette.
 			rad := math.Sqrt(bdx*bdx + bdy*bdy)
 			if rad > 0.85 {
 				s[r][c] *= (1 - rad) / 0.15
@@ -604,8 +646,8 @@ func GetShape(name string) Shape {
 // first, so later overlays can tint on top of darkened/shadowed cells.
 var planetOverlays = map[string][]Overlay{
 	"mercury": {
-		{Shape: mercuryCratersShape(), Color: [3]uint8{220, 212, 198}},
-		{Shape: mercuryVeinsShape(), Color: [3]uint8{205, 198, 186}},
+		{Shape: mercuryCratersShape(), Color: [3]uint8{95, 95, 95}},
+		{Shape: mercuryRaysShape(), Color: [3]uint8{225, 225, 222}},
 	},
 	"venus": {{Shape: venusCloudShape(), Color: [3]uint8{255, 240, 200}}},
 	"earth": {{Shape: earthCloudShape(), Color: [3]uint8{250, 250, 250}}},
