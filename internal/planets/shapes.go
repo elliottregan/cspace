@@ -78,20 +78,24 @@ func applyPolarCap(s Shape, rows int, boost float64) Shape {
 	return s
 }
 
-// applyJupiterBands applies latitude-based bands with soft top/bottom
-// edges and a small positional noise term so the bands curve with the
-// sphere (narrower at poles, wider at equator) and look turbulent rather
-// than drawn with a ruler.
+// applyJupiterBands applies latitude-based bands that darken the belts
+// (NEB, SEB) and keep the zones near full brightness. A bright cream
+// overlay (jupiterZonesShape) then lifts the zones toward Jupiter's
+// signature pale ivory; the contrast between the dim belts and the
+// lifted zones gives the planet its characteristic striped look.
+//
+// Band edges are softened and modulated with multi-octave noise so the
+// transitions look turbulent (swirls, eddies) rather than ruler-straight.
 func applyJupiterBands(s Shape) Shape {
 	type band struct{ minDy, maxDy, dim float64 }
 	bands := []band{
-		{-0.95, -0.72, 0.62},
-		{-0.68, -0.48, 0.90},
-		{-0.44, -0.22, 0.58}, // NEB
-		{-0.18, 0.06, 0.94},  // EZ
-		{0.10, 0.32, 0.60},   // SEB
-		{0.36, 0.56, 0.88},
-		{0.60, 0.82, 0.64},
+		{-0.92, -0.72, 0.78}, // N polar — flat/muted
+		{-0.68, -0.48, 0.95}, // NTZ — zone (slightly dim, overlay brightens)
+		{-0.44, -0.22, 0.50}, // NEB — dark belt
+		{-0.18, 0.06, 0.96},  // EZ — zone
+		{0.10, 0.32, 0.50},   // SEB — dark belt (Great Red Spot lives here)
+		{0.36, 0.56, 0.95},   // STropZ — zone
+		{0.60, 0.82, 0.78},   // S polar — flat/muted
 	}
 	const bodyR = 0.47
 	const edge = 0.045
@@ -101,9 +105,19 @@ func applyJupiterBands(s Shape) Shape {
 				continue
 			}
 			y := (float64(r) + 0.5) / float64(ShapeRows)
+			x := (float64(c) + 0.5) / float64(ShapeCols)
 			dy := (y - 0.5) / bodyR
 			shade := 1.0
+			// Track distance to nearest band edge so we can crank up
+			// turbulence at belt/zone interfaces.
+			nearestEdge := math.Inf(1)
 			for _, b := range bands {
+				if d := math.Abs(dy - b.minDy); d < nearestEdge {
+					nearestEdge = d
+				}
+				if d := math.Abs(dy - b.maxDy); d < nearestEdge {
+					nearestEdge = d
+				}
 				if dy < b.minDy || dy > b.maxDy {
 					continue
 				}
@@ -118,8 +132,19 @@ func applyJupiterBands(s Shape) Shape {
 				shade = dim
 				break
 			}
-			// Turbulence: small per-cell jitter.
-			noise := (shapeHash(r, c) - 0.5) * 0.06
+
+			// Base per-cell jitter.
+			noise := (shapeHash(r, c) - 0.5) * 0.08
+			// Second-octave jitter for finer texture.
+			noise += (shapeHash(r*3+1, c*5+7) - 0.5) * 0.05
+			// Horizontal wispy sine — gives the sense of wind-shear within belts.
+			noise += 0.04 * math.Sin(14*x+2*y)
+
+			// Boost turbulence at band edges (up to ~2.4×).
+			if nearestEdge < 0.06 {
+				noise *= 1 + (1-nearestEdge/0.06)*1.4
+			}
+
 			shade += noise
 			if shade < 0.30 {
 				shade = 0.30
@@ -128,6 +153,65 @@ func applyJupiterBands(s Shape) Shape {
 				shade = 1
 			}
 			s[r][c] *= shade
+		}
+	}
+	return s
+}
+
+// jupiterZonesShape — bright cream overlay mask targeting Jupiter's
+// zones (NTZ, EZ, STropZ). Gaussian falloff from each zone's center
+// latitude plus multi-scale sine noise gives the zones soft turbulent
+// edges instead of flat stripes.
+func jupiterZonesShape() Shape {
+	var s Shape
+	const bodyR = 0.47
+	// Zone centers in dy latitude space (bdy coordinates), with a
+	// half-height and peak intensity.
+	zones := []struct{ cyDy, halfHt, intensity float64 }{
+		{-0.58, 0.11, 0.60}, // NTZ
+		{-0.06, 0.13, 0.82}, // EZ (brightest, widest)
+		{0.46, 0.11, 0.68},  // STropZ
+	}
+	for r := 0; r < ShapeRows; r++ {
+		for c := 0; c < ShapeCols; c++ {
+			x := (float64(c) + 0.5) / float64(ShapeCols)
+			y := (float64(r) + 0.5) / float64(ShapeRows)
+			bdx := (x - 0.5) / bodyR
+			bdy := (y - 0.5) / bodyR
+			if bdx*bdx+bdy*bdy >= 1 {
+				continue
+			}
+			var v float64
+			for _, z := range zones {
+				d := math.Abs(bdy - z.cyDy)
+				if d > z.halfHt {
+					continue
+				}
+				t := 1 - d/z.halfHt
+				// Quadratic taper — sharper peak, softer edges than linear.
+				zoneV := z.intensity * t * t
+				if zoneV > v {
+					v = zoneV
+				}
+			}
+			// Horizontal wispy sine turbulence at zone latitudes.
+			wisp := 0.10 * math.Sin(9*x+4*y+0.6)
+			wisp += 0.06 * math.Sin(16*x-5*y+2.2)
+			if v > 0.05 {
+				v += wisp * math.Min(1, v*1.5)
+			}
+			// Fade near disk edge so zones don't bleed off the silhouette.
+			rad := math.Sqrt(bdx*bdx + bdy*bdy)
+			if rad > 0.85 {
+				v *= (1 - rad) / 0.15
+			}
+			if v < 0 {
+				v = 0
+			}
+			if v > 1 {
+				v = 1
+			}
+			s[r][c] = v
 		}
 	}
 	return s
@@ -745,7 +829,8 @@ var planetOverlays = map[string][]Overlay{
 	"earth": {{Shape: earthCloudShape(), Color: [3]uint8{250, 250, 250}}},
 	"mars":  {{Shape: marsSurfaceShape(), Color: [3]uint8{95, 30, 10}}},
 	"jupiter": {
-		{Shape: jupiterRedSpotShape(), Color: [3]uint8{170, 95, 50}},
+		{Shape: jupiterZonesShape(), Color: [3]uint8{245, 225, 190}},
+		{Shape: jupiterRedSpotShape(), Color: [3]uint8{200, 135, 100}},
 	},
 	"saturn": {
 		{Shape: saturnEquatorTint(0.26), Color: [3]uint8{218, 172, 140}},
