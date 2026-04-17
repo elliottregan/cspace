@@ -272,28 +272,77 @@ func earthCloudShape() Shape {
 	}, 0.45)
 }
 
-// mercurySurfaceShape — many small dark crater basins scattered across
-// the surface. Rendered with a near-black overlay to read as shadowed
-// impact craters against the grey body.
-func mercurySurfaceShape() Shape {
-	return buildFormationShape([]formationCenter{
-		{0.22, 0.28, 0.05, 0.03, 0.70},
-		{0.35, 0.40, 0.06, 0.04, 0.68},
-		{0.18, 0.58, 0.04, 0.03, 0.55},
-		{0.45, 0.30, 0.07, 0.04, 0.78},
-		{0.64, 0.35, 0.05, 0.03, 0.60},
-		{0.73, 0.52, 0.06, 0.04, 0.72},
-		{0.30, 0.72, 0.05, 0.03, 0.55},
-		{0.56, 0.66, 0.06, 0.04, 0.72},
-		{0.70, 0.72, 0.04, 0.03, 0.52},
-		{0.40, 0.55, 0.05, 0.03, 0.62},
-		{0.58, 0.20, 0.04, 0.03, 0.50},
-		{0.28, 0.46, 0.03, 0.02, 0.48},
-		{0.50, 0.80, 0.05, 0.03, 0.58},
-		{0.78, 0.30, 0.04, 0.03, 0.50},
-		{0.18, 0.38, 0.04, 0.03, 0.55},
-		{0.48, 0.48, 0.05, 0.03, 0.62},
-	}, 0.46)
+// mercuryCratersShape — many small crater basins hash-scattered across
+// the disk so they don't form visible lattice patterns. Rendered with
+// a bright cream overlay to read as highlights/ejecta from impacts
+// against the grey body (real Mercury craters appear brighter than
+// the surrounding regolith).
+func mercuryCratersShape() Shape {
+	const bodyR = 0.46
+	var formations []formationCenter
+	for i := 0; i < 50; i++ {
+		h1 := shapeHash(i*13+1, i*7+19)
+		h2 := shapeHash(i*11+5, i*17+3)
+		h3 := shapeHash(i*19+7, i*23+11)
+		h4 := shapeHash(i*29+13, i*31+17)
+
+		cx := 0.1 + h1*0.8
+		cy := 0.1 + h2*0.8
+		// Rejection-sample to keep craters well inside the disk.
+		dx := (cx - 0.5) / bodyR
+		dy := (cy - 0.5) / bodyR
+		if dx*dx+dy*dy > 0.78 {
+			continue
+		}
+		formations = append(formations, formationCenter{
+			cx:        cx,
+			cy:        cy,
+			rx:        0.016 + h3*0.034,
+			ry:        0.012 + h4*0.028,
+			intensity: 0.35 + h3*0.30,
+		})
+	}
+	return buildFormationShape(formations, bodyR)
+}
+
+// mercuryVeinsShape — thin curving "veins" (fault scarps, ejecta rays)
+// traced by the zero-crossings of sine-product fields. Two overlapping
+// wave fields give a web of curves across the disk without visible
+// repetition.
+func mercuryVeinsShape() Shape {
+	const bodyR = 0.46
+	var s Shape
+	for r := 0; r < ShapeRows; r++ {
+		for c := 0; c < ShapeCols; c++ {
+			x := (float64(c) + 0.5) / float64(ShapeCols)
+			y := (float64(r) + 0.5) / float64(ShapeRows)
+			bdx := (x - 0.5) / bodyR
+			bdy := (y - 0.5) / bodyR
+			if bdx*bdx+bdy*bdy >= 1 {
+				continue
+			}
+			// Zero-crossing of a product of sines traces a curved line.
+			// Two independent fields give two overlapping sets of veins.
+			v1 := math.Sin(15*x+10*y+1.2) * math.Sin(12*x-17*y+2.3)
+			if th := math.Abs(v1); th < 0.11 {
+				s[r][c] = (1 - th/0.11) * 0.55
+			}
+			v2 := math.Sin(21*x-13*y+3.1) * math.Sin(9*x+15*y+0.7)
+			if th := math.Abs(v2); th < 0.07 {
+				add := (1 - th/0.07) * 0.40
+				if add > s[r][c] {
+					s[r][c] = add
+				}
+			}
+			// Fade veins near the disk edge so they don't clutter the
+			// silhouette.
+			rad := math.Sqrt(bdx*bdx + bdy*bdy)
+			if rad > 0.85 {
+				s[r][c] *= (1 - rad) / 0.15
+			}
+		}
+	}
+	return s
 }
 
 // marsSurfaceShape — large dusty basins and storm streaks. Rendered
@@ -325,16 +374,14 @@ func uranusHazeShape() Shape {
 	}, 0.40)
 }
 
-// neptuneStormShape — compact dark storms (à la Great Dark Spot) in
-// the upper cloud deck, overlaid with a brighter blue so they read as
-// distinct weather systems.
+// neptuneStormShape — compact bright storm systems (separate from the
+// darker Great Dark Spot overlay).
 func neptuneStormShape() Shape {
 	return buildFormationShape([]formationCenter{
-		{0.32, 0.40, 0.11, 0.05, 0.75}, // Great Dark Spot analog
 		{0.64, 0.54, 0.10, 0.04, 0.62},
-		{0.52, 0.30, 0.08, 0.04, 0.55},
+		{0.52, 0.28, 0.08, 0.04, 0.55},
 		{0.36, 0.66, 0.09, 0.04, 0.62},
-		{0.62, 0.28, 0.07, 0.03, 0.48},
+		{0.68, 0.30, 0.07, 0.03, 0.48},
 		{0.50, 0.52, 0.06, 0.03, 0.45},
 	}, 0.40)
 }
@@ -391,33 +438,59 @@ func saturnRingOverlayMask(bodyRx float64) Shape {
 	return s
 }
 
-// saturnShadowMask returns a thin horizontal band of shadow across the
-// planet's surface where the rings block sunlight. Rendered with a
-// near-black overlay so cells on the sphere dim.
+// saturnShadowMask returns a thin CURVED shadow that traces the ring's
+// back-edge projected onto the sphere. Keeping the curve parallel to
+// the ring ellipse makes the shadow feel connected to the ring rather
+// than a horizontal painted-on stripe. Intensity is intentionally low
+// so the shadow reads as a subtle graze.
 func saturnShadowMask(bodyRx float64) Shape {
 	var s Shape
 	const (
-		shadowCenterY   = 0.485 // slightly above equator — ring is tilted
-		shadowHalfHt    = 0.020
+		ringRx         = 0.48
+		ringRy         = 0.10
+		shadowOffset   = 0.008 // shadow sits just below ring's back edge
+		bandHalfHeight = 0.018
+		maxIntensity   = 0.28
 	)
 	for r := 0; r < ShapeRows; r++ {
-		y := (float64(r) + 0.5) / float64(ShapeRows)
-		dist := math.Abs(y - shadowCenterY)
-		if dist > shadowHalfHt {
-			continue
-		}
-		taper := 1 - dist/shadowHalfHt // 1 at band center, 0 at edge
 		for c := 0; c < ShapeCols; c++ {
+			y := (float64(r) + 0.5) / float64(ShapeRows)
 			x := (float64(c) + 0.5) / float64(ShapeCols)
+
+			// Only darken cells on the sphere body.
 			sDx := (x - 0.5) / bodyRx
 			sDy := (y - 0.5) / bodyRx
 			if sDx*sDx+sDy*sDy >= 1 {
 				continue
 			}
-			s[r][c] = taper * 0.55
+
+			// Ring's back-edge curve at this x: the upper arc of the
+			// tilted ring ellipse.
+			normX := (x - 0.5) / ringRx
+			if normX*normX >= 1 {
+				continue
+			}
+			ringUpperY := 0.5 - ringRy*math.Sqrt(1-normX*normX)
+			shadowY := ringUpperY + shadowOffset
+
+			dist := math.Abs(y - shadowY)
+			if dist > bandHalfHeight {
+				continue
+			}
+			t := 1 - dist/bandHalfHeight
+			s[r][c] = t * maxIntensity
 		}
 	}
 	return s
+}
+
+// neptuneDarkSpotShape — a single compact darker formation representing
+// Neptune's Great Dark Spot. Rendered as a darker-blue overlay on top
+// of the lighter storm formations.
+func neptuneDarkSpotShape() Shape {
+	return buildFormationShape([]formationCenter{
+		{0.32, 0.40, 0.09, 0.045, 0.85},
+	}, 0.40)
 }
 
 // venusCloudShape creates swirling cloud bands — used as an Overlay
@@ -530,17 +603,25 @@ func GetShape(name string) Shape {
 // the overlay color. Order matters — earlier overlays are applied
 // first, so later overlays can tint on top of darkened/shadowed cells.
 var planetOverlays = map[string][]Overlay{
-	"mercury": {{Shape: mercurySurfaceShape(), Color: [3]uint8{40, 40, 40}}},
-	"venus":   {{Shape: venusCloudShape(), Color: [3]uint8{255, 240, 200}}},
-	"earth":   {{Shape: earthCloudShape(), Color: [3]uint8{250, 250, 250}}},
-	"mars":    {{Shape: marsSurfaceShape(), Color: [3]uint8{95, 30, 10}}},
-	"jupiter": {{Shape: jupiterRedSpotShape(), Color: [3]uint8{170, 95, 50}}},
-	"saturn": {
-		{Shape: saturnShadowMask(0.26), Color: [3]uint8{10, 10, 10}},
-		{Shape: saturnRingOverlayMask(0.26), Color: [3]uint8{235, 218, 195}},
+	"mercury": {
+		{Shape: mercuryCratersShape(), Color: [3]uint8{220, 212, 198}},
+		{Shape: mercuryVeinsShape(), Color: [3]uint8{205, 198, 186}},
 	},
-	"uranus":  {{Shape: uranusHazeShape(), Color: [3]uint8{195, 245, 245}}},
-	"neptune": {{Shape: neptuneStormShape(), Color: [3]uint8{110, 145, 230}}},
+	"venus": {{Shape: venusCloudShape(), Color: [3]uint8{255, 240, 200}}},
+	"earth": {{Shape: earthCloudShape(), Color: [3]uint8{250, 250, 250}}},
+	"mars":  {{Shape: marsSurfaceShape(), Color: [3]uint8{95, 30, 10}}},
+	"jupiter": {
+		{Shape: jupiterRedSpotShape(), Color: [3]uint8{170, 95, 50}},
+	},
+	"saturn": {
+		{Shape: saturnShadowMask(0.26), Color: [3]uint8{12, 8, 4}},
+		{Shape: saturnRingOverlayMask(0.26), Color: [3]uint8{218, 192, 155}},
+	},
+	"uranus": {{Shape: uranusHazeShape(), Color: [3]uint8{195, 245, 245}}},
+	"neptune": {
+		{Shape: neptuneDarkSpotShape(), Color: [3]uint8{20, 35, 90}},
+		{Shape: neptuneStormShape(), Color: [3]uint8{110, 145, 230}},
+	},
 }
 
 // GetOverlays returns the per-planet color overlays, or nil if the
