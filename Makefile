@@ -3,7 +3,7 @@ LDFLAGS         := -ldflags "-X github.com/elliottregan/cspace/internal/cli.Vers
 LDFLAGS_RELEASE := -ldflags "-s -w -X github.com/elliottregan/cspace/internal/cli.Version=$(VERSION)"
 GOBIN           := ./bin/cspace-go
 
-.PHONY: build build-linux clean test test-node vet sync-embedded fmt fmt-check lint check install-tools setup-hooks
+.PHONY: build build-linux clean test test-node vet sync-embedded overlay-demo fmt fmt-check lint check install-tools setup-hooks
 
 # Sync lib/ contents into internal/assets/embedded/ for go:embed
 sync-embedded:
@@ -23,6 +23,12 @@ sync-embedded:
 
 build: sync-embedded
 	go build $(LDFLAGS) -o $(GOBIN) ./cmd/cspace
+
+# Run the provisioning overlay against synthesized phase events. Useful for
+# iterating on the UI without spinning up a real container. Forwards any
+# extra args through ARGS, e.g. `make overlay-demo ARGS="--planet=jupiter"`.
+overlay-demo: sync-embedded
+	@go run ./cmd/overlay-demo/ $(ARGS)
 
 build-linux: sync-embedded
 	@mkdir -p dist

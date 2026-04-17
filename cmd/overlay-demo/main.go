@@ -2,11 +2,15 @@
 // synthesized phase events so developers can iterate on the UI without
 // spinning up a real container. Requires a TTY.
 //
-// Examples:
+// Run via the Makefile so embedded assets are synced first:
 //
-//	go run ./cmd/overlay-demo/
-//	go run ./cmd/overlay-demo/ --planet=jupiter --per-phase=400ms
-//	go run ./cmd/overlay-demo/ --fail-at=8
+//	make overlay-demo
+//	make overlay-demo ARGS="--planet=jupiter --per-phase=400ms"
+//	make overlay-demo ARGS="--fail-at=8"
+//
+// Or manually after `make sync-embedded`:
+//
+//	go run ./cmd/overlay-demo/ --planet=saturn
 package main
 
 import (
