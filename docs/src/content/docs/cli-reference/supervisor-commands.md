@@ -24,6 +24,10 @@ Injects a user turn into the target's live conversation via the supervisor socke
 
 Use `_coordinator` as the target to reach the coordinator — this is the well-known address that all workers use to report completion. Use an instance name (e.g., `mercury`, `issue-42`) to send to a specific agent.
 
+:::note
+One-shot agents (`cspace up <name> --prompt "…"` without `--persistent`) exit after their first result, so a `send` after that does nothing. For back-and-forth, start the agent with `--persistent` — see [Persistent Agents](/cli-reference/autonomous-agents/#persistent-agents-with-cspace-up---persistent).
+:::
+
 ### Examples
 
 ```bash
