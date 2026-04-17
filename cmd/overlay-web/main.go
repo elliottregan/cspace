@@ -89,6 +89,7 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	p := planets.MustGet(planet)
 	shape := planets.GetShape(planet)
+	opts.Overlays = planets.GetOverlays(planet)
 	total := len(provision.Phases)
 
 	frames := make([]frameData, 0, total)

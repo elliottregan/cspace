@@ -4,10 +4,7 @@ import "math"
 
 // Shape dimensions: 48 rows × 48 cols of SUB-pixels. Rendering pairs
 // consecutive rows into one terminal line using the ▀/▄ half-block
-// characters, so output is ShapeRows/2 = 24 terminal rows tall. With
-// subpixels counted as 1 visual unit and terminal chars as 1 unit wide
-// × 2 units tall, this gives a square unit space and a visually round
-// disk when rx == ry in sphereShape.
+// characters, so output is ShapeRows/2 = 24 terminal rows tall.
 const (
 	ShapeRows = 48
 	ShapeCols = 48
@@ -18,22 +15,25 @@ const (
 // character selected from a phase-specific palette.
 type Shape = [ShapeRows][ShapeCols]float64
 
-// lightDir points from the sphere surface toward the directional key light.
-// Slightly up-left-of-viewer so the bright spot sits in the upper-left
-// quadrant of the disk and the terminator shadow falls toward the lower
-// right — a classic 3D-sphere lighting setup.
+// Overlay is a secondary surface feature applied on top of the base
+// terrain during rendering: at each cell, the base color is blended
+// toward Color by the overlay's shade value. Used for clouds (white),
+// Jupiter's Great Red Spot (red), etc.
+type Overlay struct {
+	Shape Shape
+	Color [3]uint8
+}
+
+// lightDir: classic 3D-sphere key light slightly up-left-of-viewer.
 var lightDir = [3]float64{-0.40, -0.30, 0.85}
 
-// ambient is the base illumination on the shadowed hemisphere. Above 0 so
-// the silhouette stays visible past the terminator; low enough that the
-// directional shadow is clearly asymmetric.
+// ambient: base illumination on the shadow side so the silhouette stays
+// visible past the terminator.
 const ambient = 0.18
 
-// sphereShape produces a directionally lit elliptical disk centered at
-// (cx, cy) with semi-axes (rx, ry) in unit space. Each in-disk cell is
-// treated as a point on a 3D unit sphere: surface normal N = (dx, dy, z),
-// shade = ambient + (1 - ambient) · max(0, N · lightDir). This offsets the
-// bright spot from geometric center, producing a visible shadow.
+// sphereShape produces a directionally lit disk centered at (cx, cy)
+// with semi-axes (rx, ry). Shading uses a Lambertian model with the
+// light direction defined above.
 func sphereShape(cx, cy, rx, ry float64) Shape {
 	var s Shape
 	for r := 0; r < ShapeRows; r++ {
@@ -61,20 +61,6 @@ func sphereShape(cx, cy, rx, ry float64) Shape {
 	return s
 }
 
-// applyBands dims every other band of `period` rows by `dim`, producing
-// the horizontal stripes characteristic of gas giants.
-func applyBands(s Shape, period int, dim float64) Shape {
-	for r := 0; r < ShapeRows; r++ {
-		if (r/period)%2 == 0 {
-			continue
-		}
-		for c := 0; c < ShapeCols; c++ {
-			s[r][c] *= dim
-		}
-	}
-	return s
-}
-
 // applyPolarCap brightens the top `rows` rows of a shape by `boost`,
 // clamping to 1.0. Used for Mars's northern ice cap.
 func applyPolarCap(s Shape, rows int, boost float64) Shape {
@@ -92,101 +78,256 @@ func applyPolarCap(s Shape, rows int, boost float64) Shape {
 	return s
 }
 
-// applyRings overlays Saturn-like rings centered on the equator, one
-// subpixel row thick. Three bands plus a Cassini-style gap:
-//
-//	[body] | A-ring (bright) | gap (dim) | B-ring (medium) | taper
-//
-// The body's shadow passes in front of the rings naturally because
-// sphereShape has already filled the body rows at a higher shade than
-// the ring shades, so `if shade > s[row][c]` preserves the body.
-func applyRings(s Shape, bodyRx float64) Shape {
-	// Two thin equatorial subpixel rows; very thin elliptical disc.
-	midRow := ShapeRows / 2
-	rows := []int{midRow - 1, midRow}
-
-	// Ring bands: (innerX, outerX, shade). Measured from center; symmetric
-	// around x=0.5.
-	bands := []struct{ inner, outer, shade float64 }{
-		{bodyRx + 0.015, bodyRx + 0.065, 0.90}, // inner bright ring (A)
-		{bodyRx + 0.075, bodyRx + 0.090, 0.30}, // Cassini gap
-		{bodyRx + 0.100, 0.470, 0.75},          // outer ring (B)
+// applyJupiterBands applies latitude-based bands with soft top/bottom
+// edges and a small positional noise term so the bands curve with the
+// sphere (narrower at poles, wider at equator) and look turbulent rather
+// than drawn with a ruler.
+func applyJupiterBands(s Shape) Shape {
+	type band struct{ minDy, maxDy, dim float64 }
+	bands := []band{
+		{-0.95, -0.72, 0.62},
+		{-0.68, -0.48, 0.90},
+		{-0.44, -0.22, 0.58}, // NEB
+		{-0.18, 0.06, 0.94},  // EZ
+		{0.10, 0.32, 0.60},   // SEB
+		{0.36, 0.56, 0.88},
+		{0.60, 0.82, 0.64},
 	}
-
-	for i, row := range rows {
-		if row < 0 || row >= ShapeRows {
-			continue
-		}
-		// Upper and lower subpixel rows at the equator get slightly less
-		// intensity than the true center row so the ring reads as very
-		// thin rather than a solid slab.
-		rowScale := 1.0
-		if i == 0 {
-			rowScale = 0.55
-		}
+	const bodyR = 0.47
+	const edge = 0.045
+	for r := 0; r < ShapeRows; r++ {
 		for c := 0; c < ShapeCols; c++ {
-			x := (float64(c) + 0.5) / float64(ShapeCols)
-			d := math.Abs(x - 0.5)
+			if s[r][c] == 0 {
+				continue
+			}
+			y := (float64(r) + 0.5) / float64(ShapeRows)
+			dy := (y - 0.5) / bodyR
+			shade := 1.0
 			for _, b := range bands {
-				if d < b.inner || d > b.outer {
+				if dy < b.minDy || dy > b.maxDy {
 					continue
 				}
-				// Fade at extreme outer edge so rings don't hard-cut at
-				// the frame edge.
-				taper := 1.0
-				if d > 0.42 {
-					taper = (0.47 - d) / 0.05
-					if taper < 0 {
-						taper = 0
-					}
+				dim := b.dim
+				if dy-b.minDy < edge {
+					t := (dy - b.minDy) / edge
+					dim = 1 + (dim-1)*t
+				} else if b.maxDy-dy < edge {
+					t := (b.maxDy - dy) / edge
+					dim = 1 + (dim-1)*t
 				}
-				shade := b.shade * rowScale * taper
-				if shade > s[row][c] {
-					s[row][c] = shade
-				}
+				shade = dim
 				break
+			}
+			// Turbulence: small per-cell jitter.
+			noise := (shapeHash(r, c) - 0.5) * 0.06
+			shade += noise
+			if shade < 0.30 {
+				shade = 0.30
+			}
+			if shade > 1 {
+				shade = 1
+			}
+			s[r][c] *= shade
+		}
+	}
+	return s
+}
+
+// applyRings wraps Saturn-style rings around a sphere. The ring is a
+// thin tilted ellipse (ringRx × ringRy). Where the ring passes below
+// the sphere's equator it is drawn IN FRONT of the sphere; above the
+// equator the sphere occludes the ring. Three concentric bands with a
+// Cassini-style gap produce the striped disk look.
+func applyRings(s Shape, bodyRx float64) Shape {
+	const (
+		ringRx = 0.48
+		ringRy = 0.10
+	)
+	innerU := bodyRx/ringRx + 0.08
+	bands := []struct{ inner, outer, shade float64 }{
+		{innerU, innerU + 0.18, 0.88},        // inner bright ring (A)
+		{innerU + 0.20, innerU + 0.24, 0.22}, // Cassini gap
+		{innerU + 0.26, 0.98, 0.74},          // outer ring (B)
+	}
+	const edgeFade = 0.015
+	for r := 0; r < ShapeRows; r++ {
+		for c := 0; c < ShapeCols; c++ {
+			y := (float64(r) + 0.5) / float64(ShapeRows)
+			x := (float64(c) + 0.5) / float64(ShapeCols)
+			dx := (x - 0.5) / ringRx
+			dy := (y - 0.5) / ringRy
+			u := math.Sqrt(dx*dx + dy*dy)
+
+			var ringShade float64
+			for _, b := range bands {
+				if u < b.inner || u > b.outer {
+					continue
+				}
+				shade := b.shade
+				if u-b.inner < edgeFade {
+					shade *= (u - b.inner) / edgeFade
+				}
+				if b.outer-u < edgeFade {
+					shade *= (b.outer - u) / edgeFade
+				}
+				ringShade = shade
+				break
+			}
+			if ringShade == 0 {
+				continue
+			}
+
+			// Check sphere occlusion. The front half of the ring (below
+			// the equator line in screen space) draws over the sphere;
+			// the back half is hidden where the sphere overlaps.
+			frontSide := y > 0.5
+			sDx := (x - 0.5) / bodyRx
+			sDy := (y - 0.5) / bodyRx
+			inSphere := sDx*sDx+sDy*sDy < 1
+			if inSphere && !frontSide {
+				continue
+			}
+			if ringShade > s[r][c] {
+				s[r][c] = ringShade
 			}
 		}
 	}
 	return s
 }
 
-// applyContinents darkens a scattered set of interior cells to suggest
-// landmasses. Patch centers are normalized so they stay inside the disk
-// across any grid size.
-func applyContinents(s Shape) Shape {
-	patches := [][2]float64{
-		{0.35, 0.35}, {0.40, 0.30}, {0.30, 0.45},
-		{0.62, 0.40}, {0.68, 0.55}, {0.55, 0.65},
-		{0.42, 0.62}, {0.72, 0.30}, {0.48, 0.75},
+// earthCloudShape generates soft wispy cloud patches scattered across
+// the disk — used as an Overlay to produce bright white puffs over the
+// blue base.
+func earthCloudShape() Shape {
+	patches := []struct{ cx, cy, rx, ry, intensity float64 }{
+		{0.28, 0.32, 0.10, 0.05, 0.85},
+		{0.52, 0.24, 0.11, 0.04, 0.72},
+		{0.68, 0.44, 0.11, 0.05, 0.80},
+		{0.40, 0.52, 0.09, 0.05, 0.60},
+		{0.24, 0.52, 0.08, 0.04, 0.62},
+		{0.60, 0.60, 0.12, 0.05, 0.72},
+		{0.38, 0.72, 0.10, 0.05, 0.65},
+		{0.72, 0.30, 0.08, 0.03, 0.50},
+		{0.48, 0.40, 0.07, 0.03, 0.55},
 	}
-	dRow := ShapeRows / 24
-	dCol := ShapeCols / 12
-	for _, p := range patches {
-		rc := int(p[1] * float64(ShapeRows))
-		cc := int(p[0] * float64(ShapeCols))
-		for dr := -dRow; dr <= dRow; dr++ {
-			for dc := -dCol; dc <= dCol; dc++ {
-				r, c := rc+dr, cc+dc
-				if r < 0 || r >= ShapeRows || c < 0 || c >= ShapeCols {
+	const bodyR = 0.45
+	var s Shape
+	for r := 0; r < ShapeRows; r++ {
+		for c := 0; c < ShapeCols; c++ {
+			x := (float64(c) + 0.5) / float64(ShapeCols)
+			y := (float64(r) + 0.5) / float64(ShapeRows)
+			bdx := (x - 0.5) / bodyR
+			bdy := (y - 0.5) / bodyR
+			if bdx*bdx+bdy*bdy >= 1 {
+				continue
+			}
+			var intensity float64
+			for _, p := range patches {
+				dx := (x - p.cx) / p.rx
+				dy := (y - p.cy) / p.ry
+				d2 := dx*dx + dy*dy
+				if d2 >= 1 {
 					continue
 				}
-				if s[r][c] > 0 {
-					s[r][c] *= 0.60
+				v := p.intensity * math.Exp(-d2*2.5)
+				if v > intensity {
+					intensity = v
 				}
 			}
+			// Wispy positional noise.
+			noise := (shapeHash(r, c) - 0.5) * 0.18
+			intensity += noise
+			if intensity < 0 {
+				intensity = 0
+			}
+			if intensity > 1 {
+				intensity = 1
+			}
+			s[r][c] = intensity
 		}
 	}
 	return s
+}
+
+// venusCloudShape creates swirling cloud bands — used as an Overlay
+// with a warm cream color to produce Venus's thick haze.
+func venusCloudShape() Shape {
+	const bodyR = 0.47
+	var s Shape
+	for r := 0; r < ShapeRows; r++ {
+		for c := 0; c < ShapeCols; c++ {
+			x := (float64(c) + 0.5) / float64(ShapeCols)
+			y := (float64(r) + 0.5) / float64(ShapeRows)
+			bdx := (x - 0.5) / bodyR
+			bdy := (y - 0.5) / bodyR
+			if bdx*bdx+bdy*bdy >= 1 {
+				continue
+			}
+			// Two overlapping sine fields give a swirling look.
+			v := 0.30 * (math.Sin(11*x+7*y+1.2) + math.Sin(17*x-6*y+3.3))
+			v = 0.5 + v*0.3
+			// Soft fade toward the silhouette edge.
+			rad := math.Sqrt(bdx*bdx + bdy*bdy)
+			if rad > 0.80 {
+				v *= (1.0 - rad) / 0.20
+			}
+			if v < 0 {
+				v = 0
+			}
+			if v > 0.85 {
+				v = 0.85
+			}
+			s[r][c] = v
+		}
+	}
+	return s
+}
+
+// jupiterRedSpotShape returns a small elliptical cloud for the Great
+// Red Spot — used as an Overlay with a muted red color on top of
+// Jupiter's banded base.
+func jupiterRedSpotShape() Shape {
+	const (
+		cx = 0.62
+		cy = 0.62
+		rx = 0.08
+		ry = 0.038
+	)
+	var s Shape
+	for r := 0; r < ShapeRows; r++ {
+		for c := 0; c < ShapeCols; c++ {
+			x := (float64(c) + 0.5) / float64(ShapeCols)
+			y := (float64(r) + 0.5) / float64(ShapeRows)
+			dx := (x - cx) / rx
+			dy := (y - cy) / ry
+			d2 := dx*dx + dy*dy
+			if d2 >= 1 {
+				continue
+			}
+			s[r][c] = 0.88 * math.Exp(-d2*2.0)
+		}
+	}
+	return s
+}
+
+// shapeHash is a cheap deterministic float in [0,1) keyed on (r, c).
+// Reused by both shapes.go and overlay/render.go so the noise patterns
+// stay stable across frames.
+func shapeHash(r, c int) float64 {
+	h := uint32(r)*73856093 ^ uint32(c)*19349663
+	h ^= h >> 13
+	h *= 0x5bd1e995
+	h ^= h >> 15
+	return float64(h%10000) / 10000.0
 }
 
 var (
 	mercurySimpleSphere = sphereShape(0.5, 0.5, 0.46, 0.46)
 	venusUniformHaze    = sphereShape(0.5, 0.5, 0.47, 0.47)
-	earthContinents     = applyContinents(sphereShape(0.5, 0.5, 0.45, 0.45))
+	earthBaseSphere     = sphereShape(0.5, 0.5, 0.45, 0.45)
 	marsPolarCap        = applyPolarCap(sphereShape(0.5, 0.5, 0.43, 0.43), 10, 1.25)
-	jupiterBands        = applyBands(sphereShape(0.5, 0.5, 0.47, 0.47), 6, 0.70)
-	saturnRings         = applyRings(sphereShape(0.5, 0.5, 0.32, 0.32), 0.32)
+	jupiterBands        = applyJupiterBands(sphereShape(0.5, 0.5, 0.47, 0.47))
+	saturnRings         = applyRings(sphereShape(0.5, 0.5, 0.26, 0.26), 0.26)
 	uranusSmallSphere   = sphereShape(0.5, 0.5, 0.40, 0.40)
 	neptuneDenseCore    = sphereShape(0.5, 0.5, 0.40, 0.40)
 )
@@ -194,7 +335,7 @@ var (
 var shapes = map[string]Shape{
 	"mercury": mercurySimpleSphere,
 	"venus":   venusUniformHaze,
-	"earth":   earthContinents,
+	"earth":   earthBaseSphere,
 	"mars":    marsPolarCap,
 	"jupiter": jupiterBands,
 	"saturn":  saturnRings,
@@ -202,11 +343,27 @@ var shapes = map[string]Shape{
 	"neptune": neptuneDenseCore,
 }
 
-// GetShape returns the shade grid for the named planet. Unknown names
-// fall back to the mercury sphere so custom instance names still render.
+// GetShape returns the base shade grid for the named planet. Unknown
+// names fall back to the mercury sphere so custom instance names still
+// render.
 func GetShape(name string) Shape {
 	if s, ok := shapes[name]; ok {
 		return s
 	}
 	return mercurySimpleSphere
+}
+
+// planetOverlays holds per-planet surface features that color-blend
+// onto the base terrain during rendering. Earth gets white clouds,
+// Venus gets warm haze, Jupiter gets a red spot.
+var planetOverlays = map[string][]Overlay{
+	"earth":   {{Shape: earthCloudShape(), Color: [3]uint8{250, 250, 250}}},
+	"venus":   {{Shape: venusCloudShape(), Color: [3]uint8{255, 240, 200}}},
+	"jupiter": {{Shape: jupiterRedSpotShape(), Color: [3]uint8{175, 55, 35}}},
+}
+
+// GetOverlays returns the per-planet color overlays, or nil if the
+// planet has none.
+func GetOverlays(name string) []Overlay {
+	return planetOverlays[name]
 }

@@ -413,7 +413,9 @@ func (m Model) hudLines() []string {
 
 func (m Model) loadingView() string {
 	shape := planets.GetShape(m.cfg.Name)
-	art := RenderPlanet(shape, m.cfg.Planet, m.phaseNum, m.cfg.Total)
+	opts := DefaultRenderOptions()
+	opts.Overlays = planets.GetOverlays(m.cfg.Name)
+	art := RenderPlanetWith(shape, m.cfg.Planet, m.phaseNum, m.cfg.Total, opts)
 
 	artHeight := planets.ShapeRows / 2
 	hud := m.hudLines()

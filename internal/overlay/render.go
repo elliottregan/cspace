@@ -7,13 +7,15 @@
 //     block size drops linearly to 1 at phase=total.
 //   - Color saturation: base color lerps from dim grey toward the planet's
 //     canonical RGB as phase advances.
-//   - Surface texture: past 70% focus, a braille-dither overlay stipples
-//     subtle shadow/highlight variation across lit cells, ramping up with
-//     focus. Contrast is intentionally small — just enough to suggest
-//     surface detail without looking like random noise.
+//   - Surface texture: past TextureStart focus, a braille-dither overlay
+//     stipples subtle shading across lit cells to suggest surface detail.
+//     Dots are slightly DARKER than the cell they sit in so the texture
+//     reads as shadow rather than glint.
 //
-// Every cell paints explicit black bg so the planet always sits inside a
-// consistent black viewport regardless of terminal theme.
+// Planets may carry color Overlays (clouds, Great Red Spot, etc.) whose
+// per-cell shade controls how much the base color blends toward the
+// overlay's color. Overlays are pixelated in lockstep with the base
+// shape so they resolve with the planet during the focus pull.
 package overlay
 
 import (
@@ -24,45 +26,66 @@ import (
 	"github.com/elliottregan/cspace/internal/planets"
 )
 
-// greyStart is the washed-out grey the focus-pull begins with before
-// interpolating toward the planet's canonical color as phases advance.
+// Default tuning constants. Exposed as variables through
+// DefaultRenderOptions so the preview tool can override per-request.
 var greyStart = [3]uint8{110, 110, 110}
 
-// haloThreshold suppresses dim tails below this shade so the silhouette
-// collapses cleanly to black rather than fringing.
-const haloThreshold = 0.08
-
-// maxBlockSize is the pixelation block size used at phase 1 — big solid
-// squares that shrink toward 1 as focus approaches 1. 8 means at phase 1
-// the planet is effectively rendered at ShapeRows/8 × ShapeCols/8 resolution.
-const maxBlockSize = 8
-
-// textureStart is the focus value at which braille dither kicks in.
-// Below this focus we render only half-block shapes; above, a growing
-// fraction of lit cells are painted with a braille character to suggest
-// surface texture.
-const textureStart = 0.70
-
-// textureDensity is the fraction of cells that receive braille treatment
-// when focus hits 1.0. Below, the fraction scales linearly from 0.
-const textureDensity = 0.28
-
-// textureContrast is the fg/bg shade differential used by braille cells.
-// Small (fg slightly brighter than bg), so the texture reads as surface
-// detail rather than discrete dots.
-const textureContrast = 0.12
+const (
+	haloThreshold   = 0.08
+	maxBlockSize    = 8
+	textureStart    = 0.85 // kick in only near the end of the pull
+	textureDensity  = 0.30
+	textureContrast = 0.09 // small — dots sit just slightly below base
+)
 
 // viewportBg is the panel-interior background every cell paints.
 var viewportBg = [3]uint8{0, 0, 0}
 
-// upperHalf / lowerHalf / fullBlock pack two stacked sub-pixels per cell.
+// upperHalf / lowerHalf pack two stacked sub-pixels per cell.
 const (
 	upperHalf = "▀"
 	lowerHalf = "▄"
 )
 
+const ansiReset = "\x1b[0m"
+
+// brailleTextures is a curated pool of braille patterns with 2–5 dots
+// scattered across the 2×4 cell grid. Picking from a varied pool gives
+// the surface a stippled texture rather than repeating rows of the
+// same two dots.
+var brailleTextures = []string{
+	"⠃", "⠅", "⠆", "⠉", "⠊", "⠌", "⠑", "⠒",
+	"⠔", "⠘", "⠙", "⠚", "⠜", "⡀", "⡁", "⡂",
+	"⡃", "⡉", "⡐", "⡘", "⢁", "⢂", "⢄", "⢈",
+	"⢉", "⢐", "⢘", "⣀", "⣁", "⣂", "⣄", "⣈",
+	"⣐", "⣒", "⣡", "⣢", "⣤", "⣨", "⣪", "⣰",
+}
+
+// RenderOptions lets callers tweak image parameters per-render without
+// editing constants and rebuilding.
+type RenderOptions struct {
+	MaxBlockSize    int
+	HaloThreshold   float64
+	TextureStart    float64
+	TextureDensity  float64
+	TextureContrast float64
+	GreyStart       [3]uint8
+	Overlays        []planets.Overlay
+}
+
+// DefaultRenderOptions returns the package defaults used by RenderPlanet.
+func DefaultRenderOptions() RenderOptions {
+	return RenderOptions{
+		MaxBlockSize:    maxBlockSize,
+		HaloThreshold:   haloThreshold,
+		TextureStart:    textureStart,
+		TextureDensity:  textureDensity,
+		TextureContrast: textureContrast,
+		GreyStart:       greyStart,
+	}
+}
+
 // LerpColor linearly interpolates each channel of from→to by t∈[0,1].
-// Values outside [0,1] are clamped.
 func LerpColor(from, to [3]uint8, t float64) [3]uint8 {
 	if t < 0 {
 		t = 0
@@ -102,8 +125,6 @@ func scaleColor(rgb [3]uint8, shade float64) [3]uint8 {
 	}
 }
 
-const ansiReset = "\x1b[0m"
-
 func fgBgAnsi(fg, bg [3]uint8) string {
 	return fmt.Sprintf("\x1b[38;2;%d;%d;%d;48;2;%d;%d;%dm",
 		fg[0], fg[1], fg[2], bg[0], bg[1], bg[2])
@@ -113,9 +134,8 @@ func bgAnsi(bg [3]uint8) string {
 	return fmt.Sprintf("\x1b[48;2;%d;%d;%dm", bg[0], bg[1], bg[2])
 }
 
-// hash2 is a cheap deterministic float in [0,1) keyed on (r, c). Used for
-// per-cell texture decisions so the stipple pattern stays stable across
-// frames instead of twinkling.
+// hash2 is a deterministic per-cell float used for both braille
+// character selection and texture placement.
 func hash2(r, c int) float64 {
 	h := uint32(r)*73856093 ^ uint32(c)*19349663
 	h ^= h >> 13
@@ -124,45 +144,12 @@ func hash2(r, c int) float64 {
 	return float64(h%10000) / 10000.0
 }
 
-// pickBraille chooses a braille character (U+2800..U+28FF) whose dot
-// pattern is a stable function of (r, c). Dot count is biased by the
-// per-cell noise so textured regions vary visibly without clumping.
 func pickBraille(r, c int) string {
-	h := hash2(r, c)
-	// 2..6 dots keeps texture visible without turning cells into solid
-	// blocks (which would defeat the purpose).
-	dots := 2 + int(h*5)
-	mask := 0
-	// Use every other bit position so the resulting braille pattern
-	// spreads across both columns of the 2x4 dot grid.
-	for i := 0; i < dots; i++ {
-		mask |= 1 << ((i * 3) % 8)
+	idx := int(hash2(r, c) * float64(len(brailleTextures)))
+	if idx >= len(brailleTextures) {
+		idx = len(brailleTextures) - 1
 	}
-	return string(rune(0x2800 + mask))
-}
-
-// RenderOptions lets the preview tool tweak the image parameters at
-// request time without recompiling. Zero values are replaced with the
-// package defaults by DefaultRenderOptions.
-type RenderOptions struct {
-	MaxBlockSize    int
-	HaloThreshold   float64
-	TextureStart    float64
-	TextureDensity  float64
-	TextureContrast float64
-	GreyStart       [3]uint8
-}
-
-// DefaultRenderOptions returns the package defaults used by RenderPlanet.
-func DefaultRenderOptions() RenderOptions {
-	return RenderOptions{
-		MaxBlockSize:    maxBlockSize,
-		HaloThreshold:   haloThreshold,
-		TextureStart:    textureStart,
-		TextureDensity:  textureDensity,
-		TextureContrast: textureContrast,
-		GreyStart:       greyStart,
-	}
+	return brailleTextures[idx]
 }
 
 // RenderPlanet returns one frame of the focus-pull animation using the
@@ -171,8 +158,7 @@ func RenderPlanet(shape planets.Shape, p planets.Planet, phase, total int) strin
 	return RenderPlanetWith(shape, p, phase, total, DefaultRenderOptions())
 }
 
-// RenderPlanetWith is RenderPlanet with tweakable options — useful for
-// the preview server at cmd/overlay-web.
+// RenderPlanetWith is RenderPlanet with tweakable options.
 func RenderPlanetWith(shape planets.Shape, p planets.Planet, phase, total int, opts RenderOptions) string {
 	if total <= 0 {
 		total = 1
@@ -185,19 +171,37 @@ func RenderPlanetWith(shape planets.Shape, p planets.Planet, phase, total int, o
 		focus = 1
 	}
 
-	// Pixelation: chunky at phase 1, pixel-perfect at phase total.
 	blockSize := int(math.Round(float64(opts.MaxBlockSize) * (1 - focus)))
 	if blockSize < 1 {
 		blockSize = 1
 	}
 	frame := pixelateShape(shape, blockSize)
 
+	// Pixelate overlay shapes in lockstep so they resolve with the base.
+	overlayFrames := make([]planets.Shape, len(opts.Overlays))
+	for i, ov := range opts.Overlays {
+		overlayFrames[i] = pixelateShape(ov.Shape, blockSize)
+	}
+
 	baseColor := LerpColor(opts.GreyStart, p.Color, focus)
 
-	// Texture ramp: 0 until TextureStart, then linearly up to TextureDensity.
 	var textureFrac float64
 	if focus > opts.TextureStart && opts.TextureStart < 1 {
 		textureFrac = (focus - opts.TextureStart) / (1 - opts.TextureStart) * opts.TextureDensity
+	}
+
+	// blendSub takes a base shade and the sub-pixel's (row, col) in the
+	// shape grid, returns the final cell color with overlay blending
+	// applied.
+	blendSub := func(shade float64, row, col int) [3]uint8 {
+		col0 := scaleColor(baseColor, shade)
+		for i, ov := range opts.Overlays {
+			ovShade := overlayFrames[i][row][col]
+			if ovShade > 0 {
+				col0 = LerpColor(col0, ov.Color, ovShade)
+			}
+		}
+		return col0
 	}
 
 	termRows := planets.ShapeRows / 2
@@ -205,8 +209,9 @@ func RenderPlanetWith(shape planets.Shape, p planets.Planet, phase, total int, o
 	for r := 0; r < termRows; r++ {
 		var line strings.Builder
 		for c := 0; c < planets.ShapeCols; c++ {
-			top := frame[r*2][c]
-			bot := frame[r*2+1][c]
+			topRow, botRow := r*2, r*2+1
+			top := frame[topRow][c]
+			bot := frame[botRow][c]
 			topOn := top >= opts.HaloThreshold
 			botOn := bot >= opts.HaloThreshold
 
@@ -215,28 +220,38 @@ func RenderPlanetWith(shape planets.Shape, p planets.Planet, phase, total int, o
 				line.WriteString(bgAnsi(viewportBg))
 				line.WriteByte(' ')
 				line.WriteString(ansiReset)
+
 			case topOn && botOn:
-				// Braille texture overlay on fully-lit cells past TextureStart.
 				if textureFrac > 0 && hash2(r, c) < textureFrac {
+					// Braille dither: fg slightly darker than bg, both
+					// sharing the same (overlay-blended) base color.
 					mid := (top + bot) * 0.5
-					bg := scaleColor(baseColor, mid)
-					fg := scaleColor(baseColor, math.Min(1, mid+opts.TextureContrast))
+					bg := blendSub(mid, topRow, c)
+					// Blend the fg's darker shade with the SAME overlay
+					// shade as the bg so only lightness differs.
+					fgShade := mid - opts.TextureContrast
+					if fgShade < 0 {
+						fgShade = 0
+					}
+					fg := blendSub(fgShade, topRow, c)
 					line.WriteString(fgBgAnsi(fg, bg))
 					line.WriteString(pickBraille(r, c))
 				} else {
-					topColor := scaleColor(baseColor, top)
-					botColor := scaleColor(baseColor, bot)
+					topColor := blendSub(top, topRow, c)
+					botColor := blendSub(bot, botRow, c)
 					line.WriteString(fgBgAnsi(topColor, botColor))
 					line.WriteString(upperHalf)
 				}
 				line.WriteString(ansiReset)
+
 			case topOn:
-				topColor := scaleColor(baseColor, top)
+				topColor := blendSub(top, topRow, c)
 				line.WriteString(fgBgAnsi(topColor, viewportBg))
 				line.WriteString(upperHalf)
 				line.WriteString(ansiReset)
+
 			case botOn:
-				botColor := scaleColor(baseColor, bot)
+				botColor := blendSub(bot, botRow, c)
 				line.WriteString(fgBgAnsi(botColor, viewportBg))
 				line.WriteString(lowerHalf)
 				line.WriteString(ansiReset)
@@ -248,8 +263,7 @@ func RenderPlanetWith(shape planets.Shape, p planets.Planet, phase, total int, o
 }
 
 // pixelateShape returns a new shape where every blockSize×blockSize region
-// of the input is flattened to the region's mean shade. blockSize <= 1
-// returns the input unchanged.
+// of the input is flattened to the region's mean shade.
 func pixelateShape(s planets.Shape, blockSize int) planets.Shape {
 	if blockSize <= 1 {
 		return s
