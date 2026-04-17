@@ -30,7 +30,7 @@ build: sync-embedded
 overlay-demo: sync-embedded
 	@go run ./cmd/overlay-demo/ $(ARGS)
 
-# Serve a browser preview of the overlay at http://localhost:8080/ with
+# Serve a browser preview of the overlay at http://localhost:3000/ with
 # sliders for the main image parameters. Faster visual iteration than
 # the TUI demo. Override the port with ARGS="-addr :9000".
 overlay-web: sync-embedded

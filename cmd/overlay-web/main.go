@@ -24,7 +24,7 @@ import (
 	"github.com/elliottregan/cspace/internal/provision"
 )
 
-var addr = flag.String("addr", ":8080", "listen address")
+var addr = flag.String("addr", ":3000", "listen address")
 
 var planetNames = []string{
 	"mercury", "venus", "earth", "mars",
