@@ -136,19 +136,16 @@ func applyJupiterBands(s Shape) Shape {
 // applyRings wraps Saturn-style rings around a sphere. The ring is a
 // thin tilted ellipse (ringRx × ringRy). Where the ring passes below
 // the sphere's equator it is drawn IN FRONT of the sphere; above the
-// equator the sphere occludes the ring. Three concentric bands with a
-// Cassini-style gap produce the striped disk look.
+// equator the sphere occludes the ring. Five concentric bands with
+// a Cassini division and a thin C/B gap give the striped disk its
+// natural layered look.
 func applyRings(s Shape, bodyRx float64) Shape {
 	const (
 		ringRx = 0.48
 		ringRy = 0.10
 	)
 	innerU := bodyRx/ringRx + 0.08
-	bands := []struct{ inner, outer, shade float64 }{
-		{innerU, innerU + 0.18, 0.88},        // inner bright ring (A)
-		{innerU + 0.20, innerU + 0.24, 0.22}, // Cassini gap
-		{innerU + 0.26, 0.98, 0.74},          // outer ring (B)
-	}
+	bands := saturnRingBands(innerU)
 	const edgeFade = 0.015
 	for r := 0; r < ShapeRows; r++ {
 		for c := 0; c < ShapeCols; c++ {
@@ -428,21 +425,38 @@ func neptuneStormShape() Shape {
 	}, 0.40)
 }
 
+// saturnRingBands returns the five ring bands (C, C/B gap, B, Cassini,
+// A, outer haze) in order of increasing u. Shared between the base
+// shape builder and the overlay mask so band edges stay in sync.
+func saturnRingBands(innerU float64) []struct{ inner, outer, shade float64 } {
+	return []struct{ inner, outer, shade float64 }{
+		{innerU, innerU + 0.09, 0.50},         // C ring — innermost, faint
+		{innerU + 0.10, innerU + 0.11, 0.18},  // thin C/B gap
+		{innerU + 0.12, innerU + 0.24, 0.88},  // B ring — brightest
+		{innerU + 0.25, innerU + 0.28, 0.18},  // Cassini division
+		{innerU + 0.29, innerU + 0.36, 0.78},  // A ring
+		{innerU + 0.37, 0.97, 0.42},           // outer haze / F region
+	}
+}
+
 // saturnRingOverlayMask returns a cell-level mask of where Saturn's
 // bright ring bands are visible (front half over sphere, both halves
-// outside sphere body). Used by an overlay to tint ring cells toward
-// a pale ring color instead of the planet's gold. The Cassini gap is
-// deliberately excluded so the gap keeps the planet-body color and
-// the band structure stays readable.
+// outside sphere body). Gaps (C/B gap, Cassini division) are excluded
+// so they keep the planet-body color and the band structure stays
+// legible.
 func saturnRingOverlayMask(bodyRx float64) Shape {
 	const (
 		ringRx = 0.48
 		ringRy = 0.10
 	)
 	innerU := bodyRx/ringRx + 0.08
+	// Bright bands only (skip the two gaps and the very outer faint).
+	all := saturnRingBands(innerU)
 	brightBands := []struct{ inner, outer float64 }{
-		{innerU, innerU + 0.18},      // A ring
-		{innerU + 0.26, 0.98},        // B ring
+		{all[0].inner, all[0].outer}, // C ring
+		{all[2].inner, all[2].outer}, // B ring
+		{all[4].inner, all[4].outer}, // A ring
+		{all[5].inner, all[5].outer}, // outer haze
 	}
 	var s Shape
 	for r := 0; r < ShapeRows; r++ {
@@ -492,7 +506,7 @@ func saturnShadowMask(bodyRx float64) Shape {
 		ringRy         = 0.10
 		shadowOffset   = 0.008 // shadow sits just below ring's back edge
 		bandHalfHeight = 0.018
-		maxIntensity   = 0.28
+		maxIntensity   = 0.45
 	)
 	for r := 0; r < ShapeRows; r++ {
 		for c := 0; c < ShapeCols; c++ {
@@ -533,6 +547,84 @@ func neptuneDarkSpotShape() Shape {
 	return buildFormationShape([]formationCenter{
 		{0.32, 0.40, 0.09, 0.045, 0.85},
 	}, 0.40)
+}
+
+// applySaturnBands dims the sphere shade by latitude to add the subtle
+// horizontal banding real Saturn shows — much softer than Jupiter's.
+// Multiplies the base shade by a modest factor within each band and
+// smooths band edges so no visible seams appear.
+func applySaturnBands(s Shape) Shape {
+	type band struct{ minDy, maxDy, dim float64 }
+	bands := []band{
+		{-0.90, -0.55, 1.04}, // slightly brighter northern mid-lat
+		{-0.20, 0.12, 0.93},  // slightly dimmer equatorial band
+		{0.30, 0.65, 1.03},   // slightly brighter southern mid-lat
+		{0.78, 0.95, 0.92},   // slightly dimmer far south
+	}
+	const bodyR = 0.26
+	const edge = 0.05
+	for r := 0; r < ShapeRows; r++ {
+		for c := 0; c < ShapeCols; c++ {
+			if s[r][c] == 0 {
+				continue
+			}
+			y := (float64(r) + 0.5) / float64(ShapeRows)
+			dy := (y - 0.5) / bodyR
+			shade := 1.0
+			for _, b := range bands {
+				if dy < b.minDy || dy > b.maxDy {
+					continue
+				}
+				dim := b.dim
+				if dy-b.minDy < edge {
+					t := (dy - b.minDy) / edge
+					dim = 1 + (dim-1)*t
+				} else if b.maxDy-dy < edge {
+					t := (b.maxDy - dy) / edge
+					dim = 1 + (dim-1)*t
+				}
+				shade = dim
+				break
+			}
+			v := s[r][c] * shade
+			if v > 1 {
+				v = 1
+			}
+			s[r][c] = v
+		}
+	}
+	return s
+}
+
+// saturnEquatorTint returns a subtle mask that concentrates at the
+// equator, used to paint a warmer pink/salmon tint across the middle
+// of the disk — the signature hue shift real Saturn shows at mid-
+// latitudes.
+func saturnEquatorTint(bodyRx float64) Shape {
+	var s Shape
+	const (
+		centerY     = 0.50
+		bandHalfHt  = 0.055
+		maxBlend    = 0.35
+	)
+	for r := 0; r < ShapeRows; r++ {
+		y := (float64(r) + 0.5) / float64(ShapeRows)
+		dist := math.Abs(y - centerY)
+		if dist > bandHalfHt {
+			continue
+		}
+		t := 1 - dist/bandHalfHt
+		for c := 0; c < ShapeCols; c++ {
+			x := (float64(c) + 0.5) / float64(ShapeCols)
+			sDx := (x - 0.5) / bodyRx
+			sDy := (y - 0.5) / bodyRx
+			if sDx*sDx+sDy*sDy >= 1 {
+				continue
+			}
+			s[r][c] = t * maxBlend
+		}
+	}
+	return s
 }
 
 // venusCloudShape creates swirling cloud bands — used as an Overlay
@@ -613,7 +705,7 @@ var (
 	earthBaseSphere     = sphereShape(0.5, 0.5, 0.45, 0.45)
 	marsPolarCap        = applyPolarCap(sphereShape(0.5, 0.5, 0.43, 0.43), 10, 1.25)
 	jupiterBands        = applyJupiterBands(sphereShape(0.5, 0.5, 0.47, 0.47))
-	saturnRings         = applyRings(sphereShape(0.5, 0.5, 0.26, 0.26), 0.26)
+	saturnRings         = applyRings(applySaturnBands(sphereShape(0.5, 0.5, 0.26, 0.26)), 0.26)
 	uranusSmallSphere   = sphereShape(0.5, 0.5, 0.40, 0.40)
 	neptuneDenseCore    = sphereShape(0.5, 0.5, 0.40, 0.40)
 )
@@ -656,6 +748,7 @@ var planetOverlays = map[string][]Overlay{
 		{Shape: jupiterRedSpotShape(), Color: [3]uint8{170, 95, 50}},
 	},
 	"saturn": {
+		{Shape: saturnEquatorTint(0.26), Color: [3]uint8{218, 172, 140}},
 		{Shape: saturnShadowMask(0.26), Color: [3]uint8{12, 8, 4}},
 		{Shape: saturnRingOverlayMask(0.26), Color: [3]uint8{218, 192, 155}},
 	},
