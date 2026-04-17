@@ -126,4 +126,4 @@ git push origin v0.1.0
 
 ## License
 
-MIT
+[PolyForm Perimeter 1.0.0](./LICENSE) — free to use (including at work), modify, and redistribute; may not be used to build a product that competes with cspace.

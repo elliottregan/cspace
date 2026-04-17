@@ -56,7 +56,9 @@ brews:
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/elliottregan/cspace"
     description: "Portable CLI for managing Claude Code devcontainer instances"
-    license: "MIT"
+    # PolyForm Perimeter 1.0.0 has no SPDX identifier; use an SPDX
+    # LicenseRef pointing at the LICENSE file at the repo root.
+    license: "LicenseRef-PolyForm-Perimeter-1.0.0"
     install: |
       bin.install "cspace"
     test: |
