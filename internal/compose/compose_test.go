@@ -1,6 +1,7 @@
 package compose
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -207,4 +208,54 @@ func TestComposeEnvEffortDefaultsToXhigh(t *testing.T) {
 		}
 	}
 	t.Errorf("expected CSPACE_CLAUDE_CODE_EFFORT_LEVEL=xhigh in env when Effort is empty, got: %v", env)
+}
+
+func TestWriteServiceURLsOverrideNoopWhenEmpty(t *testing.T) {
+	cfg := &config.Config{Project: config.ProjectConfig{Name: "p", Prefix: "p"}}
+
+	path, err := writeServiceURLsOverride("mercury", cfg)
+	if err != nil {
+		t.Fatalf("writeServiceURLsOverride error: %v", err)
+	}
+	if path != "" {
+		t.Errorf("expected empty path when ServiceURLs is unset, got: %q", path)
+	}
+}
+
+func TestWriteServiceURLsOverrideWritesFile(t *testing.T) {
+	cfg := &config.Config{
+		Project: config.ProjectConfig{Name: "resume-redux", Prefix: "re"},
+		ServiceURLs: map[string][]string{
+			"convex":      {"VITE_CONVEX_URL", "CONVEX_URL"},
+			"convex-site": {"VITE_CONVEX_SITE_URL"},
+		},
+	}
+
+	path, err := writeServiceURLsOverride("mercury", cfg)
+	if err != nil {
+		t.Fatalf("writeServiceURLsOverride error: %v", err)
+	}
+	if path == "" {
+		t.Fatal("expected non-empty path when ServiceURLs is set")
+	}
+	t.Cleanup(func() { _ = os.Remove(path) })
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading override: %v", err)
+	}
+	got := string(body)
+
+	want := []string{
+		"CSPACE_SERVICE_CONVEX_URL=http://convex.mercury.resume-redux.cspace.local",
+		"VITE_CONVEX_URL=http://convex.mercury.resume-redux.cspace.local",
+		"CONVEX_URL=http://convex.mercury.resume-redux.cspace.local",
+		"CSPACE_SERVICE_CONVEX_SITE_URL=http://convex-site.mercury.resume-redux.cspace.local",
+		"VITE_CONVEX_SITE_URL=http://convex-site.mercury.resume-redux.cspace.local",
+	}
+	for _, w := range want {
+		if !strings.Contains(got, w) {
+			t.Errorf("override missing %q\n---\n%s", w, got)
+		}
+	}
 }

@@ -11,20 +11,21 @@ cspace runs a global Traefik reverse proxy alongside a CoreDNS sidecar to give e
 
 ## Hostnames
 
-Each instance gets a hostname following the pattern:
+Each service gets a hostname following the pattern:
 
 ```
-<instance>.<project>.cspace.local
+<label>.<instance>.<project>.cspace.local
 ```
 
 For example, an instance named `mercury` in a project called `resume-redux`:
 
 | Service | URL |
 |---------|-----|
-| Dev server (port 3000) | `http://mercury.resume-redux.cspace.local` |
+| Dev server (port 3000) | `http://dev.mercury.resume-redux.cspace.local` |
 | Preview server (port 4173) | `http://preview.mercury.resume-redux.cspace.local` |
+| Project service (Convex API) | `http://convex.mercury.resume-redux.cspace.local` |
 
-Multiple instances can all serve on the same internal port (e.g., 3000) without conflicts — each gets its own hostname.
+Multiple instances can all serve on the same internal port (e.g., 3000) without conflicts — each gets its own hostname. All labels follow the same pattern so URLs stay parallel between dev, preview, and deployed environments.
 
 ## Architecture
 
@@ -39,7 +40,7 @@ Both are defined in a single compose stack. The source templates live at `lib/te
 
 1. **DNS resolution:** The host's `/etc/resolver/cspace.local` file directs `*.cspace.local` queries to `127.0.0.1:53` where CoreDNS listens. CoreDNS returns `127.0.0.1` for all queries.
 
-2. **HTTP routing:** The browser sends an HTTP request to `127.0.0.1:80` with a `Host` header like `mercury.resume-redux.cspace.local`. Traefik matches this against Docker labels on running containers and forwards the request to the correct container's internal port.
+2. **HTTP routing:** The browser sends an HTTP request to `127.0.0.1:80` with a `Host` header like `dev.mercury.resume-redux.cspace.local`. Traefik matches this against Docker labels on running containers and forwards the request to the correct container's internal port.
 
 3. **Auto-discovery:** Instance containers in `docker-compose.core.yml` have Traefik labels that define routing rules. When a container starts or stops, Traefik updates its routing table automatically via the Docker socket.
 

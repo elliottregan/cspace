@@ -36,6 +36,13 @@ type Config struct {
 	Services   string                 `json:"services"`
 	PostSetup  string                 `json:"post_setup"`
 
+	// ServiceURLs declares Traefik-routed project services whose URLs cspace
+	// should inject into the main container as env vars. Key is the subdomain
+	// label (matches the Traefik Host rule); value is a list of framework env
+	// var names to alias to the same URL. cspace always exports
+	// CSPACE_SERVICE_<LABEL>_URL, plus each alias (e.g. VITE_CONVEX_URL).
+	ServiceURLs map[string][]string `json:"serviceUrls,omitempty"`
+
 	// Runtime fields (not from JSON)
 	ProjectRoot string `json:"-"`
 	AssetsDir   string `json:"-"`

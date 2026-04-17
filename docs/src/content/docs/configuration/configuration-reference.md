@@ -55,7 +55,11 @@ Every cspace project is configured through a `.cspace.json` file in the reposito
     "issue_label": "ready"
   },
   "services": ".cspace/docker-compose.yml",
-  "post_setup": ".cspace/post-setup.sh"
+  "post_setup": ".cspace/post-setup.sh",
+  "serviceUrls": {
+    "convex": ["VITE_CONVEX_URL"],
+    "convex-site": ["VITE_CONVEX_SITE_URL"]
+  }
 }
 ```
 
@@ -146,6 +150,7 @@ Controls autonomous agent behavior.
 |-----|------|---------|-------------|
 | `services` | `string` | `""` | Path to a Docker Compose file with project-specific services (e.g., `".cspace/docker-compose.yml"`). See [Project Services](/configuration/project-services/). |
 | `post_setup` | `string` | `""` | Path to a shell script that runs after container initialization (e.g., `".cspace/post-setup.sh"`). See [Project Services](/configuration/project-services/). |
+| `serviceUrls` | `object` | `{}` | Map of Traefik subdomain label → list of env var aliases. cspace injects each URL as `CSPACE_SERVICE_<LABEL>_URL` plus every alias, so e.g. `{"convex": ["VITE_CONVEX_URL"]}` exports `VITE_CONVEX_URL=http://convex.<instance>.<project>.cspace.local` into the main container. Eliminates `.env.local` juggling for cross-service wiring. |
 
 ## Config merging
 

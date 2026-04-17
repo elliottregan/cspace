@@ -50,7 +50,7 @@ func TestComposeFilesAutoDetect(t *testing.T) {
 
 	cfg := buildTestConfig(projectRoot, assetsDir, "")
 
-	files, err := ComposeFiles(cfg)
+	files, err := ComposeFiles("mercury", cfg)
 	if err != nil {
 		t.Fatalf("ComposeFiles returned error: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestComposeFilesExplicitOverridesAutoDetect(t *testing.T) {
 
 	cfg := buildTestConfig(projectRoot, assetsDir, "my-services.yml")
 
-	files, err := ComposeFiles(cfg)
+	files, err := ComposeFiles("mercury", cfg)
 	if err != nil {
 		t.Fatalf("ComposeFiles returned error: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestComposeFilesNoAutoDetect(t *testing.T) {
 
 	cfg := buildTestConfig(projectRoot, assetsDir, "")
 
-	files, err := ComposeFiles(cfg)
+	files, err := ComposeFiles("mercury", cfg)
 	if err != nil {
 		t.Fatalf("ComposeFiles returned error: %v", err)
 	}

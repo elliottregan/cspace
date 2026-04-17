@@ -198,12 +198,8 @@ if [ -n "$SELF_CONTAINER" ] && [ -f "$CSPACE_JSON" ]; then
         # Only show URLs for ports actually in use right now
         ss -tlnp 2>/dev/null | grep -q ":${internal_port} " || continue
         if [ -n "$PROXY_UP" ] && [ -n "$PROJECT" ] && [ -n "$INSTANCE" ]; then
-            # Traefik hostname: "dev" gets bare subdomain, others get label prefix
-            if [ "$label" = "dev" ]; then
-                HOST="${INSTANCE}.${PROJECT}.cspace.local"
-            else
-                HOST="${label}.${INSTANCE}.${PROJECT}.cspace.local"
-            fi
+            # Traefik hostname — every label is its own subdomain, no special-casing
+            HOST="${label}.${INSTANCE}.${PROJECT}.cspace.local"
             URL="http://${HOST}"
             DISPLAY="$HOST"
         else
