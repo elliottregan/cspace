@@ -62,7 +62,8 @@ func (logReporter) Done() {
 }
 
 func (logReporter) Error(phase string, err error) {
-	if phase != "" {
-		fmt.Fprintf(os.Stderr, "error in phase %q: %v\n", phase, err)
-	}
+	// No-op. In the default (non-overlay) path, errors are surfaced by the
+	// caller — cobra prints the error returned from Run. Reporter.Error
+	// exists primarily so overlay implementations can render a panel with
+	// the failing phase.
 }
