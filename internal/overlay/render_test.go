@@ -33,39 +33,34 @@ func TestLerpColorReverseDirection(t *testing.T) {
 	}
 }
 
-func TestShadeToCharZero(t *testing.T) {
-	if got := ShadeToChar(0); got != " " {
-		t.Errorf("shade 0: got %q, want \" \"", got)
+func TestScaleColor(t *testing.T) {
+	rgb := [3]uint8{200, 100, 50}
+	if got := scaleColor(rgb, 0); got != ([3]uint8{0, 0, 0}) {
+		t.Errorf("shade 0: got %v, want black", got)
 	}
-}
-
-func TestShadeToCharBelowHaloThreshold(t *testing.T) {
-	// Dim blur tails below the halo threshold collapse to space so the
-	// halo fades to empty rather than fringing with ░.
-	if got := ShadeToChar(haloThreshold / 2); got != " " {
-		t.Errorf("sub-threshold shade: got %q, want \" \"", got)
+	if got := scaleColor(rgb, 1); got != rgb {
+		t.Errorf("shade 1: got %v, want %v", got, rgb)
 	}
-}
-
-func TestShadeToCharFullShadeReturnsDensest(t *testing.T) {
-	if got := ShadeToChar(1.0); got != "█" {
-		t.Errorf("shade 1.0: got %q, want \"█\"", got)
+	got := scaleColor(rgb, 0.5)
+	if got != ([3]uint8{100, 50, 25}) {
+		t.Errorf("shade 0.5: got %v, want [100 50 25]", got)
 	}
 }
 
 func TestRenderPlanetDimensions(t *testing.T) {
 	p := planets.MustGet("mercury")
 	shape := planets.GetShape("mercury")
-	out := RenderPlanet(shape, p, 1, 14)
+	out := RenderPlanet(shape, p, 14, 14)
 	lines := strings.Split(out, "\n")
-	if len(lines) != planets.ShapeRows {
-		t.Errorf("got %d lines, want %d", len(lines), planets.ShapeRows)
+	want := planets.ShapeRows / 2
+	if len(lines) != want {
+		t.Errorf("got %d lines, want %d (ShapeRows/2)", len(lines), want)
 	}
 }
 
 func TestRenderPlanetBlurryAtPhaseOne(t *testing.T) {
-	// At phase 1 the shape is maximally blurred, so the bright center cells
-	// of the sharp shape should render dimmer than they do at phase=total.
+	// At phase 1 the shape is maximally blurred, so early and late frames
+	// must differ visibly.
 	p := planets.MustGet("mercury")
 	shape := planets.GetShape("mercury")
 	early := RenderPlanet(shape, p, 1, 14)
@@ -80,9 +75,18 @@ func TestRenderPlanetContainsAnsiColor(t *testing.T) {
 	shape := planets.GetShape("mercury")
 	out := RenderPlanet(shape, p, 14, 14)
 	if !strings.Contains(out, "\x1b[38;2;") {
-		t.Error("expected truecolor ANSI escape in output")
+		t.Error("expected truecolor foreground ANSI escape in output")
 	}
 	if !strings.Contains(out, "\x1b[0m") {
 		t.Error("expected ANSI reset in output")
+	}
+}
+
+func TestRenderPlanetUsesHalfBlocks(t *testing.T) {
+	p := planets.MustGet("mercury")
+	shape := planets.GetShape("mercury")
+	out := RenderPlanet(shape, p, 14, 14)
+	if !strings.Contains(out, "▀") && !strings.Contains(out, "▄") {
+		t.Error("expected at least one half-block character (▀ or ▄) in output")
 	}
 }
