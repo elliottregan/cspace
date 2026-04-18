@@ -15,6 +15,12 @@ type recordingReporter struct{ events []captured }
 func (r *recordingReporter) Phase(name string, num, total int) {
 	r.events = append(r.events, captured{kind: "phase", name: name, num: num, total: total})
 }
+func (r *recordingReporter) Log(msg string) {
+	r.events = append(r.events, captured{kind: "log", name: msg})
+}
+func (r *recordingReporter) Port(label, url string) {
+	r.events = append(r.events, captured{kind: "port", name: label + " " + url})
+}
 func (r *recordingReporter) Warn(msg string) {
 	r.events = append(r.events, captured{kind: "warn", name: msg})
 }

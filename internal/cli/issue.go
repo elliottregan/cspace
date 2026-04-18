@@ -93,7 +93,7 @@ func runIssue(cmd *cobra.Command, args []string) error {
 
 	composeName := cfg.ComposeName(name)
 	_ = instance.SkipOnboarding(composeName)
-	instance.ShowPorts(name, cfg)
+	// Ports already surfaced via provision.Run's reporter.
 
 	// Git operations
 	_, _ = instance.DcExec(composeName, "git", "fetch", "--prune", "--quiet")

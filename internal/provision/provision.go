@@ -237,13 +237,23 @@ func Run(p Params) (result Result, err error) {
 		}
 	}
 
+	// Port mappings are stable once the container is up, but cheap enough
+	// to probe and visually satisfying during the overlay's plugin-install
+	// phase (`Installing plugins` takes the longest of any step). Emit
+	// them via the reporter so the overlay streams them into the HUD and
+	// the logReporter prints them inline — matching what ShowPorts used
+	// to dump after provision.Run returned.
+	for _, b := range instance.ProbePorts(name, cfg) {
+		reporter.Port(b.Label, b.URL)
+	}
+
 	// Phase 14: idempotent tail (marketplace + plugins + post-setup). Runs
 	// for both new and reused containers.
 	reportPhase(14, Phases[13])
 	if merr := ensureMarketplace(composeName); merr != nil {
 		reportWarn(fmt.Sprintf("marketplace setup: %v", merr))
 	}
-	if ierr := installPlugins(composeName, cfg); ierr != nil {
+	if ierr := installPlugins(composeName, cfg, reporter); ierr != nil {
 		reportWarn(fmt.Sprintf("plugin installation: %v", ierr))
 	}
 	if perr := runPostSetup(composeName, cfg); perr != nil {
@@ -544,7 +554,11 @@ func ensureMarketplace(composeName string) error {
 }
 
 // installPlugins installs recommended plugins from config, with an idempotency marker.
-func installPlugins(composeName string, cfg *config.Config) error {
+// Each plugin name is emitted through reporter.Log so overlay callers can
+// render a live tail of the install progress; the default logReporter
+// prints them as indented lines under the phase header (preserving the
+// pre-reporter behavior).
+func installPlugins(composeName string, cfg *config.Config, reporter Reporter) error {
 	if !cfg.Plugins.Enabled {
 		fmt.Println("Plugin installation disabled in config.")
 		return nil
@@ -562,7 +576,7 @@ func installPlugins(composeName string, cfg *config.Config) error {
 
 	fmt.Println("Installing recommended plugins...")
 	for _, plugin := range cfg.Plugins.Install {
-		fmt.Printf("  - %s\n", plugin)
+		reporter.Log(plugin)
 		// Ignore individual plugin install errors (matching bash behavior)
 		_, _ = instance.DcExec(composeName, "claude", "plugin", "install", plugin)
 	}

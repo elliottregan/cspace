@@ -188,7 +188,7 @@ func TeleportRun(p TeleportParams) error {
 	if err := ensureMarketplace(composeName); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: marketplace setup: %v\n", err)
 	}
-	if err := installPlugins(composeName, cfg); err != nil {
+	if err := installPlugins(composeName, cfg, logReporter{}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: plugin installation: %v\n", err)
 	}
 	if err := runPostSetup(composeName, cfg); err != nil {

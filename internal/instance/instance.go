@@ -241,49 +241,78 @@ func DcExecInteractive(composeName string, cmdArgs ...string) error {
 	return cmd.Run()
 }
 
-// ShowPorts formats port mappings for an instance and prints to stdout.
-func ShowPorts(name string, cfg *config.Config) {
+// PortBinding pairs a human-readable label with the host URL that maps
+// to a container port.
+type PortBinding struct {
+	Label string
+	URL   string
+}
+
+// ProbePorts queries Docker for all host port mappings associated with
+// an instance and returns them as labeled URLs. Results come back in a
+// stable order: configured devcontainer ports first (by config map
+// iteration), then any sidecar services discovered via `docker compose
+// ps`. Unavailable or unmapped ports are silently dropped; callers that
+// need errors should inspect Docker directly.
+func ProbePorts(name string, cfg *config.Config) []PortBinding {
 	composeName := cfg.ComposeName(name)
+	var bindings []PortBinding
 
-	fmt.Printf("Ports for %s:\n", name)
-
-	// Show devcontainer ports from config
 	for port, label := range cfg.Container.Ports {
-		hostPort := ports.GetHostPort(composeName, ServiceName, port)
-		if hostPort != "" {
-			fmt.Printf("  %s: http://localhost:%s\n", label, hostPort)
+		if hostPort := ports.GetHostPort(composeName, ServiceName, port); hostPort != "" {
+			bindings = append(bindings, PortBinding{
+				Label: label,
+				URL:   "http://localhost:" + hostPort,
+			})
 		}
 	}
 
-	// Show any additional service ports via docker compose ps
+	// Sidecar services (browser, playwright run-server, etc.).
 	out, err := exec.Command(
 		"docker", "compose",
 		"-p", composeName,
 		"ps", "--format", "{{.Service}}\t{{.Ports}}",
 	).Output()
 	if err != nil {
-		return
+		return bindings
 	}
-
 	for _, line := range splitLines(out) {
 		parts := strings.SplitN(line, "\t", 2)
 		svc := parts[0]
 		if svc == "" || svc == ServiceName || len(parts) < 2 {
 			continue
 		}
-		// Parse port mappings like "0.0.0.0:9222->9222/tcp"
 		portStr := parts[1]
 		if portStr == "" {
 			continue
 		}
-		// Extract host port from first mapping
-		if idx := strings.Index(portStr, "->"); idx >= 0 {
-			hostPart := portStr[:idx]
-			if colonIdx := strings.LastIndex(hostPart, ":"); colonIdx >= 0 {
-				hostPort := hostPart[colonIdx+1:]
-				fmt.Printf("  %s: http://localhost:%s\n", svc, hostPort)
-			}
+		// Mapping format: "0.0.0.0:12345->9222/tcp". Take the host side
+		// of the first mapping only.
+		idx := strings.Index(portStr, "->")
+		if idx < 0 {
+			continue
 		}
+		hostPart := portStr[:idx]
+		colonIdx := strings.LastIndex(hostPart, ":")
+		if colonIdx < 0 {
+			continue
+		}
+		bindings = append(bindings, PortBinding{
+			Label: svc,
+			URL:   "http://localhost:" + hostPart[colonIdx+1:],
+		})
+	}
+	return bindings
+}
+
+// ShowPorts prints port mappings for an instance to stdout. Used by
+// `cspace ports` and by the TUI's "View ports" menu entry. The
+// provisioning overlay no longer calls this — it streams the same
+// bindings through Reporter.Port.
+func ShowPorts(name string, cfg *config.Config) {
+	fmt.Printf("Ports for %s:\n", name)
+	for _, b := range ProbePorts(name, cfg) {
+		fmt.Printf("  %s: %s\n", b.Label, b.URL)
 	}
 }
 
@@ -342,15 +371,51 @@ func DcCp(composeName, hostPath, containerPath string) error {
 	return cmd.Run()
 }
 
-// SkipOnboarding sets hasCompletedOnboarding=true in the container's
-// ~/.claude.json file. Auth is handled by CLAUDE_CODE_OAUTH_TOKEN env var.
+// SkipOnboarding pre-accepts every interactive prompt Claude Code would
+// otherwise show on a fresh-container launch, so `cspace up` runs
+// hands-free:
+//
+//  1. hasCompletedOnboarding (in ~/.claude.json) — dismisses the
+//     authentication / setup wizard. Auth itself comes from
+//     CLAUDE_CODE_OAUTH_TOKEN.
+//  2. projects["/workspace"].hasTrustDialogAccepted (in ~/.claude.json) —
+//     per-directory "Accessing workspace: /workspace" trust prompt.
+//     Safe to auto-accept: /workspace is the repo we just provisioned
+//     inside an isolated container.
+//  3. enableAllProjectMcpServers (in /etc/claude-code/managed-settings.json) —
+//     pre-approves every server a project declares in .mcp.json, skipping
+//     the "New MCP server found in .mcp.json: <name>" prompt.
+//  4. skipDangerousModePermissionPrompt (same file) — pre-accepts the
+//     one-time "Yes, I accept" confirmation Claude shows the first time
+//     it's launched with --dangerously-skip-permissions. We always launch
+//     that way inside cspace, so the prompt is pure friction.
+//
+// Keys #3 and #4 live in the managed layer (highest precedence in Claude
+// Code's settings chain) so a project's own .claude/settings.json cannot
+// toggle them off. Written here, not in the Dockerfile, so policy
+// changes ship with the Go CLI — no `cspace rebuild` needed.
 func SkipOnboarding(composeName string) error {
 	script := `const fs = require('fs'), f = '/home/dev/.claude.json';
 const d = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f)) : {};
 d.hasCompletedOnboarding = true;
+d.projects = d.projects || {};
+d.projects['/workspace'] = d.projects['/workspace'] || {};
+d.projects['/workspace'].hasTrustDialogAccepted = true;
 fs.writeFileSync(f, JSON.stringify(d));`
-	_, err := DcExec(composeName, "node", "-e", script)
+	if _, err := DcExec(composeName, "node", "-e", script); err != nil {
+		return err
+	}
+	const managedSettings = `{"enableAllProjectMcpServers":true,"skipDangerousModePermissionPrompt":true}`
+	_, err := DcExecRoot(composeName, "sh", "-c",
+		`mkdir -p /etc/claude-code && printf %s `+shellQuote(managedSettings)+` > /etc/claude-code/managed-settings.json`,
+	)
 	return err
+}
+
+// shellQuote wraps s in single quotes, escaping any embedded single
+// quotes so the result is safe to embed in a POSIX shell command.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // dcExecOutput runs a command in the devcontainer and returns stdout,

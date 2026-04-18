@@ -133,8 +133,9 @@ func runUpWithArgs(name, branch string, noClaude, verbose bool, prompt, promptFi
 		fmt.Fprintf(os.Stderr, "warning: skip onboarding: %v\n", err)
 	}
 
-	// Show port mappings
-	instance.ShowPorts(name, cfg)
+	// Port mappings are already surfaced by provision.Run via the
+	// reporter (overlay HUD in the default path, stdout lines in
+	// --verbose mode), so there's nothing to print here.
 
 	// Git operations — fetch and checkout/pull
 	_, _ = instance.DcExec(composeName, "git", "fetch", "--prune", "--quiet")

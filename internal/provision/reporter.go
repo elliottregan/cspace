@@ -15,6 +15,16 @@ import (
 type Reporter interface {
 	// Phase announces entry into a named phase (1-indexed).
 	Phase(name string, num, total int)
+	// Log surfaces a sub-phase detail line (e.g. the name of a plugin
+	// currently being installed). Overlay reporters render the last few
+	// as a scrolling tail; the default reporter prints them as indented
+	// lines under the phase header.
+	Log(msg string)
+	// Port announces a host port mapping (label → URL) that's come
+	// online. Overlay reporters stream them into the HUD; the default
+	// reporter prints them as indented lines, matching what the
+	// pre-overlay `cspace up` flow used to dump via instance.ShowPorts.
+	Port(label, url string)
 	// Warn surfaces a non-fatal issue.
 	Warn(msg string)
 	// Done is called once, on successful completion.
@@ -51,6 +61,14 @@ type logReporter struct{}
 
 func (logReporter) Phase(name string, num, total int) {
 	fmt.Printf("[%d/%d] %s...\n", num, total, name)
+}
+
+func (logReporter) Log(msg string) {
+	fmt.Printf("  - %s\n", msg)
+}
+
+func (logReporter) Port(label, url string) {
+	fmt.Printf("  %s: %s\n", label, url)
 }
 
 func (logReporter) Warn(msg string) {

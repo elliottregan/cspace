@@ -20,6 +20,12 @@ type EventKind int
 const (
 	// PhaseEvent announces that provisioning has entered a new phase.
 	PhaseEvent EventKind = iota
+	// LogEvent carries a sub-phase detail line (e.g. the current plugin
+	// being installed). The overlay keeps a short tail of the most recent.
+	LogEvent
+	// PortEvent announces that a host port mapping has come online.
+	// The overlay accumulates them in arrival order.
+	PortEvent
 	// WarnEvent carries a provisioning warning (non-fatal).
 	WarnEvent
 	// DoneEvent signals successful completion.
@@ -28,14 +34,28 @@ const (
 	ErrorEvent
 )
 
+// logTailLen caps how many recent reporter.Log lines the overlay shows
+// beneath the phase header. Three is enough to feel live without
+// pushing the progress bar off-screen on short terminals.
+const logTailLen = 3
+
 // ProvisionEvent is the message sent from provision.Run to the overlay over
 // a buffered channel. One goroutine writes; bubbletea reads.
+//
+// Field aliasing by Kind:
+//   - PhaseEvent:  Phase, Num, Total
+//   - LogEvent:    Message
+//   - PortEvent:   Label, URL
+//   - WarnEvent:   Message
+//   - ErrorEvent:  Phase, Err
 type ProvisionEvent struct {
 	Kind    EventKind
 	Phase   string
 	Num     int
 	Total   int
 	Message string
+	Label   string
+	URL     string
 	Err     error
 }
 
@@ -62,6 +82,16 @@ func (r *ChannelReporter) Phase(name string, num, total int) {
 		Num:   num,
 		Total: total,
 	}
+}
+
+// Log dispatches a LogEvent with a sub-phase detail line.
+func (r *ChannelReporter) Log(msg string) {
+	r.events <- ProvisionEvent{Kind: LogEvent, Message: msg}
+}
+
+// Port dispatches a PortEvent announcing a host port mapping.
+func (r *ChannelReporter) Port(label, url string) {
+	r.events <- ProvisionEvent{Kind: PortEvent, Label: label, URL: url}
 }
 
 // Warn dispatches a WarnEvent. The overlay currently ignores warnings, but
@@ -94,11 +124,19 @@ type ModelConfig struct {
 	Now    func() time.Time // injectable for tests
 }
 
+// portEntry is one row in the overlay's port listing.
+type portEntry struct {
+	Label string
+	URL   string
+}
+
 // Model is the bubbletea model driving the provisioning overlay.
 type Model struct {
 	cfg      ModelConfig
 	phase    string
 	phaseNum int
+	logs     []string // most recent sub-phase detail lines (len ≤ logTailLen)
+	ports    []portEntry
 	start    time.Time
 	err      error
 	errPhase string
@@ -196,9 +234,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case PhaseEvent:
 			m.phase = msg.Phase
 			m.phaseNum = msg.Num
+			m.logs = nil // fresh phase starts with an empty log tail
 			if msg.Total > 0 {
 				m.cfg.Total = msg.Total
 			}
+			return m, waitForEvent(m.cfg.Events)
+		case LogEvent:
+			m.logs = append(m.logs, msg.Message)
+			if len(m.logs) > logTailLen {
+				m.logs = m.logs[len(m.logs)-logTailLen:]
+			}
+			return m, waitForEvent(m.cfg.Events)
+		case PortEvent:
+			m.ports = append(m.ports, portEntry{Label: msg.Label, URL: msg.URL})
 			return m, waitForEvent(m.cfg.Events)
 		case WarnEvent:
 			// Drop silently for now.
@@ -381,9 +429,14 @@ func (m Model) hudLines() []string {
 		m.cfg.Planet.Color[0], m.cfg.Planet.Color[1], m.cfg.Planet.Color[2])
 	planetStyle := nameValueStyle.Foreground(lipgloss.Color(planetHex))
 
+	// Progress reflects phases *completed*, not entered: we subtract one
+	// from phaseNum while the phase is running. Without this, the bar
+	// reads 100 % during the final (long) "Installing plugins" phase —
+	// which looks like a stall. DoneEvent flips m.done and the view
+	// disappears before the bar would otherwise reach 100 %.
 	progress := 0.0
-	if m.cfg.Total > 0 {
-		progress = float64(m.phaseNum) / float64(m.cfg.Total)
+	if m.cfg.Total > 0 && m.phaseNum > 0 {
+		progress = float64(m.phaseNum-1) / float64(m.cfg.Total)
 	}
 	elapsed := m.cfg.Now().Sub(m.start)
 	mm := int(elapsed.Minutes())
@@ -396,7 +449,7 @@ func (m Model) hudLines() []string {
 	)
 	rule := hudColStyle.Render(hudDimStyle.Render(strings.Repeat("─", hudColWidth-2)))
 
-	return []string{
+	lines := []string{
 		blank,
 		header,
 		blank,
@@ -408,9 +461,64 @@ func (m Model) hudLines() []string {
 		renderStatRow("STATE", sciFiLabelFor(m.phase), valueStyle),
 		blank,
 		hudColStyle.Render(renderProgressBar(progress)),
-		blank,
-		hudColStyle.Render(hudBaseStyle.Render("›  ") + hudBaseStyle.Render(m.phase)),
 	}
+	if len(m.ports) > 0 {
+		lines = append(lines, blank, hudColStyle.Render(hudDimStyle.Render("UPLINKS")))
+		for _, p := range m.ports {
+			lines = append(lines, hudColStyle.Render(
+				hudAccentStyle.Render(" ↗ ")+formatPortLine(p),
+			))
+		}
+	}
+	lines = append(lines,
+		blank,
+		hudColStyle.Render(hudBaseStyle.Render("›  ")+hudBaseStyle.Render(m.phase)),
+	)
+	for _, entry := range m.logs {
+		lines = append(lines, hudColStyle.Render(
+			hudDimStyle.Render("   • ")+hudDimStyle.Render(truncate(entry, hudColWidth-5)),
+		))
+	}
+	return lines
+}
+
+// formatPortLine renders one port row as e.g. "app    :30001" — host
+// portion only, sized to fit the HUD column. The full URL is reserved
+// for the log-reporter (verbose) path.
+func formatPortLine(p portEntry) string {
+	host := p.URL
+	// Strip "http://localhost" prefix when present so the row fits.
+	const localhost = "http://localhost"
+	if strings.HasPrefix(host, localhost) {
+		host = host[len(localhost):]
+	}
+	label := truncate(p.Label, 16)
+	// Pad label to a consistent column so ports align across rows.
+	padded := label + strings.Repeat(" ", max(0, 16-runeLen(label)))
+	return hudBaseStyle.Render(padded) + hudAccentStyle.Render(host)
+}
+
+func runeLen(s string) int { return len([]rune(s)) }
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// truncate returns s clipped to max runes with an ellipsis suffix when
+// the input exceeds the budget. Used to keep log-tail entries inside
+// the HUD column width.
+func truncate(s string, max int) string {
+	if max <= 1 {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max-1]) + "…"
 }
 
 func (m Model) loadingView() string {
