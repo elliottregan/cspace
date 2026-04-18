@@ -469,8 +469,8 @@ func mercuryRaysShape() Shape {
 }
 
 // marsSurfaceShape — large dusty basins and storm streaks. Rendered
-// with a dark rust color so regions look like deep Martian terrain
-// (Hellas Planitia, Valles Marineris) against the lighter orange body.
+// with a dark rust color so regions look like deep basaltic terrain
+// against the lighter orange body.
 func marsSurfaceShape() Shape {
 	return buildFormationShape([]formationCenter{
 		{0.28, 0.38, 0.13, 0.06, 0.70},

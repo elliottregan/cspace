@@ -55,9 +55,8 @@ func TestGetShapeDimensions(t *testing.T) {
 func TestGetShapeUnknown(t *testing.T) {
 	// Unknown names should fall back to the mercury shape so custom
 	// instance names still render something.
-	s := GetShape("ci-bot")
-	if len(s) != ShapeRows {
-		t.Errorf("fallback shape: got %d rows, want %d", len(s), ShapeRows)
+	if got, want := GetShape("ci-bot"), GetShape("mercury"); got != want {
+		t.Error("expected unknown names to fall back to the mercury shape")
 	}
 }
 

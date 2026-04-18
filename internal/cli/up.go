@@ -238,7 +238,7 @@ func provisionWithOverlay(name, branch string) error {
 	defer func() {
 		os.Stdout = origStdout
 		os.Stderr = origStderr
-		devNull.Close()
+		_ = devNull.Close()
 	}()
 
 	done := make(chan error, 1)
