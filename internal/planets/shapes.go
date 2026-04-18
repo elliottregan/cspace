@@ -393,14 +393,14 @@ func mercuryRaysShape() Shape {
 
 	// Bright rayed craters. Placed asymmetrically so they feel natural.
 	centers := []struct {
-		cx, cy        float64 // crater position in unit space
-		radius        float64 // outer reach of the rays
-		strength      float64 // peak brightness
-		rayCount      int     // N-fold symmetric ray pattern
-		phaseOffset   float64 // rotation of the ray pattern
+		cx, cy      float64 // crater position in unit space
+		radius      float64 // outer reach of the rays
+		strength    float64 // peak brightness
+		rayCount    int     // N-fold symmetric ray pattern
+		phaseOffset float64 // rotation of the ray pattern
 	}{
-		{0.50, 0.58, 0.32, 0.60, 14, 0.7},  // central, just below equator
-		{0.66, 0.22, 0.22, 0.45, 11, 1.9},  // near north pole, ~1 o'clock
+		{0.50, 0.58, 0.32, 0.60, 14, 0.7}, // central, just below equator
+		{0.66, 0.22, 0.22, 0.45, 11, 1.9}, // near north pole, ~1 o'clock
 	}
 
 	var s Shape
@@ -514,12 +514,12 @@ func neptuneStormShape() Shape {
 // shape builder and the overlay mask so band edges stay in sync.
 func saturnRingBands(innerU float64) []struct{ inner, outer, shade float64 } {
 	return []struct{ inner, outer, shade float64 }{
-		{innerU, innerU + 0.09, 0.50},         // C ring — innermost, faint
-		{innerU + 0.10, innerU + 0.11, 0.18},  // thin C/B gap
-		{innerU + 0.12, innerU + 0.24, 0.88},  // B ring — brightest
-		{innerU + 0.25, innerU + 0.28, 0.18},  // Cassini division
-		{innerU + 0.29, innerU + 0.36, 0.78},  // A ring
-		{innerU + 0.37, 0.97, 0.42},           // outer haze / F region
+		{innerU, innerU + 0.09, 0.50},        // C ring — innermost, faint
+		{innerU + 0.10, innerU + 0.11, 0.18}, // thin C/B gap
+		{innerU + 0.12, innerU + 0.24, 0.88}, // B ring — brightest
+		{innerU + 0.25, innerU + 0.28, 0.18}, // Cassini division
+		{innerU + 0.29, innerU + 0.36, 0.78}, // A ring
+		{innerU + 0.37, 0.97, 0.42},          // outer haze / F region
 	}
 }
 
@@ -687,9 +687,9 @@ func applySaturnBands(s Shape) Shape {
 func saturnEquatorTint(bodyRx float64) Shape {
 	var s Shape
 	const (
-		centerY     = 0.50
-		bandHalfHt  = 0.055
-		maxBlend    = 0.35
+		centerY    = 0.50
+		bandHalfHt = 0.055
+		maxBlend   = 0.35
 	)
 	for r := 0; r < ShapeRows; r++ {
 		y := (float64(r) + 0.5) / float64(ShapeRows)
