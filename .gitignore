@@ -32,3 +32,4 @@ dist/
 # `make sync-embedded` has ever run.
 internal/assets/embedded/*
 !internal/assets/embedded/.gitkeep
+.claude/settings.local.json

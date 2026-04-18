@@ -2,14 +2,18 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
 	"github.com/elliottregan/cspace/internal/instance"
+	"github.com/elliottregan/cspace/internal/overlay"
+	"github.com/elliottregan/cspace/internal/planets"
 	"github.com/elliottregan/cspace/internal/ports"
 	"github.com/elliottregan/cspace/internal/provision"
 	"github.com/elliottregan/cspace/internal/supervisor"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 func newUpCmd() *cobra.Command {
@@ -29,6 +33,9 @@ Use --no-claude to provision the container without launching Claude.`,
 	}
 
 	cmd.Flags().Bool("no-claude", false, "Create instance without launching Claude")
+	cmd.Flags().Bool("verbose", false,
+		"Stream raw provisioning output instead of showing the planet overlay. "+
+			"Use when debugging provisioning failures or when piping output.")
 	cmd.Flags().String("prompt", "", "Inline prompt text for autonomous agent")
 	cmd.Flags().String("prompt-file", "", "Path to a prompt file for autonomous agent")
 	cmd.Flags().Bool("persistent", false,
@@ -43,6 +50,7 @@ Use --no-claude to provision the container without launching Claude.`,
 
 func runUp(cmd *cobra.Command, args []string) error {
 	noClaude, _ := cmd.Flags().GetBool("no-claude")
+	verbose, _ := cmd.Flags().GetBool("verbose")
 	prompt, _ := cmd.Flags().GetString("prompt")
 	promptFile, _ := cmd.Flags().GetString("prompt-file")
 	persistent, _ := cmd.Flags().GetBool("persistent")
@@ -101,12 +109,12 @@ func runUp(cmd *cobra.Command, args []string) error {
 		branch = baseOverride
 	}
 
-	return runUpWithArgs(name, branch, noClaude, prompt, promptFile, teleportFrom, persistent)
+	return runUpWithArgs(name, branch, noClaude, verbose, prompt, promptFile, teleportFrom, persistent)
 }
 
 // runUpWithArgs is the shared implementation for the up command, callable from
 // both the CLI handler and the TUI menu.
-func runUpWithArgs(name, branch string, noClaude bool, prompt, promptFile, teleportFrom string, persistent bool) error {
+func runUpWithArgs(name, branch string, noClaude, verbose bool, prompt, promptFile, teleportFrom string, persistent bool) error {
 	if teleportFrom != "" {
 		return provision.TeleportRun(provision.TeleportParams{
 			Name:         name,
@@ -115,13 +123,7 @@ func runUpWithArgs(name, branch string, noClaude bool, prompt, promptFile, telep
 		})
 	}
 
-	// Provision the instance
-	_, err := provision.Run(provision.Params{
-		Name:   name,
-		Branch: branch,
-		Cfg:    cfg,
-	})
-	if err != nil {
+	if err := provisionWithUI(name, branch, verbose); err != nil {
 		return err
 	}
 
@@ -179,4 +181,95 @@ func runUpWithArgs(name, branch string, noClaude bool, prompt, promptFile, telep
 		StderrLog:  supervisor.ContainerAgentStderrLog,
 		Persistent: persistent,
 	}, cfg)
+}
+
+// provisionWithUI dispatches to the overlay or the raw log stream based on
+// TTY, --verbose, and terminal size. The overlay path runs provision in a
+// goroutine while a bubbletea Program consumes a buffered event channel;
+// returns the provisioning error (if any) after the overlay exits.
+func provisionWithUI(name, branch string, verbose bool) error {
+	if shouldUseOverlay(verbose) {
+		return provisionWithOverlay(name, branch)
+	}
+	_, err := provision.Run(provision.Params{
+		Name:   name,
+		Branch: branch,
+		Cfg:    cfg,
+	})
+	return err
+}
+
+func shouldUseOverlay(verbose bool) bool {
+	if verbose {
+		return false
+	}
+	if !isInteractive() {
+		return false
+	}
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		return false
+	}
+	w, h, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || w < 96 || h < 32 {
+		return false
+	}
+	return true
+}
+
+func provisionWithOverlay(name, branch string) error {
+	events := make(chan overlay.ProvisionEvent, 16)
+	reporter := overlay.NewChannelReporter(events)
+
+	// provision.Run delegates to subprocesses (docker compose, git,
+	// docker exec) and helpers (configureGit, runPostSetup) that write
+	// directly to os.Stdout/os.Stderr, bypassing Params.Stdout/Stderr.
+	// Redirect the process's stdout/stderr to /dev/null for the lifetime
+	// of the overlay so none of that leaks into the alt-screen. We hand
+	// the original stdout to bubbletea explicitly so the overlay still
+	// renders on the real terminal.
+	origStdout := os.Stdout
+	origStderr := os.Stderr
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("opening /dev/null: %w", err)
+	}
+	os.Stdout = devNull
+	os.Stderr = devNull
+	defer func() {
+		os.Stdout = origStdout
+		os.Stderr = origStderr
+		_ = devNull.Close()
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := provision.Run(provision.Params{
+			Name:     name,
+			Branch:   branch,
+			Cfg:      cfg,
+			Reporter: reporter,
+			Stdout:   io.Discard,
+			Stderr:   io.Discard,
+		})
+		close(events)
+		done <- err
+	}()
+
+	planet := planets.MustGet(name)
+	model := overlay.ModelConfig{
+		Name:   name,
+		Planet: planet,
+		Total:  len(provision.Phases),
+		Events: events,
+	}
+	if err := overlay.RunOn(model, origStdout); err != nil {
+		// Drain the channel so the provision goroutine doesn't block on
+		// its buffered reporter sends when the overlay couldn't render.
+		go func() {
+			for range events {
+			}
+		}()
+		return err
+	}
+	return <-done
 }

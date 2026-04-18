@@ -1,0 +1,12 @@
+# Shellcheck suppressions for existing project scripts.
+#
+# SC2059: variable in printf format string. Our statusline uses color
+# escape vars in format strings intentionally, which is safe because
+# the contents are hard-coded terminal escapes.
+# SC1083: literal `{` — flags braces in format strings that are meant
+# as output characters, not shell syntax.
+# SC2034: variable appears unused — exported style vars that are read
+# externally or left for future use.
+# SC1003: escape a single quote — alternate quoting that shellcheck
+# flags but is intentional in several places.
+disable=SC2059,SC1083,SC2034,SC1003
