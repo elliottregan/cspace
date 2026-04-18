@@ -220,6 +220,27 @@ func provisionWithOverlay(name, branch string) error {
 	events := make(chan overlay.ProvisionEvent, 16)
 	reporter := overlay.NewChannelReporter(events)
 
+	// provision.Run delegates to subprocesses (docker compose, git,
+	// docker exec) and helpers (configureGit, runPostSetup) that write
+	// directly to os.Stdout/os.Stderr, bypassing Params.Stdout/Stderr.
+	// Redirect the process's stdout/stderr to /dev/null for the lifetime
+	// of the overlay so none of that leaks into the alt-screen. We hand
+	// the original stdout to bubbletea explicitly so the overlay still
+	// renders on the real terminal.
+	origStdout := os.Stdout
+	origStderr := os.Stderr
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("opening /dev/null: %w", err)
+	}
+	os.Stdout = devNull
+	os.Stderr = devNull
+	defer func() {
+		os.Stdout = origStdout
+		os.Stderr = origStderr
+		devNull.Close()
+	}()
+
 	done := make(chan error, 1)
 	go func() {
 		_, err := provision.Run(provision.Params{
@@ -241,7 +262,7 @@ func provisionWithOverlay(name, branch string) error {
 		Total:  len(provision.Phases),
 		Events: events,
 	}
-	if err := overlay.Run(model); err != nil {
+	if err := overlay.RunOn(model, origStdout); err != nil {
 		// Drain the channel so the provision goroutine doesn't block on
 		// its buffered reporter sends when the overlay couldn't render.
 		go func() {

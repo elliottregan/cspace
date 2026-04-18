@@ -2,6 +2,8 @@ package overlay
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -474,7 +476,15 @@ func (m Model) errorView() string {
 // Run starts the bubbletea program in alt-screen mode and blocks until
 // the user dismisses the error panel or provisioning completes.
 func Run(cfg ModelConfig) error {
-	p := tea.NewProgram(NewModel(cfg), tea.WithAltScreen())
+	return RunOn(cfg, os.Stdout)
+}
+
+// RunOn is Run with an explicit output writer. Callers that need to
+// redirect the process's os.Stdout (e.g. to silence leaking subprocess
+// output) pass the original os.Stdout here so bubbletea keeps writing
+// to the real terminal.
+func RunOn(cfg ModelConfig, out io.Writer) error {
+	p := tea.NewProgram(NewModel(cfg), tea.WithAltScreen(), tea.WithOutput(out))
 	_, err := p.Run()
 	return err
 }
