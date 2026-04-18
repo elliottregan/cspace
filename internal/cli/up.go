@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/elliottregan/cspace/internal/instance"
 	"github.com/elliottregan/cspace/internal/overlay"
 	"github.com/elliottregan/cspace/internal/planets"
 	"github.com/elliottregan/cspace/internal/ports"
@@ -127,27 +126,10 @@ func runUpWithArgs(name, branch string, noClaude, verbose bool, prompt, promptFi
 		return err
 	}
 
-	// Skip Claude onboarding
+	// provision.Run's final phase handles SkipOnboarding + git sync, so
+	// there's nothing between overlay close and exec claude that could
+	// flash the terminal.
 	composeName := cfg.ComposeName(name)
-	if err := instance.SkipOnboarding(composeName); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: skip onboarding: %v\n", err)
-	}
-
-	// Port mappings are already surfaced by provision.Run via the
-	// reporter (overlay HUD in the default path, stdout lines in
-	// --verbose mode), so there's nothing to print here.
-
-	// Git operations — fetch and checkout/pull
-	_, _ = instance.DcExec(composeName, "git", "fetch", "--prune", "--quiet")
-	if branch != "" {
-		// Try checkout existing branch, then create tracking branch
-		if _, err := instance.DcExec(composeName, "git", "checkout", branch); err != nil {
-			_, _ = instance.DcExec(composeName, "git", "checkout", "-b", branch, "origin/"+branch)
-		}
-		_, _ = instance.DcExec(composeName, "git", "reset", "--hard", "origin/"+branch)
-	} else {
-		_, _ = instance.DcExec(composeName, "git", "pull", "--ff-only", "--quiet")
-	}
 
 	if noClaude {
 		fmt.Printf("Instance '%s' is ready. Run 'cspace ssh %s' to connect.\n", name, name)

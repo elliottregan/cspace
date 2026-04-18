@@ -38,14 +38,16 @@ func TestReporterInterfaceImplementations(t *testing.T) {
 }
 
 func TestPhasesReference(t *testing.T) {
-	// Sanity check: the Phases slice exposes 14 labeled steps.
-	if len(Phases) != 14 {
-		t.Errorf("Phases: got %d entries, want 14", len(Phases))
+	if len(Phases) != 15 {
+		t.Errorf("Phases: got %d entries, want 15", len(Phases))
 	}
 	if Phases[0] != "Validating name" {
 		t.Errorf("Phases[0]: got %q", Phases[0])
 	}
 	if Phases[13] != "Installing plugins" {
 		t.Errorf("Phases[13]: got %q", Phases[13])
+	}
+	if Phases[14] != "Syncing workspace" {
+		t.Errorf("Phases[14]: got %q", Phases[14])
 	}
 }

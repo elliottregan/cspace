@@ -260,6 +260,25 @@ func Run(p Params) (result Result, err error) {
 		reportWarn(fmt.Sprintf("post-setup: %v", perr))
 	}
 
+	// Phase 15: last-mile workspace sync. Folded into provision.Run so
+	// callers can exec Claude immediately after Run returns, with no
+	// post-overlay shell commands flashing the main terminal buffer.
+	// SkipOnboarding pre-accepts Claude Code's first-run prompts; the
+	// git ops bring /workspace up to date before handoff.
+	reportPhase(15, Phases[14])
+	if sErr := instance.SkipOnboarding(composeName); sErr != nil {
+		reportWarn(fmt.Sprintf("skip onboarding: %v", sErr))
+	}
+	_, _ = instance.DcExec(composeName, "git", "fetch", "--prune", "--quiet")
+	if p.Branch != "" {
+		if _, err := instance.DcExec(composeName, "git", "checkout", p.Branch); err != nil {
+			_, _ = instance.DcExec(composeName, "git", "checkout", "-b", p.Branch, "origin/"+p.Branch)
+		}
+		_, _ = instance.DcExec(composeName, "git", "reset", "--hard", "origin/"+p.Branch)
+	} else {
+		_, _ = instance.DcExec(composeName, "git", "pull", "--ff-only", "--quiet")
+	}
+
 	return Result{Created: created, Name: name}, nil
 }
 

@@ -127,7 +127,7 @@ func runCoordinateWithArgs(prompt, promptFile, name, systemPromptFile string) er
 	}
 
 	composeName := cfg.ComposeName(name)
-	_ = instance.SkipOnboarding(composeName)
+	// SkipOnboarding is handled inside provision.Run's final phase.
 
 	// Re-copy host .env so the coordinator inherits GH_TOKEN, etc.
 	envFile := filepath.Join(cfg.ProjectRoot, ".env")

@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/elliottregan/cspace/internal/instance"
 	"github.com/elliottregan/cspace/internal/ports"
 	"github.com/elliottregan/cspace/internal/provision"
 	"github.com/elliottregan/cspace/internal/supervisor"
@@ -91,18 +90,9 @@ func runIssue(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// SkipOnboarding + git sync are handled inside provision.Run's
+	// final phase; nothing extra needed here.
 	composeName := cfg.ComposeName(name)
-	_ = instance.SkipOnboarding(composeName)
-	// Ports already surfaced via provision.Run's reporter.
-
-	// Git operations
-	_, _ = instance.DcExec(composeName, "git", "fetch", "--prune", "--quiet")
-	if baseBranch != "" {
-		if _, err := instance.DcExec(composeName, "git", "checkout", baseBranch); err != nil {
-			_, _ = instance.DcExec(composeName, "git", "checkout", "-b", baseBranch, "origin/"+baseBranch)
-		}
-		_, _ = instance.DcExec(composeName, "git", "reset", "--hard", "origin/"+baseBranch)
-	}
 
 	if err := supervisor.StagePromptText(composeName, prompt, supervisor.ContainerPromptPath); err != nil {
 		return err

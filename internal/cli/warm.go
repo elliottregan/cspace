@@ -49,9 +49,8 @@ func runWarm(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		// Skip onboarding
+		// SkipOnboarding is handled inside provision.Run's final phase.
 		composeName := cfg.ComposeName(name)
-		_ = instance.SkipOnboarding(composeName)
 
 		// Validate firewall — re-init if not done
 		if _, err := instance.DcExecRoot(composeName, "test", "-f", "/tmp/.firewall-init-done"); err != nil {

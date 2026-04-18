@@ -34,7 +34,7 @@ type Reporter interface {
 	Error(phase string, err error)
 }
 
-// Phases lists the human-readable label for each of the 14 provisioning
+// Phases lists the human-readable label for each of the provisioning
 // phases, in order. Exposed so callers (e.g. the overlay) can show the
 // total count ahead of provisioning starting.
 var Phases = []string{
@@ -52,6 +52,7 @@ var Phases = []string{
 	"Initializing workspace",
 	"Configuring git & env",
 	"Installing plugins",
+	"Syncing workspace",
 }
 
 // logReporter is the default reporter used when Params.Reporter is nil.
