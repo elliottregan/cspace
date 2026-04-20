@@ -1,0 +1,22 @@
+# cspace-search-mcp sidecar — exposes the MCP server for semantic search.
+# Depends on shared search infrastructure (llama-server, qdrant, reduce-api,
+# hdbscan-api) from docker-compose.core.yml.
+services:
+  cspace-search-mcp:
+    image: ${CSPACE_IMAGE:-cspace-dev}
+    container_name: ${CSPACE_CONTAINER_NAME}.search-mcp
+    depends_on:
+      llama-server:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    command: ["/usr/local/bin/cspace-search-mcp"]
+    working_dir: /workspace
+    volumes:
+      - workspace:/workspace:ro
+      - ${PROJECT_ROOT:-.}/.cspace/context:/workspace/.cspace/context
+    stdin_open: true
+    tty: false
+    restart: unless-stopped
+    networks:
+      - default

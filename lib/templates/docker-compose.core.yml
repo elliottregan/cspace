@@ -2,6 +2,9 @@
 # Project-specific services are added via compose file layering (-f).
 # Browser sidecar provides Chrome CDP + Playwright run-server per instance.
 
+include:
+  - docker-compose.search.yml
+
 services:
   cspace:
     image: ${CSPACE_IMAGE:-cspace-dev}
