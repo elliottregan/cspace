@@ -7,7 +7,10 @@ corpora:
     excludes:
       - "vendor/**"
       - "internal/assets/embedded/**"
-      - "docs/superpowers/specs/**"
+      # All prose/docs deferred to a future docs corpus. Keeps the code
+      # corpus focused on actual source: Go, shell, YAML, and the in-tree
+      # skill/command/agent .md files under lib/.
+      - "docs/**"
       - "*.lock"
       - "*.sum"
       - "package-lock.json"
