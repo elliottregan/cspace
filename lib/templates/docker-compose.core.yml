@@ -110,6 +110,38 @@ services:
     tty: true
     stdin_open: true
 
+  # llama.cpp embedding server — provides on-device vector embeddings for
+  # `cspace search`. Accessible inside the container at http://llama-server:8080.
+  # Model is downloaded from HuggingFace on first start and cached in the
+  # llama-models volume. Override the model with LLAMA_HF_REPO / LLAMA_HF_FILE.
+  llama-server:
+    image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
+    container_name: ${CSPACE_CONTAINER_NAME}.llama
+    command:
+      - --hf-repo
+      - ${LLAMA_HF_REPO:-ggml-org/embeddinggemma-300M-GGUF}
+      - --hf-file
+      - ${LLAMA_HF_FILE:-embeddinggemma-300M-Q8_0.gguf}
+      - --embedding
+      - --port
+      - "8080"
+      - --host
+      - "0.0.0.0"
+      - -b
+      - "2048"
+      - -ub
+      - "2048"
+    volumes:
+      - llama-models:/root/.cache
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 120s
+    networks:
+      - default
+
   # Consolidated browser sidecar — headless Chrome (CDP on 9222) + Playwright
   # run-server (3000) in one container. Both MCP servers (chrome-devtools,
   # playwright) run here via docker exec from the agent container.
@@ -156,6 +188,7 @@ volumes:
   claude-home:
   gh-config:
   cspace-logs:
+  llama-models:
     name: ${CSPACE_LOGS_VOLUME:-cspace-logs}
     external: true
 
