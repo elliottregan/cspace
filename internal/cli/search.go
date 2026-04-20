@@ -12,7 +12,7 @@ import (
 )
 
 func newSearchCmd() *cobra.Command {
-	var llamaURL, clusterURL, qdrantURL, dimReduceURL string
+	var llamaURL, clusterURL, qdrantURL, reduceURL, hdbscanURL string
 
 	cmd := &cobra.Command{
 		Use:     "search <query>",
@@ -44,7 +44,7 @@ func newSearchCmd() *cobra.Command {
 			minPts, _ := cmd.Flags().GetInt("min-pts")
 			topPer, _ := cmd.Flags().GetInt("top-per-cluster")
 			coordsOut, _ := cmd.Flags().GetString("coords-out")
-			return runSearchClusters(clusterURL, qdrantURL, dimReduceURL, limit, minPts, topPer, coordsOut)
+			return runSearchClusters(clusterURL, qdrantURL, reduceURL, hdbscanURL, limit, minPts, topPer, coordsOut)
 		},
 	}
 	clustersCmd.Flags().Int("limit", 500, "Maximum number of commits to index")
@@ -55,7 +55,8 @@ func newSearchCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&llamaURL, "llama-url", llamaURLDefault(), "llama.cpp server URL (retrieval adapter)")
 	cmd.PersistentFlags().StringVar(&clusterURL, "cluster-url", clusterURLDefault(), "llama.cpp server URL (clustering adapter)")
 	cmd.PersistentFlags().StringVar(&qdrantURL, "qdrant-url", qdrantURLDefault(), "Qdrant server URL")
-	cmd.PersistentFlags().StringVar(&dimReduceURL, "dim-reduce-url", dimReduceURLDefault(), "UMAP + HDBSCAN service URL")
+	cmd.PersistentFlags().StringVar(&reduceURL, "reduce-url", reduceURLDefault(), "Dimension reduction service URL (reduce-api)")
+	cmd.PersistentFlags().StringVar(&hdbscanURL, "hdbscan-url", hdbscanURLDefault(), "HDBSCAN clustering service URL")
 	cmd.AddCommand(indexCmd)
 	cmd.AddCommand(clustersCmd)
 	return cmd
@@ -84,11 +85,18 @@ func clusterURLDefault() string {
 	return "http://llama-clustering:8080"
 }
 
-func dimReduceURLDefault() string {
-	if u := os.Getenv("DIM_REDUCE_URL"); u != "" {
+func reduceURLDefault() string {
+	if u := os.Getenv("REDUCE_URL"); u != "" {
 		return u
 	}
-	return "http://dim-reduce:8090"
+	return "http://reduce-api:8000"
+}
+
+func hdbscanURLDefault() string {
+	if u := os.Getenv("HDBSCAN_URL"); u != "" {
+		return u
+	}
+	return "http://hdbscan-api:8090"
 }
 
 func runSearchIndex(llamaURL, qdrantURL string, limit int) error {
@@ -187,7 +195,7 @@ func clusterCollectionName(repoPath string) string {
 	return search.CollectionName(repoPath) + "-clustering"
 }
 
-func runSearchClusters(clusterURL, qdrantURL, dimReduceURL string, limit, minPts, topPer int, coordsOut string) error {
+func runSearchClusters(clusterURL, qdrantURL, reduceURL, hdbscanURL string, limit, minPts, topPer int, coordsOut string) error {
 	repoPath, err := os.Getwd()
 	if err != nil {
 		return err
@@ -214,14 +222,23 @@ func runSearchClusters(clusterURL, qdrantURL, dimReduceURL string, limit, minPts
 		vectors[i] = p.Vector
 	}
 
-	fmt.Printf("Reducing to 2D + clustering via %s ...\n", dimReduceURL)
+	fmt.Printf("Reducing %d vectors to 2D via %s ...\n", len(vectors), reduceURL)
 	start := time.Now()
-	dc := search.NewClusterClient(dimReduceURL)
-	labels, coords, err := dc.Cluster(vectors, minPts, 1)
+	reducer := search.NewReduceClient(reduceURL)
+	coords, err := reducer.Reduce(vectors, 2)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Done in %s\n\n", time.Since(start).Round(time.Millisecond))
+	fmt.Printf("Reduced in %s\n", time.Since(start).Round(time.Millisecond))
+
+	fmt.Printf("Clustering 2D points via %s ...\n", hdbscanURL)
+	start = time.Now()
+	hd := search.NewHdbscanClient(hdbscanURL)
+	labels, err := hd.Cluster(coords, minPts, 1)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Clustered in %s\n\n", time.Since(start).Round(time.Millisecond))
 
 	clusters, noise := search.BuildClusters(points, coords, labels)
 

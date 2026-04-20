@@ -179,14 +179,28 @@ services:
     networks:
       - default
 
-  # UMAP + HDBSCAN service for `cspace search clusters`. Reduces vectors to
-  # 2D (so clustering is well-behaved and the projection can be plotted) then
-  # runs HDBSCAN on the 2D points. Built locally from lib/dim-reduce/.
-  dim-reduce:
-    image: ${DIM_REDUCE_IMAGE:-cspace-dim-reduce}
-    container_name: ${CSPACE_CONTAINER_NAME}.dim-reduce
+  # Dimension reduction service for `cspace search clusters`. Uses PaCMAP /
+  # LocalMAP to project high-dim embeddings onto 2D. Pre-built image from
+  # mindthemath — we only consume its /reduce endpoint.
+  reduce-api:
+    image: ${REDUCE_API_IMAGE:-mindthemath/reduce-api}
+    container_name: ${CSPACE_CONTAINER_NAME}.reduce-api
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/health\")' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - default
+
+  # HDBSCAN clustering service for 2D points. Runs after reduce-api. Minimal
+  # image built locally from lib/hdbscan-api/ (just hdbscan + flask).
+  hdbscan-api:
+    image: ${HDBSCAN_API_IMAGE:-cspace-hdbscan-api}
+    container_name: ${CSPACE_CONTAINER_NAME}.hdbscan
     build:
-      context: ${CSPACE_HOME}/lib/dim-reduce
+      context: ${CSPACE_HOME}/lib/hdbscan-api
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://localhost:8090/health || exit 1"]
       interval: 10s
