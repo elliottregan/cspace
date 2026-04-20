@@ -16,6 +16,17 @@ The `.cspace/context/` directory holds layered planning context accessible via t
 
 Agents call `read_context` at the start of non-trivial work. `.cspace/context/` is bind-mounted from the host into every cspace container for the project, so writes (decisions, discoveries, findings) by one agent are visible to siblings in real time without git push/pull. The cspace-context MCP server reads/writes directly against this bind mount; `writeEntry` uses `O_EXCL` create for race-safe concurrent creates across containers. See `docs/superpowers/specs/2026-04-13-context-mcp-server-design.md` for the original contract (findings are a later extension).
 
+## Advisors
+
+Advisors are long-running specialist agents consulted alongside the coordinator. Each runs in its own cspace container as `role=advisor` — persistent, session-continuous across `cspace coordinate` invocations. They are declared in `.cspace.json` under `advisors` (see defaults for the decision-maker).
+
+- **Role prompts** live at `lib/advisors/<name>.md` (shipped) or `.cspace/advisors/<name>.md` (per-project override).
+- **Opinions** come from `.cspace/context/principles.md` (human-owned per the context-server spec). Populate it with the project's architectural preferences; the decision-maker reads it on each consultation.
+- **Lifecycle:** `cspace coordinate` auto-launches configured advisors. `cspace advisor list|down|restart` manages them explicitly. Advisors persist across coordinator sessions so their SDK sessions accumulate project context.
+- **Communication:** coordinators and workers consult via the `ask_advisor` MCP tool on the agent-messenger server. Replies arrive as new user turns, not tool results.
+
+See `docs/superpowers/specs/2026-04-18-advisor-agents-design.md` for the full design.
+
 ## Development
 
 The CLI is built with Go using the Cobra framework. The agent supervisor is Node.js ESM.
