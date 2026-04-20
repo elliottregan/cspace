@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/elliottregan/cspace/internal/advisor"
@@ -182,7 +183,25 @@ func runCoordinateWithArgs(prompt, promptFile, name, systemPromptFile string) er
 		if err != nil {
 			return fmt.Errorf("reading coordinator playbook: %w", err)
 		}
-		fullPrompt = string(playbookBytes) + "\n\nUSER INSTRUCTIONS:\n\n" + userBody
+		// Render the advisor roster into the coordinator's first user turn so it
+		// knows what names are valid for ask_advisor/send_to_advisor.
+		var rosterBuilder strings.Builder
+		if len(cfg.Advisors) > 0 {
+			rosterBuilder.WriteString("\n\n## Advisor roster (available via ask_advisor / send_to_advisor)\n\n")
+			for _, adName := range advisor.SortedAdvisorNames(cfg) {
+				spec := cfg.Advisors[adName]
+				model := spec.Model
+				if model == "" {
+					model = "(account default)"
+				}
+				effort := spec.Effort
+				if effort == "" {
+					effort = "(default)"
+				}
+				fmt.Fprintf(&rosterBuilder, "- **%s** — model=%s, effort=%s\n", adName, model, effort)
+			}
+		}
+		fullPrompt = string(playbookBytes) + rosterBuilder.String() + "\n\nUSER INSTRUCTIONS:\n\n" + userBody
 	}
 
 	if err := supervisor.StagePromptText(composeName, fullPrompt, supervisor.ContainerCoordPromptPath); err != nil {
