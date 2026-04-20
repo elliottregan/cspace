@@ -20,7 +20,7 @@ import (
 // is a programmer error and is rejected at LaunchSupervisor entry.
 type LaunchParams struct {
 	Name            string // Instance name (e.g. "mercury")
-	Role            string // RoleAgent or RoleCoordinator
+	Role            string // RoleAgent, RoleCoordinator, or RoleAdvisor
 	PromptFile      string // Container-side path to prompt file. Required unless ResumeSessionID is set.
 	StderrLog       string // Container-side path for stderr log
 	ResumeSessionID string // If set, supervisor resumes this session instead of starting from PromptFile.
@@ -35,7 +35,7 @@ type LaunchParams struct {
 	// each result so external callers (`cspace send <instance> …`) can drive
 	// the agent through multiple turns. Default is the one-shot behavior —
 	// the supervisor closes the queue after the first result and exits.
-	// Only meaningful for RoleAgent; RoleCoordinator is always persistent.
+	// Only meaningful for RoleAgent; RoleCoordinator and RoleAdvisor are always persistent.
 	Persistent bool
 
 	// ModelOverride, if non-empty, takes precedence over cfg.Claude.Model

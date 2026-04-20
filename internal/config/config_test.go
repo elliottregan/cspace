@@ -208,11 +208,11 @@ func TestLoad_DefaultsOnly(t *testing.T) {
 		t.Error("expected firewall.enabled=true from defaults")
 	}
 
-	// Claude model default pins to the "opus" alias so cspace always uses
-	// the latest Opus model (independent of the container's account default,
-	// which may be a lower-tier model like sonnet).
-	if cfg.Claude.Model != "opus[1m]" {
-		t.Errorf("expected model=opus[1m], got %s", cfg.Claude.Model)
+	// Claude model defaults to empty so each role can pick its own:
+	// coordinator gets Sonnet (via coordinate.go fallback), workers fall back
+	// to account default, advisors use their per-advisor model.
+	if cfg.Claude.Model != "" {
+		t.Errorf("expected model=<empty>, got %s", cfg.Claude.Model)
 	}
 
 	// Plugins should have the default list
