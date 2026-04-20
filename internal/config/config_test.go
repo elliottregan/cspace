@@ -518,3 +518,66 @@ func TestLoad_RealProjectConfig(t *testing.T) {
 	}
 	t.Logf("Merged config:\n%s", string(data))
 }
+
+// loadConfigFromJSON is a test helper that creates a temporary project
+// with the given JSON overlay in .cspace.json, then loads it.
+func loadConfigFromJSON(t *testing.T, overlay string) (*Config, error) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".cspace.json"), []byte(overlay), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return Load(dir, "")
+}
+
+func TestConfigAdvisorsBlock(t *testing.T) {
+	cfg, err := loadConfigFromJSON(t, `{
+		"advisors": {
+			"decision-maker": {
+				"model": "claude-opus-4-7",
+				"effort": "max",
+				"baseBranch": "main"
+			},
+			"custom": {
+				"systemPromptFile": ".cspace/advisors/custom.md"
+			}
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if len(cfg.Advisors) != 2 {
+		t.Fatalf("want 2 advisors, got %d", len(cfg.Advisors))
+	}
+	dm, ok := cfg.Advisors["decision-maker"]
+	if !ok {
+		t.Fatalf("missing decision-maker entry")
+	}
+	if dm.Model != "claude-opus-4-7" {
+		t.Errorf("Model = %q, want claude-opus-4-7", dm.Model)
+	}
+	if dm.Effort != "max" {
+		t.Errorf("Effort = %q, want max", dm.Effort)
+	}
+	if dm.BaseBranch != "main" {
+		t.Errorf("BaseBranch = %q, want main", dm.BaseBranch)
+	}
+	custom := cfg.Advisors["custom"]
+	if custom.SystemPromptFile != ".cspace/advisors/custom.md" {
+		t.Errorf("SystemPromptFile = %q", custom.SystemPromptFile)
+	}
+}
+
+func TestConfigAdvisorsEmptyByDefault(t *testing.T) {
+	cfg, err := loadConfigFromJSON(t, `{}`)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Advisors == nil {
+		t.Fatal("Advisors should be non-nil (possibly empty map from defaults.json)")
+	}
+}

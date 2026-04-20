@@ -33,6 +33,7 @@ type Config struct {
 	Verify     VerifyConfig           `json:"verify"`
 	Agent      AgentConfig            `json:"agent"`
 	Plugins    PluginsConfig          `json:"plugins"`
+	Advisors   map[string]AdvisorConfig `json:"advisors,omitempty"`
 	Services   string                 `json:"services"`
 	PostSetup  string                 `json:"post_setup"`
 
@@ -46,6 +47,15 @@ type Config struct {
 	// Runtime fields (not from JSON)
 	ProjectRoot string `json:"-"`
 	AssetsDir   string `json:"-"`
+}
+
+// AdvisorConfig configures a single long-running advisor agent.
+// See docs/superpowers/specs/2026-04-18-advisor-agents-design.md.
+type AdvisorConfig struct {
+	Model            string `json:"model,omitempty"`
+	Effort           string `json:"effort,omitempty"`
+	SystemPromptFile string `json:"systemPromptFile,omitempty"`
+	BaseBranch       string `json:"baseBranch,omitempty"`
 }
 
 // ProjectConfig holds project identification fields.

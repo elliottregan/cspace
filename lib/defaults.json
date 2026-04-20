@@ -42,6 +42,7 @@
       "plugin-dev"
     ]
   },
+  "advisors": {},
   "services": "",
   "post_setup": ""
 }
