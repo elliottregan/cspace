@@ -45,6 +45,32 @@ func TestFilter_HonorsExcludeGlob(t *testing.T) {
 	}
 }
 
+// Regression: multi-segment exclude prefix must match even when the file is
+// addressed by an absolute path (e.g. /workspace/docs/superpowers/specs/x.md).
+// Before the fix, only "prefix/..." or single-segment prefixes matched.
+func TestFilter_MultiSegmentPrefixMatchesAbsolutePath(t *testing.T) {
+	f := Filter{Excludes: []string{"docs/superpowers/specs/**"}, MaxBytes: 1 << 30}
+	cases := []string{
+		"docs/superpowers/specs/foo.md",
+		"/workspace/docs/superpowers/specs/foo.md",
+		"/home/dev/cspace/docs/superpowers/specs/nested/bar.md",
+	}
+	for _, p := range cases {
+		if f.Accept(p) {
+			t.Errorf("should reject %q", p)
+		}
+	}
+	// Unrelated paths must not be matched by this exclude. We test directly
+	// against globMatch since Accept also runs os.Stat, which would fail for
+	// non-existent paths.
+	if globMatch("docs/superpowers/specs/**", "docs/src/content/foo.md") {
+		t.Error("docs/src/... should not match docs/superpowers/specs/**")
+	}
+	if globMatch("docs/superpowers/specs/**", "/workspace/docs/src/content/foo.md") {
+		t.Error("absolute path under docs/src/... should not match docs/superpowers/specs/**")
+	}
+}
+
 func TestFilter_AcceptsNormalTextFile(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "hello.go")

@@ -70,7 +70,7 @@ func globMatch(pattern, path string) bool {
 		prefix := strings.TrimSuffix(parts[0], "/")
 		suffix := strings.TrimPrefix(parts[1], "/")
 		// Normalize: compare against path either way.
-		if prefix != "" && !strings.HasPrefix(path, prefix+"/") && !hasSegment(path, prefix) {
+		if prefix != "" && !strings.HasPrefix(path, prefix+"/") && !strings.Contains(path, "/"+prefix+"/") && !hasSegment(path, prefix) {
 			return false
 		}
 		if suffix == "" {
