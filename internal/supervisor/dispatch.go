@@ -11,6 +11,7 @@ import (
 const (
 	RoleAgent       = "agent"
 	RoleCoordinator = "coordinator"
+	RoleAdvisor     = "advisor"
 )
 
 // Well-known container paths used by the supervisor protocol.

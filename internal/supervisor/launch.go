@@ -37,6 +37,18 @@ type LaunchParams struct {
 	// the supervisor closes the queue after the first result and exits.
 	// Only meaningful for RoleAgent; RoleCoordinator is always persistent.
 	Persistent bool
+
+	// ModelOverride, if non-empty, takes precedence over cfg.Claude.Model
+	// on the supervisor command line. Used by advisors to pin their model
+	// independently of the rest of the cspace session.
+	ModelOverride string
+
+	// EffortOverride, if non-empty, takes precedence over cfg.Claude.Effort.
+	EffortOverride string
+
+	// AdvisorNames is the list of configured advisor names to pass to the
+	// supervisor for MCP tool enum population.
+	AdvisorNames []string
 }
 
 // LaunchSupervisor runs the agent-supervisor inside the named instance
@@ -273,21 +285,30 @@ func buildSupervisorArgs(params LaunchParams, cfg *config.Config) []string {
 		args = append(args, "--prompt-file", params.PromptFile)
 	}
 
-	if params.Role == RoleAgent {
+	if params.Role == RoleAgent || params.Role == RoleAdvisor {
 		args = append(args, "--instance", params.Name)
 	}
 
-	if cfg.Claude.Model != "" {
-		args = append(args, "--model", cfg.Claude.Model)
+	model := params.ModelOverride
+	if model == "" {
+		model = cfg.Claude.Model
+	}
+	if model != "" {
+		args = append(args, "--model", model)
 	}
 
-	// Autonomous supervisor runs default to max thinking. An explicit
-	// claude.effort in cspace settings wins, so users can dial it down.
-	effort := cfg.Claude.Effort
+	effort := params.EffortOverride
+	if effort == "" {
+		effort = cfg.Claude.Effort
+	}
 	if effort == "" {
 		effort = "max"
 	}
 	args = append(args, "--effort", effort)
+
+	if len(params.AdvisorNames) > 0 {
+		args = append(args, "--advisors", strings.Join(params.AdvisorNames, ","))
+	}
 
 	if params.Persistent {
 		args = append(args, "--persistent")
