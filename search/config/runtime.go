@@ -18,6 +18,12 @@ func Build(projectRoot, corpusID string) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	return BuildWithConfig(projectRoot, corpusID, cfg)
+}
+
+// BuildWithConfig instantiates a Runtime using an already-loaded *Config,
+// avoiding a redundant disk read when the caller already holds the config.
+func BuildWithConfig(projectRoot, corpusID string, cfg *Config) (*Runtime, error) {
 	c, err := buildCorpus(corpusID, cfg)
 	if err != nil {
 		return nil, err
