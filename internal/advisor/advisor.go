@@ -31,15 +31,15 @@ func BuildLaunchParams(cfg *config.Config, name string) (supervisor.LaunchParams
 		Role:             supervisor.RoleAdvisor,
 		ModelOverride:    spec.Model,
 		EffortOverride:   spec.Effort,
-		AdvisorNames:     sortedAdvisorNames(cfg),
+		AdvisorNames:     SortedAdvisorNames(cfg),
 		SystemPromptFile: "", // caller stages the system-prompt file; see Launch
 		Persistent:       true,
 	}, nil
 }
 
-// sortedAdvisorNames returns the configured advisor names in sorted order
+// SortedAdvisorNames returns the configured advisor names in sorted order
 // so the --advisors CLI flag is deterministic.
-func sortedAdvisorNames(cfg *config.Config) []string {
+func SortedAdvisorNames(cfg *config.Config) []string {
 	names := make([]string, 0, len(cfg.Advisors))
 	for n := range cfg.Advisors {
 		names = append(names, n)

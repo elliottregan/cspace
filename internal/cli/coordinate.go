@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/elliottregan/cspace/internal/advisor"
 	"github.com/elliottregan/cspace/internal/instance"
 	"github.com/elliottregan/cspace/internal/provision"
 	"github.com/elliottregan/cspace/internal/supervisor"
@@ -118,6 +119,17 @@ func runCoordinateWithArgs(prompt, promptFile, name, systemPromptFile string) er
 			"or stop it first with 'cspace interrupt _coordinator'")
 	}
 
+	// Bring up all configured advisors. A fresh advisor is provisioned and
+	// launched persistent; an already-alive advisor is reused so its session
+	// continuity is preserved across cspace coordinate calls.
+	for adName := range cfg.Advisors {
+		if err := advisor.Launch(cfg, adName); err != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: advisor %s failed to launch: %v\n", adName, err)
+		} else if advisor.IsAlive(cfg, adName) {
+			fmt.Fprintf(os.Stderr, "Advisor %s ready.\n", adName)
+		}
+	}
+
 	_, err := provision.Run(provision.Params{
 		Name: name,
 		Cfg:  cfg,
@@ -183,5 +195,6 @@ func runCoordinateWithArgs(prompt, promptFile, name, systemPromptFile string) er
 		PromptFile:       supervisor.ContainerCoordPromptPath,
 		StderrLog:        supervisor.ContainerCoordStderrLog,
 		SystemPromptFile: containerSystemPrompt,
+		AdvisorNames:     advisor.SortedAdvisorNames(cfg),
 	}, cfg)
 }
