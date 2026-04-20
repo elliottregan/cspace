@@ -489,9 +489,7 @@ func formatPortLine(p portEntry) string {
 	host := p.URL
 	// Strip "http://localhost" prefix when present so the row fits.
 	const localhost = "http://localhost"
-	if strings.HasPrefix(host, localhost) {
-		host = host[len(localhost):]
-	}
+	host = strings.TrimPrefix(host, localhost)
 	label := truncate(p.Label, 16)
 	// Pad label to a consistent column so ports align across rows.
 	padded := label + strings.Repeat(" ", max(0, 16-runeLen(label)))

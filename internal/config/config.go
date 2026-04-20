@@ -25,17 +25,17 @@ var gitRepoRe = regexp.MustCompile(`github\.com[:/](.+)$`)
 
 // Config represents the merged cspace configuration.
 type Config struct {
-	Project    ProjectConfig          `json:"project"`
-	Container  ContainerConfig        `json:"container"`
-	Firewall   FirewallConfig         `json:"firewall"`
-	Claude     ClaudeConfig           `json:"claude"`
-	MCPServers map[string]interface{} `json:"mcpServers,omitempty"`
-	Verify     VerifyConfig           `json:"verify"`
-	Agent      AgentConfig            `json:"agent"`
-	Plugins    PluginsConfig          `json:"plugins"`
+	Project    ProjectConfig            `json:"project"`
+	Container  ContainerConfig          `json:"container"`
+	Firewall   FirewallConfig           `json:"firewall"`
+	Claude     ClaudeConfig             `json:"claude"`
+	MCPServers map[string]interface{}   `json:"mcpServers,omitempty"`
+	Verify     VerifyConfig             `json:"verify"`
+	Agent      AgentConfig              `json:"agent"`
+	Plugins    PluginsConfig            `json:"plugins"`
 	Advisors   map[string]AdvisorConfig `json:"advisors,omitempty"`
-	Services   string                 `json:"services"`
-	PostSetup  string                 `json:"post_setup"`
+	Services   string                   `json:"services"`
+	PostSetup  string                   `json:"post_setup"`
 
 	// ServiceURLs declares Traefik-routed project services whose URLs cspace
 	// should inject into the main container as env vars. Key is the subdomain

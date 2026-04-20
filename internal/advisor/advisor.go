@@ -81,10 +81,10 @@ func IsAlive(cfg *config.Config, name string) bool {
 }
 
 // Launch brings the named advisor up if not already alive. It:
-//   1. provisions the container if missing
-//   2. checks out the configured baseBranch
-//   3. stages the system prompt and bootstrap prompt
-//   4. launches the supervisor detached (role=advisor, persistent)
+//  1. provisions the container if missing
+//  2. checks out the configured baseBranch
+//  3. stages the system prompt and bootstrap prompt
+//  4. launches the supervisor detached (role=advisor, persistent)
 //
 // If the advisor is already alive, Launch is a no-op (returns nil).
 func Launch(cfg *config.Config, name string) error {
