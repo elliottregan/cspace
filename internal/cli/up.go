@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/elliottregan/cspace/internal/advisor"
 	"github.com/elliottregan/cspace/internal/overlay"
 	"github.com/elliottregan/cspace/internal/planets"
 	"github.com/elliottregan/cspace/internal/ports"
@@ -158,11 +159,12 @@ func runUpWithArgs(name, branch string, noClaude, verbose bool, prompt, promptFi
 	}
 
 	return supervisor.LaunchSupervisor(supervisor.LaunchParams{
-		Name:       name,
-		Role:       supervisor.RoleAgent,
-		PromptFile: supervisor.ContainerPromptPath,
-		StderrLog:  supervisor.ContainerAgentStderrLog,
-		Persistent: persistent,
+		Name:         name,
+		Role:         supervisor.RoleAgent,
+		PromptFile:   supervisor.ContainerPromptPath,
+		StderrLog:    supervisor.ContainerAgentStderrLog,
+		Persistent:   persistent,
+		AdvisorNames: advisor.SortedAdvisorNames(cfg),
 	}, cfg)
 }
 
