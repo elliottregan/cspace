@@ -73,7 +73,7 @@ func (c *Client) embedBatch(texts []string) ([][]float32, error) {
 		return nil, fmt.Errorf("llama.cpp server unreachable at %s: %w\n"+
 			"Start it with: llama-server -m <model>.gguf --embedding", c.BaseURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("llama.cpp server returned %d", resp.StatusCode)
