@@ -1,0 +1,32 @@
+# Default corpus configuration for cspace-search.
+# Projects override by placing a search.yaml at the project root.
+corpora:
+  code:
+    enabled: true
+    max_bytes: 204800
+    excludes:
+      - "vendor/**"
+      - "internal/assets/embedded/**"
+      - "docs/superpowers/specs/**"
+      - "*.lock"
+      - "*.sum"
+      - "package-lock.json"
+      - "*.png"
+      - "*.jpg"
+      - "*.gif"
+      - "*.ico"
+      - "*.pdf"
+      - "*.zip"
+      - "*.tar.gz"
+  commits:
+    enabled: true
+    limit: 500
+sidecars:
+  llama_retrieval_url: "http://llama-server:8080"
+  llama_clustering_url: "http://llama-clustering:8080"
+  qdrant_url: "http://qdrant:6333"
+  reduce_url: "http://reduce-api:8000"
+  hdbscan_url: "http://hdbscan-api:8090"
+index:
+  lock_path: ".cspace/search-index.lock"
+  log_path: ".cspace/search-index.log"
