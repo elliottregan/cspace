@@ -208,6 +208,17 @@ func runCoordinateWithArgs(prompt, promptFile, name, systemPromptFile string) er
 		return err
 	}
 
+	// Coordinator defaults to Sonnet — deep reasoning is delegated to
+	// advisors (Opus). User can override via claude.model in .cspace.json.
+	coordModel := cfg.Claude.Model
+	if coordModel == "" {
+		coordModel = "claude-sonnet-4-6"
+	}
+	coordEffort := cfg.Claude.Effort
+	if coordEffort == "" {
+		coordEffort = "high"
+	}
+
 	return supervisor.LaunchSupervisor(supervisor.LaunchParams{
 		Name:             name,
 		Role:             supervisor.RoleCoordinator,
@@ -215,5 +226,7 @@ func runCoordinateWithArgs(prompt, promptFile, name, systemPromptFile string) er
 		StderrLog:        supervisor.ContainerCoordStderrLog,
 		SystemPromptFile: containerSystemPrompt,
 		AdvisorNames:     advisor.SortedAdvisorNames(cfg),
+		ModelOverride:    coordModel,
+		EffortOverride:   coordEffort,
 	}, cfg)
 }
