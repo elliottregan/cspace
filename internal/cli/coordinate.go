@@ -209,9 +209,10 @@ func runCoordinateWithArgs(prompt, promptFile, name, systemPromptFile string) er
 		return err
 	}
 
-	// Coordinator defaults to Sonnet — deep reasoning is delegated to
-	// advisors (Opus). User can override via claude.model in .cspace.json.
-	coordModel := cfg.Claude.Model
+	// Coordinator uses its own model setting (Sonnet default), independent of
+	// claude.model which drives workers and advisor fallbacks. Deep reasoning
+	// is delegated to advisors, so the coordinator shouldn't run on Opus.
+	coordModel := cfg.Claude.CoordinatorModel
 	if coordModel == "" {
 		coordModel = "claude-sonnet-4-6"
 	}

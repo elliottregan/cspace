@@ -80,8 +80,9 @@ type FirewallConfig struct {
 
 // ClaudeConfig holds Claude model settings.
 type ClaudeConfig struct {
-	Model  string `json:"model"`
-	Effort string `json:"effort"`
+	Model            string `json:"model"`
+	Effort           string `json:"effort"`
+	CoordinatorModel string `json:"coordinatorModel,omitempty"`
 }
 
 // VerifyConfig holds verification command paths.

@@ -14,7 +14,7 @@
     "domains": []
   },
   "claude": {
-    "model": "",
+    "model": "opus[1m]",
     "effort": ""
   },
   "mcpServers": {},

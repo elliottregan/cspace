@@ -208,11 +208,11 @@ func TestLoad_DefaultsOnly(t *testing.T) {
 		t.Error("expected firewall.enabled=true from defaults")
 	}
 
-	// Claude model defaults to empty so each role can pick its own:
-	// coordinator gets Sonnet (via coordinate.go fallback), workers fall back
-	// to account default, advisors use their per-advisor model.
-	if cfg.Claude.Model != "" {
-		t.Errorf("expected model=<empty>, got %s", cfg.Claude.Model)
+	// Claude model defaults to opus[1m] for workers and advisor fallbacks.
+	// Coordinator has a separate setting (coordinatorModel) that defaults to
+	// Sonnet via coordinate.go logic.
+	if cfg.Claude.Model != "opus[1m]" {
+		t.Errorf("expected model=opus[1m], got %s", cfg.Claude.Model)
 	}
 
 	// Plugins should have the default list
@@ -579,5 +579,29 @@ func TestConfigAdvisorsNonNilAfterDefaults(t *testing.T) {
 	}
 	if cfg.Advisors == nil {
 		t.Fatal("Advisors should be non-nil — defaults.json ships a decision-maker entry and DeepMerge preserves it when the overlay omits the key")
+	}
+}
+
+func TestConfigCoordinatorModelOverride(t *testing.T) {
+	cfg, err := loadConfigFromJSON(t, `{"claude": {"coordinatorModel": "claude-opus-4-7"}}`)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Claude.CoordinatorModel != "claude-opus-4-7" {
+		t.Errorf("CoordinatorModel = %q, want claude-opus-4-7", cfg.Claude.CoordinatorModel)
+	}
+	// Defaults still supply Model for workers/advisors.
+	if cfg.Claude.Model != "opus[1m]" {
+		t.Errorf("Model = %q, want opus[1m] (unchanged by coordinator override)", cfg.Claude.Model)
+	}
+}
+
+func TestConfigCoordinatorModelEmptyByDefault(t *testing.T) {
+	cfg, err := loadConfigFromJSON(t, `{}`)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Claude.CoordinatorModel != "" {
+		t.Errorf("CoordinatorModel default = %q, want empty", cfg.Claude.CoordinatorModel)
 	}
 }
