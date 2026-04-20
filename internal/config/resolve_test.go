@@ -133,3 +133,36 @@ func TestResolveAgent_FallbackToAssets(t *testing.T) {
 		t.Errorf("expected assets fallback %s, got %s", expected, result)
 	}
 }
+
+func TestResolveAdvisor(t *testing.T) {
+	project := t.TempDir()
+	assets := t.TempDir()
+
+	// Fallback: assets/advisors/decision-maker.md exists.
+	if err := os.MkdirAll(filepath.Join(assets, "advisors"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fallback := filepath.Join(assets, "advisors", "decision-maker.md")
+	if err := os.WriteFile(fallback, []byte("fallback"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := ResolveAdvisor(project, assets, "decision-maker")
+	if got != fallback {
+		t.Errorf("fallback: got %s, want %s", got, fallback)
+	}
+
+	// Override: .cspace/advisors/decision-maker.md wins.
+	if err := os.MkdirAll(filepath.Join(project, ".cspace", "advisors"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	override := filepath.Join(project, ".cspace", "advisors", "decision-maker.md")
+	if err := os.WriteFile(override, []byte("override"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got = ResolveAdvisor(project, assets, "decision-maker")
+	if got != override {
+		t.Errorf("override: got %s, want %s", got, override)
+	}
+}
