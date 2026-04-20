@@ -2,14 +2,18 @@ package cluster
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
+	"os"
 	"sort"
 	"time"
 
+	"github.com/elliottregan/cspace/search/corpus"
 	"github.com/elliottregan/cspace/search/qdrant"
+	"github.com/elliottregan/cspace/search/reduce"
 )
 
 // HdbscanClient calls the hdbscan-api sidecar.
@@ -157,4 +161,234 @@ func cosineSim(a, b []float32) float32 {
 		return 0
 	}
 	return float32(dot / denom)
+}
+
+// representative tracks a single candidate point for one path during
+// cluster-representative selection.
+type representative struct {
+	ID        uint64
+	Path      string
+	Kind      string
+	LineStart int
+	Vector    []float32
+}
+
+// pickRepresentative returns one representative per path, preferring
+// kind="file"; if none present, the chunk with the lowest LineStart wins.
+func pickRepresentative(pts []representative) []representative {
+	byPath := map[string][]representative{}
+	for _, p := range pts {
+		byPath[p.Path] = append(byPath[p.Path], p)
+	}
+	out := make([]representative, 0, len(byPath))
+	for _, group := range byPath {
+		var best *representative
+		for i := range group {
+			if best == nil {
+				best = &group[i]
+				continue
+			}
+			if best.Kind != "file" && group[i].Kind == "file" {
+				best = &group[i]
+				continue
+			}
+			if best.Kind == group[i].Kind && group[i].LineStart < best.LineStart {
+				best = &group[i]
+			}
+		}
+		out = append(out, *best)
+	}
+	return out
+}
+
+// Config bundles the params for the cluster pipeline.
+type Config struct {
+	Corpus       corpus.Corpus
+	ProjectRoot  string
+	QdrantURL    string
+	ReduceURL    string
+	HDBSCANURL   string
+	CoordsOutput string // optional TSV output path
+	MinPts       int    // HDBSCAN min_cluster_size
+}
+
+// Result summarizes the clustering pass.
+type Result struct {
+	Clusters []ClusterSummary `json:"clusters"`
+}
+
+// ClusterSummary is one cluster's summary.
+type ClusterSummary struct {
+	ClusterID int      `json:"cluster_id"`
+	Size      int      `json:"size"`
+	TopPaths  []string `json:"top_paths"`
+}
+
+// Run reduces representatives to 2D, clusters them with HDBSCAN, and writes
+// cluster_id back to ALL points in the collection whose path maps to a
+// clustered representative. Returns a Result summary.
+func Run(ctx context.Context, cfg Config) (*Result, error) {
+	if cfg.MinPts == 0 {
+		cfg.MinPts = 3
+	}
+	qc := qdrant.NewQdrantClient(cfg.QdrantURL)
+	collection := cfg.Corpus.Collection(cfg.ProjectRoot)
+
+	all, err := qc.ScrollAll(collection)
+	if err != nil {
+		return nil, fmt.Errorf("scroll: %w", err)
+	}
+	if len(all) == 0 {
+		return &Result{}, nil
+	}
+
+	// Build representatives (one per path).
+	reps := make([]representative, 0, len(all))
+	for _, p := range all {
+		path, _ := p.Payload["path"].(string)
+		kind, _ := p.Payload["kind"].(string)
+		ls := 0
+		if v, ok := p.Payload["line_start"].(float64); ok {
+			ls = int(v)
+		}
+		reps = append(reps, representative{
+			ID: p.ID, Path: path, Kind: kind, LineStart: ls, Vector: p.Vector,
+		})
+	}
+	reps = pickRepresentative(reps)
+	if len(reps) < cfg.MinPts {
+		return &Result{}, nil
+	}
+
+	// Reduce to 2D.
+	vectors := make([][]float32, len(reps))
+	for i, r := range reps {
+		vectors[i] = r.Vector
+	}
+	rc := reduce.NewReduceClient(cfg.ReduceURL)
+	coords, err := rc.Reduce(vectors, 2)
+	if err != nil {
+		return nil, fmt.Errorf("reduce: %w", err)
+	}
+
+	// Cluster.
+	hc := NewHdbscanClient(cfg.HDBSCANURL)
+	labels, err := hc.Cluster(coords, cfg.MinPts, 1)
+	if err != nil {
+		return nil, fmt.Errorf("hdbscan: %w", err)
+	}
+	if len(labels) != len(reps) {
+		return nil, fmt.Errorf("label count mismatch: %d vs %d", len(labels), len(reps))
+	}
+
+	// Map path → cluster_id from representative labels.
+	pathToCluster := map[string]int{}
+	for i, r := range reps {
+		pathToCluster[r.Path] = labels[i]
+	}
+
+	// Group all point IDs by cluster_id for batch set_payload.
+	byCluster := map[int][]uint64{}
+	for _, p := range all {
+		path, _ := p.Payload["path"].(string)
+		if cid, ok := pathToCluster[path]; ok {
+			byCluster[cid] = append(byCluster[cid], p.ID)
+		}
+	}
+	for cid, ids := range byCluster {
+		if err := qc.SetPayload(collection, ids, map[string]any{"cluster_id": cid}); err != nil {
+			return nil, fmt.Errorf("set cluster_id: %w", err)
+		}
+	}
+
+	// Optional coords TSV output.
+	if cfg.CoordsOutput != "" {
+		if err := writeClusterCoordsTSV(cfg.CoordsOutput, reps, coords, labels); err != nil {
+			return nil, fmt.Errorf("write coords: %w", err)
+		}
+	}
+
+	return summarizeClusters(reps, labels), nil
+}
+
+// List returns the current cluster summary by scrolling Qdrant payloads.
+// It does not re-run the pipeline.
+func List(ctx context.Context, cfg Config) (*Result, error) {
+	qc := qdrant.NewQdrantClient(cfg.QdrantURL)
+	all, err := qc.ScrollAll(cfg.Corpus.Collection(cfg.ProjectRoot))
+	if err != nil {
+		return nil, err
+	}
+	// Map cluster_id → unique paths in that cluster.
+	clusters := map[int]map[string]bool{}
+	for _, p := range all {
+		path, _ := p.Payload["path"].(string)
+		cid := -1
+		if v, ok := p.Payload["cluster_id"].(float64); ok {
+			cid = int(v)
+		}
+		if cid < 0 {
+			continue
+		}
+		if clusters[cid] == nil {
+			clusters[cid] = map[string]bool{}
+		}
+		clusters[cid][path] = true
+	}
+	var out []ClusterSummary
+	for cid, paths := range clusters {
+		list := make([]string, 0, len(paths))
+		for p := range paths {
+			list = append(list, p)
+		}
+		sort.Strings(list)
+		top := list
+		if len(top) > 6 {
+			top = top[:6]
+		}
+		out = append(out, ClusterSummary{ClusterID: cid, Size: len(list), TopPaths: top})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Size > out[j].Size })
+	return &Result{Clusters: out}, nil
+}
+
+func summarizeClusters(reps []representative, labels []int) *Result {
+	type acc struct {
+		size  int
+		paths []string
+	}
+	m := map[int]*acc{}
+	for i, r := range reps {
+		if labels[i] < 0 {
+			continue
+		}
+		a := m[labels[i]]
+		if a == nil {
+			a = &acc{}
+			m[labels[i]] = a
+		}
+		a.size++
+		if len(a.paths) < 6 {
+			a.paths = append(a.paths, r.Path)
+		}
+	}
+	out := make([]ClusterSummary, 0, len(m))
+	for cid, a := range m {
+		out = append(out, ClusterSummary{ClusterID: cid, Size: a.size, TopPaths: a.paths})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Size > out[j].Size })
+	return &Result{Clusters: out}
+}
+
+func writeClusterCoordsTSV(path string, reps []representative, coords [][]float32, labels []int) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	_, _ = fmt.Fprintln(f, "id\tpath\tx\ty\tlabel")
+	for i, r := range reps {
+		_, _ = fmt.Fprintf(f, "%d\t%s\t%f\t%f\t%d\n", r.ID, r.Path, coords[i][0], coords[i][1], labels[i])
+	}
+	return nil
 }

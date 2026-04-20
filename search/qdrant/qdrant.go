@@ -283,6 +283,84 @@ func (c *QdrantClient) SearchPoints(collection string, vector []float32, topK in
 	return out, nil
 }
 
+// SetPayload sets/updates payload fields on specific points in a collection.
+// Merges with existing payload (Qdrant's default behavior).
+func (c *QdrantClient) SetPayload(collection string, ids []uint64, payload map[string]any) error {
+	body, _ := json.Marshal(map[string]any{
+		"payload": payload,
+		"points":  ids,
+	})
+	req, _ := http.NewRequest(http.MethodPost, c.BaseURL+"/collections/"+collection+"/points/payload", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("qdrant set_payload returned %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// FullPoint is a point with its full payload and vector, as returned by ScrollAll.
+type FullPoint struct {
+	ID      uint64
+	Vector  []float32
+	Payload map[string]any
+}
+
+// ScrollAll fetches all points with full payload and vectors. Use sparingly —
+// this loads the whole collection into memory.
+func (c *QdrantClient) ScrollAll(collection string) ([]FullPoint, error) {
+	var out []FullPoint
+	var offset any = nil
+	for {
+		body := map[string]any{
+			"limit":        256,
+			"with_payload": true,
+			"with_vector":  true,
+		}
+		if offset != nil {
+			body["offset"] = offset
+		}
+		buf, _ := json.Marshal(body)
+		req, _ := http.NewRequest(http.MethodPost, c.BaseURL+"/collections/"+collection+"/points/scroll", bytes.NewReader(buf))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode == http.StatusNotFound {
+			_ = resp.Body.Close()
+			return nil, nil
+		}
+		var parsed struct {
+			Result struct {
+				Points []struct {
+					ID      uint64         `json:"id"`
+					Vector  []float32      `json:"vector"`
+					Payload map[string]any `json:"payload"`
+				} `json:"points"`
+				NextPageOffset any `json:"next_page_offset"`
+			} `json:"result"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+			_ = resp.Body.Close()
+			return nil, err
+		}
+		_ = resp.Body.Close()
+		for _, p := range parsed.Result.Points {
+			out = append(out, FullPoint{ID: p.ID, Vector: p.Vector, Payload: p.Payload})
+		}
+		if parsed.Result.NextPageOffset == nil {
+			break
+		}
+		offset = parsed.Result.NextPageOffset
+	}
+	return out, nil
+}
+
 // Result is a ranked item returned by a search query.
 type Result struct {
 	Score   float32
