@@ -242,6 +242,47 @@ func (c *QdrantClient) ScrollPoints(collection string) ([]ScrolledPoint, error) 
 	return all, nil
 }
 
+// SearchResult is a single ANN hit.
+type SearchResult struct {
+	ID      uint64
+	Score   float32
+	Payload map[string]any
+}
+
+// SearchPoints performs an ANN query against a collection.
+func (c *QdrantClient) SearchPoints(collection string, vector []float32, topK int) ([]SearchResult, error) {
+	body, _ := json.Marshal(map[string]any{
+		"vector":       vector,
+		"limit":        topK,
+		"with_payload": true,
+	})
+	req, _ := http.NewRequest(http.MethodPost, c.BaseURL+"/collections/"+collection+"/points/search", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("search: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("qdrant search returned %d", resp.StatusCode)
+	}
+	var parsed struct {
+		Result []struct {
+			ID      uint64         `json:"id"`
+			Score   float32        `json:"score"`
+			Payload map[string]any `json:"payload"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil, err
+	}
+	out := make([]SearchResult, len(parsed.Result))
+	for i, r := range parsed.Result {
+		out[i] = SearchResult{ID: r.ID, Score: r.Score, Payload: r.Payload}
+	}
+	return out, nil
+}
+
 // Result is a ranked item returned by a search query.
 type Result struct {
 	Score   float32

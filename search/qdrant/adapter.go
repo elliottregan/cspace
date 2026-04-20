@@ -1,6 +1,9 @@
 package qdrant
 
-import "github.com/elliottregan/cspace/search/index"
+import (
+	"github.com/elliottregan/cspace/search/index"
+	"github.com/elliottregan/cspace/search/query"
+)
 
 // Adapter wraps *QdrantClient to satisfy index.Upserter.
 type Adapter struct{ *QdrantClient }
@@ -15,4 +18,18 @@ func (a *Adapter) UpsertPoints(collection string, points []index.Point, batchSiz
 	return a.QdrantClient.UpsertPoints(collection, qp, batchSize, progress)
 }
 
+// Search satisfies query.Searcher.
+func (a *Adapter) Search(collection string, vector []float32, topK int) ([]query.RawHit, error) {
+	raws, err := a.QdrantClient.SearchPoints(collection, vector, topK)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]query.RawHit, len(raws))
+	for i, r := range raws {
+		out[i] = query.RawHit{ID: r.ID, Score: r.Score, Payload: r.Payload}
+	}
+	return out, nil
+}
+
 var _ index.Upserter = (*Adapter)(nil)
+var _ query.Searcher = (*Adapter)(nil)
