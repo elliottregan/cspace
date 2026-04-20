@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -130,7 +131,7 @@ func runSearchIndex(llamaURL, qdrantURL string, limit int) error {
 	fmt.Printf("Embedding %d commits via %s ...\n", len(texts), llamaURL)
 	start := time.Now()
 	embedClient := embed.NewClient(llamaURL)
-	vectors, err := embedClient.EmbedDocuments(texts, func(done, total int) {
+	vectors, err := embedClient.EmbedDocuments(context.Background(), texts, func(done, total int) {
 		fmt.Printf("\r  %d / %d", done, total)
 	})
 	fmt.Println()
@@ -176,7 +177,7 @@ func runSearch(query, llamaURL, qdrantURL string, topN int) error {
 	}
 
 	embedClient := embed.NewClient(llamaURL)
-	queryVec, err := embedClient.EmbedQuery(query)
+	queryVec, err := embedClient.EmbedQuery(context.Background(), query)
 	if err != nil {
 		return err
 	}
@@ -296,7 +297,7 @@ func buildClusteringIndex(clusterURL string, qdrant *qdrantpkg.QdrantClient, col
 	fmt.Printf("Embedding (clustering adapter) via %s ...\n", clusterURL)
 	start := time.Now()
 	embedClient := embed.NewClient(clusterURL)
-	vectors, err := embedClient.EmbedPlain(texts, func(done, total int) {
+	vectors, err := embedClient.EmbedPlain(context.Background(), texts, func(done, total int) {
 		fmt.Printf("\r  %d / %d", done, total)
 	})
 	fmt.Println()

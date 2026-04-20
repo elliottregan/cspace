@@ -2,6 +2,7 @@ package embed
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -37,17 +38,17 @@ type embedResponse struct {
 const defaultBatchSize = 4
 
 // EmbedDocuments embeds document texts (prepends "Document: " for Jina retrieval task).
-func (c *Client) EmbedDocuments(texts []string, progress func(done, total int)) ([][]float32, error) {
+func (c *Client) EmbedDocuments(ctx context.Context, texts []string, progress func(done, total int)) ([][]float32, error) {
 	prefixed := make([]string, len(texts))
 	for i, t := range texts {
 		prefixed[i] = "Document: " + t
 	}
-	return c.embedBatched(prefixed, progress)
+	return c.embedBatched(ctx, prefixed, progress)
 }
 
 // EmbedQuery embeds a single query (prepends "Query: " for Jina retrieval task).
-func (c *Client) EmbedQuery(query string) ([]float32, error) {
-	vecs, err := c.embedBatched([]string{"Query: " + query}, nil)
+func (c *Client) EmbedQuery(ctx context.Context, query string) ([]float32, error) {
+	vecs, err := c.embedBatched(ctx, []string{"Query: " + query}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -56,18 +57,18 @@ func (c *Client) EmbedQuery(query string) ([]float32, error) {
 
 // EmbedPlain embeds texts without any prefix — for the clustering adapter,
 // which already bakes the task instruction into the model.
-func (c *Client) EmbedPlain(texts []string, progress func(done, total int)) ([][]float32, error) {
-	return c.embedBatched(texts, progress)
+func (c *Client) EmbedPlain(ctx context.Context, texts []string, progress func(done, total int)) ([][]float32, error) {
+	return c.embedBatched(ctx, texts, progress)
 }
 
-func (c *Client) embedBatched(texts []string, progress func(done, total int)) ([][]float32, error) {
+func (c *Client) embedBatched(ctx context.Context, texts []string, progress func(done, total int)) ([][]float32, error) {
 	all := make([][]float32, 0, len(texts))
 	for i := 0; i < len(texts); i += defaultBatchSize {
 		end := i + defaultBatchSize
 		if end > len(texts) {
 			end = len(texts)
 		}
-		vecs, err := c.embedOneBatch(texts[i:end])
+		vecs, err := c.embedOneBatch(ctx, texts[i:end])
 		if err != nil {
 			return nil, err
 		}
@@ -79,12 +80,17 @@ func (c *Client) embedBatched(texts []string, progress func(done, total int)) ([
 	return all, nil
 }
 
-func (c *Client) embedOneBatch(texts []string) ([][]float32, error) {
+func (c *Client) embedOneBatch(ctx context.Context, texts []string) ([][]float32, error) {
 	body, err := json.Marshal(embedRequest{Input: texts})
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.HTTPClient.Post(c.BaseURL+"/v1/embeddings", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/v1/embeddings", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("llama.cpp server unreachable at %s: %w\n"+
 			"Start it with: llama-server -m <model>.gguf --embedding", c.BaseURL, err)
