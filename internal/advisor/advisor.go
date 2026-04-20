@@ -86,19 +86,22 @@ func IsAlive(cfg *config.Config, name string) bool {
 //  3. stages the system prompt and bootstrap prompt
 //  4. launches the supervisor detached (role=advisor, persistent)
 //
-// If the advisor is already alive, Launch is a no-op (returns nil).
-func Launch(cfg *config.Config, name string) error {
+// Returns reused=true when the advisor was already alive (no-op), reused=false
+// when a fresh provision+launch was initiated. A fresh launch is detached
+// and asynchronous — the supervisor socket may not be ready immediately
+// after Launch returns.
+func Launch(cfg *config.Config, name string) (reused bool, err error) {
 	spec, ok := cfg.Advisors[name]
 	if !ok {
-		return fmt.Errorf("advisor %q not configured", name)
+		return false, fmt.Errorf("advisor %q not configured", name)
 	}
 
 	if IsAlive(cfg, name) {
-		return nil
+		return true, nil
 	}
 
 	if _, err := provision.Run(provision.Params{Name: name, Cfg: cfg}); err != nil {
-		return fmt.Errorf("provisioning advisor %s: %w", name, err)
+		return false, fmt.Errorf("provisioning advisor %s: %w", name, err)
 	}
 
 	composeName := cfg.ComposeName(name)
@@ -120,36 +123,39 @@ func Launch(cfg *config.Config, name string) error {
 	// git fetch is best-effort; container may be offline. checkout must succeed.
 	_, _ = instance.DcExec(composeName, "git", "-C", "/workspace", "fetch", "origin")
 	if _, err := instance.DcExec(composeName, "git", "-C", "/workspace", "checkout", baseBranch); err != nil {
-		return fmt.Errorf("checking out advisor baseBranch %s: %w", baseBranch, err)
+		return false, fmt.Errorf("checking out advisor baseBranch %s: %w", baseBranch, err)
 	}
 
 	// Stage the system prompt (ResolveAdvisor handles override/fallback).
 	systemPromptHost := cfg.ResolveAdvisor(name)
 	if systemPromptHost == "" {
-		return fmt.Errorf("no system prompt resolved for advisor %s", name)
+		return false, fmt.Errorf("no system prompt resolved for advisor %s", name)
 	}
 	const containerSystemPromptPath = "/tmp/advisor-system-prompt.txt"
 	if err := supervisor.StagePromptFile(composeName, systemPromptHost, containerSystemPromptPath); err != nil {
-		return fmt.Errorf("staging advisor system prompt: %w", err)
+		return false, fmt.Errorf("staging advisor system prompt: %w", err)
 	}
 
 	// Render and stage the bootstrap prompt.
 	bootstrap := renderBootstrapPrompt(name)
 	const containerBootstrapPath = "/tmp/advisor-bootstrap.txt"
 	if err := supervisor.StagePromptText(composeName, bootstrap, containerBootstrapPath); err != nil {
-		return fmt.Errorf("staging advisor bootstrap prompt: %w", err)
+		return false, fmt.Errorf("staging advisor bootstrap prompt: %w", err)
 	}
 
 	params, err := BuildLaunchParams(cfg, name)
 	if err != nil {
-		return err
+		return false, err
 	}
 	params.PromptFile = containerBootstrapPath
 	params.StderrLog = supervisor.ContainerAgentStderrLog
 	params.SystemPromptFile = containerSystemPromptPath
 
 	// Detached launch — the coordinator does not block on advisor stdout.
-	return supervisor.RelaunchDetached(params, cfg, 0)
+	if err := supervisor.RelaunchDetached(params, cfg, 0); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 func renderBootstrapPrompt(name string) string {

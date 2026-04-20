@@ -123,11 +123,16 @@ func runCoordinateWithArgs(prompt, promptFile, name, systemPromptFile string) er
 	// Bring up all configured advisors. A fresh advisor is provisioned and
 	// launched persistent; an already-alive advisor is reused so its session
 	// continuity is preserved across cspace coordinate calls.
-	for adName := range cfg.Advisors {
-		if err := advisor.Launch(cfg, adName); err != nil {
+	for _, adName := range advisor.SortedAdvisorNames(cfg) {
+		reused, err := advisor.Launch(cfg, adName)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "WARNING: advisor %s failed to launch: %v\n", adName, err)
-		} else if advisor.IsAlive(cfg, adName) {
-			fmt.Fprintf(os.Stderr, "Advisor %s ready.\n", adName)
+			continue
+		}
+		if reused {
+			fmt.Fprintf(os.Stderr, "Advisor %s reused (already alive).\n", adName)
+		} else {
+			fmt.Fprintf(os.Stderr, "Advisor %s launched (detached; supervisor starting in container).\n", adName)
 		}
 	}
 
@@ -190,15 +195,11 @@ func runCoordinateWithArgs(prompt, promptFile, name, systemPromptFile string) er
 			rosterBuilder.WriteString("\n\n## Advisor roster (available via ask_advisor / send_to_advisor)\n\n")
 			for _, adName := range advisor.SortedAdvisorNames(cfg) {
 				spec := cfg.Advisors[adName]
-				model := spec.Model
-				if model == "" {
-					model = "(account default)"
-				}
-				effort := spec.Effort
-				if effort == "" {
-					effort = "(default)"
-				}
-				fmt.Fprintf(&rosterBuilder, "- **%s** — model=%s, effort=%s\n", adName, model, effort)
+				fmt.Fprintf(&rosterBuilder, "- **%s** — model=%s, effort=%s\n",
+					adName,
+					fallback(spec.Model, "(account default)"),
+					fallback(spec.Effort, "(default)"),
+				)
 			}
 		}
 		fullPrompt = string(playbookBytes) + rosterBuilder.String() + "\n\nUSER INSTRUCTIONS:\n\n" + userBody
@@ -229,4 +230,13 @@ func runCoordinateWithArgs(prompt, promptFile, name, systemPromptFile string) er
 		ModelOverride:    coordModel,
 		EffortOverride:   coordEffort,
 	}, cfg)
+}
+
+// fallback returns s if non-empty, else d. Used for consistent display of
+// config defaults in coordinate and advisor list output.
+func fallback(s, d string) string {
+	if s == "" {
+		return d
+	}
+	return s
 }
