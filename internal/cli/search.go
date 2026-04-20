@@ -12,7 +12,7 @@ import (
 )
 
 func newSearchCmd() *cobra.Command {
-	var llamaURL, qdrantURL string
+	var llamaURL, clusterURL, qdrantURL, dimReduceURL string
 
 	cmd := &cobra.Command{
 		Use:     "search <query>",
@@ -36,9 +36,28 @@ func newSearchCmd() *cobra.Command {
 	}
 	indexCmd.Flags().Int("limit", 500, "Maximum number of commits to index")
 
-	cmd.PersistentFlags().StringVar(&llamaURL, "llama-url", llamaURLDefault(), "llama.cpp server URL")
+	clustersCmd := &cobra.Command{
+		Use:   "clusters",
+		Short: "Discover thematic clusters in commit history (UMAP → HDBSCAN)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			limit, _ := cmd.Flags().GetInt("limit")
+			minPts, _ := cmd.Flags().GetInt("min-pts")
+			topPer, _ := cmd.Flags().GetInt("top-per-cluster")
+			coordsOut, _ := cmd.Flags().GetString("coords-out")
+			return runSearchClusters(clusterURL, qdrantURL, dimReduceURL, limit, minPts, topPer, coordsOut)
+		},
+	}
+	clustersCmd.Flags().Int("limit", 500, "Maximum number of commits to index")
+	clustersCmd.Flags().Int("min-pts", 3, "Minimum commits to form a cluster (HDBSCAN min_cluster_size)")
+	clustersCmd.Flags().Int("top-per-cluster", 6, "Commits to show per cluster")
+	clustersCmd.Flags().String("coords-out", "", "Write per-commit 2D coordinates to this TSV file (hash\tx\ty\tlabel\tsubject)")
+
+	cmd.PersistentFlags().StringVar(&llamaURL, "llama-url", llamaURLDefault(), "llama.cpp server URL (retrieval adapter)")
+	cmd.PersistentFlags().StringVar(&clusterURL, "cluster-url", clusterURLDefault(), "llama.cpp server URL (clustering adapter)")
 	cmd.PersistentFlags().StringVar(&qdrantURL, "qdrant-url", qdrantURLDefault(), "Qdrant server URL")
+	cmd.PersistentFlags().StringVar(&dimReduceURL, "dim-reduce-url", dimReduceURLDefault(), "UMAP + HDBSCAN service URL")
 	cmd.AddCommand(indexCmd)
+	cmd.AddCommand(clustersCmd)
 	return cmd
 }
 
@@ -56,6 +75,20 @@ func qdrantURLDefault() string {
 		return u
 	}
 	return "http://qdrant:6333"
+}
+
+func clusterURLDefault() string {
+	if u := os.Getenv("CLUSTER_URL"); u != "" {
+		return u
+	}
+	return "http://llama-clustering:8080"
+}
+
+func dimReduceURLDefault() string {
+	if u := os.Getenv("DIM_REDUCE_URL"); u != "" {
+		return u
+	}
+	return "http://dim-reduce:8090"
 }
 
 func runSearchIndex(llamaURL, qdrantURL string, limit int) error {
@@ -144,6 +177,143 @@ func runSearch(query, llamaURL, qdrantURL string, topN int) error {
 	fmt.Printf("Top %d commits in %s matching %q\n\n", len(results), filepath.Base(repoPath), query)
 	for _, r := range results {
 		fmt.Printf("%.2f  %s  %s  %s\n", r.Score, r.Hash[:7], r.Date, r.Subject)
+	}
+	return nil
+}
+
+// clusterCollectionName returns the Qdrant collection name for clustering
+// embeddings (separate from retrieval to keep the two vector spaces apart).
+func clusterCollectionName(repoPath string) string {
+	return search.CollectionName(repoPath) + "-clustering"
+}
+
+func runSearchClusters(clusterURL, qdrantURL, dimReduceURL string, limit, minPts, topPer int, coordsOut string) error {
+	repoPath, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+
+	collection := clusterCollectionName(repoPath)
+	qdrant := search.NewQdrantClient(qdrantURL)
+
+	// Index-if-empty: if the clustering collection doesn't exist, build it.
+	points, err := qdrant.ScrollPoints(collection)
+	if err != nil || len(points) == 0 {
+		if err := buildClusteringIndex(clusterURL, qdrant, collection, repoPath, limit); err != nil {
+			return err
+		}
+		points, err = qdrant.ScrollPoints(collection)
+		if err != nil {
+			return err
+		}
+	}
+	fmt.Printf("Loaded %d commits from %q\n", len(points), collection)
+
+	vectors := make([][]float32, len(points))
+	for i, p := range points {
+		vectors[i] = p.Vector
+	}
+
+	fmt.Printf("Reducing to 2D + clustering via %s ...\n", dimReduceURL)
+	start := time.Now()
+	dc := search.NewClusterClient(dimReduceURL)
+	labels, coords, err := dc.Cluster(vectors, minPts, 1)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Done in %s\n\n", time.Since(start).Round(time.Millisecond))
+
+	clusters, noise := search.BuildClusters(points, coords, labels)
+
+	if coordsOut != "" {
+		if err := writeCoordsTSV(coordsOut, points, coords, labels); err != nil {
+			return fmt.Errorf("writing coords: %w", err)
+		}
+		fmt.Printf("2D coordinates written to %s\n\n", coordsOut)
+	}
+
+	fmt.Printf("Found %d clusters (%d noise points) ranked by size × density\n\n", len(clusters), noise)
+	for _, c := range clusters {
+		fmt.Printf("=== Cluster %d  (size: %d, density: %.2f) ===\n", c.ID, len(c.Members), c.Density)
+		n := topPer
+		if n > len(c.Members) {
+			n = len(c.Members)
+		}
+		for _, m := range c.Members[:n] {
+			fmt.Printf("  %s  %s  %s\n", m.Hash[:7], m.Date, m.Subject)
+		}
+		if len(c.Members) > n {
+			fmt.Printf("  ... (%d more)\n", len(c.Members)-n)
+		}
+		fmt.Println()
+	}
+	return nil
+}
+
+func buildClusteringIndex(clusterURL string, qdrant *search.QdrantClient, collection, repoPath string, limit int) error {
+	fmt.Printf("Clustering collection %q not found — building it now\n", collection)
+	fmt.Printf("Extracting commits from %s ...\n", repoPath)
+	commits, err := search.ListCommits(repoPath, limit)
+	if err != nil {
+		return fmt.Errorf("reading git history: %w", err)
+	}
+	fmt.Printf("Found %d commits\n", len(commits))
+
+	texts := make([]string, len(commits))
+	for i, c := range commits {
+		texts[i] = c.EmbedText()
+	}
+
+	fmt.Printf("Embedding (clustering adapter) via %s ...\n", clusterURL)
+	start := time.Now()
+	embedClient := search.NewClient(clusterURL)
+	vectors, err := embedClient.EmbedPlain(texts, func(done, total int) {
+		fmt.Printf("\r  %d / %d", done, total)
+	})
+	fmt.Println()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Embedded in %s\n", time.Since(start).Round(time.Millisecond))
+
+	if err := qdrant.DropCollection(collection); err != nil {
+		return err
+	}
+	if err := qdrant.EnsureCollection(collection, len(vectors[0])); err != nil {
+		return err
+	}
+
+	qps := make([]search.QdrantPoint, len(commits))
+	for i, c := range commits {
+		qps[i] = search.QdrantPoint{
+			ID:     uint64(i),
+			Vector: vectors[i],
+			Payload: map[string]string{
+				"hash":    c.Hash,
+				"date":    c.Date.Format("2006-01-02"),
+				"subject": c.Subject,
+			},
+		}
+	}
+	if err := qdrant.UpsertPoints(collection, qps, 100, func(done, total int) {
+		fmt.Printf("\r  upserted %d / %d", done, total)
+	}); err != nil {
+		return err
+	}
+	fmt.Printf("\n")
+	return nil
+}
+
+func writeCoordsTSV(path string, points []search.ScrolledPoint, coords [][]float32, labels []int) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	fmt.Fprintln(f, "hash\tx\ty\tlabel\tdate\tsubject")
+	for i, p := range points {
+		fmt.Fprintf(f, "%s\t%f\t%f\t%d\t%s\t%s\n",
+			p.Hash, coords[i][0], coords[i][1], labels[i], p.Date, p.Subject)
 	}
 	return nil
 }

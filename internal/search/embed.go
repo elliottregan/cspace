@@ -54,6 +54,12 @@ func (c *Client) EmbedQuery(query string) ([]float32, error) {
 	return vecs[0], nil
 }
 
+// EmbedPlain embeds texts without any prefix — for the clustering adapter,
+// which already bakes the task instruction into the model.
+func (c *Client) EmbedPlain(texts []string, progress func(done, total int)) ([][]float32, error) {
+	return c.embedBatched(texts, progress)
+}
+
 func (c *Client) embedBatched(texts []string, progress func(done, total int)) ([][]float32, error) {
 	all := make([][]float32, 0, len(texts))
 	for i := 0; i < len(texts); i += defaultBatchSize {

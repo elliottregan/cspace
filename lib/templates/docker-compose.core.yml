@@ -145,6 +145,57 @@ services:
     networks:
       - default
 
+  # Second llama.cpp server running the Jina clustering adapter for
+  # `cspace search clusters`. Retrieval (query→document) and clustering
+  # (document↔document) need different adapters, so both run in parallel
+  # on separate containers. Accessible at http://llama-clustering:8080.
+  llama-clustering:
+    image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
+    container_name: ${CSPACE_CONTAINER_NAME}.llama-cluster
+    command:
+      - --hf-repo
+      - ${LLAMA_CLUSTERING_HF_REPO:-jinaai/jina-embeddings-v5-text-nano-clustering-GGUF}
+      - --hf-file
+      - ${LLAMA_CLUSTERING_HF_FILE:-v5-nano-clustering-Q8_0.gguf}
+      - --embedding
+      - --port
+      - "8080"
+      - --host
+      - "0.0.0.0"
+      - -c
+      - "8192"
+      - -b
+      - "8192"
+      - -ub
+      - "8192"
+    volumes:
+      - llama-models:/root/.cache
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 120s
+    networks:
+      - default
+
+  # UMAP + HDBSCAN service for `cspace search clusters`. Reduces vectors to
+  # 2D (so clustering is well-behaved and the projection can be plotted) then
+  # runs HDBSCAN on the 2D points. Built locally from lib/dim-reduce/.
+  dim-reduce:
+    image: ${DIM_REDUCE_IMAGE:-cspace-dim-reduce}
+    container_name: ${CSPACE_CONTAINER_NAME}.dim-reduce
+    build:
+      context: ${CSPACE_HOME}/lib/dim-reduce
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8090/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - default
+
   # Qdrant vector database — stores commit embeddings for `cspace search`.
   # Accessible inside the container at http://qdrant:6333 (REST) / :6334 (gRPC).
   # Data persists in the qdrant-storage volume across container restarts.

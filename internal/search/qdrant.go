@@ -108,6 +108,69 @@ func (c *QdrantClient) UpsertPoints(collection string, points []QdrantPoint, bat
 	return nil
 }
 
+// ScrolledPoint is a single point returned by ScrollPoints.
+type ScrolledPoint struct {
+	Vector  []float32
+	Hash    string
+	Date    string
+	Subject string
+}
+
+type qdrantScrollResponse struct {
+	Result struct {
+		Points []struct {
+			ID      uint64            `json:"id"`
+			Vector  []float32         `json:"vector"`
+			Payload map[string]string `json:"payload"`
+		} `json:"points"`
+		NextPageOffset *uint64 `json:"next_page_offset"`
+	} `json:"result"`
+}
+
+// ScrollPoints returns every point in the collection, including vectors.
+func (c *QdrantClient) ScrollPoints(collection string) ([]ScrolledPoint, error) {
+	url := c.BaseURL + "/collections/" + collection + "/points/scroll"
+	var offset *uint64
+	var all []ScrolledPoint
+	for {
+		req := map[string]any{
+			"limit":        512,
+			"with_payload": true,
+			"with_vector":  true,
+		}
+		if offset != nil {
+			req["offset"] = *offset
+		}
+		body, _ := json.Marshal(req)
+		resp, err := c.HTTPClient.Post(url, "application/json", bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("scroll: %w", err)
+		}
+		var sr qdrantScrollResponse
+		if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+			_ = resp.Body.Close()
+			return nil, err
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("qdrant scroll returned %d", resp.StatusCode)
+		}
+		for _, p := range sr.Result.Points {
+			all = append(all, ScrolledPoint{
+				Vector:  p.Vector,
+				Hash:    p.Payload["hash"],
+				Date:    p.Payload["date"],
+				Subject: p.Payload["subject"],
+			})
+		}
+		if sr.Result.NextPageOffset == nil {
+			break
+		}
+		offset = sr.Result.NextPageOffset
+	}
+	return all, nil
+}
+
 type qdrantQueryResponse struct {
 	Result struct {
 		Points []struct {
