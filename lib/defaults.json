@@ -42,7 +42,13 @@
       "plugin-dev"
     ]
   },
-  "advisors": {},
+  "advisors": {
+    "decision-maker": {
+      "model": "claude-opus-4-7",
+      "effort": "max",
+      "baseBranch": "main"
+    }
+  },
   "services": "",
   "post_setup": ""
 }
