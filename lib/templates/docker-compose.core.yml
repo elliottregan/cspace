@@ -111,26 +111,29 @@ services:
     stdin_open: true
 
   # llama.cpp embedding server — provides on-device vector embeddings for
-  # `cspace search`. Accessible inside the container at http://llama-server:8080.
+  # `cspace search`. Uses jina-embeddings-v5-text-nano (retrieval adapter),
+  # 768-dim, 8K context. Accessible at http://llama-server:8080.
   # Model is downloaded from HuggingFace on first start and cached in the
-  # llama-models volume. Override the model with LLAMA_HF_REPO / LLAMA_HF_FILE.
+  # llama-models volume. Override with LLAMA_HF_REPO / LLAMA_HF_FILE.
   llama-server:
     image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
     container_name: ${CSPACE_CONTAINER_NAME}.llama
     command:
       - --hf-repo
-      - ${LLAMA_HF_REPO:-ggml-org/embeddinggemma-300M-GGUF}
+      - ${LLAMA_HF_REPO:-jinaai/jina-embeddings-v5-text-nano-retrieval-GGUF}
       - --hf-file
-      - ${LLAMA_HF_FILE:-embeddinggemma-300M-Q8_0.gguf}
+      - ${LLAMA_HF_FILE:-v5-nano-retrieval-Q8_0.gguf}
       - --embedding
       - --port
       - "8080"
       - --host
       - "0.0.0.0"
+      - -c
+      - "8192"
       - -b
-      - "2048"
+      - "8192"
       - -ub
-      - "2048"
+      - "8192"
     volumes:
       - llama-models:/root/.cache
     healthcheck:
@@ -139,6 +142,23 @@ services:
       timeout: 5s
       retries: 60
       start_period: 120s
+    networks:
+      - default
+
+  # Qdrant vector database — stores commit embeddings for `cspace search`.
+  # Accessible inside the container at http://qdrant:6333 (REST) / :6334 (gRPC).
+  # Data persists in the qdrant-storage volume across container restarts.
+  qdrant:
+    image: ${QDRANT_IMAGE:-qdrant/qdrant}
+    container_name: ${CSPACE_CONTAINER_NAME}.qdrant
+    volumes:
+      - qdrant-storage:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
     networks:
       - default
 
@@ -189,6 +209,7 @@ volumes:
   gh-config:
   cspace-logs:
   llama-models:
+  qdrant-storage:
     name: ${CSPACE_LOGS_VOLUME:-cspace-logs}
     external: true
 

@@ -17,8 +17,9 @@ type CommitRecord struct {
 	DiffSummary string
 }
 
-// maxEmbedChars is the character limit for embed text (~500 tokens at ~4 chars/token).
-const maxEmbedChars = 2000
+// maxEmbedChars is the character limit for embed text. The Jina retrieval model
+// supports 8K tokens; 12000 chars ≈ 3000 tokens leaving headroom for the prefix.
+const maxEmbedChars = 12000
 
 // EmbedText returns the text to embed for this commit, truncated to fit the model's context.
 func (c CommitRecord) EmbedText() string {
@@ -110,8 +111,8 @@ func commitDiffSummary(repoPath, hash string) (string, error) {
 		return strings.Join(statBody, "\n"), nil
 	}
 	snippet := diff
-	if len(snippet) > 300 {
-		snippet = snippet[:300]
+	if len(snippet) > 2000 {
+		snippet = snippet[:2000]
 	}
 
 	return strings.Join(statBody, "\n") + "\n" + snippet, nil

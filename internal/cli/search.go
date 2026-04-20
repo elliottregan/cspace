@@ -12,7 +12,7 @@ import (
 )
 
 func newSearchCmd() *cobra.Command {
-	var llamaURL string
+	var llamaURL, qdrantURL string
 
 	cmd := &cobra.Command{
 		Use:     "search <query>",
@@ -20,25 +20,24 @@ func newSearchCmd() *cobra.Command {
 		GroupID: "other",
 		Args:    cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			query := strings.Join(args, " ")
 			topN, _ := cmd.Flags().GetInt("top")
-			return runSearch(query, llamaURL, topN)
+			return runSearch(strings.Join(args, " "), llamaURL, qdrantURL, topN)
 		},
 	}
+	cmd.Flags().Int("top", 10, "Number of results to show")
 
 	indexCmd := &cobra.Command{
 		Use:   "index",
 		Short: "Build or refresh the commit embedding index",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			limit, _ := cmd.Flags().GetInt("limit")
-			return runSearchIndex(llamaURL, limit)
+			return runSearchIndex(llamaURL, qdrantURL, limit)
 		},
 	}
 	indexCmd.Flags().Int("limit", 500, "Maximum number of commits to index")
 
-	cmd.Flags().Int("top", 10, "Number of results to show")
 	cmd.PersistentFlags().StringVar(&llamaURL, "llama-url", llamaURLDefault(), "llama.cpp server URL")
-
+	cmd.PersistentFlags().StringVar(&qdrantURL, "qdrant-url", qdrantURLDefault(), "Qdrant server URL")
 	cmd.AddCommand(indexCmd)
 	return cmd
 }
@@ -52,13 +51,15 @@ func llamaURLDefault() string {
 	return "http://llama-server:8080"
 }
 
-func runSearchIndex(llamaURL string, limit int) error {
-	repoPath, err := os.Getwd()
-	if err != nil {
-		return err
+func qdrantURLDefault() string {
+	if u := os.Getenv("QDRANT_URL"); u != "" {
+		return u
 	}
+	return "http://qdrant:6333"
+}
 
-	cspaceHome, err := defaultCspaceHome()
+func runSearchIndex(llamaURL, qdrantURL string, limit int) error {
+	repoPath, err := os.Getwd()
 	if err != nil {
 		return err
 	}
@@ -70,79 +71,77 @@ func runSearchIndex(llamaURL string, limit int) error {
 	}
 	fmt.Printf("Found %d commits\n", len(commits))
 
-	client := search.NewClient(llamaURL)
-
 	texts := make([]string, len(commits))
 	for i, c := range commits {
 		texts[i] = c.EmbedText()
 	}
 
-	fmt.Printf("Embedding %d commits via %s (batched) ...\n", len(texts), llamaURL)
+	fmt.Printf("Embedding %d commits via %s ...\n", len(texts), llamaURL)
 	start := time.Now()
-	vectors, err := client.EmbedWithProgress(texts, func(done, total int) {
+	embedClient := search.NewClient(llamaURL)
+	vectors, err := embedClient.EmbedDocuments(texts, func(done, total int) {
 		fmt.Printf("\r  %d / %d", done, total)
 	})
 	fmt.Println()
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Done in %s\n", time.Since(start).Round(time.Millisecond))
+	fmt.Printf("Embedded in %s\n", time.Since(start).Round(time.Millisecond))
 
-	entries := make([]search.IndexEntry, len(commits))
+	collection := search.CollectionName(repoPath)
+	qdrant := search.NewQdrantClient(qdrantURL)
+
+	fmt.Printf("Indexing into Qdrant collection %q ...\n", collection)
+	if err := qdrant.DropCollection(collection); err != nil {
+		return fmt.Errorf("dropping collection: %w", err)
+	}
+	dim := len(vectors[0])
+	if err := qdrant.EnsureCollection(collection, dim); err != nil {
+		return err
+	}
+
+	points := make([]search.QdrantPoint, len(commits))
 	for i, c := range commits {
-		entries[i] = search.IndexEntry{
-			Hash:    c.Hash,
-			Date:    c.Date,
-			Subject: c.Subject,
-			Vector:  vectors[i],
+		points[i] = search.QdrantPoint{
+			ID:     uint64(i),
+			Vector: vectors[i],
+			Payload: map[string]string{
+				"hash":    c.Hash,
+				"date":    c.Date.Format("2006-01-02"),
+				"subject": c.Subject,
+			},
 		}
 	}
 
-	idx := &search.Index{
-		ModelURL:  llamaURL,
-		CreatedAt: time.Now(),
-		Entries:   entries,
+	if err := qdrant.UpsertPoints(collection, points, 100, func(done, total int) {
+		fmt.Printf("\r  upserted %d / %d", done, total)
+	}); err != nil {
+		return fmt.Errorf("upserting points: %w", err)
 	}
-
-	idxPath := search.IndexPath(cspaceHome, repoPath)
-	if err := search.Save(idxPath, idx); err != nil {
-		return fmt.Errorf("saving index: %w", err)
-	}
-
-	fmt.Printf("Index saved to %s\n", idxPath)
+	fmt.Printf("\nDone. %d commits indexed into %q\n", len(commits), collection)
 	return nil
 }
 
-func runSearch(query, llamaURL string, topN int) error {
+func runSearch(query, llamaURL, qdrantURL string, topN int) error {
 	repoPath, err := os.Getwd()
 	if err != nil {
 		return err
 	}
 
-	cspaceHome, err := defaultCspaceHome()
+	embedClient := search.NewClient(llamaURL)
+	queryVec, err := embedClient.EmbedQuery(query)
 	if err != nil {
 		return err
 	}
 
-	idxPath := search.IndexPath(cspaceHome, repoPath)
-	idx, err := search.Load(idxPath)
-	if os.IsNotExist(err) {
-		return fmt.Errorf("no index found — run `cspace search index` first")
-	}
+	collection := search.CollectionName(repoPath)
+	qdrant := search.NewQdrantClient(qdrantURL)
+	results, err := qdrant.QueryPoints(collection, queryVec, topN)
 	if err != nil {
-		return fmt.Errorf("loading index: %w", err)
+		return fmt.Errorf("searching: %w\nRun `cspace search index` first if the collection doesn't exist", err)
 	}
 
-	client := search.NewClient(llamaURL)
-	vecs, err := client.Embed([]string{query})
-	if err != nil {
-		return err
-	}
-
-	results := search.Search(idx, vecs[0], topN)
-
-	shortRepo := filepath.Base(repoPath)
-	fmt.Printf("Top %d commits in %s matching %q\n\n", len(results), shortRepo, query)
+	fmt.Printf("Top %d commits in %s matching %q\n\n", len(results), filepath.Base(repoPath), query)
 	for _, r := range results {
 		fmt.Printf("%.2f  %s  %s  %s\n", r.Score, r.Hash[:7], r.Date, r.Subject)
 	}
