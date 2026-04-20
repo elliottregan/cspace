@@ -1,4 +1,4 @@
-package search
+package corpus
 
 import (
 	"bytes"
@@ -6,10 +6,13 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	qdrantpkg "github.com/elliottregan/cspace/search/qdrant"
 )
 
-// CommitRecord holds the extracted data for a single commit.
-type CommitRecord struct {
+// commitRecord holds the extracted data for a single commit.
+// This is a package-private type used by CommitCorpus.
+type commitRecord struct {
 	Hash        string
 	Date        time.Time
 	Subject     string
@@ -21,8 +24,9 @@ type CommitRecord struct {
 // supports 8K tokens; 12000 chars ≈ 3000 tokens leaving headroom for the prefix.
 const maxEmbedChars = 12000
 
-// EmbedText returns the text to embed for this commit, truncated to fit the model's context.
-func (c CommitRecord) EmbedText() string {
+// commitEmbedText returns the text to embed for a commit, truncated to fit the
+// model's context.
+func commitEmbedText(c commitRecord) string {
 	parts := []string{c.Subject}
 	if c.Body != "" {
 		parts = append(parts, c.Body)
@@ -37,13 +41,60 @@ func (c CommitRecord) EmbedText() string {
 	return text
 }
 
-// ListCommits extracts up to limit commits from the git repo at repoPath.
-func ListCommits(repoPath string, limit int) ([]CommitRecord, error) {
+// CommitCorpus indexes git commit history (subject + body + diff summary).
+type CommitCorpus struct {
+	// Limit caps the number of commits enumerated; 0 means use a default.
+	Limit int
+}
+
+// ID returns the stable corpus identifier.
+func (c *CommitCorpus) ID() string { return "commits" }
+
+// Collection returns the Qdrant collection name for this corpus + project.
+func (c *CommitCorpus) Collection(projectRoot string) string {
+	return "commits-" + qdrantpkg.ProjectHash(projectRoot)
+}
+
+// Enumerate emits Records for each commit, one per unit of content. The channel
+// is closed when enumeration completes. Errors are reported via the errs channel.
+func (c *CommitCorpus) Enumerate(projectRoot string) (<-chan Record, <-chan error) {
+	out := make(chan Record)
+	errs := make(chan error, 4)
+	go func() {
+		defer close(out)
+		defer close(errs)
+		limit := c.Limit
+		if limit <= 0 {
+			limit = 500
+		}
+		commits, err := listCommits(projectRoot, limit)
+		if err != nil {
+			errs <- err
+			return
+		}
+		for _, cm := range commits {
+			out <- Record{
+				Path:      cm.Hash,
+				Kind:      "commit",
+				EmbedText: commitEmbedText(cm),
+				Extra: map[string]any{
+					"hash":    cm.Hash,
+					"date":    cm.Date.Format("2006-01-02"),
+					"subject": cm.Subject,
+				},
+			}
+		}
+	}()
+	return out, errs
+}
+
+// listCommits extracts up to limit commits from the git repo at repoPath.
+func listCommits(repoPath string, limit int) ([]commitRecord, error) {
 	// Get hashes, dates, subjects, and bodies in one pass.
 	// Use a rare delimiter to safely split multi-line bodies.
 	// Use a delimiter unlikely to appear in commit messages.
 	const sep = "|||COMMIT|||"
-	logOut, err := git(repoPath, "log",
+	logOut, err := gitCmd(repoPath, "log",
 		fmt.Sprintf("-n%d", limit),
 		"--format="+sep+"%H|%aI|%s|%b|||END|||",
 	)
@@ -51,7 +102,7 @@ func ListCommits(repoPath string, limit int) ([]CommitRecord, error) {
 		return nil, fmt.Errorf("git log: %w", err)
 	}
 
-	var records []CommitRecord
+	var records []commitRecord
 	for _, block := range strings.Split(logOut, "|||END|||") {
 		block = strings.TrimSpace(block)
 		if block == "" {
@@ -79,7 +130,7 @@ func ListCommits(repoPath string, limit int) ([]CommitRecord, error) {
 			diffSummary = ""
 		}
 
-		records = append(records, CommitRecord{
+		records = append(records, commitRecord{
 			Hash:        hash,
 			Date:        date,
 			Subject:     subject,
@@ -92,7 +143,7 @@ func ListCommits(repoPath string, limit int) ([]CommitRecord, error) {
 
 // commitDiffSummary returns the --stat output plus the first 300 bytes of the diff.
 func commitDiffSummary(repoPath, hash string) (string, error) {
-	stat, err := git(repoPath, "show", "--stat", "--no-patch", hash)
+	stat, err := gitCmd(repoPath, "show", "--stat", "--no-patch", hash)
 	if err != nil {
 		return "", err
 	}
@@ -106,7 +157,7 @@ func commitDiffSummary(repoPath, hash string) (string, error) {
 		}
 	}
 
-	diff, err := git(repoPath, "diff", hash+"^", hash, "--", ".")
+	diff, err := gitCmd(repoPath, "diff", hash+"^", hash, "--", ".")
 	if err != nil {
 		return strings.Join(statBody, "\n"), nil
 	}
@@ -118,7 +169,7 @@ func commitDiffSummary(repoPath, hash string) (string, error) {
 	return strings.Join(statBody, "\n") + "\n" + snippet, nil
 }
 
-func git(repoPath string, args ...string) (string, error) {
+func gitCmd(repoPath string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = repoPath
 	var out, errBuf bytes.Buffer

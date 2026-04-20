@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/elliottregan/cspace/internal/search"
 	"github.com/elliottregan/cspace/search/cluster"
+	"github.com/elliottregan/cspace/search/corpus"
 	"github.com/elliottregan/cspace/search/embed"
 	qdrantpkg "github.com/elliottregan/cspace/search/qdrant"
 	"github.com/elliottregan/cspace/search/reduce"
@@ -110,15 +110,21 @@ func runSearchIndex(llamaURL, qdrantURL string, limit int) error {
 	}
 
 	fmt.Printf("Extracting commits from %s ...\n", repoPath)
-	commits, err := search.ListCommits(repoPath, limit)
-	if err != nil {
-		return fmt.Errorf("reading git history: %w", err)
-	}
-	fmt.Printf("Found %d commits\n", len(commits))
+	cc := &corpus.CommitCorpus{Limit: limit}
+	recCh, errCh := cc.Enumerate(repoPath)
 
-	texts := make([]string, len(commits))
-	for i, c := range commits {
-		texts[i] = c.EmbedText()
+	var records []corpus.Record
+	for rec := range recCh {
+		records = append(records, rec)
+	}
+	for e := range errCh {
+		return fmt.Errorf("reading git history: %w", e)
+	}
+	fmt.Printf("Found %d commits\n", len(records))
+
+	texts := make([]string, len(records))
+	for i, r := range records {
+		texts[i] = r.EmbedText
 	}
 
 	fmt.Printf("Embedding %d commits via %s ...\n", len(texts), llamaURL)
@@ -145,16 +151,12 @@ func runSearchIndex(llamaURL, qdrantURL string, limit int) error {
 		return err
 	}
 
-	points := make([]qdrantpkg.QdrantPoint, len(commits))
-	for i, c := range commits {
+	points := make([]qdrantpkg.QdrantPoint, len(records))
+	for i, r := range records {
 		points[i] = qdrantpkg.QdrantPoint{
 			ID:     uint64(i),
 			Vector: vectors[i],
-			Payload: map[string]any{
-				"hash":    c.Hash,
-				"date":    c.Date.Format("2006-01-02"),
-				"subject": c.Subject,
-			},
+			Payload: r.Extra,
 		}
 	}
 
@@ -163,7 +165,7 @@ func runSearchIndex(llamaURL, qdrantURL string, limit int) error {
 	}); err != nil {
 		return fmt.Errorf("upserting points: %w", err)
 	}
-	fmt.Printf("\nDone. %d commits indexed into %q\n", len(commits), collection)
+	fmt.Printf("\nDone. %d commits indexed into %q\n", len(records), collection)
 	return nil
 }
 
@@ -274,15 +276,21 @@ func runSearchClusters(clusterURL, qdrantURL, reduceURL, hdbscanURL string, limi
 func buildClusteringIndex(clusterURL string, qdrant *qdrantpkg.QdrantClient, collection, repoPath string, limit int) error {
 	fmt.Printf("Clustering collection %q not found — building it now\n", collection)
 	fmt.Printf("Extracting commits from %s ...\n", repoPath)
-	commits, err := search.ListCommits(repoPath, limit)
-	if err != nil {
-		return fmt.Errorf("reading git history: %w", err)
-	}
-	fmt.Printf("Found %d commits\n", len(commits))
+	cc := &corpus.CommitCorpus{Limit: limit}
+	recCh, errCh := cc.Enumerate(repoPath)
 
-	texts := make([]string, len(commits))
-	for i, c := range commits {
-		texts[i] = c.EmbedText()
+	var records []corpus.Record
+	for rec := range recCh {
+		records = append(records, rec)
+	}
+	for e := range errCh {
+		return fmt.Errorf("reading git history: %w", e)
+	}
+	fmt.Printf("Found %d commits\n", len(records))
+
+	texts := make([]string, len(records))
+	for i, r := range records {
+		texts[i] = r.EmbedText
 	}
 
 	fmt.Printf("Embedding (clustering adapter) via %s ...\n", clusterURL)
@@ -304,16 +312,12 @@ func buildClusteringIndex(clusterURL string, qdrant *qdrantpkg.QdrantClient, col
 		return err
 	}
 
-	qps := make([]qdrantpkg.QdrantPoint, len(commits))
-	for i, c := range commits {
+	qps := make([]qdrantpkg.QdrantPoint, len(records))
+	for i, r := range records {
 		qps[i] = qdrantpkg.QdrantPoint{
 			ID:     uint64(i),
 			Vector: vectors[i],
-			Payload: map[string]any{
-				"hash":    c.Hash,
-				"date":    c.Date.Format("2006-01-02"),
-				"subject": c.Subject,
-			},
+			Payload: r.Extra,
 		}
 	}
 	if err := qdrant.UpsertPoints(collection, qps, 100, func(done, total int) {
