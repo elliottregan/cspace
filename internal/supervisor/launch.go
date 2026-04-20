@@ -39,8 +39,9 @@ type LaunchParams struct {
 	Persistent bool
 
 	// ModelOverride, if non-empty, takes precedence over cfg.Claude.Model
-	// on the supervisor command line. Used by advisors to pin their model
-	// independently of the rest of the cspace session.
+	// on the supervisor command line. Used by coordinators (pinning to
+	// Sonnet) and advisors (pinning to their configured per-advisor model)
+	// to set a specific model independent of the global cfg.Claude.Model.
 	ModelOverride string
 
 	// EffortOverride, if non-empty, takes precedence over cfg.Claude.Effort.

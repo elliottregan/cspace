@@ -572,12 +572,12 @@ func TestConfigAdvisorsBlock(t *testing.T) {
 	}
 }
 
-func TestConfigAdvisorsEmptyByDefault(t *testing.T) {
+func TestConfigAdvisorsNonNilAfterDefaults(t *testing.T) {
 	cfg, err := loadConfigFromJSON(t, `{}`)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
 	if cfg.Advisors == nil {
-		t.Fatal("Advisors should be non-nil (possibly empty map from defaults.json)")
+		t.Fatal("Advisors should be non-nil — defaults.json ships a decision-maker entry and DeepMerge preserves it when the overlay omits the key")
 	}
 }
