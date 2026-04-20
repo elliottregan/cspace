@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"path/filepath"
 )
 
 // Record is one unit of content to be indexed. A Record may represent a whole
@@ -44,6 +45,14 @@ func (r Record) ID() uint64 {
 	fmt.Fprintf(h, "%s\x00%s\x00%d\x00%d", r.Kind, r.Path, r.LineStart, r.LineEnd)
 	sum := h.Sum(nil)
 	return binary.BigEndian.Uint64(sum[:8])
+}
+
+// ProjectHash returns a stable 8-char hex hash for a project root path,
+// used as a suffix in Qdrant collection names.
+func ProjectHash(repoPath string) string {
+	abs, _ := filepath.Abs(repoPath)
+	h := sha256.Sum256([]byte(abs))
+	return fmt.Sprintf("%x", h[:4])
 }
 
 // Corpus is the interface an indexable content type implements.

@@ -2,21 +2,11 @@ package qdrant
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"path/filepath"
 	"time"
 )
-
-// ProjectHash returns a stable 8-char hex hash for a project root,
-// used as a component in Qdrant collection names.
-func ProjectHash(repoPath string) string {
-	abs, _ := filepath.Abs(repoPath)
-	h := sha256.Sum256([]byte(abs))
-	return fmt.Sprintf("%x", h[:4])
-}
 
 // QdrantClient is a minimal HTTP client for Qdrant's REST API.
 type QdrantClient struct {
@@ -105,6 +95,75 @@ func (c *QdrantClient) UpsertPoints(collection string, points []QdrantPoint, bat
 		if progress != nil {
 			progress(end, len(points))
 		}
+	}
+	return nil
+}
+
+// ExistingPoints returns a map of point ID → content_hash for a collection,
+// paginating through scroll. Used by the indexer for change detection.
+func (c *QdrantClient) ExistingPoints(collection string) (map[uint64]string, error) {
+	out := map[uint64]string{}
+	var offset any = nil
+	for {
+		body := map[string]any{
+			"limit":        256,
+			"with_payload": []string{"content_hash"},
+			"with_vector":  false,
+		}
+		if offset != nil {
+			body["offset"] = offset
+		}
+		buf, _ := json.Marshal(body)
+		req, _ := http.NewRequest(http.MethodPost, c.BaseURL+"/collections/"+collection+"/points/scroll", bytes.NewReader(buf))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("scroll: %w", err)
+		}
+		// Treat "collection missing" as empty so the indexer can create it.
+		if resp.StatusCode == http.StatusNotFound {
+			_ = resp.Body.Close()
+			return map[uint64]string{}, nil
+		}
+		var parsed struct {
+			Result struct {
+				Points []struct {
+					ID      uint64         `json:"id"`
+					Payload map[string]any `json:"payload"`
+				} `json:"points"`
+				NextPageOffset any `json:"next_page_offset"`
+			} `json:"result"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+			_ = resp.Body.Close()
+			return nil, err
+		}
+		_ = resp.Body.Close()
+		for _, p := range parsed.Result.Points {
+			if h, ok := p.Payload["content_hash"].(string); ok {
+				out[p.ID] = h
+			}
+		}
+		if parsed.Result.NextPageOffset == nil {
+			break
+		}
+		offset = parsed.Result.NextPageOffset
+	}
+	return out, nil
+}
+
+// DeletePoints removes the listed point IDs.
+func (c *QdrantClient) DeletePoints(collection string, ids []uint64) error {
+	body, _ := json.Marshal(map[string]any{"points": ids})
+	req, _ := http.NewRequest(http.MethodPost, c.BaseURL+"/collections/"+collection+"/points/delete", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("qdrant delete returned %d", resp.StatusCode)
 	}
 	return nil
 }

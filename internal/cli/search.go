@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/elliottregan/cspace/search/cluster"
-	"github.com/elliottregan/cspace/search/corpus"
+	corpuspkg "github.com/elliottregan/cspace/search/corpus"
 	"github.com/elliottregan/cspace/search/embed"
 	qdrantpkg "github.com/elliottregan/cspace/search/qdrant"
 	"github.com/elliottregan/cspace/search/reduce"
@@ -110,10 +110,10 @@ func runSearchIndex(llamaURL, qdrantURL string, limit int) error {
 	}
 
 	fmt.Printf("Extracting commits from %s ...\n", repoPath)
-	cc := &corpus.CommitCorpus{Limit: limit}
+	cc := &corpuspkg.CommitCorpus{Limit: limit}
 	recCh, errCh := cc.Enumerate(repoPath)
 
-	var records []corpus.Record
+	var records []corpuspkg.Record
 	for rec := range recCh {
 		records = append(records, rec)
 	}
@@ -139,7 +139,7 @@ func runSearchIndex(llamaURL, qdrantURL string, limit int) error {
 	}
 	fmt.Printf("Embedded in %s\n", time.Since(start).Round(time.Millisecond))
 
-	collection := "git-search-" + qdrantpkg.ProjectHash(repoPath)
+	collection := "git-search-" + corpuspkg.ProjectHash(repoPath)
 	qdrant := qdrantpkg.NewQdrantClient(qdrantURL)
 
 	fmt.Printf("Indexing into Qdrant collection %q ...\n", collection)
@@ -181,7 +181,7 @@ func runSearch(query, llamaURL, qdrantURL string, topN int) error {
 		return err
 	}
 
-	collection := "git-search-" + qdrantpkg.ProjectHash(repoPath)
+	collection := "git-search-" + corpuspkg.ProjectHash(repoPath)
 	qdrant := qdrantpkg.NewQdrantClient(qdrantURL)
 	results, err := qdrant.QueryPoints(collection, queryVec, topN)
 	if err != nil {
@@ -198,7 +198,7 @@ func runSearch(query, llamaURL, qdrantURL string, topN int) error {
 // clusterCollectionName returns the Qdrant collection name for clustering
 // embeddings (separate from retrieval to keep the two vector spaces apart).
 func clusterCollectionName(repoPath string) string {
-	return "git-search-" + qdrantpkg.ProjectHash(repoPath) + "-clustering"
+	return "git-search-" + corpuspkg.ProjectHash(repoPath) + "-clustering"
 }
 
 func runSearchClusters(clusterURL, qdrantURL, reduceURL, hdbscanURL string, limit, minPts, topPer int, coordsOut string) error {
@@ -276,10 +276,10 @@ func runSearchClusters(clusterURL, qdrantURL, reduceURL, hdbscanURL string, limi
 func buildClusteringIndex(clusterURL string, qdrant *qdrantpkg.QdrantClient, collection, repoPath string, limit int) error {
 	fmt.Printf("Clustering collection %q not found — building it now\n", collection)
 	fmt.Printf("Extracting commits from %s ...\n", repoPath)
-	cc := &corpus.CommitCorpus{Limit: limit}
+	cc := &corpuspkg.CommitCorpus{Limit: limit}
 	recCh, errCh := cc.Enumerate(repoPath)
 
-	var records []corpus.Record
+	var records []corpuspkg.Record
 	for rec := range recCh {
 		records = append(records, rec)
 	}

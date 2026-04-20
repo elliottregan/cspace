@@ -6,8 +6,6 @@ import (
 	"os/exec"
 	"strings"
 	"time"
-
-	qdrantpkg "github.com/elliottregan/cspace/search/qdrant"
 )
 
 // commitRecord holds the extracted data for a single commit.
@@ -52,7 +50,7 @@ func (c *CommitCorpus) ID() string { return "commits" }
 
 // Collection returns the Qdrant collection name for this corpus + project.
 func (c *CommitCorpus) Collection(projectRoot string) string {
-	return "commits-" + qdrantpkg.ProjectHash(projectRoot)
+	return "commits-" + ProjectHash(projectRoot)
 }
 
 // Enumerate emits Records for each commit, one per unit of content. The channel
