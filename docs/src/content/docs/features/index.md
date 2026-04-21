@@ -18,3 +18,4 @@ If you're looking for how a specific command works, start with the **CLI Referen
 ## Available features
 
 - **[Teleport](/features/teleport)** — move a live Claude Code conversation from one cspace container into another.
+- **[Semantic Search](/features/semantic-search)** — natural-language search over commits, code, project context, and GitHub issues. Available as a CLI and as MCP tools for agents.

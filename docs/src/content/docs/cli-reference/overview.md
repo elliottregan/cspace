@@ -19,7 +19,7 @@ cspace provides a comprehensive set of commands for managing devcontainer instan
 | [`cspace ports`](/cli-reference/instance-management/#cspace-ports) | Show port mappings for an instance |
 | [`cspace down`](/cli-reference/instance-management/#cspace-down) | Destroy instance and volumes |
 | [`cspace warm`](/cli-reference/instance-management/#cspace-warm) | Pre-provision containers without launching Claude |
-| [`cspace rebuild`](/cli-reference/instance-management/#cspace-rebuild) | Rebuild the container image |
+| [`cspace rebuild`](/cli-reference/instance-management/#cspace-rebuild) | Rebuild the container image (with `--reindex` to also refresh search on every running instance) |
 
 ### Autonomous Agents
 
@@ -44,6 +44,21 @@ cspace provides a comprehensive set of commands for managing devcontainer instan
 |---------|-------------|
 | [`cspace init`](/cli-reference/project-setup/#cspace-init) | Initialize cspace project configuration |
 | [`cspace self-update`](/cli-reference/project-setup/#cspace-self-update) | Update cspace to the latest version |
+
+### Semantic Search
+
+| Command | Description |
+|---------|-------------|
+| `cspace search init` | Bootstrap search for a project: writes `search.yaml`, installs lefthook hooks, runs initial indexes. |
+| `cspace search code "<query>"` | Natural-language search over the code corpus. |
+| `cspace search commits "<query>"` | Same, against the commit history corpus. |
+| `cspace search context "<query>"` | Same, against the `.cspace/context/` planning artifacts. |
+| `cspace search issues "<query>"` | Same, against the repo's GitHub issues and PRs. |
+| `cspace search {code,commits,context,issues} index` | (Re)build the named index. Auto-runs on commit via lefthook if installed. |
+| `cspace search {code,commits,context,issues} clusters` | Discover thematic clusters and write `cluster_id` into the index. |
+| `cspace search mcp` | Stdio MCP server exposing all four corpora as tools (launched by Claude via `.mcp.json`, not invoked directly). |
+
+See [Semantic Search](/features/semantic-search/) for a conceptual overview, corpus selection guidance, and MCP tool contracts.
 
 ### Other
 
