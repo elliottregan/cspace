@@ -122,7 +122,7 @@ func queryCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&corpusID, "corpus", "code", "corpus id")
+	cmd.Flags().StringVar(&corpusID, "corpus", "code", "corpus id (code|commits|context)")
 	cmd.Flags().IntVar(&topK, "top", 10, "top K hits")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON envelope")
 	cmd.Flags().BoolVar(&withCluster, "with-cluster", false, "include cluster_id per hit")
@@ -165,7 +165,7 @@ func clustersCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&corpusID, "corpus", "code", "corpus id")
+	cmd.Flags().StringVar(&corpusID, "corpus", "code", "corpus id (code|commits|context)")
 	cmd.Flags().StringVar(&coordsOut, "coords-out", "", "write TSV of coords+labels")
 	cmd.Flags().IntVar(&minPts, "min-pts", 3, "HDBSCAN min_cluster_size (min points per cluster)")
 	cmd.Flags().IntVar(&minSamples, "min-samples", 1, "HDBSCAN min_samples (cluster conservatism; higher → more noise, tighter clusters)")

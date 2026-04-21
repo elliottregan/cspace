@@ -28,6 +28,8 @@ corpora:
     enabled: true
     limit: 500
   context:
+    # No max_bytes / excludes: ContextCorpus has no config fields. Indexes
+    # the fixed set of .cspace/context/ artifacts unconditionally.
     enabled: true
 sidecars:
   llama_retrieval_url: "http://llama-server:8080"
