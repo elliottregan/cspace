@@ -76,7 +76,7 @@ func Run(ctx context.Context, cfg Config) (*Envelope, error) {
 		return &Envelope{
 			Query:   cfg.Query,
 			Corpus:  cfg.Corpus.ID(),
-			Results: nil,
+			Results: []Hit{},
 			Warning: "query produced a degenerate embedding; try a more specific phrase",
 		}, nil
 	}
