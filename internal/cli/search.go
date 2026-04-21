@@ -49,18 +49,19 @@ func newSearchCmd() *cobra.Command {
 }
 
 // newSearchMCPCmd builds `cspace search mcp`, a stdio MCP server exposing
-// search tools (search_code, search_context, list_clusters). Registered per
-// agent container via init-claude-plugins.sh so advisors/coordinators/
-// implementers can consult the indexes mid-session. Parallels `cspace
-// context-server`.
+// the search tools (search_code, search_context, search_issues,
+// list_clusters). Registered per agent container via init-claude-plugins.sh
+// so advisors/coordinators/implementers can consult the indexes mid-session.
+// Parallels `cspace context-server`.
 func newSearchMCPCmd() *cobra.Command {
 	var root string
 	cmd := &cobra.Command{
 		Use:   "mcp",
 		Short: "Run the search MCP server over stdio",
-		Long: `Expose the code, commits, and context search indexes as MCP tools
-(search_code, search_context, list_clusters). Invoked by Claude Code via
-.mcp.json or a container's Claude MCP config, not by humans directly.`,
+		Long: `Expose the code, commits, context, and issues search indexes as MCP
+tools (search_code, search_context, search_issues, list_clusters). Invoked
+by Claude Code via .mcp.json or a container's Claude MCP config, not by
+humans directly.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if root == "" {
 				root = searchProjectRoot()
