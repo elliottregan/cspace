@@ -38,7 +38,13 @@ func newSearchCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().IntVar(&topK, "top", 10, "Number of results to show (back-compat flag)")
-	cmd.AddCommand(newSearchSubcmd("code"), newSearchSubcmd("commits"), newSearchSubcmd("context"), newSearchMCPCmd())
+	cmd.AddCommand(
+		newSearchSubcmd("code"),
+		newSearchSubcmd("commits"),
+		newSearchSubcmd("context"),
+		newSearchSubcmd("issues"),
+		newSearchMCPCmd(),
+	)
 	return cmd
 }
 
