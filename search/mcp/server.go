@@ -29,6 +29,13 @@ func (s *Server) Register(srv *mcpSDK.Server) {
 		return s.handleSearchCode(ctx, in)
 	})
 
+	mcpSDK.AddTool[searchContextInput, searchContextOutput](srv, &mcpSDK.Tool{
+		Name:        "search_context",
+		Description: "Semantic search over the project's context artifacts (direction, principles, roadmap, findings, decisions, discoveries). Use when you need to check prior decisions, open findings, or stated architectural principles before acting.",
+	}, func(ctx context.Context, req *mcpSDK.CallToolRequest, in searchContextInput) (*mcpSDK.CallToolResult, searchContextOutput, error) {
+		return s.handleSearchContext(ctx, in)
+	})
+
 	mcpSDK.AddTool[listClustersInput, listClustersOutput](srv, &mcpSDK.Tool{
 		Name:        "list_clusters",
 		Description: "List the thematic clusters discovered in the code index. Returns cluster IDs, sizes, and representative file paths.",
@@ -46,6 +53,16 @@ type searchCodeInput struct {
 }
 
 type searchCodeOutput struct {
+	Results json.RawMessage `json:"results"`
+}
+
+type searchContextInput struct {
+	Query       string `json:"query"        jsonschema:"the natural language query to embed and search against context artifacts"`
+	TopK        int    `json:"top_k,omitempty" jsonschema:"max results to return (default 10, max 50)"`
+	WithCluster bool   `json:"with_cluster,omitempty" jsonschema:"include cluster_id per hit"`
+}
+
+type searchContextOutput struct {
 	Results json.RawMessage `json:"results"`
 }
 
@@ -88,6 +105,42 @@ func (s *Server) handleSearchCode(ctx context.Context, in searchCodeInput) (*mcp
 		return nil, searchCodeOutput{}, err
 	}
 	out := searchCodeOutput{Results: json.RawMessage(buf)}
+	return &mcpSDK.CallToolResult{
+		Content: []mcpSDK.Content{&mcpSDK.TextContent{Text: string(buf)}},
+	}, out, nil
+}
+
+func (s *Server) handleSearchContext(ctx context.Context, in searchContextInput) (*mcpSDK.CallToolResult, searchContextOutput, error) {
+	rt, err := config.BuildWithConfig(s.ProjectRoot, "context", s.Config)
+	if err != nil {
+		return nil, searchContextOutput{}, err
+	}
+	qc := qdrant.NewQdrantClient(s.Config.Sidecars.QdrantURL)
+	ec := embed.NewClient(s.Config.Sidecars.LlamaRetrievalURL)
+
+	topK := in.TopK
+	if topK <= 0 {
+		topK = 10
+	}
+
+	env, err := query.Run(ctx, query.Config{
+		Corpus:      rt.Corpus,
+		Embedder:    &embed.QueryAdapter{Client: ec},
+		Searcher:    &qdrant.Adapter{QdrantClient: qc},
+		ProjectRoot: s.ProjectRoot,
+		Query:       in.Query,
+		TopK:        topK,
+		WithCluster: in.WithCluster,
+	})
+	if err != nil {
+		return nil, searchContextOutput{}, err
+	}
+
+	buf, err := json.Marshal(env)
+	if err != nil {
+		return nil, searchContextOutput{}, err
+	}
+	out := searchContextOutput{Results: json.RawMessage(buf)}
 	return &mcpSDK.CallToolResult{
 		Content: []mcpSDK.Content{&mcpSDK.TextContent{Text: string(buf)}},
 	}, out, nil
