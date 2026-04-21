@@ -27,6 +27,8 @@ corpora:
   commits:
     enabled: true
     limit: 500
+  context:
+    enabled: true
 sidecars:
   llama_retrieval_url: "http://llama-server:8080"
   llama_clustering_url: "http://llama-clustering:8080"
