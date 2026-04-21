@@ -13,7 +13,7 @@ type Adapter struct{ *Client }
 
 // Embed implements index.Embedder by delegating to EmbedDocuments.
 func (a *Adapter) Embed(ctx context.Context, texts []string) ([][]float32, error) {
-	return a.Client.EmbedDocuments(ctx, texts, nil)
+	return a.EmbedDocuments(ctx, texts, nil)
 }
 
 // QueryAdapter wraps *Client for single-query embedding. A later task (2.4)

@@ -20,7 +20,7 @@ func (a *Adapter) UpsertPoints(collection string, points []index.Point, batchSiz
 
 // Search satisfies query.Searcher.
 func (a *Adapter) Search(collection string, vector []float32, topK int) ([]query.RawHit, error) {
-	raws, err := a.QdrantClient.SearchPoints(collection, vector, topK)
+	raws, err := a.SearchPoints(collection, vector, topK)
 	if err != nil {
 		return nil, err
 	}

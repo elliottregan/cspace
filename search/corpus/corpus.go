@@ -42,7 +42,8 @@ type Record struct {
 // ID returns a deterministic 64-bit Qdrant point ID for this Record.
 func (r Record) ID() uint64 {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s\x00%s\x00%d\x00%d", r.Kind, r.Path, r.LineStart, r.LineEnd)
+	// sha256.Hash.Write never returns an error, but errcheck doesn't know that.
+	_, _ = fmt.Fprintf(h, "%s\x00%s\x00%d\x00%d", r.Kind, r.Path, r.LineStart, r.LineEnd)
 	sum := h.Sum(nil)
 	return binary.BigEndian.Uint64(sum[:8])
 }
