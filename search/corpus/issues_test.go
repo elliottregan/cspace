@@ -1,7 +1,6 @@
 package corpus
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 )
@@ -284,7 +283,7 @@ func TestFormatIssueEmbedText_WithLabels(t *testing.T) {
 	}
 }
 
-func TestFormatIssueEmbedText_ContentHash(t *testing.T) {
+func TestFormatIssueEmbedText_Deterministic(t *testing.T) {
 	issue := ghIssue{
 		Number: 1, Title: "test", Body: "body",
 		State: "open", Author: "a", Labels: nil,
@@ -370,6 +369,4 @@ func TestIssuesCorpus_RecordContentHash(t *testing.T) {
 	if rec.Extra["author"] != "a" {
 		t.Errorf("Extra[author] = %v, want %q", rec.Extra["author"], "a")
 	}
-
-	fmt.Println("ContentHash:", rec.ContentHash)
 }
