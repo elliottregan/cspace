@@ -58,7 +58,11 @@ func renderEventRow(e EventRow, width int) string {
 
 	used := 8 + 10 + 8
 	if remaining := width - used - 2; remaining > 0 {
-		evContent = styleContent.MaxWidth(remaining).Render(e.Content)
+		if e.Kind == KindResult {
+			evContent = styleEvTypeResult.MaxWidth(remaining).Render(e.Content)
+		} else {
+			evContent = styleContent.MaxWidth(remaining).Render(e.Content)
+		}
 	}
 
 	return evTime + evInst + evType + evContent
