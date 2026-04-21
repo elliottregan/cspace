@@ -23,6 +23,22 @@ If the `cspace-context` MCP server is available (you'll see `mcp__cspace_context
 - Before designing (Phase 3), if the task touches architecture, existing abstractions, or prior design choices, call `read_context` with `sections: ["decisions", "discoveries"]` to avoid re-litigating settled questions.
 - If the task touches an area that might have open bugs or pending refactor proposals, call `list_findings` with `status: ["open", "acknowledged"]` and any relevant `tags` or `category` filter. Read any matches with `read_finding` and surface them as context — you may end up closing one as part of this task, or deliberately deferring it.
 
+### Advisor handshake
+
+After reading your task prompt and initial `read_context`, call:
+
+```
+handshake_advisor(
+  name="decision-maker",
+  summary="<one-line summary of your task>",
+  hints=["path/to/file1", "module/name", "..."]
+)
+```
+
+This warms the decision-maker's context so it's ready for any consultations later in the task. Do not wait for a reply (the advisor will not reply to a handshake). Continue to Explore.
+
+You may receive mid-task messages from the advisor if it finds something urgent (e.g. a conflicting prior decision). Treat these the way you'd treat a new directive from the coordinator: read, adjust, continue.
+
 ## Phase 2 — Codebase Exploration
 
 **Goal**: Understand relevant existing code and patterns at both high and low levels.
@@ -44,6 +60,22 @@ If the `cspace-context` MCP server is available (you'll see `mcp__cspace_context
    - **Pragmatic balance** — speed + quality
 
 6. Review all approaches and form your opinion on which fits best for this specific task.
+
+### When to ask the decision-maker
+
+If you hit an architectural choice you can't confidently resolve against `principles.md` and prior decisions in the context server, call:
+
+```
+ask_advisor(
+  name="decision-maker",
+  question="<specific question with context>",
+  kind="question"
+)
+```
+
+The reply arrives later as a new user turn on your session, not as a tool result. Continue working on parts of the task that don't depend on the answer. When the reply lands, integrate it and proceed.
+
+Don't ask for: trivial naming, formatting, or which file to edit. Do ask for: cross-cutting design decisions that affect other agents' work or conflict with existing decisions.
 
 ## Phase 4 — Implement
 
@@ -68,6 +100,16 @@ If the `cspace-context` MCP server is available (you'll see `mcp__cspace_context
 
 17b. **Report bugs / observations / refactor opportunities you encounter outside this task's scope.** Call `log_finding` with `category` ∈ {bug, observation, refactor}, a title, summary, and details. Do NOT fix them inline — that expands the PR. A finding is a commitment to remember, not to do right now. If your commit happens to resolve an existing finding, append `(cs-finding:<slug>)` to the commit message and call `append_to_finding(slug, note, status="resolved")` so the Updates log reflects the fix.
 
+### Release your supervisor
+
+After the coordinator-notification message has been delivered, call:
+
+```
+shutdown_self()
+```
+
+This closes your supervisor cleanly so the coordinator isn't left tracking an idle persistent agent. Your container stays up; the coordinator can reclaim it with `cspace down` or reuse it with `cspace up`.
+
 ## Phase 7 — Review
 
 18. Take screenshots of the new/changed features using Playwright MCP browser tools against the running preview server, then post them as a comment on the PR using gh cli.
@@ -77,4 +119,6 @@ If the `cspace-context` MCP server is available (you'll see `mcp__cspace_context
     ```bash
     cspace send _coordinator "Worker issue-${NUMBER} complete. Status: <success|failed>. PR: <url or 'none'>. Summary: <one-line description of what was done>" 2>/dev/null || true
     ```
+    (Equivalent MCP tool: `notify_coordinator(message="...")`. Preferred for structured return values.)
+    
     If you failed and could not produce a PR, still send the message with `Status: failed` and a brief explanation. If the send fails (no coordinator running), that's fine — it means you were launched standalone.

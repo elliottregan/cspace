@@ -178,3 +178,46 @@ func TestLaunchSupervisorRejectsBothSet(t *testing.T) {
 		t.Errorf("expected 'mutually exclusive' error, got: %v", err)
 	}
 }
+
+func TestBuildSupervisorArgsAdvisor(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Claude.Model = "default-model"
+	cfg.Claude.Effort = "high"
+
+	params := LaunchParams{
+		Name:           "decision-maker",
+		Role:           RoleAdvisor,
+		PromptFile:     "/tmp/p",
+		StderrLog:      "/tmp/err",
+		ModelOverride:  "claude-opus-4-7",
+		EffortOverride: "max",
+		AdvisorNames:   []string{"decision-maker", "critic"},
+	}
+	args := buildSupervisorArgs(params, cfg)
+
+	if !containsArg(args, "--role", "advisor") {
+		t.Errorf("expected --role advisor; got %v", args)
+	}
+	if !containsArg(args, "--model", "claude-opus-4-7") {
+		t.Errorf("expected --model claude-opus-4-7 (override); got %v", args)
+	}
+	if !containsArg(args, "--effort", "max") {
+		t.Errorf("expected --effort max (override); got %v", args)
+	}
+	if !containsArg(args, "--advisors", "decision-maker,critic") {
+		t.Errorf("expected --advisors decision-maker,critic; got %v", args)
+	}
+	if !containsArg(args, "--instance", "decision-maker") {
+		t.Errorf("expected --instance decision-maker; got %v", args)
+	}
+}
+
+// Helper: walks pairs and returns true if [flag, value] appears consecutively.
+func containsArg(args []string, flag, value string) bool {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == flag && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}

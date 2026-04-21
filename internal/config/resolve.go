@@ -67,6 +67,20 @@ func ResolveAgent(projectRoot, assetsDir, name string) string {
 	return path
 }
 
+// ResolveAdvisor resolves an advisor system-prompt file, checking the project
+// override directory first, then falling back to the extracted embedded assets.
+//
+// Resolution order:
+//  1. $PROJECT_ROOT/.cspace/advisors/<name>.md
+//  2. $ASSETS_DIR/advisors/<name>.md
+//
+// Used when AdvisorConfig.SystemPromptFile is empty (the default). Callers
+// that want to respect an explicit SystemPromptFile should check that first.
+func ResolveAdvisor(projectRoot, assetsDir, name string) string {
+	path, _ := resolveFile(projectRoot, assetsDir, "advisors", "advisors", name+".md")
+	return path
+}
+
 // --- Config methods for convenience ---
 
 // ResolveTemplate resolves a template file using this config's paths.
@@ -82,4 +96,18 @@ func (c *Config) ResolveScript(name string) string {
 // ResolveAgent resolves an agent playbook file using this config's paths.
 func (c *Config) ResolveAgent(name string) string {
 	return ResolveAgent(c.ProjectRoot, c.AssetsDir, name)
+}
+
+// ResolveAdvisor resolves an advisor system-prompt file using this config's paths.
+// If the named advisor's config has an explicit SystemPromptFile, that path is
+// returned directly (joined against project root if relative); otherwise the
+// default override/fallback resolution applies.
+func (c *Config) ResolveAdvisor(name string) string {
+	if a, ok := c.Advisors[name]; ok && a.SystemPromptFile != "" {
+		if filepath.IsAbs(a.SystemPromptFile) {
+			return a.SystemPromptFile
+		}
+		return filepath.Join(c.ProjectRoot, a.SystemPromptFile)
+	}
+	return ResolveAdvisor(c.ProjectRoot, c.AssetsDir, name)
 }

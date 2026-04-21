@@ -14,6 +14,7 @@ sync-embedded:
 	@cp -r lib/scripts internal/assets/embedded/
 	@cp -r lib/hooks internal/assets/embedded/
 	@cp -r lib/agents internal/assets/embedded/
+	@cp -r lib/advisors internal/assets/embedded/
 	@cp -r lib/agent-supervisor internal/assets/embedded/
 	@rm -rf internal/assets/embedded/agent-supervisor/node_modules
 	@cp -r lib/skills internal/assets/embedded/

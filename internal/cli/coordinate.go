@@ -7,8 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/elliottregan/cspace/internal/advisor"
 	"github.com/elliottregan/cspace/internal/instance"
 	"github.com/elliottregan/cspace/internal/provision"
 	"github.com/elliottregan/cspace/internal/supervisor"
@@ -118,6 +120,22 @@ func runCoordinateWithArgs(prompt, promptFile, name, systemPromptFile string) er
 			"or stop it first with 'cspace interrupt _coordinator'")
 	}
 
+	// Bring up all configured advisors. A fresh advisor is provisioned and
+	// launched persistent; an already-alive advisor is reused so its session
+	// continuity is preserved across cspace coordinate calls.
+	for _, adName := range advisor.SortedAdvisorNames(cfg) {
+		reused, err := advisor.Launch(cfg, adName)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: advisor %s failed to launch: %v\n", adName, err)
+			continue
+		}
+		if reused {
+			fmt.Fprintf(os.Stderr, "Advisor %s reused (already alive).\n", adName)
+		} else {
+			fmt.Fprintf(os.Stderr, "Advisor %s launched (detached; supervisor starting in container).\n", adName)
+		}
+	}
+
 	_, err := provision.Run(provision.Params{
 		Name: name,
 		Cfg:  cfg,
@@ -170,11 +188,37 @@ func runCoordinateWithArgs(prompt, promptFile, name, systemPromptFile string) er
 		if err != nil {
 			return fmt.Errorf("reading coordinator playbook: %w", err)
 		}
-		fullPrompt = string(playbookBytes) + "\n\nUSER INSTRUCTIONS:\n\n" + userBody
+		// Render the advisor roster into the coordinator's first user turn so it
+		// knows what names are valid for ask_advisor/send_to_advisor.
+		var rosterBuilder strings.Builder
+		if len(cfg.Advisors) > 0 {
+			rosterBuilder.WriteString("\n\n## Advisor roster (available via ask_advisor / send_to_advisor)\n\n")
+			for _, adName := range advisor.SortedAdvisorNames(cfg) {
+				spec := cfg.Advisors[adName]
+				fmt.Fprintf(&rosterBuilder, "- **%s** — model=%s, effort=%s\n",
+					adName,
+					fallback(spec.Model, "(account default)"),
+					fallback(spec.Effort, "(default)"),
+				)
+			}
+		}
+		fullPrompt = string(playbookBytes) + rosterBuilder.String() + "\n\nUSER INSTRUCTIONS:\n\n" + userBody
 	}
 
 	if err := supervisor.StagePromptText(composeName, fullPrompt, supervisor.ContainerCoordPromptPath); err != nil {
 		return err
+	}
+
+	// Coordinator uses its own model setting (Sonnet default), independent of
+	// claude.model which drives workers and advisor fallbacks. Deep reasoning
+	// is delegated to advisors, so the coordinator shouldn't run on Opus.
+	coordModel := cfg.Claude.CoordinatorModel
+	if coordModel == "" {
+		coordModel = "claude-sonnet-4-6"
+	}
+	coordEffort := cfg.Claude.Effort
+	if coordEffort == "" {
+		coordEffort = "high"
 	}
 
 	return supervisor.LaunchSupervisor(supervisor.LaunchParams{
@@ -183,5 +227,17 @@ func runCoordinateWithArgs(prompt, promptFile, name, systemPromptFile string) er
 		PromptFile:       supervisor.ContainerCoordPromptPath,
 		StderrLog:        supervisor.ContainerCoordStderrLog,
 		SystemPromptFile: containerSystemPrompt,
+		AdvisorNames:     advisor.SortedAdvisorNames(cfg),
+		ModelOverride:    coordModel,
+		EffortOverride:   coordEffort,
 	}, cfg)
+}
+
+// fallback returns s if non-empty, else d. Used for consistent display of
+// config defaults in coordinate and advisor list output.
+func fallback(s, d string) string {
+	if s == "" {
+		return d
+	}
+	return s
 }

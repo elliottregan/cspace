@@ -25,16 +25,17 @@ var gitRepoRe = regexp.MustCompile(`github\.com[:/](.+)$`)
 
 // Config represents the merged cspace configuration.
 type Config struct {
-	Project    ProjectConfig          `json:"project"`
-	Container  ContainerConfig        `json:"container"`
-	Firewall   FirewallConfig         `json:"firewall"`
-	Claude     ClaudeConfig           `json:"claude"`
-	MCPServers map[string]interface{} `json:"mcpServers,omitempty"`
-	Verify     VerifyConfig           `json:"verify"`
-	Agent      AgentConfig            `json:"agent"`
-	Plugins    PluginsConfig          `json:"plugins"`
-	Services   string                 `json:"services"`
-	PostSetup  string                 `json:"post_setup"`
+	Project    ProjectConfig            `json:"project"`
+	Container  ContainerConfig          `json:"container"`
+	Firewall   FirewallConfig           `json:"firewall"`
+	Claude     ClaudeConfig             `json:"claude"`
+	MCPServers map[string]interface{}   `json:"mcpServers,omitempty"`
+	Verify     VerifyConfig             `json:"verify"`
+	Agent      AgentConfig              `json:"agent"`
+	Plugins    PluginsConfig            `json:"plugins"`
+	Advisors   map[string]AdvisorConfig `json:"advisors,omitempty"`
+	Services   string                   `json:"services"`
+	PostSetup  string                   `json:"post_setup"`
 
 	// ServiceURLs declares Traefik-routed project services whose URLs cspace
 	// should inject into the main container as env vars. Key is the subdomain
@@ -46,6 +47,15 @@ type Config struct {
 	// Runtime fields (not from JSON)
 	ProjectRoot string `json:"-"`
 	AssetsDir   string `json:"-"`
+}
+
+// AdvisorConfig configures a single long-running advisor agent.
+// See docs/superpowers/specs/2026-04-18-advisor-agents-design.md.
+type AdvisorConfig struct {
+	Model            string `json:"model,omitempty"`
+	Effort           string `json:"effort,omitempty"`
+	SystemPromptFile string `json:"systemPromptFile,omitempty"`
+	BaseBranch       string `json:"baseBranch,omitempty"`
 }
 
 // ProjectConfig holds project identification fields.
@@ -70,8 +80,9 @@ type FirewallConfig struct {
 
 // ClaudeConfig holds Claude model settings.
 type ClaudeConfig struct {
-	Model  string `json:"model"`
-	Effort string `json:"effort"`
+	Model            string `json:"model"`
+	Effort           string `json:"effort"`
+	CoordinatorModel string `json:"coordinatorModel,omitempty"`
 }
 
 // VerifyConfig holds verification command paths.

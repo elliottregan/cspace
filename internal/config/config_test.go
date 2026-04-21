@@ -208,9 +208,9 @@ func TestLoad_DefaultsOnly(t *testing.T) {
 		t.Error("expected firewall.enabled=true from defaults")
 	}
 
-	// Claude model default pins to the "opus" alias so cspace always uses
-	// the latest Opus model (independent of the container's account default,
-	// which may be a lower-tier model like sonnet).
+	// Claude model defaults to opus[1m] for workers and advisor fallbacks.
+	// Coordinator has a separate setting (coordinatorModel) that defaults to
+	// Sonnet via coordinate.go logic.
 	if cfg.Claude.Model != "opus[1m]" {
 		t.Errorf("expected model=opus[1m], got %s", cfg.Claude.Model)
 	}
@@ -517,4 +517,91 @@ func TestLoad_RealProjectConfig(t *testing.T) {
 		t.Fatalf("JSON marshal error: %v", err)
 	}
 	t.Logf("Merged config:\n%s", string(data))
+}
+
+// loadConfigFromJSON is a test helper that creates a temporary project
+// with the given JSON overlay in .cspace.json, then loads it.
+func loadConfigFromJSON(t *testing.T, overlay string) (*Config, error) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".cspace.json"), []byte(overlay), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return Load(dir, "")
+}
+
+func TestConfigAdvisorsBlock(t *testing.T) {
+	cfg, err := loadConfigFromJSON(t, `{
+		"advisors": {
+			"decision-maker": {
+				"model": "claude-opus-4-7",
+				"effort": "max",
+				"baseBranch": "main"
+			},
+			"custom": {
+				"systemPromptFile": ".cspace/advisors/custom.md"
+			}
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if len(cfg.Advisors) != 2 {
+		t.Fatalf("want 2 advisors, got %d", len(cfg.Advisors))
+	}
+	dm, ok := cfg.Advisors["decision-maker"]
+	if !ok {
+		t.Fatalf("missing decision-maker entry")
+	}
+	if dm.Model != "claude-opus-4-7" {
+		t.Errorf("Model = %q, want claude-opus-4-7", dm.Model)
+	}
+	if dm.Effort != "max" {
+		t.Errorf("Effort = %q, want max", dm.Effort)
+	}
+	if dm.BaseBranch != "main" {
+		t.Errorf("BaseBranch = %q, want main", dm.BaseBranch)
+	}
+	custom := cfg.Advisors["custom"]
+	if custom.SystemPromptFile != ".cspace/advisors/custom.md" {
+		t.Errorf("SystemPromptFile = %q", custom.SystemPromptFile)
+	}
+}
+
+func TestConfigAdvisorsNonNilAfterDefaults(t *testing.T) {
+	cfg, err := loadConfigFromJSON(t, `{}`)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Advisors == nil {
+		t.Fatal("Advisors should be non-nil — defaults.json ships a decision-maker entry and DeepMerge preserves it when the overlay omits the key")
+	}
+}
+
+func TestConfigCoordinatorModelOverride(t *testing.T) {
+	cfg, err := loadConfigFromJSON(t, `{"claude": {"coordinatorModel": "claude-opus-4-7"}}`)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Claude.CoordinatorModel != "claude-opus-4-7" {
+		t.Errorf("CoordinatorModel = %q, want claude-opus-4-7", cfg.Claude.CoordinatorModel)
+	}
+	// Defaults still supply Model for workers/advisors.
+	if cfg.Claude.Model != "opus[1m]" {
+		t.Errorf("Model = %q, want opus[1m] (unchanged by coordinator override)", cfg.Claude.Model)
+	}
+}
+
+func TestConfigCoordinatorModelEmptyByDefault(t *testing.T) {
+	cfg, err := loadConfigFromJSON(t, `{}`)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Claude.CoordinatorModel != "" {
+		t.Errorf("CoordinatorModel default = %q, want empty", cfg.Claude.CoordinatorModel)
+	}
 }

@@ -46,6 +46,35 @@ Track the graph in your status table:
 
 Update this table as PRs merge and new agents become launchable.
 
+## Phase 0.5 — Advisors
+
+You have a bench of advisors available — long-running specialists you can consult. The advisor roster is rendered into this prompt by `cspace coordinate` at launch (see above).
+
+**Consulting an advisor:** use the `ask_advisor(name, question, kind)` MCP tool. The reply arrives later as a new user turn on your session, not as a tool result. This means:
+
+- Your current turn ends after the tool returns (the tool only delivers the question).
+- You keep your full session context; the reply, when it arrives, has access to everything you were thinking about.
+- You can process other events (worker completions, directives) while waiting.
+
+**Consult the decision-maker when:**
+- Picking a base branch or merge ordering when dependencies are ambiguous.
+- Dispatching an implementer for an underspecified issue (multiple valid interpretations).
+- A worker reports a design-level blocker (e.g. "need to introduce abstraction X — proceed?").
+- A PR's diff doesn't cleanly match its acceptance criteria.
+- A prior decision or finding seems to conflict with the current work.
+- Any choice you judge architecturally significant.
+
+**Do NOT consult for:**
+- Routine orchestration (which port, which file, which commit message).
+- Choices the existing playbook already prescribes.
+- Questions that don't touch principles.md or direction.md.
+
+If you're unsure whether a choice qualifies, ask. A tight question is cheaper than the wrong call.
+
+For fire-and-forget notes (e.g. "issue-42 merged, decisions log updated"), use `send_to_advisor(name, message)`.
+
+---
+
 ## Phase 1 — Setup
 
 Run `cspace warm` with all container names to prepare them sequentially:
@@ -140,7 +169,7 @@ If `read_context` is unavailable (tool not registered), substitute `${STRATEGIC_
 ### Launch
 
 ```bash
-cspace up issue-$N --base $BASE --prompt-file /tmp/implementer-$N.txt
+cspace up issue-$N --base $BASE --prompt-file /tmp/implementer-$N.txt --persistent
 ```
 
 Use `run_in_background: true` with a 60-minute timeout. Launch all ready agents in a **single message** with multiple Bash tool calls.
@@ -217,7 +246,7 @@ For agents that **failed** (non-zero exit, no PR, or "FAILED" in output):
    ```
 3. If the agent's session is dead, re-render the prompt and re-launch:
    ```
-   cspace up issue-<N> --base <branch> --prompt-file /tmp/implementer-<N>.txt
+   cspace up issue-<N> --base <branch> --prompt-file /tmp/implementer-<N>.txt --persistent
    ```
 
 Repeat until all issues have accepted PRs or the user says stop.
@@ -278,3 +307,4 @@ Suggest `cspace down <name>` to clean up containers, or note they can be reused.
 - **Report each completion immediately** — don't batch notifications
 - **Do not fabricate PR URLs** — only report URLs found in the output
 - **Always recompute base branches** after each merge — the graph changes
+- **Prefer MCP tools over `cspace send`** for inter-agent messaging: `send_to_worker`, `ask_advisor`, `send_to_advisor` give you typed recipient names and structured return values. `cspace send` still works as the underlying transport and is fine for humans/scripts/debugging.
