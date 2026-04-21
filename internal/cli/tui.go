@@ -287,7 +287,7 @@ func tuiRebuild() error {
 		return nil
 	}
 
-	return runRebuild(nil, nil)
+	return runRebuild(false)
 }
 
 // pickFromDetails presents a selection menu from pre-fetched instance details.
