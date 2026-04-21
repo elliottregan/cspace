@@ -60,7 +60,10 @@ func (c *WSClient) connect(ctx context.Context) error {
 
 	c.program.Send(WSStatusMsg{Connected: true})
 
-	sub, _ := json.Marshal(diagnostics.WSMessage{Subscribe: []string{"*"}})
+	sub, err := json.Marshal(diagnostics.WSMessage{Subscribe: []string{"*"}})
+	if err != nil {
+		return err
+	}
 	if _, err := ws.Write(sub); err != nil {
 		return err
 	}
