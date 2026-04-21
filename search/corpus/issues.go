@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"os/exec"
 	"strings"
 )
@@ -45,7 +46,7 @@ func (f *ghCLIFetcher) ListIssues(owner, repo string, limit int) ([]ghIssue, err
 	perPage := 100
 	for page := 1; len(all) < limit; page++ {
 		jqExpr := `.[] | {number, title, body, state, user: .user.login, labels: [.labels[].name], created_at, updated_at, html_url, pull_request: (.pull_request.html_url // null)}`
-		endpoint := fmt.Sprintf("repos/%s/%s/issues?state=all&sort=updated&direction=desc&per_page=%d&page=%d", owner, repo, perPage, page)
+		endpoint := fmt.Sprintf("repos/%s/%s/issues?state=all&sort=updated&direction=desc&per_page=%d&page=%d", url.PathEscape(owner), url.PathEscape(repo), perPage, page)
 		out, err := ghAPI(endpoint, jqExpr)
 		if err != nil {
 			return nil, fmt.Errorf("gh api issues page %d: %w", page, err)
@@ -83,7 +84,7 @@ func (f *ghCLIFetcher) ListIssues(owner, repo string, limit int) ([]ghIssue, err
 
 func (f *ghCLIFetcher) ListComments(owner, repo string, number int) ([]ghComment, error) {
 	jqExpr := `.[] | {user: .user.login, created_at, body}`
-	endpoint := fmt.Sprintf("repos/%s/%s/issues/%d/comments?per_page=100", owner, repo, number)
+	endpoint := fmt.Sprintf("repos/%s/%s/issues/%d/comments?per_page=100", url.PathEscape(owner), url.PathEscape(repo), number)
 	out, err := ghAPI(endpoint, jqExpr)
 	if err != nil {
 		return nil, fmt.Errorf("gh api comments for #%d: %w", number, err)

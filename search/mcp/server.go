@@ -14,13 +14,13 @@ import (
 	mcpSDK "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Server holds runtime dependencies for search_code / list_clusters tools.
+// Server holds runtime dependencies for the MCP tool handlers.
 type Server struct {
 	ProjectRoot string
 	Config      *config.Config
 }
 
-// Register attaches both tools to the provided MCP server.
+// Register attaches all search tools to the provided MCP server.
 func (s *Server) Register(srv *mcpSDK.Server) {
 	mcpSDK.AddTool[searchCodeInput, searchCodeOutput](srv, &mcpSDK.Tool{
 		Name:        "search_code",
@@ -36,6 +36,13 @@ func (s *Server) Register(srv *mcpSDK.Server) {
 		return s.handleSearchContext(ctx, in)
 	})
 
+	mcpSDK.AddTool[searchIssuesInput, searchIssuesOutput](srv, &mcpSDK.Tool{
+		Name:        "search_issues",
+		Description: "Semantic search over the repo's GitHub issues and PRs. Use to find prior discussion of a bug, feature request, or decision before proposing new work.",
+	}, func(ctx context.Context, req *mcpSDK.CallToolRequest, in searchIssuesInput) (*mcpSDK.CallToolResult, searchIssuesOutput, error) {
+		return s.handleSearchIssues(ctx, in)
+	})
+
 	mcpSDK.AddTool[listClustersInput, listClustersOutput](srv, &mcpSDK.Tool{
 		Name:        "list_clusters",
 		Description: "List the thematic clusters discovered in the code index. Returns cluster IDs, sizes, and representative file paths.",
@@ -47,8 +54,8 @@ func (s *Server) Register(srv *mcpSDK.Server) {
 // --- Input / output types ---
 
 type searchCodeInput struct {
-	Query       string `json:"query"        jsonschema:"the natural language query to embed and search"`
-	TopK        int    `json:"top_k,omitempty" jsonschema:"max results to return (default 10, max 50)"`
+	Query       string `json:"query"                  jsonschema:"the natural language query to embed and search"`
+	TopK        int    `json:"top_k,omitempty"        jsonschema:"max results to return (default 10, max 50)"`
 	WithCluster bool   `json:"with_cluster,omitempty" jsonschema:"include cluster_id per hit"`
 }
 
@@ -57,12 +64,22 @@ type searchCodeOutput struct {
 }
 
 type searchContextInput struct {
-	Query       string `json:"query"        jsonschema:"the natural language query to embed and search against context artifacts"`
-	TopK        int    `json:"top_k,omitempty" jsonschema:"max results to return (default 10, max 50)"`
+	Query       string `json:"query"                  jsonschema:"the natural language query to embed and search against context artifacts"`
+	TopK        int    `json:"top_k,omitempty"        jsonschema:"max results to return (default 10, max 50)"`
 	WithCluster bool   `json:"with_cluster,omitempty" jsonschema:"include cluster_id per hit"`
 }
 
 type searchContextOutput struct {
+	Results json.RawMessage `json:"results"`
+}
+
+type searchIssuesInput struct {
+	Query       string `json:"query"                  jsonschema:"the natural language query to embed and search against issues and PRs"`
+	TopK        int    `json:"top_k,omitempty"        jsonschema:"max results to return (default 10, max 50)"`
+	WithCluster bool   `json:"with_cluster,omitempty" jsonschema:"include cluster_id per hit"`
+}
+
+type searchIssuesOutput struct {
 	Results json.RawMessage `json:"results"`
 }
 
@@ -74,15 +91,17 @@ type listClustersOutput struct {
 
 // --- Handlers ---
 
-func (s *Server) handleSearchCode(ctx context.Context, in searchCodeInput) (*mcpSDK.CallToolResult, searchCodeOutput, error) {
-	rt, err := config.BuildWithConfig(s.ProjectRoot, "code", s.Config)
+// runCorpusQuery is a small helper that drives query.Run for a given corpus
+// and returns the envelope JSON both as a CallToolResult text content and
+// as a raw message embedded in the typed output.
+func (s *Server) runCorpusQuery(ctx context.Context, corpusID, q string, topK int, withCluster bool) (*mcpSDK.CallToolResult, json.RawMessage, error) {
+	rt, err := config.BuildWithConfig(s.ProjectRoot, corpusID, s.Config)
 	if err != nil {
-		return nil, searchCodeOutput{}, err
+		return nil, nil, err
 	}
 	qc := qdrant.NewQdrantClient(s.Config.Sidecars.QdrantURL)
 	ec := embed.NewClient(s.Config.Sidecars.LlamaRetrievalURL)
 
-	topK := in.TopK
 	if topK <= 0 {
 		topK = 10
 	}
@@ -92,58 +111,44 @@ func (s *Server) handleSearchCode(ctx context.Context, in searchCodeInput) (*mcp
 		Embedder:    &embed.QueryAdapter{Client: ec},
 		Searcher:    &qdrant.Adapter{QdrantClient: qc},
 		ProjectRoot: s.ProjectRoot,
-		Query:       in.Query,
+		Query:       q,
 		TopK:        topK,
-		WithCluster: in.WithCluster,
+		WithCluster: withCluster,
 	})
 	if err != nil {
-		return nil, searchCodeOutput{}, err
+		return nil, nil, err
 	}
-
 	buf, err := json.Marshal(env)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &mcpSDK.CallToolResult{
+		Content: []mcpSDK.Content{&mcpSDK.TextContent{Text: string(buf)}},
+	}, json.RawMessage(buf), nil
+}
+
+func (s *Server) handleSearchCode(ctx context.Context, in searchCodeInput) (*mcpSDK.CallToolResult, searchCodeOutput, error) {
+	res, raw, err := s.runCorpusQuery(ctx, "code", in.Query, in.TopK, in.WithCluster)
 	if err != nil {
 		return nil, searchCodeOutput{}, err
 	}
-	out := searchCodeOutput{Results: json.RawMessage(buf)}
-	return &mcpSDK.CallToolResult{
-		Content: []mcpSDK.Content{&mcpSDK.TextContent{Text: string(buf)}},
-	}, out, nil
+	return res, searchCodeOutput{Results: raw}, nil
 }
 
 func (s *Server) handleSearchContext(ctx context.Context, in searchContextInput) (*mcpSDK.CallToolResult, searchContextOutput, error) {
-	rt, err := config.BuildWithConfig(s.ProjectRoot, "context", s.Config)
+	res, raw, err := s.runCorpusQuery(ctx, "context", in.Query, in.TopK, in.WithCluster)
 	if err != nil {
 		return nil, searchContextOutput{}, err
 	}
-	qc := qdrant.NewQdrantClient(s.Config.Sidecars.QdrantURL)
-	ec := embed.NewClient(s.Config.Sidecars.LlamaRetrievalURL)
+	return res, searchContextOutput{Results: raw}, nil
+}
 
-	topK := in.TopK
-	if topK <= 0 {
-		topK = 10
-	}
-
-	env, err := query.Run(ctx, query.Config{
-		Corpus:      rt.Corpus,
-		Embedder:    &embed.QueryAdapter{Client: ec},
-		Searcher:    &qdrant.Adapter{QdrantClient: qc},
-		ProjectRoot: s.ProjectRoot,
-		Query:       in.Query,
-		TopK:        topK,
-		WithCluster: in.WithCluster,
-	})
+func (s *Server) handleSearchIssues(ctx context.Context, in searchIssuesInput) (*mcpSDK.CallToolResult, searchIssuesOutput, error) {
+	res, raw, err := s.runCorpusQuery(ctx, "issues", in.Query, in.TopK, in.WithCluster)
 	if err != nil {
-		return nil, searchContextOutput{}, err
+		return nil, searchIssuesOutput{}, err
 	}
-
-	buf, err := json.Marshal(env)
-	if err != nil {
-		return nil, searchContextOutput{}, err
-	}
-	out := searchContextOutput{Results: json.RawMessage(buf)}
-	return &mcpSDK.CallToolResult{
-		Content: []mcpSDK.Content{&mcpSDK.TextContent{Text: string(buf)}},
-	}, out, nil
+	return res, searchIssuesOutput{Results: raw}, nil
 }
 
 func (s *Server) handleListClusters(ctx context.Context) (*mcpSDK.CallToolResult, listClustersOutput, error) {
