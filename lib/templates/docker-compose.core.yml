@@ -277,9 +277,17 @@ volumes:
   workspace:
   claude-home:
   gh-config:
-  cspace-logs:
   llama-models:
   qdrant-storage:
+  # cspace-logs is the only shared/external volume — the supervisor writes
+  # NDJSON events under /logs/events/<instance>/ and opens per-instance
+  # sockets under /logs/messages/<instance>/, so the host-side `cspace` CLI
+  # can reach every running instance through one mount. All other volumes
+  # above are per-compose-project (e.g. qdrant-storage MUST be per-instance
+  # or concurrent qdrants conflict on a single WAL and crash). Keep this
+  # entry LAST so its `name:`/`external:` subkeys don't get silently
+  # claimed by a newly-inserted volume above.
+  cspace-logs:
     name: ${CSPACE_LOGS_VOLUME:-cspace-logs}
     external: true
 
