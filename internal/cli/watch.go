@@ -29,7 +29,7 @@ func newWatchCmd() *cobra.Command {
 			if inside {
 				return runWatchInside(addr)
 			}
-			return runWatchHost(args)
+			return runWatchHost(args, addr)
 		},
 	}
 
@@ -39,7 +39,7 @@ func newWatchCmd() *cobra.Command {
 	return cmd
 }
 
-func runWatchHost(args []string) error {
+func runWatchHost(args []string, addr string) error {
 	var target string
 	if len(args) > 0 {
 		target = args[0]
@@ -59,7 +59,7 @@ func runWatchHost(args []string) error {
 	if err := instance.RequireRunning(composeName, target); err != nil {
 		return err
 	}
-	return instance.DcExecInteractive(composeName, "cspace", "watch", "--inside")
+	return instance.DcExecInteractive(composeName, "cspace", "watch", "--inside", "--addr", addr)
 }
 
 func runWatchInside(addr string) error {
