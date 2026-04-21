@@ -120,15 +120,17 @@ func newSearchSubcmd(corpusID string) *cobra.Command {
 	{
 		var coordsOut string
 		var minPts int
+		var minSamples int
 		c := &cobra.Command{
 			Use:   "clusters",
 			Short: "Discover clusters and write cluster_id to index",
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return runSearchClusters(corpusID, coordsOut, minPts)
+				return runSearchClusters(corpusID, coordsOut, minPts, minSamples)
 			},
 		}
 		c.Flags().StringVar(&coordsOut, "coords-out", "", "write TSV of coords+labels")
-		c.Flags().IntVar(&minPts, "min-pts", 3, "HDBSCAN min_cluster_size")
+		c.Flags().IntVar(&minPts, "min-pts", 3, "HDBSCAN min_cluster_size (min points per cluster)")
+		c.Flags().IntVar(&minSamples, "min-samples", 1, "HDBSCAN min_samples (cluster conservatism; higher → more noise, tighter clusters)")
 		root.AddCommand(c)
 	}
 
@@ -208,7 +210,7 @@ func runSearchIndex(corpusID string, quiet bool) error {
 	return err
 }
 
-func runSearchClusters(corpusID, coordsOut string, minPts int) error {
+func runSearchClusters(corpusID, coordsOut string, minPts, minSamples int) error {
 	root := searchProjectRoot()
 	rt, err := config.Build(root, corpusID)
 	if err != nil {
@@ -222,6 +224,7 @@ func runSearchClusters(corpusID, coordsOut string, minPts int) error {
 		HDBSCANURL:   rt.Cfg.Sidecars.HDBSCANURL,
 		CoordsOutput: coordsOut,
 		MinPts:       minPts,
+		MinSamples:   minSamples,
 	})
 	if err != nil {
 		return err

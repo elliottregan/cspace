@@ -133,6 +133,7 @@ func clustersCmd() *cobra.Command {
 	var corpusID string
 	var coordsOut string
 	var minPts int
+	var minSamples int
 	cmd := &cobra.Command{
 		Use:   "clusters",
 		Short: "Discover thematic clusters and write cluster_id to the index",
@@ -150,6 +151,7 @@ func clustersCmd() *cobra.Command {
 				HDBSCANURL:   rt.Cfg.Sidecars.HDBSCANURL,
 				CoordsOutput: coordsOut,
 				MinPts:       minPts,
+				MinSamples:   minSamples,
 			})
 			if err != nil {
 				return err
@@ -165,6 +167,7 @@ func clustersCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&corpusID, "corpus", "code", "corpus id")
 	cmd.Flags().StringVar(&coordsOut, "coords-out", "", "write TSV of coords+labels")
-	cmd.Flags().IntVar(&minPts, "min-pts", 3, "HDBSCAN min_cluster_size")
+	cmd.Flags().IntVar(&minPts, "min-pts", 3, "HDBSCAN min_cluster_size (min points per cluster)")
+	cmd.Flags().IntVar(&minSamples, "min-samples", 1, "HDBSCAN min_samples (cluster conservatism; higher → more noise, tighter clusters)")
 	return cmd
 }

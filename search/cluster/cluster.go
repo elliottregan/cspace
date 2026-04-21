@@ -209,7 +209,8 @@ type Config struct {
 	ReduceURL    string
 	HDBSCANURL   string
 	CoordsOutput string // optional TSV output path
-	MinPts       int    // HDBSCAN min_cluster_size
+	MinPts       int    // HDBSCAN min_cluster_size (minimum points to form a cluster)
+	MinSamples   int    // HDBSCAN min_samples (cluster conservatism; higher = more noise, tighter clusters)
 }
 
 // Result summarizes the clustering pass.
@@ -230,6 +231,9 @@ type ClusterSummary struct {
 func Run(ctx context.Context, cfg Config) (*Result, error) {
 	if cfg.MinPts == 0 {
 		cfg.MinPts = 3
+	}
+	if cfg.MinSamples == 0 {
+		cfg.MinSamples = 1
 	}
 	qc := qdrant.NewQdrantClient(cfg.QdrantURL)
 	collection := cfg.Corpus.Collection(cfg.ProjectRoot)
@@ -273,7 +277,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 
 	// Cluster.
 	hc := NewHdbscanClient(cfg.HDBSCANURL)
-	labels, err := hc.Cluster(coords, cfg.MinPts, 1)
+	labels, err := hc.Cluster(coords, cfg.MinPts, cfg.MinSamples)
 	if err != nil {
 		return nil, fmt.Errorf("hdbscan: %w", err)
 	}
