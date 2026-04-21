@@ -105,6 +105,9 @@ func ensureDiagnosticsServer(addr string) error {
 	if err := srv.Start(); err != nil {
 		return fmt.Errorf("could not start diagnostics server: %w", err)
 	}
+	// Deliberately not tracking srv — the diagnostics server outlives this TUI
+	// session so subsequent `cspace watch` invocations can reuse it.
+	_ = srv.Process.Release()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if serverAlive(addr) {
@@ -115,7 +118,14 @@ func ensureDiagnosticsServer(addr string) error {
 	return fmt.Errorf("diagnostics server at %s did not start in time", addr)
 }
 
+var healthClient = &http.Client{Timeout: time.Second}
+
 func serverAlive(addr string) bool {
-	resp, err := http.Get("http://" + addr + "/health")
-	return err == nil && resp.StatusCode == http.StatusOK
+	resp, err := healthClient.Get("http://" + addr + "/health")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode == http.StatusOK
 }
