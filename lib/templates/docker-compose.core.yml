@@ -205,7 +205,8 @@ services:
     build:
       context: ${CSPACE_HOME}/lib/hdbscan-api
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://localhost:8090/health || exit 1"]
+      # hdbscan-api image has python but no wget/curl; match reduce-api's probe.
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8090/health\")' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -222,7 +223,8 @@ services:
     volumes:
       - qdrant-storage:/qdrant/storage
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
+      # qdrant/qdrant image ships without curl/wget; probe TCP via bash builtin.
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333'"]
       interval: 5s
       timeout: 3s
       retries: 30
