@@ -154,3 +154,39 @@ func TestParseEnvelope_TimeParsing(t *testing.T) {
 		t.Errorf("expected %v, got %v", expected, rows[0].Time)
 	}
 }
+
+func TestParseEnvelope_ToolInputPriority(t *testing.T) {
+	env := envelope("2026-04-21T14:33:01Z", "test", `{
+		"type": "assistant",
+		"message": {
+			"content": [
+				{"type": "tool_use", "name": "Read", "input": {"file_path": "f.txt", "pattern": "xyz"}}
+			]
+		}
+	}`)
+	rows := ParseEnvelope(env)
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if rows[0].Content != "f.txt" {
+		t.Errorf("expected file_path over pattern, got %q", rows[0].Content)
+	}
+}
+
+func TestParseEnvelope_ToolInputEmpty(t *testing.T) {
+	env := envelope("2026-04-21T14:33:01Z", "test", `{
+		"type": "assistant",
+		"message": {
+			"content": [
+				{"type": "tool_use", "name": "Bash", "input": {}}
+			]
+		}
+	}`)
+	rows := ParseEnvelope(env)
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if rows[0].Content != "" {
+		t.Errorf("expected empty content for empty input, got %q", rows[0].Content)
+	}
+}
