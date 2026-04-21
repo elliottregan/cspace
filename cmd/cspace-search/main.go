@@ -23,8 +23,8 @@ import (
 )
 
 func main() {
-	root := &cobra.Command{Use: "cspace-search", Short: "Semantic search over commits, code, and context"}
-	root.AddCommand(indexCmd(), queryCmd(), clustersCmd())
+	root := &cobra.Command{Use: "cspace-search", Short: "Semantic search over commits, code, context, and issues"}
+	root.AddCommand(indexCmd(), queryCmd(), clustersCmd(), initCmd())
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -170,4 +170,83 @@ func clustersCmd() *cobra.Command {
 	cmd.Flags().IntVar(&minPts, "min-pts", 3, "HDBSCAN min_cluster_size (min points per cluster)")
 	cmd.Flags().IntVar(&minSamples, "min-samples", 1, "HDBSCAN min_samples (cluster conservatism; higher → more noise, tighter clusters)")
 	return cmd
+}
+
+// initCmd mirrors `cspace search init` for the standalone binary. Writes a
+// project-local search.yaml template (if absent), installs lefthook hooks
+// (if available), and runs an initial index over every enabled corpus,
+// silently skipping ones whose sidecars / prerequisites aren't ready.
+func initCmd() *cobra.Command {
+	var quiet, skipYAML, skipHooks, skipIndex bool
+	cmd := &cobra.Command{
+		Use:   "init",
+		Short: "Bootstrap semantic search for the current project",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			root := projectRoot()
+			report := func(format string, args ...any) {
+				if !quiet {
+					fmt.Fprintf(os.Stderr, "search init: "+format+"\n", args...)
+				}
+			}
+
+			if !skipYAML {
+				written, err := config.EnsureProjectYAML(root)
+				switch {
+				case err != nil:
+					report("search.yaml: %v (continuing)", err)
+				case written:
+					report("wrote %s/search.yaml", root)
+				default:
+					report("search.yaml already present")
+				}
+			}
+
+			if !skipHooks {
+				installed, err := config.EnsureLefthookHooks(root)
+				switch {
+				case err != nil:
+					report("lefthook: %v (continuing)", err)
+				case installed:
+					report("lefthook hooks installed")
+				default:
+					report("lefthook unavailable; auto-indexing will rely on manual `cspace-search index`")
+				}
+			}
+
+			if !skipIndex {
+				for _, corpusID := range []string{"code", "commits", "context", "issues"} {
+					if err := runIndexCorpus(cmd.Context(), root, corpusID); err != nil {
+						report("%s: skipped (%v)", corpusID, err)
+						continue
+					}
+					report("%s: indexed", corpusID)
+				}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress progress output")
+	cmd.Flags().BoolVar(&skipYAML, "skip-yaml", false, "don't write search.yaml")
+	cmd.Flags().BoolVar(&skipHooks, "skip-hooks", false, "don't install lefthook hooks")
+	cmd.Flags().BoolVar(&skipIndex, "skip-index", false, "don't run initial index")
+	return cmd
+}
+
+// runIndexCorpus is a thin wrapper that runs index.Run for one corpus id,
+// used by initCmd to loop over corpora without rebuilding the cobra flag
+// plumbing that indexCmd exposes.
+func runIndexCorpus(ctx context.Context, root, corpusID string) error {
+	rt, err := config.Build(root, corpusID)
+	if err != nil {
+		return err
+	}
+	qc := qdrant.NewQdrantClient(rt.Cfg.Sidecars.QdrantURL)
+	ec := embed.NewClient(rt.Cfg.Sidecars.LlamaRetrievalURL)
+	return index.Run(ctx, index.Config{
+		Corpus:      rt.Corpus,
+		Embedder:    &embed.Adapter{Client: ec},
+		Upserter:    &qdrant.Adapter{QdrantClient: qc},
+		ProjectRoot: root,
+		LockPath:    filepath.Join(root, rt.Cfg.Index.LockPath),
+	})
 }

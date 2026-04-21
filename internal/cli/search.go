@@ -44,6 +44,7 @@ func newSearchCmd() *cobra.Command {
 		newSearchSubcmd("context"),
 		newSearchSubcmd("issues"),
 		newSearchMCPCmd(),
+		newSearchInitCmd(),
 	)
 	return cmd
 }

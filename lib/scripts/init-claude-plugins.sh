@@ -234,3 +234,17 @@ touch "$MARKER_FILE"
 chown -R dev:dev "$PLUGINS_DIR"
 
 echo "Claude plugins initialized"
+
+# Bootstrap semantic search in the background. Runs an initial index across
+# all enabled corpora (code, commits, context, issues). Silently skips
+# corpora whose sidecars or prerequisites aren't ready — the backing
+# services may still be starting when this fires, and missed corpora pick
+# up on the next commit via the lefthook hooks we install in the same step.
+# Runs as `dev` so any files it writes (search.yaml, lock file, logs)
+# belong to the dev user, not root.
+if command -v cspace >/dev/null 2>&1; then
+    echo "Bootstrapping semantic search in the background..."
+    mkdir -p /workspace/.cspace
+    chown dev:dev /workspace/.cspace 2>/dev/null || true
+    sudo -u dev -- bash -c 'cd /workspace && nohup cspace search init --quiet >> .cspace/search-index.log 2>&1 &' || true
+fi

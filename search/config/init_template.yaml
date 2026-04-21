@@ -1,0 +1,33 @@
+# cspace-search per-project configuration override.
+#
+# Defaults ship embedded in the binary — only keys set here override them.
+# Uncomment and edit what you need. See the embedded default.yaml in the
+# cspace-search binary for the full schema.
+#
+# Common overrides:
+#
+# sidecars:
+#   # Point at non-default sidecar hostnames (e.g. when running from a host
+#   # shell that can't resolve the in-compose service names).
+#   qdrant_url: "http://qdrant:6333"
+#   llama_retrieval_url: "http://llama-server:8080"
+#
+# corpora:
+#   code:
+#     # Add project-specific exclude globs on top of the defaults
+#     # (vendor/**, internal/assets/embedded/**, *.lock, etc).
+#     excludes:
+#       - "generated/**"
+#       - "*.pb.go"
+#     # Lower for repos with very large source files.
+#     # max_bytes: 204800
+#   commits:
+#     # Upper bound on commits to embed on each re-index.
+#     limit: 500
+#   context:
+#     # Set to false to skip the .cspace/context/ corpus entirely.
+#     enabled: true
+#   issues:
+#     # Set to false to skip the GitHub issues corpus (no gh api calls).
+#     enabled: true
+#     limit: 500
