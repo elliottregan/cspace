@@ -13,9 +13,11 @@ import (
 	"github.com/elliottregan/cspace/search/config"
 	"github.com/elliottregan/cspace/search/embed"
 	"github.com/elliottregan/cspace/search/index"
+	searchmcp "github.com/elliottregan/cspace/search/mcp"
 	"github.com/elliottregan/cspace/search/qdrant"
 	"github.com/elliottregan/cspace/search/query"
 
+	mcpSDK "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
 )
 
@@ -36,7 +38,36 @@ func newSearchCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().IntVar(&topK, "top", 10, "Number of results to show (back-compat flag)")
-	cmd.AddCommand(newSearchSubcmd("code"), newSearchSubcmd("commits"))
+	cmd.AddCommand(newSearchSubcmd("code"), newSearchSubcmd("commits"), newSearchMCPCmd())
+	return cmd
+}
+
+// newSearchMCPCmd builds `cspace search mcp`, a stdio MCP server exposing
+// search_code + list_clusters. Registered per agent container via
+// init-claude-plugins.sh so advisors/coordinators/implementers can consult
+// the index mid-session. Parallels `cspace context-server`.
+func newSearchMCPCmd() *cobra.Command {
+	var root string
+	cmd := &cobra.Command{
+		Use:   "mcp",
+		Short: "Run the search MCP server over stdio",
+		Long: `Expose the code + commits search indexes as MCP tools (search_code,
+list_clusters). Invoked by Claude Code via .mcp.json or a container's Claude
+MCP config, not by humans directly.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if root == "" {
+				root = searchProjectRoot()
+			}
+			cfg, err := config.Load(root)
+			if err != nil {
+				return err
+			}
+			server := mcpSDK.NewServer(&mcpSDK.Implementation{Name: "cspace-search", Version: Version}, nil)
+			(&searchmcp.Server{ProjectRoot: root, Config: cfg}).Register(server)
+			return server.Run(cmd.Context(), &mcpSDK.StdioTransport{})
+		},
+	}
+	cmd.Flags().StringVar(&root, "root", "", "Project root (default: git toplevel of cwd)")
 	return cmd
 }
 

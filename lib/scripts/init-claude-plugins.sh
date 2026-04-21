@@ -121,6 +121,15 @@ if ! sudo -u dev "$CLAUDE_BIN" mcp add --scope user cspace-context -- \
     echo "  - cspace-context: registration failed (continuing)"
 fi
 
+# cspace-search MCP — semantic search over commits + code (search_code,
+# list_clusters). Lets advisors, coordinators, and implementers ground
+# their reasoning in current code rather than vocabulary-matching grep.
+echo "  - cspace-search: registering"
+if ! sudo -u dev "$CLAUDE_BIN" mcp add --scope user cspace-search -- \
+    cspace search mcp --root /workspace 2>&1 | sed 's/^/      /'; then
+    echo "  - cspace-search: registration failed (continuing)"
+fi
+
 # Skip plugin init if already done
 if [ -f "$MARKER_FILE" ]; then
     exit 0
