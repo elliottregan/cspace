@@ -45,7 +45,9 @@ func buildCorpus(id string, cfg *Config) (corpus.Corpus, error) {
 		return &corpus.CommitCorpus{Limit: cfg.Corpora["commits"].Limit}, nil
 	case "context":
 		return &corpus.ContextCorpus{}, nil
+	case "issues":
+		return &corpus.IssuesCorpus{Limit: cfg.Corpora["issues"].Limit}, nil
 	default:
-		return nil, fmt.Errorf("unknown corpus %q (known: code, commits, context)", id)
+		return nil, fmt.Errorf("unknown corpus %q (known: code, commits, context, issues)", id)
 	}
 }
