@@ -22,8 +22,16 @@ sync-embedded:
 	@cp lib/defaults.json internal/assets/embedded/
 	@cp lib/planets.json internal/assets/embedded/
 
-build: sync-embedded
-	go build $(LDFLAGS) -o $(GOBIN) ./cmd/cspace
+build: sync-embedded bin/cspace-go bin/cspace-search bin/cspace-search-mcp
+
+bin/cspace-go: $(shell find cmd/cspace internal -name '*.go') sync-embedded
+	go build $(LDFLAGS) -o $@ ./cmd/cspace
+
+bin/cspace-search: $(shell find cmd/cspace-search search -name '*.go')
+	go build $(LDFLAGS) -o $@ ./cmd/cspace-search
+
+bin/cspace-search-mcp: $(shell find cmd/cspace-search-mcp search -name '*.go')
+	go build $(LDFLAGS) -o $@ ./cmd/cspace-search-mcp
 
 # Run the provisioning overlay against synthesized phase events. Useful for
 # iterating on the UI without spinning up a real container. Forwards any
@@ -54,6 +62,7 @@ vet: sync-embedded
 
 clean:
 	rm -f $(GOBIN) $(GOBIN)-linux-amd64 $(GOBIN)-linux-arm64
+	rm -f bin/cspace-search bin/cspace-search-mcp
 	rm -rf dist
 	rm -rf internal/assets/embedded
 

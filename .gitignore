@@ -19,11 +19,17 @@ lib/agent-supervisor/node_modules/
 .env
 .pnpm-store/
 
+# Local per-machine search config override. Root search.yaml is for local
+# sidecar URL overrides; embedded default.yaml holds the real defaults.
+/search.yaml
+
 # Go build artifacts
 bin/cspace-go
 bin/cspace-go-linux-amd64
 bin/cspace-go-linux-arm64
 bin/cspace-linux
+bin/cspace-search
+bin/cspace-search-mcp
 dist/
 
 # Embedded assets (generated from lib/ by make sync-embedded).

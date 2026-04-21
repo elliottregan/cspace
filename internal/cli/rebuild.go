@@ -10,11 +10,13 @@ import (
 	"strings"
 
 	"github.com/elliottregan/cspace/internal/docker"
+	"github.com/elliottregan/cspace/internal/instance"
 	"github.com/spf13/cobra"
 )
 
 func newRebuildCmd() *cobra.Command {
-	return &cobra.Command{
+	var reindex bool
+	cmd := &cobra.Command{
 		Use:   "rebuild",
 		Short: "Rebuild container image",
 		Long: `Rebuild the cspace Docker image from scratch (--no-cache).
@@ -26,13 +28,22 @@ The binary is obtained by (in order of preference):
   1. Copying the running binary if the host is already Linux
   2. Looking for a pre-built binary in dist/ or bin/
   3. Cross-compiling with the local Go toolchain
-  4. Downloading from GitHub Releases (for the current version)`,
+  4. Downloading from GitHub Releases (for the current version)
+
+With --reindex, after the image rebuilds, every running instance of the
+current project has its semantic search indexes refreshed in the
+background. Useful as a single "I pulled new cspace, refresh everything"
+step — no need to chase each instance down individually.`,
 		GroupID: "instance",
-		RunE:    runRebuild,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runRebuild(reindex)
+		},
 	}
+	cmd.Flags().BoolVar(&reindex, "reindex", false, "after rebuild, refresh semantic search indexes in every running instance of this project")
+	return cmd
 }
 
-func runRebuild(cmd *cobra.Command, args []string) error {
+func runRebuild(reindex bool) error {
 	dockerfile, err := cfg.ResolveTemplate("Dockerfile")
 	if err != nil {
 		return fmt.Errorf("resolving Dockerfile: %w", err)
@@ -54,8 +65,42 @@ func runRebuild(cmd *cobra.Command, args []string) error {
 	if err := docker.Build(cfg.ImageName(), dockerfile, cspaceHome, Version, true); err != nil {
 		return err
 	}
-
 	fmt.Printf("Image '%s' rebuilt.\n", cfg.ImageName())
+
+	if reindex {
+		return reindexRunningInstances()
+	}
+	return nil
+}
+
+// reindexRunningInstances fires `cspace search init --quiet` inside every
+// running instance of the current project. Runs the in-container command
+// in the background so a slow index doesn't block the rebuild command.
+// Failures to dispatch on one instance don't stop the others — this is
+// best-effort convenience, not a durable operation.
+func reindexRunningInstances() error {
+	names, err := instance.GetInstances(cfg)
+	if err != nil {
+		return fmt.Errorf("listing instances: %w", err)
+	}
+	if len(names) == 0 {
+		fmt.Println("No running instances to reindex. Run `cspace up <name>` to provision one — new instances auto-index on provisioning.")
+		return nil
+	}
+
+	fmt.Printf("Reindexing %d running instance(s)...\n", len(names))
+	for _, name := range names {
+		composeName := cfg.ComposeName(name)
+		// Launch in the background inside the container so the host doesn't
+		// wait on llama-server / qdrant throughput. Output goes to the same
+		// log the lefthook hooks use.
+		bg := `nohup cspace search init --quiet >> /workspace/.cspace/search-index.log 2>&1 &`
+		if _, err := instance.DcExec(composeName, "bash", "-lc", bg); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s: dispatch failed (%v)\n", name, err)
+			continue
+		}
+		fmt.Printf("  %s: reindexing in background (tail /workspace/.cspace/search-index.log)\n", name)
+	}
 	return nil
 }
 

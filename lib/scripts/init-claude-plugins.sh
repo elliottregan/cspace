@@ -121,6 +121,15 @@ if ! sudo -u dev "$CLAUDE_BIN" mcp add --scope user cspace-context -- \
     echo "  - cspace-context: registration failed (continuing)"
 fi
 
+# cspace-search MCP — semantic search over commits + code (search_code,
+# list_clusters). Lets advisors, coordinators, and implementers ground
+# their reasoning in current code rather than vocabulary-matching grep.
+echo "  - cspace-search: registering"
+if ! sudo -u dev "$CLAUDE_BIN" mcp add --scope user cspace-search -- \
+    cspace search mcp --root /workspace 2>&1 | sed 's/^/      /'; then
+    echo "  - cspace-search: registration failed (continuing)"
+fi
+
 # Skip plugin init if already done
 if [ -f "$MARKER_FILE" ]; then
     exit 0
@@ -225,3 +234,17 @@ touch "$MARKER_FILE"
 chown -R dev:dev "$PLUGINS_DIR"
 
 echo "Claude plugins initialized"
+
+# Bootstrap semantic search in the background. Runs an initial index across
+# all enabled corpora (code, commits, context, issues). Silently skips
+# corpora whose sidecars or prerequisites aren't ready — the backing
+# services may still be starting when this fires, and missed corpora pick
+# up on the next commit via the lefthook hooks we install in the same step.
+# Runs as `dev` so any files it writes (search.yaml, lock file, logs)
+# belong to the dev user, not root.
+if command -v cspace >/dev/null 2>&1; then
+    echo "Bootstrapping semantic search in the background..."
+    mkdir -p /workspace/.cspace
+    chown dev:dev /workspace/.cspace 2>/dev/null || true
+    sudo -u dev -- bash -c 'cd /workspace && nohup cspace search init --quiet >> .cspace/search-index.log 2>&1 &' || true
+fi

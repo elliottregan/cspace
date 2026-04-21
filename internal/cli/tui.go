@@ -268,14 +268,22 @@ func tuiCoordinate() error {
 	return runCoordinateWithArgs(prompt, "", name, "")
 }
 
-// tuiRebuild confirms and triggers a rebuild.
+// tuiRebuild confirms and triggers a rebuild. Optionally refreshes
+// semantic search indexes on every running instance of this project
+// afterwards — answers both questions in one form so the user isn't
+// bounced back to a second prompt.
 func tuiRebuild() error {
 	var confirm bool
+	var reindex bool
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewConfirm().
 				Title("Rebuild the container image?").
 				Value(&confirm),
+			huh.NewConfirm().
+				Title("After rebuild, reindex semantic search on running instances?").
+				Description("Runs `cspace search init --quiet` inside each running instance of this project, in the background.").
+				Value(&reindex),
 		),
 	)
 
@@ -287,7 +295,7 @@ func tuiRebuild() error {
 		return nil
 	}
 
-	return runRebuild(nil, nil)
+	return runRebuild(reindex)
 }
 
 // pickFromDetails presents a selection menu from pre-fetched instance details.
