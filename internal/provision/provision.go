@@ -81,6 +81,8 @@ type Result struct {
 //  12. Initializing workspace (bundle unpack + init-workspace.sh)
 //  13. Configuring git & env (git identity, .env files, GH_TOKEN)
 //  14. Installing plugins (marketplace + plugins + post-setup)
+//  15. Syncing workspace (git fetch / checkout / pull, skip Claude onboarding)
+//  16. Bootstrapping search (cspace search init in the background)
 func Run(p Params) (result Result, err error) {
 	reporter := p.reporter()
 	currentPhase := ""
@@ -277,6 +279,20 @@ func Run(p Params) (result Result, err error) {
 		_, _ = instance.DcExec(composeName, "git", "reset", "--hard", "origin/"+p.Branch)
 	} else {
 		_, _ = instance.DcExec(composeName, "git", "pull", "--ff-only", "--quiet")
+	}
+
+	// Phase 16: bootstrap semantic search. Fires `cspace search init` inside
+	// the container so the sidecars (llama-server, qdrant) are reachable on
+	// the compose network. Runs in the background — indexing all corpora
+	// can take minutes on a large repo and we don't want to block the Claude
+	// handoff. Output goes to /workspace/.cspace/search-index.log. The
+	// content-hash check in index.Run makes re-runs a near no-op when
+	// nothing has changed since the last index, so this is safe to fire on
+	// both new and reused containers.
+	reportPhase(16, Phases[15])
+	if _, err := instance.DcExec(composeName, "bash", "-c",
+		"mkdir -p /workspace/.cspace && nohup cspace search init --quiet >>/workspace/.cspace/search-index.log 2>&1 &"); err != nil {
+		reportWarn(fmt.Sprintf("search bootstrap: %v", err))
 	}
 
 	return Result{Created: created, Name: name}, nil

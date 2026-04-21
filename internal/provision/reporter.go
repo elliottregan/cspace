@@ -53,6 +53,7 @@ var Phases = []string{
 	"Configuring git & env",
 	"Installing plugins",
 	"Syncing workspace",
+	"Bootstrapping search",
 }
 
 // logReporter is the default reporter used when Params.Reporter is nil.
