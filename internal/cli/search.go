@@ -26,7 +26,7 @@ func newSearchCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "search",
 		Short:   "Semantic search over commits and code",
-		Long:    "Subcommands: code, commits. Back-compat: `cspace search \"<query>\"` runs a commits query.",
+		Long:    "Subcommands: code, commits, context. Back-compat: `cspace search \"<query>\"` runs a commits query.",
 		GroupID: "other",
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -38,7 +38,7 @@ func newSearchCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().IntVar(&topK, "top", 10, "Number of results to show (back-compat flag)")
-	cmd.AddCommand(newSearchSubcmd("code"), newSearchSubcmd("commits"), newSearchMCPCmd())
+	cmd.AddCommand(newSearchSubcmd("code"), newSearchSubcmd("commits"), newSearchSubcmd("context"), newSearchMCPCmd())
 	return cmd
 }
 
