@@ -13,7 +13,7 @@ type fakeCorpus struct {
 	records []corpus.Record
 }
 
-func (f *fakeCorpus) ID() string            { return "fake" }
+func (f *fakeCorpus) ID() string                 { return "fake" }
 func (f *fakeCorpus) Collection(_ string) string { return "fake-test" }
 func (f *fakeCorpus) Enumerate(_ string) (<-chan corpus.Record, <-chan error) {
 	out := make(chan corpus.Record, len(f.records))
