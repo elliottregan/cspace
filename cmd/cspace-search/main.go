@@ -23,7 +23,7 @@ import (
 )
 
 func main() {
-	root := &cobra.Command{Use: "cspace-search", Short: "Semantic search over commits and code"}
+	root := &cobra.Command{Use: "cspace-search", Short: "Semantic search over commits, code, and context"}
 	root.AddCommand(indexCmd(), queryCmd(), clustersCmd())
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -74,7 +74,7 @@ func indexCmd() *cobra.Command {
 			return err
 		},
 	}
-	cmd.Flags().StringVar(&corpusID, "corpus", "code", "corpus id (code|commits)")
+	cmd.Flags().StringVar(&corpusID, "corpus", "code", "corpus id (code|commits|context)")
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress progress output")
 	return cmd
 }
