@@ -37,6 +37,16 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 			case "version", "help", "completion", "init", "self-update", "context-server", "diagnostics-server", "search", "index":
 				return nil
 			}
+			// Any subcommand under `cspace search` (mcp, code, commits, context,
+			// issues, query, clusters) runs outside the cspace config loader —
+			// the search stack has its own config package and accepts --root,
+			// so it must not require a .git-rooted project for `cspace search mcp`
+			// to start in workspaces that haven't been cloned yet.
+			for p := cmd.Parent(); p != nil; p = p.Parent() {
+				if p.Name() == "search" {
+					return nil
+				}
+			}
 
 			// For the root command (no subcommand), attempt config loading
 			// but tolerate failure — the TUI falls back to help when cfg is nil.
