@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
-	"time"
 
 	"github.com/elliottregan/cspace/search/cluster"
 	"github.com/elliottregan/cspace/search/config"
@@ -159,59 +158,45 @@ func (s *Server) handleListClusters(ctx context.Context) (*mcpSDK.CallToolResult
 }
 
 func (s *Server) handleStatus(_ context.Context) (*mcpSDK.CallToolResult, StatusOutput, error) {
-	sf, err := status.Read(s.ProjectRoot)
+	disabled := make(map[string]bool)
+	for id, cc := range s.Config.Corpora {
+		if !cc.Enabled {
+			disabled[id] = true
+		}
+	}
+
+	cs, err := status.Compute(s.ProjectRoot, disabled, func(corpusID string) (bool, string) {
+		qc := qdrant.NewQdrantClient(s.Config.Sidecars.QdrantURL)
+		adapter := &qdrant.Adapter{QdrantClient: qc}
+		collection := mcpCorpusCollection(corpusID, s.ProjectRoot)
+		var st corpus.Staleness
+		switch corpusID {
+		case "code":
+			st, _ = corpus.CodeStalenessCached(s.ProjectRoot, collection, adapter)
+		case "commits":
+			st, _ = corpus.CommitsStalenessCached(s.ProjectRoot, collection, adapter)
+		}
+		return st.IsStale, st.Reason
+	})
 	if err != nil {
 		return nil, StatusOutput{}, err
 	}
 
-	allCorpora := []string{"code", "commits", "context", "issues"}
-	out := StatusOutput{Corpora: make(map[string]CorpusStatusEntry)}
-	if sf != nil {
-		out.Current = sf.Current
+	// Map ComputedStatus to StatusOutput (same shape, different type names).
+	out := StatusOutput{
+		Corpora: make(map[string]CorpusStatusEntry),
+		Current: cs.Current,
 	}
-
-	for _, id := range allCorpora {
-		entry := CorpusStatusEntry{State: "unknown"}
-
-		// Check if disabled in config.
-		if cc, ok := s.Config.Corpora[id]; ok && !cc.Enabled {
-			entry.State = "disabled"
-			out.Corpora[id] = entry
-			continue
+	for id, c := range cs.Corpora {
+		out.Corpora[id] = CorpusStatusEntry{
+			State:        c.State,
+			FinishedAt:   c.FinishedAt,
+			DurationMS:   c.DurationMS,
+			IndexedCount: c.IndexedCount,
+			Error:        c.Error,
+			Stale:        c.Stale,
+			StaleReason:  c.StaleReason,
 		}
-
-		// Pull state from status file.
-		if sf != nil {
-			if cs, ok := sf.Last[id]; ok {
-				entry.State = cs.State
-				if !cs.FinishedAt.IsZero() {
-					entry.FinishedAt = cs.FinishedAt.Format(time.RFC3339)
-				}
-				entry.DurationMS = cs.DurationMS
-				entry.IndexedCount = cs.IndexedCount
-				entry.Error = cs.Error
-			}
-		}
-
-		// Check staleness for code and commits (cached to avoid per-query I/O).
-		if entry.State == "completed" && (id == "code" || id == "commits") {
-			qc := qdrant.NewQdrantClient(s.Config.Sidecars.QdrantURL)
-			adapter := &qdrant.Adapter{QdrantClient: qc}
-			collection := mcpCorpusCollection(id, s.ProjectRoot)
-			var st corpus.Staleness
-			switch id {
-			case "code":
-				st, _ = corpus.CodeStalenessCached(s.ProjectRoot, collection, adapter)
-			case "commits":
-				st, _ = corpus.CommitsStalenessCached(s.ProjectRoot, collection, adapter)
-			}
-			if st.IsStale {
-				entry.Stale = true
-				entry.StaleReason = st.Reason
-			}
-		}
-
-		out.Corpora[id] = entry
 	}
 
 	buf, err := json.Marshal(out)

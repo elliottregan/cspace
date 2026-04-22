@@ -338,22 +338,6 @@ index is out of date.`,
 	return cmd
 }
 
-// statusOutput is the JSON shape for `cspace search status --json`.
-type statusOutput struct {
-	Corpora map[string]corpusStatusOutput `json:"corpora"`
-	Current *status.RunningState          `json:"current"`
-}
-
-type corpusStatusOutput struct {
-	State        string `json:"state"` // completed, failed, disabled, unknown
-	FinishedAt   string `json:"finished_at,omitempty"`
-	DurationMS   int64  `json:"duration_ms,omitempty"`
-	IndexedCount int    `json:"indexed_count,omitempty"`
-	Error        string `json:"error,omitempty"`
-	Stale        bool   `json:"stale,omitempty"`
-	StaleReason  string `json:"stale_reason,omitempty"`
-}
-
 func runSearchStatus(asJSON bool) error {
 	root := searchProjectRoot()
 	cfg, err := config.Load(root)
@@ -361,72 +345,40 @@ func runSearchStatus(asJSON bool) error {
 		return err
 	}
 
-	sf, err := status.Read(root)
+	disabled := make(map[string]bool)
+	for id, cc := range cfg.Corpora {
+		if !cc.Enabled {
+			disabled[id] = true
+		}
+	}
+
+	cs, err := status.Compute(root, disabled, func(corpusID string) (bool, string) {
+		qc := qdrant.NewQdrantClient(cfg.Sidecars.QdrantURL)
+		adapter := &qdrant.Adapter{QdrantClient: qc}
+		collection := corpusCollection(corpusID, root)
+		var st corpus.Staleness
+		switch corpusID {
+		case "code":
+			st, _ = corpus.CodeStalenessCached(root, collection, adapter)
+		case "commits":
+			st, _ = corpus.CommitsStalenessCached(root, collection, adapter)
+		}
+		return st.IsStale, st.Reason
+	})
 	if err != nil {
-		return fmt.Errorf("reading status file: %w", err)
-	}
-
-	allCorpora := []string{"code", "commits", "context", "issues"}
-	out := statusOutput{
-		Corpora: make(map[string]corpusStatusOutput),
-	}
-	if sf != nil {
-		out.Current = sf.Current
-	}
-
-	for _, id := range allCorpora {
-		co := corpusStatusOutput{State: "unknown"}
-
-		// Check if disabled in config.
-		if cc, ok := cfg.Corpora[id]; ok && !cc.Enabled {
-			co.State = "disabled"
-			out.Corpora[id] = co
-			continue
-		}
-
-		// Pull state from status file if available.
-		if sf != nil {
-			if cs, ok := sf.Last[id]; ok {
-				co.State = cs.State
-				if !cs.FinishedAt.IsZero() {
-					co.FinishedAt = cs.FinishedAt.Format(time.RFC3339)
-				}
-				co.DurationMS = cs.DurationMS
-				co.IndexedCount = cs.IndexedCount
-				co.Error = cs.Error
-			}
-		}
-
-		// Check staleness for code and commits (cached to avoid per-query I/O).
-		if co.State == "completed" && (id == "code" || id == "commits") {
-			qc := qdrant.NewQdrantClient(cfg.Sidecars.QdrantURL)
-			adapter := &qdrant.Adapter{QdrantClient: qc}
-			collection := corpusCollection(id, root)
-			var st corpus.Staleness
-			switch id {
-			case "code":
-				st, _ = corpus.CodeStalenessCached(root, collection, adapter)
-			case "commits":
-				st, _ = corpus.CommitsStalenessCached(root, collection, adapter)
-			}
-			if st.IsStale {
-				co.Stale = true
-				co.StaleReason = st.Reason
-			}
-		}
-
-		out.Corpora[id] = co
+		return fmt.Errorf("computing status: %w", err)
 	}
 
 	if asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		return enc.Encode(out)
+		return enc.Encode(cs)
 	}
 
 	// Human-readable output.
+	allCorpora := []string{"code", "commits", "context", "issues"}
 	for _, id := range allCorpora {
-		co := out.Corpora[id]
+		co := cs.Corpora[id]
 		switch co.State {
 		case "disabled":
 			fmt.Printf("%-10s disabled (enable with corpora.%s.enabled=true in search.yaml)\n", id, id)
@@ -461,11 +413,11 @@ func runSearchStatus(asJSON bool) error {
 	}
 
 	// Show current run.
-	if out.Current != nil {
-		age := timeAgo(time.Since(out.Current.StartedAt))
-		fmt.Printf("\nCurrently running: %s  started %s ago", out.Current.Corpus, age)
-		if out.Current.Progress.Total > 0 {
-			fmt.Printf("  (%d/%d)", out.Current.Progress.Done, out.Current.Progress.Total)
+	if cs.Current != nil {
+		age := timeAgo(time.Since(cs.Current.StartedAt))
+		fmt.Printf("\nCurrently running: %s  started %s ago", cs.Current.Corpus, age)
+		if cs.Current.Progress.Total > 0 {
+			fmt.Printf("  (%d/%d)", cs.Current.Progress.Done, cs.Current.Progress.Total)
 		}
 		fmt.Println()
 	} else {

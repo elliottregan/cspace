@@ -8,6 +8,8 @@ package status
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -65,6 +67,78 @@ func Read(projectRoot string) (*File, error) {
 	return &f, nil
 }
 
+// ComputedStatus is the unified output shape for the status command — both
+// the MCP tool and the CLI serialize this same struct so their JSON output
+// is guaranteed identical. Extracted per PR #61 review item #5.
+type ComputedStatus struct {
+	Corpora map[string]ComputedCorpus `json:"corpora"`
+	Current *RunningState             `json:"current"`
+}
+
+// ComputedCorpus describes one corpus's index state plus staleness.
+type ComputedCorpus struct {
+	State        string `json:"state"` // completed, failed, disabled, unknown
+	FinishedAt   string `json:"finished_at,omitempty"`
+	DurationMS   int64  `json:"duration_ms,omitempty"`
+	IndexedCount int    `json:"indexed_count,omitempty"`
+	Error        string `json:"error,omitempty"`
+	Stale        bool   `json:"stale,omitempty"`
+	StaleReason  string `json:"stale_reason,omitempty"`
+}
+
+// StalenessChecker is a callback used by Compute to check staleness for
+// code/commits corpora. It decouples the status package from qdrant/corpus.
+type StalenessChecker func(corpusID string) (stale bool, reason string)
+
+// Compute builds a ComputedStatus from the on-disk status file and config.
+// disabledCorpora is the set of corpus IDs that are disabled in config.
+// checkStaleness is an optional callback for staleness checks (may be nil).
+func Compute(projectRoot string, disabledCorpora map[string]bool, checkStaleness StalenessChecker) (*ComputedStatus, error) {
+	sf, err := Read(projectRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	allCorpora := []string{"code", "commits", "context", "issues"}
+	out := &ComputedStatus{Corpora: make(map[string]ComputedCorpus)}
+	if sf != nil {
+		out.Current = sf.Current
+	}
+
+	for _, id := range allCorpora {
+		co := ComputedCorpus{State: "unknown"}
+
+		if disabledCorpora[id] {
+			co.State = "disabled"
+			out.Corpora[id] = co
+			continue
+		}
+
+		if sf != nil {
+			if cs, ok := sf.Last[id]; ok {
+				co.State = cs.State
+				if !cs.FinishedAt.IsZero() {
+					co.FinishedAt = cs.FinishedAt.Format(time.RFC3339)
+				}
+				co.DurationMS = cs.DurationMS
+				co.IndexedCount = cs.IndexedCount
+				co.Error = cs.Error
+			}
+		}
+
+		if co.State == "completed" && (id == "code" || id == "commits") && checkStaleness != nil {
+			if stale, reason := checkStaleness(id); stale {
+				co.Stale = true
+				co.StaleReason = reason
+			}
+		}
+
+		out.Corpora[id] = co
+	}
+
+	return out, nil
+}
+
 // Writer manages atomic writes to the status file. It is safe for concurrent
 // use from a single process (the indexer's progress callback fires from
 // goroutines). Writes are throttled to at most once per second to avoid
@@ -77,6 +151,10 @@ type Writer struct {
 	// lastFlush tracks the wall-clock time of the most recent disk write so
 	// we can throttle progress-driven updates.
 	lastFlush time.Time
+
+	// ErrLog receives flush errors (disk full, permission denied, etc.)
+	// instead of silently dropping them. Defaults to os.Stderr when nil.
+	ErrLog io.Writer
 }
 
 // NewWriter creates a Writer targeting projectRoot. It loads any existing
@@ -102,11 +180,12 @@ func NewWriter(projectRoot string) (*Writer, error) {
 func (w *Writer) StartCorpus(corpusID string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	now := time.Now().UTC()
 	w.file.Current = &RunningState{
 		Corpus:    corpusID,
-		StartedAt: time.Now().UTC(),
+		StartedAt: now,
 	}
-	w.file.UpdatedAt = time.Now().UTC()
+	w.file.UpdatedAt = now
 	w.flush()
 }
 
@@ -117,8 +196,9 @@ func (w *Writer) UpdateProgress(done, total int) {
 	if w.file.Current == nil {
 		return
 	}
+	now := time.Now().UTC()
 	w.file.Current.Progress = Progress{Done: done, Total: total}
-	w.file.UpdatedAt = time.Now().UTC()
+	w.file.UpdatedAt = now
 	if time.Since(w.lastFlush) >= time.Second {
 		w.flush()
 	}
@@ -128,14 +208,15 @@ func (w *Writer) UpdateProgress(done, total int) {
 func (w *Writer) FinishCorpus(corpusID string, startedAt time.Time, indexedCount int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	now := time.Now().UTC()
 	w.file.Last[corpusID] = CorpusState{
 		State:        "completed",
-		FinishedAt:   time.Now().UTC(),
+		FinishedAt:   now,
 		DurationMS:   time.Since(startedAt).Milliseconds(),
 		IndexedCount: indexedCount,
 	}
 	w.file.Current = nil
-	w.file.UpdatedAt = time.Now().UTC()
+	w.file.UpdatedAt = now
 	w.flush()
 }
 
@@ -143,37 +224,53 @@ func (w *Writer) FinishCorpus(corpusID string, startedAt time.Time, indexedCount
 func (w *Writer) FailCorpus(corpusID string, startedAt time.Time, runErr error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	now := time.Now().UTC()
 	w.file.Last[corpusID] = CorpusState{
 		State:      "failed",
-		FinishedAt: time.Now().UTC(),
+		FinishedAt: now,
 		DurationMS: time.Since(startedAt).Milliseconds(),
 		Error:      runErr.Error(),
 	}
 	w.file.Current = nil
-	w.file.UpdatedAt = time.Now().UTC()
+	w.file.UpdatedAt = now
 	w.flush()
 }
 
-// DisableCorpus records that a corpus is intentionally disabled.
+// DisableCorpus records that a corpus is intentionally disabled. Short-circuits
+// without flushing if the corpus is already disabled.
 func (w *Writer) DisableCorpus(corpusID string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	// No-op if already disabled — avoids unnecessary I/O in init loops.
+	if cs, ok := w.file.Last[corpusID]; ok && cs.State == "disabled" {
+		return
+	}
+	now := time.Now().UTC()
 	w.file.Last[corpusID] = CorpusState{State: "disabled"}
-	w.file.UpdatedAt = time.Now().UTC()
+	w.file.UpdatedAt = now
 	w.flush()
 }
 
 // flush writes the status file atomically (write tmp + rename). Caller
-// must hold w.mu.
+// must hold w.mu. Errors are reported to w.ErrLog (defaults to os.Stderr).
 func (w *Writer) flush() {
+	errLog := w.ErrLog
+	if errLog == nil {
+		errLog = os.Stderr
+	}
 	data, err := json.MarshalIndent(&w.file, "", "  ")
 	if err != nil {
+		_, _ = fmt.Fprintf(errLog, "status: marshal error: %v\n", err)
 		return
 	}
 	tmp := w.path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		_, _ = fmt.Fprintf(errLog, "status: write error: %v\n", err)
 		return
 	}
-	_ = os.Rename(tmp, w.path)
+	if err := os.Rename(tmp, w.path); err != nil {
+		_, _ = fmt.Fprintf(errLog, "status: rename error: %v\n", err)
+		return
+	}
 	w.lastFlush = time.Now()
 }

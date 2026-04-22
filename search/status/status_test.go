@@ -1,10 +1,12 @@
 package status
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -284,5 +286,103 @@ func TestWriter_UpdateProgress(t *testing.T) {
 	}
 	if f.Current.Progress.Done != 10 || f.Current.Progress.Total != 100 {
 		t.Errorf("unexpected progress: %+v", f.Current.Progress)
+	}
+}
+
+// TestWriter_FlushReportsErrors verifies that flush errors are written to
+// the ErrLog writer rather than silently dropped. PR #61 review item #6.
+func TestWriter_FlushReportsErrors(t *testing.T) {
+	// Point the Writer at a nonexistent directory — writes will fail.
+	var errBuf bytes.Buffer
+	w := &Writer{
+		path:   "/nonexistent-dir/status.json",
+		ErrLog: &errBuf,
+		file:   File{Last: make(map[string]CorpusState)},
+	}
+
+	w.FinishCorpus("code", time.Now(), 42)
+
+	if errBuf.Len() == 0 {
+		t.Error("expected flush error to be written to ErrLog, got nothing")
+	}
+	if !strings.Contains(errBuf.String(), "status:") {
+		t.Errorf("expected 'status:' prefix in error, got: %s", errBuf.String())
+	}
+}
+
+// TestWriter_DisableCorpusShortCircuit verifies that calling DisableCorpus
+// when the corpus is already disabled doesn't flush (no I/O). PR #61 item #9.
+func TestWriter_DisableCorpusShortCircuit(t *testing.T) {
+	dir := t.TempDir()
+	projectRoot := dir
+	if err := os.MkdirAll(filepath.Join(projectRoot, ".cspace"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	w, err := NewWriter(projectRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First call: should flush.
+	w.DisableCorpus("context")
+	stat1, err := os.Stat(StatusPath(projectRoot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	modTime1 := stat1.ModTime()
+
+	// Let a bit of time pass so mod times differ.
+	time.Sleep(10 * time.Millisecond)
+
+	// Second call: should short-circuit (no flush).
+	w.DisableCorpus("context")
+	stat2, err := os.Stat(StatusPath(projectRoot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	modTime2 := stat2.ModTime()
+
+	if !modTime1.Equal(modTime2) {
+		t.Error("expected DisableCorpus to short-circuit when already disabled — mod time changed")
+	}
+}
+
+// TestCompute_Basic verifies the shared Compute function. PR #61 review item #5.
+func TestCompute_Basic(t *testing.T) {
+	dir := t.TempDir()
+	projectRoot := dir
+	if err := os.MkdirAll(filepath.Join(projectRoot, ".cspace"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a status file with code=completed, commits=failed.
+	w, err := NewWriter(projectRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.FinishCorpus("code", time.Now(), 100)
+	w2, _ := NewWriter(projectRoot)
+	w2.FailCorpus("commits", time.Now(), errors.New("embed: timeout"))
+
+	disabled := map[string]bool{"context": true, "issues": true}
+	cs, err := Compute(projectRoot, disabled, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Corpora["code"].State != "completed" {
+		t.Errorf("expected code=completed, got %q", cs.Corpora["code"].State)
+	}
+	if cs.Corpora["commits"].State != "failed" {
+		t.Errorf("expected commits=failed, got %q", cs.Corpora["commits"].State)
+	}
+	if cs.Corpora["context"].State != "disabled" {
+		t.Errorf("expected context=disabled, got %q", cs.Corpora["context"].State)
+	}
+	if cs.Corpora["issues"].State != "disabled" {
+		t.Errorf("expected issues=disabled, got %q", cs.Corpora["issues"].State)
+	}
+	if cs.Corpora["code"].IndexedCount != 100 {
+		t.Errorf("expected code indexed_count=100, got %d", cs.Corpora["code"].IndexedCount)
 	}
 }
