@@ -1,4 +1,4 @@
-rc: export PATH="$HOME/go/bin:$PATH"
+rc: .lefthookrc
 
 pre-commit:
   parallel: true
@@ -9,7 +9,10 @@ pre-commit:
       stage_fixed: true
     lint-go:
       glob: "*.go"
-      run: golangci-lint run --new-from-rev=HEAD~1 ./...
+      run: golangci-lint run ./...
+    vet-go:
+      glob: "*.go"
+      run: go vet ./...
     lint-shell:
       glob: "*.sh"
       exclude: "lib/scripts/statusline.sh"

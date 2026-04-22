@@ -3,7 +3,7 @@ LDFLAGS         := -ldflags "-X github.com/elliottregan/cspace/internal/cli.Vers
 LDFLAGS_RELEASE := -ldflags "-s -w -X github.com/elliottregan/cspace/internal/cli.Version=$(VERSION)"
 GOBIN           := ./bin/cspace-go
 
-.PHONY: build build-linux clean test test-node vet sync-embedded overlay-demo overlay-web fmt fmt-check lint check install-tools setup-hooks
+.PHONY: build build-linux clean test test-node vet sync-embedded overlay-demo overlay-web fmt fmt-check lint check install-tools setup-hooks check-hooks
 
 # Sync lib/ contents into internal/assets/embedded/ for go:embed
 sync-embedded:
@@ -22,7 +22,7 @@ sync-embedded:
 	@cp lib/defaults.json internal/assets/embedded/
 	@cp lib/planets.json internal/assets/embedded/
 
-build: sync-embedded bin/cspace-go bin/cspace-search bin/cspace-search-mcp
+build: check-hooks sync-embedded bin/cspace-go bin/cspace-search bin/cspace-search-mcp
 
 bin/cspace-go: $(shell find cmd/cspace internal -name '*.go') sync-embedded
 	go build $(LDFLAGS) -o $@ ./cmd/cspace
@@ -89,4 +89,14 @@ install-tools:
 	@echo "Install shellcheck via your package manager (brew install shellcheck / apt install shellcheck)."
 
 setup-hooks:
+	@command -v lefthook >/dev/null 2>&1 || { echo "ERROR: lefthook not found in PATH. Run 'make install-tools' first." >&2; exit 1; }
 	lefthook install
+
+# Emit a warning if git hooks are not installed. Called by build so
+# contributors notice early without blocking the build itself.
+check-hooks:
+	@if [ -d .git ] && [ ! -f .git/hooks/pre-commit ]; then \
+		echo "" >&2; \
+		echo "⚠  Git hooks are not installed. Run 'make setup-hooks' to enable pre-commit and pre-push checks." >&2; \
+		echo "" >&2; \
+	fi
