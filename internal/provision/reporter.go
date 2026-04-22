@@ -43,6 +43,7 @@ var Phases = []string{
 	"Bundling repo",
 	"Creating volumes",
 	"Creating network",
+	"Starting search stack",
 	"Starting reverse proxy",
 	"Setting up directories",
 	"Starting containers",
