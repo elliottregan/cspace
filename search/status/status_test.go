@@ -366,9 +366,12 @@ func TestCompute_Basic(t *testing.T) {
 	w2.FailCorpus("commits", time.Now(), errors.New("embed: timeout"))
 
 	disabled := map[string]bool{"context": true, "issues": true}
-	cs, err := Compute(projectRoot, disabled, nil)
+	cs, err := Compute(projectRoot, true, disabled, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !cs.Enabled {
+		t.Errorf("expected Enabled=true in output")
 	}
 	if cs.Corpora["code"].State != "completed" {
 		t.Errorf("expected code=completed, got %q", cs.Corpora["code"].State)
@@ -384,5 +387,34 @@ func TestCompute_Basic(t *testing.T) {
 	}
 	if cs.Corpora["code"].IndexedCount != 100 {
 		t.Errorf("expected code indexed_count=100, got %d", cs.Corpora["code"].IndexedCount)
+	}
+}
+
+// TestCompute_SearchDisabled verifies that when the master switch is
+// off, Compute returns Enabled=false and an empty corpora map — no
+// leaking prior state from a previous session when enabled was true.
+func TestCompute_SearchDisabled(t *testing.T) {
+	dir := t.TempDir()
+	projectRoot := dir
+	if err := os.MkdirAll(filepath.Join(projectRoot, ".cspace"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a status file so we can verify it is NOT surfaced.
+	w, _ := NewWriter(projectRoot)
+	w.FinishCorpus("code", time.Now(), 100)
+
+	cs, err := Compute(projectRoot, false, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.Enabled {
+		t.Errorf("expected Enabled=false when master switch is off")
+	}
+	if len(cs.Corpora) != 0 {
+		t.Errorf("expected empty corpora map when disabled, got %d entries", len(cs.Corpora))
+	}
+	if cs.Current != nil {
+		t.Errorf("expected Current=nil when disabled")
 	}
 }

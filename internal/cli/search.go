@@ -352,7 +352,7 @@ func runSearchStatus(asJSON bool) error {
 		}
 	}
 
-	cs, err := status.Compute(root, disabled, func(corpusID string) (bool, string) {
+	cs, err := status.Compute(root, cfg.Enabled, disabled, func(corpusID string) (bool, string) {
 		qc := qdrant.NewQdrantClient(cfg.Sidecars.QdrantURL)
 		adapter := &qdrant.Adapter{QdrantClient: qc}
 		collection := corpusCollection(corpusID, root)
@@ -373,6 +373,14 @@ func runSearchStatus(asJSON bool) error {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(cs)
+	}
+
+	// When search is opted out project-wide, show a single clear message
+	// instead of iterating the corpus map (which is empty by contract).
+	if !cs.Enabled {
+		fmt.Printf("search not configured for this project.\n")
+		fmt.Printf("To activate, set `enabled: true` in %s/search.yaml.\n", root)
+		return nil
 	}
 
 	// Human-readable output.

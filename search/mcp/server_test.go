@@ -27,6 +27,7 @@ func TestServer_HandleStatus_NoStatusFile(t *testing.T) {
 	s := &Server{
 		ProjectRoot: dir,
 		Config: &config.Config{
+			Enabled: true,
 			Corpora: map[string]config.CorpusConfig{
 				"code":    {Enabled: true},
 				"commits": {Enabled: true},
@@ -42,6 +43,9 @@ func TestServer_HandleStatus_NoStatusFile(t *testing.T) {
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
+	if !out.Enabled {
+		t.Error("expected Enabled=true when master switch is on")
+	}
 	if out.Current != nil {
 		t.Error("expected no current run")
 	}
@@ -55,6 +59,33 @@ func TestServer_HandleStatus_NoStatusFile(t *testing.T) {
 	// code and commits should be unknown (no status file).
 	if out.Corpora["code"].State != "unknown" {
 		t.Errorf("expected code=unknown, got %q", out.Corpora["code"].State)
+	}
+}
+
+// When the master switch is off, handleStatus reports Enabled=false and
+// empty corpora — even if a status file exists on disk from a prior
+// session.
+func TestServer_HandleStatus_SearchDisabled(t *testing.T) {
+	dir := t.TempDir()
+	s := &Server{
+		ProjectRoot: dir,
+		Config: &config.Config{
+			Enabled: false,
+			Corpora: map[string]config.CorpusConfig{
+				"code":    {Enabled: true},
+				"commits": {Enabled: true},
+			},
+		},
+	}
+	_, out, err := s.handleStatus(context.TODO())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Enabled {
+		t.Error("expected Enabled=false when master switch is off")
+	}
+	if len(out.Corpora) != 0 {
+		t.Errorf("expected empty Corpora when disabled, got %d entries", len(out.Corpora))
 	}
 }
 
@@ -79,6 +110,7 @@ func TestServer_HandleStatus_WithStatusFile(t *testing.T) {
 	s := &Server{
 		ProjectRoot: dir,
 		Config: &config.Config{
+			Enabled: true,
 			Corpora: map[string]config.CorpusConfig{
 				"code":    {Enabled: true},
 				"commits": {Enabled: true},

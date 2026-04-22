@@ -14,6 +14,12 @@ var defaultYAML []byte
 
 // Config is the top-level config shape.
 type Config struct {
+	// Enabled is the master switch for semantic search in this project.
+	// Must be set to true explicitly in search.yaml; otherwise every search
+	// CLI + MCP + bootstrap path fast-exits with ErrSearchDisabled.
+	// Prevents "I just cloned a repo with cspace baked in and now it's
+	// indexing node_modules on first container boot."
+	Enabled  bool                    `yaml:"enabled"`
 	Corpora  map[string]CorpusConfig `yaml:"corpora"`
 	Sidecars Sidecars                `yaml:"sidecars"`
 	Index    IndexConfig             `yaml:"index"`

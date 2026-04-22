@@ -4,7 +4,15 @@
 # Uncomment and edit what you need. See the embedded default.yaml in the
 # cspace-search binary for the full schema.
 #
-# Corpus defaults:
+# -----------------------------------------------------------------------
+# Master switch. Search is OFF by default so a fresh cspace project
+# doesn't incidentally start indexing (e.g. pulling in node_modules).
+# Flip this to `true` when you want agents and CLIs in this project to
+# actually build indexes and run queries.
+enabled: false
+# -----------------------------------------------------------------------
+#
+# Corpus defaults (only relevant once `enabled: true` above):
 #   code     — enabled  (source of truth for "where does X happen?")
 #   commits  — enabled  (git history; "how did it get here?")
 #   context  — DISABLED (.cspace/context/ files are usually small enough

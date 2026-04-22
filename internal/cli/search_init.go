@@ -82,6 +82,13 @@ func runSearchInit(opts searchInitOpts) error {
 	}
 
 	if !opts.SkipIndex {
+		// Short-circuit the per-corpus loop when the project hasn't opted
+		// in — the first call into runSearchIndex would return
+		// ErrSearchDisabled four times otherwise. One clear message.
+		if cfg, err := config.Load(root); err == nil && !cfg.Enabled {
+			report("search not configured (set `enabled: true` in %s/search.yaml to activate)", root)
+			return nil
+		}
 		for _, corpusID := range []string{"code", "commits", "context", "issues"} {
 			err := runSearchIndex(corpusID, true)
 			switch {

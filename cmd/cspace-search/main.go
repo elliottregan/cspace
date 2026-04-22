@@ -228,6 +228,11 @@ func initCmd() *cobra.Command {
 			}
 
 			if !skipIndex {
+				// Short-circuit when the project hasn't opted in.
+				if cfg, err := config.Load(root); err == nil && !cfg.Enabled {
+					report("search not configured (set `enabled: true` in %s/search.yaml to activate)", root)
+					return nil
+				}
 				for _, corpusID := range []string{"code", "commits", "context", "issues"} {
 					err := runIndexCorpus(cmd.Context(), root, corpusID)
 					switch {
@@ -304,7 +309,7 @@ func statusCmd() *cobra.Command {
 				}
 			}
 
-			cs, err := status.Compute(root, disabled, func(corpusID string) (bool, string) {
+			cs, err := status.Compute(root, cfg.Enabled, disabled, func(corpusID string) (bool, string) {
 				qc := qdrant.NewQdrantClient(cfg.Sidecars.QdrantURL)
 				adapter := &qdrant.Adapter{QdrantClient: qc}
 				collection := corpusCollection(corpusID, root)
@@ -325,6 +330,12 @@ func statusCmd() *cobra.Command {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
 				return enc.Encode(cs)
+			}
+
+			if !cs.Enabled {
+				fmt.Printf("search not configured for this project.\n")
+				fmt.Printf("To activate, set `enabled: true` in %s/search.yaml.\n", root)
+				return nil
 			}
 
 			allCorpora := []string{"code", "commits", "context", "issues"}

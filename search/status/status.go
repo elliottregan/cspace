@@ -71,6 +71,10 @@ func Read(projectRoot string) (*File, error) {
 // the MCP tool and the CLI serialize this same struct so their JSON output
 // is guaranteed identical. Extracted per PR #61 review item #5.
 type ComputedStatus struct {
+	// Enabled mirrors the top-level `enabled:` field of search.yaml. When
+	// false, search is opted out project-wide and Corpora is empty —
+	// clients should show a "not configured" message.
+	Enabled bool                      `json:"enabled"`
 	Corpora map[string]ComputedCorpus `json:"corpora"`
 	Current *RunningState             `json:"current"`
 }
@@ -91,16 +95,23 @@ type ComputedCorpus struct {
 type StalenessChecker func(corpusID string) (stale bool, reason string)
 
 // Compute builds a ComputedStatus from the on-disk status file and config.
+// searchEnabled mirrors the top-level search.yaml `enabled:` field; when
+// false, the output flags Enabled=false and skips the per-corpus loop
+// so clients see a single "not configured" signal.
 // disabledCorpora is the set of corpus IDs that are disabled in config.
 // checkStaleness is an optional callback for staleness checks (may be nil).
-func Compute(projectRoot string, disabledCorpora map[string]bool, checkStaleness StalenessChecker) (*ComputedStatus, error) {
+func Compute(projectRoot string, searchEnabled bool, disabledCorpora map[string]bool, checkStaleness StalenessChecker) (*ComputedStatus, error) {
+	if !searchEnabled {
+		return &ComputedStatus{Enabled: false, Corpora: map[string]ComputedCorpus{}}, nil
+	}
+
 	sf, err := Read(projectRoot)
 	if err != nil {
 		return nil, err
 	}
 
 	allCorpora := []string{"code", "commits", "context", "issues"}
-	out := &ComputedStatus{Corpora: make(map[string]ComputedCorpus)}
+	out := &ComputedStatus{Enabled: true, Corpora: make(map[string]ComputedCorpus)}
 	if sf != nil {
 		out.Current = sf.Current
 	}

@@ -76,7 +76,10 @@ type listClustersInput struct{}
 type statusInput struct{}
 
 // StatusOutput is the structured output from the search_status MCP tool.
+// Enabled mirrors the top-level search.yaml `enabled:` field. When false,
+// Corpora is empty and clients should show a "not configured" signal.
 type StatusOutput struct {
+	Enabled bool                         `json:"enabled"`
 	Corpora map[string]CorpusStatusEntry `json:"corpora"`
 	Current *status.RunningState         `json:"current"`
 }
@@ -165,7 +168,7 @@ func (s *Server) handleStatus(_ context.Context) (*mcpSDK.CallToolResult, Status
 		}
 	}
 
-	cs, err := status.Compute(s.ProjectRoot, disabled, func(corpusID string) (bool, string) {
+	cs, err := status.Compute(s.ProjectRoot, s.Config.Enabled, disabled, func(corpusID string) (bool, string) {
 		qc := qdrant.NewQdrantClient(s.Config.Sidecars.QdrantURL)
 		adapter := &qdrant.Adapter{QdrantClient: qc}
 		collection := mcpCorpusCollection(corpusID, s.ProjectRoot)
@@ -184,6 +187,7 @@ func (s *Server) handleStatus(_ context.Context) (*mcpSDK.CallToolResult, Status
 
 	// Map ComputedStatus to StatusOutput (same shape, different type names).
 	out := StatusOutput{
+		Enabled: cs.Enabled,
 		Corpora: make(map[string]CorpusStatusEntry),
 		Current: cs.Current,
 	}
