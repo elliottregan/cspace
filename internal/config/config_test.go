@@ -437,6 +437,8 @@ func TestHelpers(t *testing.T) {
 		{"MemoryVolume", cfg.MemoryVolume(), "cspace-myapp-memory"},
 		{"LogsVolume", cfg.LogsVolume(), "cspace-myapp-logs"},
 		{"InstanceLabel", cfg.InstanceLabel(), "cspace.project=myapp"},
+		{"ProjectStackName", cfg.ProjectStackName(), "cspace-myapp-stack"},
+		{"ProjectNetwork", cfg.ProjectNetwork(), "cspace-myapp"},
 	}
 
 	for _, tt := range tests {

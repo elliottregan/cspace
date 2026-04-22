@@ -41,12 +41,14 @@ func TestComposeEnv(t *testing.T) {
 	}{
 		{"COMPOSE_PROJECT_NAME", "mp-mercury"},
 		{"CSPACE_CONTAINER_NAME", "mp-mercury"},
+		{"CSPACE_INSTANCE_NAME", "mercury"},
 		{"CSPACE_PROJECT_NAME", "myproject"},
 		{"CSPACE_PREFIX", "mp"},
 		{"CSPACE_IMAGE", "cspace-myproject"},
 		{"CSPACE_MEMORY_VOLUME", "cspace-myproject-memory"},
 		{"CSPACE_LOGS_VOLUME", "cspace-myproject-logs"},
 		{"CSPACE_LABEL", "cspace.project=myproject"},
+		{"CSPACE_PROJECT_STACK_NAME", "cspace-myproject-stack"},
 		{"CSPACE_HOME", "/home/user/.cspace"},
 		{"HOST_PORT_DEV", "0"},     // all instances use Docker-assigned ports
 		{"HOST_PORT_PREVIEW", "0"}, // all instances use Docker-assigned ports
