@@ -87,17 +87,25 @@ Full reference: [configuration](https://cspace-cli.netlify.app/configuration/con
 The CLI is written in Go with Cobra. The agent supervisor is Node.js (ESM).
 
 ```bash
+# First-time setup: install tools and git hooks
+make install-tools
+make setup-hooks
+
 # Build
 make build
 ./bin/cspace-go --help
 
 # Test and lint
 make test
-make vet
+make check   # fmt-check + vet + lint + test
 
 # Rebuild the container image after Dockerfile/template changes
 cspace rebuild
 ```
+
+### Git Hooks
+
+[Lefthook](https://github.com/evilmartians/lefthook) runs pre-commit (format, lint, vet) and pre-push (lint, test) checks automatically. Run `make setup-hooks` after cloning to activate them. The `make build` target will warn if hooks are not installed.
 
 ### Project Structure
 

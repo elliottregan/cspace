@@ -1,4 +1,4 @@
-rc: export PATH="$HOME/go/bin:$PATH"
+rc: .lefthookrc
 
 pre-commit:
   parallel: true
@@ -9,7 +9,10 @@ pre-commit:
       stage_fixed: true
     lint-go:
       glob: "*.go"
-      run: golangci-lint run --new-from-rev=HEAD~1 ./...
+      run: golangci-lint run ./...
+    vet-go:
+      glob: "*.go"
+      run: go vet ./...
     lint-shell:
       glob: "*.sh"
       exclude: "lib/scripts/statusline.sh"
@@ -22,27 +25,3 @@ pre-push:
       run: golangci-lint run ./...
     test:
       run: go test ./...
-
-post-commit:
-  commands:
-    search-index:
-      run: |
-        if [ -x ./bin/cspace-search ]; then
-          ( ./bin/cspace-search index --corpus=code --quiet >> .cspace/search-index.log 2>&1 & )
-        fi
-
-post-checkout:
-  commands:
-    search-index:
-      run: |
-        if [ -x ./bin/cspace-search ]; then
-          ( ./bin/cspace-search index --corpus=code --quiet >> .cspace/search-index.log 2>&1 & )
-        fi
-
-post-merge:
-  commands:
-    search-index:
-      run: |
-        if [ -x ./bin/cspace-search ]; then
-          ( ./bin/cspace-search index --corpus=code --quiet >> .cspace/search-index.log 2>&1 & )
-        fi

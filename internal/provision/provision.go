@@ -22,12 +22,13 @@ var nameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // Params holds everything needed to provision an instance.
 type Params struct {
-	Name     string         // Instance name (validated: alphanumeric + hyphens/underscores)
-	Branch   string         // Git branch to checkout (empty = host's current branch)
-	Cfg      *config.Config // Merged configuration
-	Reporter Reporter       // Progress reporter; nil → logReporter{}
-	Stdout   io.Writer      // Subprocess stdout; nil → os.Stdout
-	Stderr   io.Writer      // Subprocess stderr; nil → os.Stderr
+	Name            string         // Instance name (validated: alphanumeric + hyphens/underscores)
+	Branch          string         // Git branch to checkout (empty = host's current branch)
+	Cfg             *config.Config // Merged configuration
+	Reporter        Reporter       // Progress reporter; nil → logReporter{}
+	Stdout          io.Writer      // Subprocess stdout; nil → os.Stdout
+	Stderr          io.Writer      // Subprocess stderr; nil → os.Stderr
+	BootstrapSearch bool           // Run `cspace search init` during provisioning (opt-in)
 }
 
 func (p Params) reporter() Reporter {
@@ -281,18 +282,16 @@ func Run(p Params) (result Result, err error) {
 		_, _ = instance.DcExec(composeName, "git", "pull", "--ff-only", "--quiet")
 	}
 
-	// Phase 16: bootstrap semantic search. Fires `cspace search init` inside
-	// the container so the sidecars (llama-server, qdrant) are reachable on
-	// the compose network. Runs in the background — indexing all corpora
-	// can take minutes on a large repo and we don't want to block the Claude
-	// handoff. Output goes to /workspace/.cspace/search-index.log. The
-	// content-hash check in index.Run makes re-runs a near no-op when
-	// nothing has changed since the last index, so this is safe to fire on
-	// both new and reused containers.
-	reportPhase(16, Phases[15])
-	if _, err := instance.DcExec(composeName, "bash", "-c",
-		"mkdir -p /workspace/.cspace && nohup cspace search init --quiet >>/workspace/.cspace/search-index.log 2>&1 &"); err != nil {
-		reportWarn(fmt.Sprintf("search bootstrap: %v", err))
+	// Phase 16: bootstrap semantic search — opt-in. Fires only when
+	// BootstrapSearch is true (advisors, coordinators, or explicit --index).
+	// Runs `cspace search init` in the background so the Claude handoff
+	// isn't blocked. Content-hash check makes re-runs a near no-op.
+	if p.BootstrapSearch {
+		reportPhase(16, Phases[15])
+		if _, err := instance.DcExec(composeName, "bash", "-c",
+			"mkdir -p /workspace/.cspace && nohup cspace search init --quiet >>/workspace/.cspace/search-index.log 2>&1 &"); err != nil {
+			reportWarn(fmt.Sprintf("search bootstrap: %v", err))
+		}
 	}
 
 	return Result{Created: created, Name: name}, nil

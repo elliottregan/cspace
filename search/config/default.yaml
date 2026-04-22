@@ -1,5 +1,12 @@
 # Default corpus configuration for cspace-search.
 # Projects override by placing a search.yaml at the project root.
+#
+# Master switch: search is off by default. Projects opt in by setting
+# `enabled: true` in their own search.yaml. Without that, every search
+# CLI + MCP + bootstrap path fast-exits without touching qdrant or llama.
+# Prevents newly-cloned cspace projects from auto-indexing node_modules
+# on first container boot.
+enabled: false
 corpora:
   code:
     enabled: true

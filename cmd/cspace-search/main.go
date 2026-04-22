@@ -12,20 +12,23 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/elliottregan/cspace/search/cluster"
 	"github.com/elliottregan/cspace/search/config"
+	"github.com/elliottregan/cspace/search/corpus"
 	"github.com/elliottregan/cspace/search/embed"
 	"github.com/elliottregan/cspace/search/index"
 	"github.com/elliottregan/cspace/search/qdrant"
 	"github.com/elliottregan/cspace/search/query"
+	"github.com/elliottregan/cspace/search/status"
 
 	"github.com/spf13/cobra"
 )
 
 func main() {
 	root := &cobra.Command{Use: "cspace-search", Short: "Semantic search over commits, code, context, and issues"}
-	root.AddCommand(indexCmd(), queryCmd(), clustersCmd(), initCmd())
+	root.AddCommand(indexCmd(), queryCmd(), clustersCmd(), initCmd(), statusCmd())
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -61,13 +64,19 @@ func indexCmd() *cobra.Command {
 					fmt.Fprintf(os.Stderr, "\rindex: %d/%d", done, total)
 				}
 			}
+			sw, _ := status.NewWriter(root)
+			var statusWriter index.StatusWriter
+			if sw != nil {
+				statusWriter = sw
+			}
 			err = index.Run(context.Background(), index.Config{
-				Corpus:      rt.Corpus,
-				Embedder:    &embed.Adapter{Client: ec},
-				Upserter:    &qdrant.Adapter{QdrantClient: qc},
-				ProjectRoot: root,
-				LockPath:    filepath.Join(root, rt.Cfg.Index.LockPath),
-				Progress:    progress,
+				Corpus:       rt.Corpus,
+				Embedder:     &embed.Adapter{Client: ec},
+				Upserter:     &qdrant.Adapter{QdrantClient: qc},
+				ProjectRoot:  root,
+				LockPath:     filepath.Join(root, rt.Cfg.Index.LockPath),
+				Progress:     progress,
+				StatusWriter: statusWriter,
 			})
 			if !quiet {
 				fmt.Fprintln(os.Stderr)
@@ -109,6 +118,10 @@ func queryCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+
+			// Check staleness and annotate the envelope.
+			appendStalenessWarning(env, corpusID, root, qc)
+
 			if asJSON {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
@@ -215,12 +228,19 @@ func initCmd() *cobra.Command {
 			}
 
 			if !skipIndex {
+				// Short-circuit when the project hasn't opted in.
+				if cfg, err := config.Load(root); err == nil && !cfg.Enabled {
+					report("search not configured (set `enabled: true` in %s/search.yaml to activate)", root)
+					return nil
+				}
 				for _, corpusID := range []string{"code", "commits", "context", "issues"} {
 					err := runIndexCorpus(cmd.Context(), root, corpusID)
 					switch {
 					case err == nil:
 						report("%s: indexed", corpusID)
 					case errors.Is(err, config.ErrCorpusDisabled):
+						// runIndexCorpus already wrote the disabled state with
+						// a fresh single-use writer — no outer writer needed.
 						report("%s: disabled in search.yaml (enable with corpora.%s.enabled=true)", corpusID, corpusID)
 					default:
 						report("%s: skipped (%v)", corpusID, err)
@@ -243,15 +263,180 @@ func initCmd() *cobra.Command {
 func runIndexCorpus(ctx context.Context, root, corpusID string) error {
 	rt, err := config.Build(root, corpusID)
 	if err != nil {
+		// If the corpus is disabled, record that in the status file with a
+		// fresh single-use writer so we never clobber state written by prior
+		// iterations. Then return the sentinel so callers can report it.
+		if errors.Is(err, config.ErrCorpusDisabled) {
+			if sw, swErr := status.NewWriter(root); swErr == nil && sw != nil {
+				sw.DisableCorpus(corpusID)
+			}
+		}
 		return err
 	}
 	qc := qdrant.NewQdrantClient(rt.Cfg.Sidecars.QdrantURL)
 	ec := embed.NewClient(rt.Cfg.Sidecars.LlamaRetrievalURL)
+	sw, _ := status.NewWriter(root)
+	var statusWriter index.StatusWriter
+	if sw != nil {
+		statusWriter = sw
+	}
 	return index.Run(ctx, index.Config{
-		Corpus:      rt.Corpus,
-		Embedder:    &embed.Adapter{Client: ec},
-		Upserter:    &qdrant.Adapter{QdrantClient: qc},
-		ProjectRoot: root,
-		LockPath:    filepath.Join(root, rt.Cfg.Index.LockPath),
+		Corpus:       rt.Corpus,
+		Embedder:     &embed.Adapter{Client: ec},
+		Upserter:     &qdrant.Adapter{QdrantClient: qc},
+		ProjectRoot:  root,
+		LockPath:     filepath.Join(root, rt.Cfg.Index.LockPath),
+		StatusWriter: statusWriter,
 	})
+}
+
+func statusCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show index status and staleness for all corpora",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			root := projectRoot()
+			cfg, err := config.Load(root)
+			if err != nil {
+				return err
+			}
+
+			disabled := make(map[string]bool)
+			for id, cc := range cfg.Corpora {
+				if !cc.Enabled {
+					disabled[id] = true
+				}
+			}
+
+			cs, err := status.Compute(root, cfg.Enabled, disabled, func(corpusID string) (bool, string) {
+				qc := qdrant.NewQdrantClient(cfg.Sidecars.QdrantURL)
+				adapter := &qdrant.Adapter{QdrantClient: qc}
+				collection := corpusCollection(corpusID, root)
+				var st corpus.Staleness
+				switch corpusID {
+				case "code":
+					st, _ = corpus.CodeStalenessCached(root, collection, adapter)
+				case "commits":
+					st, _ = corpus.CommitsStalenessCached(root, collection, adapter)
+				}
+				return st.IsStale, st.Reason
+			})
+			if err != nil {
+				return fmt.Errorf("computing status: %w", err)
+			}
+
+			if asJSON {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(cs)
+			}
+
+			if !cs.Enabled {
+				fmt.Printf("search not configured for this project.\n")
+				fmt.Printf("To activate, set `enabled: true` in %s/search.yaml.\n", root)
+				return nil
+			}
+
+			allCorpora := []string{"code", "commits", "context", "issues"}
+			for _, id := range allCorpora {
+				co := cs.Corpora[id]
+				switch co.State {
+				case "disabled":
+					fmt.Printf("%-10s disabled (enable with corpora.%s.enabled=true in search.yaml)\n", id, id)
+				case "completed":
+					age := "unknown"
+					if co.FinishedAt != "" {
+						if t, err := time.Parse(time.RFC3339, co.FinishedAt); err == nil {
+							age = timeAgo(time.Since(t))
+						}
+					}
+					line := fmt.Sprintf("%-10s completed %s ago", id, age)
+					if co.IndexedCount > 0 {
+						line += fmt.Sprintf("   (%d chunks indexed)", co.IndexedCount)
+					}
+					if co.Stale {
+						line += fmt.Sprintf(" — STALE: %s", co.StaleReason)
+					} else {
+						line += " — up to date"
+					}
+					fmt.Println(line)
+				case "failed":
+					age := "unknown"
+					if co.FinishedAt != "" {
+						if t, err := time.Parse(time.RFC3339, co.FinishedAt); err == nil {
+							age = timeAgo(time.Since(t))
+						}
+					}
+					fmt.Printf("%-10s failed %s ago   error: %s\n", id, age, co.Error)
+				default:
+					fmt.Printf("%-10s never indexed\n", id)
+				}
+			}
+
+			if cs.Current != nil {
+				age := timeAgo(time.Since(cs.Current.StartedAt))
+				fmt.Printf("\nCurrently running: %s  started %s ago", cs.Current.Corpus, age)
+				if cs.Current.Progress.Total > 0 {
+					fmt.Printf("  (%d/%d)", cs.Current.Progress.Done, cs.Current.Progress.Total)
+				}
+				fmt.Println()
+			} else {
+				fmt.Println("\nCurrently running: none.")
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON output for programmatic consumers")
+	return cmd
+}
+
+// appendStalenessWarning checks corpus staleness and appends a warning to
+// the envelope if the index is out of date.
+func appendStalenessWarning(env *query.Envelope, corpusID, root string, qc *qdrant.QdrantClient) {
+	adapter := &qdrant.Adapter{QdrantClient: qc}
+	collection := corpusCollection(corpusID, root)
+	if collection == "" {
+		return
+	}
+	var st corpus.Staleness
+	var err error
+	switch corpusID {
+	case "code":
+		st, err = corpus.CodeStalenessCached(root, collection, adapter)
+	case "commits":
+		st, err = corpus.CommitsStalenessCached(root, collection, adapter)
+	default:
+		return
+	}
+	if err != nil || !st.IsStale {
+		return
+	}
+	warning := "index may be out of date: " + st.Reason +
+		" \u2014 run `cspace search " + corpusID + " index` to refresh"
+	env.Warning = strings.TrimSpace(env.Warning + "\n" + warning)
+}
+
+func corpusCollection(corpusID, projectRoot string) string {
+	switch corpusID {
+	case "code":
+		return "code-" + corpus.ProjectHash(projectRoot)
+	case "commits":
+		return "commits-" + corpus.ProjectHash(projectRoot)
+	default:
+		return ""
+	}
+}
+
+func timeAgo(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }

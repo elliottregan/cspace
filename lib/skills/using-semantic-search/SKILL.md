@@ -137,10 +137,36 @@ When existing code surprises you:
 
 ## Index freshness
 
-Indexes auto-refresh on `post-commit`, `post-checkout`, and `post-merge`
-lefthook hooks (if lefthook is installed for the project). If you suspect
-the index is stale — e.g. you just pulled a large change and the tool
-surfaces gone files — run:
+Indexes do **not** auto-refresh. There are no post-commit hooks. Search
+bootstrap at provisioning time is opt-in: advisors and coordinators get
+it automatically; other roles must run `cspace search init` explicitly
+or pass `--index` to `cspace up`. Once built, update with
+`cspace search <corpus> index`.
+
+### Before high-stakes queries
+
+Run `cspace search status` (CLI) or use the `search_status` MCP tool.
+It reports per-corpus state and whether the index is stale:
+
+```
+$ cspace search status
+code      completed 12m ago   (1043 chunks indexed) — STALE: 17 files changed since last index
+commits   completed 12m ago   (197 commits indexed) — up to date
+context   disabled (enable with corpora.context.enabled=true in search.yaml)
+issues    disabled (enable with corpora.issues.enabled=true in search.yaml)
+
+Currently running: none.
+```
+
+### Decision tree
+
+- **STALE** and your answer depends on current code state? Reindex first:
+  `cspace search code index` (or `commits`, etc.)
+- **running**? Proceed with awareness that results may be partial, or wait.
+- **failed**? Surface the error, reindex before trusting results.
+- **completed + up to date**? Query freely.
+
+### Reindex commands
 
 ```
 cspace search code index

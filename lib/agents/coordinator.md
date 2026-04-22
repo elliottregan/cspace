@@ -172,6 +172,8 @@ If `read_context` is unavailable (tool not registered), substitute `${STRATEGIC_
 cspace up issue-$N --base $BASE --prompt-file /tmp/implementer-$N.txt --persistent
 ```
 
+Use descriptive or numbered names (`issue-<n>`, `cs-agent-<n>`, or short task labels). Planet names (`mercury`, `venus`, …) are reserved for the human-facing TUI.
+
 Use `run_in_background: true` with a 60-minute timeout. Launch all ready agents in a **single message** with multiple Bash tool calls.
 
 **Each `cspace up` call is a blocking streaming command.** It does not return until the agent exits, and its combined stdout+stderr emits the agent's entire event stream as it happens (thinking, tool calls, tool results, final result). With `run_in_background: true`, that whole stream accumulates in the Bash call's BashOutput and is what you read to monitor the agent — exactly like watching a foreground `cspace up` in a terminal. Save the background task ID for each agent; you'll need it to read BashOutput in Phase 3.

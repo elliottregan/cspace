@@ -152,6 +152,59 @@ func (c *QdrantClient) ExistingPoints(collection string) (map[uint64]string, err
 	return out, nil
 }
 
+// MaxPayloadDate scrolls a collection and returns the maximum "date" payload
+// value (format "2006-01-02"). Returns "" if the collection is empty or has
+// no date fields. Used by CommitsStaleness.
+func (c *QdrantClient) MaxPayloadDate(collection string) (string, error) {
+	var maxDate string
+	var offset any = nil
+	for {
+		body := map[string]any{
+			"limit":        256,
+			"with_payload": []string{"date"},
+			"with_vector":  false,
+		}
+		if offset != nil {
+			body["offset"] = offset
+		}
+		buf, _ := json.Marshal(body)
+		req, _ := http.NewRequest(http.MethodPost, c.BaseURL+"/collections/"+collection+"/points/scroll", bytes.NewReader(buf))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("scroll: %w", err)
+		}
+		if resp.StatusCode == http.StatusNotFound {
+			_ = resp.Body.Close()
+			return "", nil
+		}
+		var parsed struct {
+			Result struct {
+				Points []struct {
+					ID      uint64         `json:"id"`
+					Payload map[string]any `json:"payload"`
+				} `json:"points"`
+				NextPageOffset any `json:"next_page_offset"`
+			} `json:"result"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+			_ = resp.Body.Close()
+			return "", err
+		}
+		_ = resp.Body.Close()
+		for _, p := range parsed.Result.Points {
+			if d, ok := p.Payload["date"].(string); ok && d > maxDate {
+				maxDate = d
+			}
+		}
+		if parsed.Result.NextPageOffset == nil {
+			break
+		}
+		offset = parsed.Result.NextPageOffset
+	}
+	return maxDate, nil
+}
+
 // DeletePoints removes the listed point IDs.
 func (c *QdrantClient) DeletePoints(collection string, ids []uint64) error {
 	body, _ := json.Marshal(map[string]any{"points": ids})

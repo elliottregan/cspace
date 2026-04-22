@@ -44,6 +44,7 @@ Use --no-claude to provision the container without launching Claude.`,
 			"after its first result (the default one-shot behavior).")
 	cmd.Flags().String("base", "", "Override base branch")
 	cmd.Flags().String("teleport-from", "", "Seed the instance from a teleport session dir (internal; used by /cspace-teleport)")
+	cmd.Flags().Bool("index", false, "Bootstrap search indexes during provisioning (auto-enabled for advisors and coordinators)")
 
 	return cmd
 }
@@ -56,6 +57,7 @@ func runUp(cmd *cobra.Command, args []string) error {
 	persistent, _ := cmd.Flags().GetBool("persistent")
 	baseOverride, _ := cmd.Flags().GetString("base")
 	teleportFrom, _ := cmd.Flags().GetString("teleport-from")
+	indexFlag, _ := cmd.Flags().GetBool("index")
 
 	// Validate flags
 	if prompt != "" && promptFile != "" {
@@ -109,12 +111,12 @@ func runUp(cmd *cobra.Command, args []string) error {
 		branch = baseOverride
 	}
 
-	return runUpWithArgs(name, branch, noClaude, verbose, prompt, promptFile, teleportFrom, persistent)
+	return runUpWithArgs(name, branch, noClaude, verbose, prompt, promptFile, teleportFrom, persistent, indexFlag)
 }
 
 // runUpWithArgs is the shared implementation for the up command, callable from
 // both the CLI handler and the TUI menu.
-func runUpWithArgs(name, branch string, noClaude, verbose bool, prompt, promptFile, teleportFrom string, persistent bool) error {
+func runUpWithArgs(name, branch string, noClaude, verbose bool, prompt, promptFile, teleportFrom string, persistent, bootstrapSearch bool) error {
 	if teleportFrom != "" {
 		return provision.TeleportRun(provision.TeleportParams{
 			Name:         name,
@@ -123,7 +125,7 @@ func runUpWithArgs(name, branch string, noClaude, verbose bool, prompt, promptFi
 		})
 	}
 
-	if err := provisionWithUI(name, branch, verbose); err != nil {
+	if err := provisionWithUI(name, branch, verbose, bootstrapSearch); err != nil {
 		return err
 	}
 
@@ -172,14 +174,15 @@ func runUpWithArgs(name, branch string, noClaude, verbose bool, prompt, promptFi
 // TTY, --verbose, and terminal size. The overlay path runs provision in a
 // goroutine while a bubbletea Program consumes a buffered event channel;
 // returns the provisioning error (if any) after the overlay exits.
-func provisionWithUI(name, branch string, verbose bool) error {
+func provisionWithUI(name, branch string, verbose, bootstrapSearch bool) error {
 	if shouldUseOverlay(verbose) {
-		return provisionWithOverlay(name, branch)
+		return provisionWithOverlay(name, branch, bootstrapSearch)
 	}
 	_, err := provision.Run(provision.Params{
-		Name:   name,
-		Branch: branch,
-		Cfg:    cfg,
+		Name:            name,
+		Branch:          branch,
+		Cfg:             cfg,
+		BootstrapSearch: bootstrapSearch,
 	})
 	return err
 }
@@ -201,7 +204,7 @@ func shouldUseOverlay(verbose bool) bool {
 	return true
 }
 
-func provisionWithOverlay(name, branch string) error {
+func provisionWithOverlay(name, branch string, bootstrapSearch bool) error {
 	events := make(chan overlay.ProvisionEvent, 16)
 	reporter := overlay.NewChannelReporter(events)
 
@@ -229,12 +232,13 @@ func provisionWithOverlay(name, branch string) error {
 	done := make(chan error, 1)
 	go func() {
 		_, err := provision.Run(provision.Params{
-			Name:     name,
-			Branch:   branch,
-			Cfg:      cfg,
-			Reporter: reporter,
-			Stdout:   io.Discard,
-			Stderr:   io.Discard,
+			Name:            name,
+			Branch:          branch,
+			Cfg:             cfg,
+			Reporter:        reporter,
+			Stdout:          io.Discard,
+			Stderr:          io.Discard,
+			BootstrapSearch: bootstrapSearch,
 		})
 		close(events)
 		done <- err

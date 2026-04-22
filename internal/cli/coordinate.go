@@ -137,8 +137,9 @@ func runCoordinateWithArgs(prompt, promptFile, name, systemPromptFile string) er
 	}
 
 	_, err := provision.Run(provision.Params{
-		Name: name,
-		Cfg:  cfg,
+		Name:            name,
+		Cfg:             cfg,
+		BootstrapSearch: true,
 	})
 	if err != nil {
 		return err

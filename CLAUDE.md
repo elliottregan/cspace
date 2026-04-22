@@ -100,7 +100,7 @@ Shell scripts fired by Claude Code's hook system: progress logging on `PostToolU
 
 **Template overrides**: Users place files in `.cspace/` to override built-in templates (Dockerfile, compose files, agent playbooks). Resolution checks project dir first, falls back to `$ASSETS_DIR/templates/` or `$ASSETS_DIR/agents/`.
 
-**Instance naming**: Auto-assigned from planet names with deterministic port ranges. Custom names get random port assignment.
+**Instance naming**: Auto-assigned from planet names with deterministic port ranges. Custom names get random port assignment. When spawning a cspace instance from an agent, use a descriptive or numbered name (`issue-<n>`, `cs-agent-<n>`, or a short task label). Planet names (`mercury`, `venus`, …) are reserved for the human-facing TUI.
 
 **Exit code handling**: Exit codes 0 and 2 (stream pipe closed) are success; 141 (SIGPIPE) is expected.
 

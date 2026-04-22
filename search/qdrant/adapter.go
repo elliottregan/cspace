@@ -31,5 +31,12 @@ func (a *Adapter) Search(collection string, vector []float32, topK int) ([]query
 	return out, nil
 }
 
+// MaxPayloadDate scrolls a collection and returns the maximum "date" payload
+// field (format "2006-01-02"). Used by CommitsStaleness to compare HEAD against
+// the latest indexed commit without false positives under commits.limit.
+func (a *Adapter) MaxPayloadDate(collection string) (string, error) {
+	return a.QdrantClient.MaxPayloadDate(collection)
+}
+
 var _ index.Upserter = (*Adapter)(nil)
 var _ query.Searcher = (*Adapter)(nil)
