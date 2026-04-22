@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -215,11 +216,15 @@ func initCmd() *cobra.Command {
 
 			if !skipIndex {
 				for _, corpusID := range []string{"code", "commits", "context", "issues"} {
-					if err := runIndexCorpus(cmd.Context(), root, corpusID); err != nil {
+					err := runIndexCorpus(cmd.Context(), root, corpusID)
+					switch {
+					case err == nil:
+						report("%s: indexed", corpusID)
+					case errors.Is(err, config.ErrCorpusDisabled):
+						report("%s: disabled in search.yaml (enable with corpora.%s.enabled=true)", corpusID, corpusID)
+					default:
 						report("%s: skipped (%v)", corpusID, err)
-						continue
 					}
-					report("%s: indexed", corpusID)
 				}
 			}
 			return nil

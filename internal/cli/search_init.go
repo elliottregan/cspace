@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -82,11 +83,15 @@ func runSearchInit(opts searchInitOpts) error {
 
 	if !opts.SkipIndex {
 		for _, corpusID := range []string{"code", "commits", "context", "issues"} {
-			if err := runSearchIndex(corpusID, true); err != nil {
+			err := runSearchIndex(corpusID, true)
+			switch {
+			case err == nil:
+				report("%s: indexed", corpusID)
+			case errors.Is(err, config.ErrCorpusDisabled):
+				report("%s: disabled in search.yaml (enable with corpora.%s.enabled=true)", corpusID, corpusID)
+			default:
 				report("%s: skipped (%v)", corpusID, err)
-				continue
 			}
-			report("%s: indexed", corpusID)
 		}
 	}
 	return nil

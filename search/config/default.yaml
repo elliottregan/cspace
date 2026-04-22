@@ -28,11 +28,17 @@ corpora:
     enabled: true
     limit: 500
   context:
-    # No max_bytes / excludes: ContextCorpus has no config fields. Indexes
-    # the fixed set of .cspace/context/ artifacts unconditionally.
-    enabled: true
+    # Disabled by default: .cspace/context/ files are usually small enough
+    # for agents to read directly, and indexing them pays qdrant + embed
+    # cost for negligible retrieval benefit on O(dozens) of files. Enable
+    # per-project by setting enabled: true in search.yaml.
+    enabled: false
   issues:
-    enabled: true
+    # Disabled by default: indexing issues requires GH_TOKEN, hits the
+    # GitHub API on every bootstrap/hook, and most projects don't use
+    # issues as a primary retrieval surface. Enable per-project by
+    # setting enabled: true in search.yaml.
+    enabled: false
     limit: 500
 sidecars:
   llama_retrieval_url: "http://llama-server:8080"

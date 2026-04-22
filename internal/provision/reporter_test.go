@@ -38,8 +38,8 @@ func TestReporterInterfaceImplementations(t *testing.T) {
 }
 
 func TestPhasesReference(t *testing.T) {
-	if len(Phases) != 15 {
-		t.Errorf("Phases: got %d entries, want 15", len(Phases))
+	if len(Phases) != 16 {
+		t.Errorf("Phases: got %d entries, want 16", len(Phases))
 	}
 	if Phases[0] != "Validating name" {
 		t.Errorf("Phases[0]: got %q", Phases[0])
@@ -49,5 +49,8 @@ func TestPhasesReference(t *testing.T) {
 	}
 	if Phases[14] != "Syncing workspace" {
 		t.Errorf("Phases[14]: got %q", Phases[14])
+	}
+	if Phases[15] != "Bootstrapping search" {
+		t.Errorf("Phases[15]: got %q", Phases[15])
 	}
 }

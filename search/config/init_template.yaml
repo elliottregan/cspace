@@ -4,6 +4,17 @@
 # Uncomment and edit what you need. See the embedded default.yaml in the
 # cspace-search binary for the full schema.
 #
+# Corpus defaults:
+#   code     — enabled  (source of truth for "where does X happen?")
+#   commits  — enabled  (git history; "how did it get here?")
+#   context  — DISABLED (.cspace/context/ files are usually small enough
+#                       to read directly; indexing them pays embed/qdrant
+#                       cost for negligible retrieval benefit)
+#   issues   — DISABLED (requires GH_TOKEN; hits the GitHub API on every
+#                       bootstrap/hook; opt-in per project)
+#
+# Opt a disabled corpus in by setting enabled: true under its key below.
+#
 # Common overrides:
 #
 # sidecars:
@@ -25,9 +36,10 @@
 #     # Upper bound on commits to embed on each re-index.
 #     limit: 500
 #   context:
-#     # Set to false to skip the .cspace/context/ corpus entirely.
+#     # Opt in — re-enables indexing of .cspace/context/ artifacts.
 #     enabled: true
 #   issues:
-#     # Set to false to skip the GitHub issues corpus (no gh api calls).
+#     # Opt in — re-enables indexing of GitHub issues + PRs. Requires
+#     # GH_TOKEN to be set in the container environment.
 #     enabled: true
 #     limit: 500

@@ -42,22 +42,60 @@ type IndexConfig struct {
 	LogPath  string `yaml:"log_path"`
 }
 
-// Load reads the embedded defaults and then shallow-merges an optional
-// search.yaml from projectRoot on top. Missing fields in the override
-// preserve default values.
+// Load reads the embedded defaults and deep-merges an optional search.yaml
+// from projectRoot on top. "Deep-merge" matters for nested maps like
+// corpora.<id>: naively unmarshaling the override onto the existing Config
+// replaces each touched CorpusConfig wholesale (so overriding just
+// corpora.code.excludes would silently reset MaxBytes/Enabled to zero).
+// Here we merge at the parsed-YAML tree level, then unmarshal the merged
+// tree into the typed Config, so only keys actually present in the
+// override take effect.
 func Load(projectRoot string) (*Config, error) {
-	var cfg Config
-	if err := yaml.Unmarshal(defaultYAML, &cfg); err != nil {
+	var base map[string]any
+	if err := yaml.Unmarshal(defaultYAML, &base); err != nil {
 		return nil, err
 	}
+
 	path := filepath.Join(projectRoot, "search.yaml")
-	b, err := os.ReadFile(path)
-	if err == nil {
-		if err := yaml.Unmarshal(b, &cfg); err != nil {
+	if b, err := os.ReadFile(path); err == nil {
+		var overlay map[string]any
+		if err := yaml.Unmarshal(b, &overlay); err != nil {
 			return nil, err
 		}
+		base = deepMerge(base, overlay)
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
+
+	merged, err := yaml.Marshal(base)
+	if err != nil {
+		return nil, err
+	}
+	var cfg Config
+	if err := yaml.Unmarshal(merged, &cfg); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
+}
+
+// deepMerge recursively merges overlay into base: nested maps merge key by
+// key (overlay wins on leaf conflicts), scalars and sequences from the
+// overlay replace base values wholesale. Neither argument is mutated.
+func deepMerge(base, overlay map[string]any) map[string]any {
+	out := make(map[string]any, len(base))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, ov := range overlay {
+		if bv, ok := out[k]; ok {
+			bm, bIsMap := bv.(map[string]any)
+			om, oIsMap := ov.(map[string]any)
+			if bIsMap && oIsMap {
+				out[k] = deepMerge(bm, om)
+				continue
+			}
+		}
+		out[k] = ov
+	}
+	return out
 }
