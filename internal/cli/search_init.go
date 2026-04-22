@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/elliottregan/cspace/search/config"
+	"github.com/elliottregan/cspace/search/status"
 	"github.com/spf13/cobra"
 )
 
@@ -82,6 +83,7 @@ func runSearchInit(opts searchInitOpts) error {
 	}
 
 	if !opts.SkipIndex {
+		sw, _ := status.NewWriter(root)
 		for _, corpusID := range []string{"code", "commits", "context", "issues"} {
 			err := runSearchIndex(corpusID, true)
 			switch {
@@ -89,6 +91,9 @@ func runSearchInit(opts searchInitOpts) error {
 				report("%s: indexed", corpusID)
 			case errors.Is(err, config.ErrCorpusDisabled):
 				report("%s: disabled in search.yaml (enable with corpora.%s.enabled=true)", corpusID, corpusID)
+				if sw != nil {
+					sw.DisableCorpus(corpusID)
+				}
 			default:
 				report("%s: skipped (%v)", corpusID, err)
 			}

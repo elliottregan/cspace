@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/elliottregan/cspace/search/corpus"
 )
@@ -32,20 +33,32 @@ type Upserter interface {
 	DeletePoints(collection string, ids []uint64) error
 }
 
+// StatusWriter is an optional callback interface for reporting index
+// lifecycle events to an external status tracker. When nil, Run skips
+// status updates. Satisfied by *status.Writer.
+type StatusWriter interface {
+	StartCorpus(corpusID string)
+	UpdateProgress(done, total int)
+	FinishCorpus(corpusID string, startedAt time.Time, indexedCount int)
+	FailCorpus(corpusID string, startedAt time.Time, runErr error)
+}
+
 // Config bundles the parts needed for one index run.
 type Config struct {
-	Corpus      corpus.Corpus
-	Embedder    Embedder
-	Upserter    Upserter
-	ProjectRoot string
-	BatchSize   int // default 32
-	Dim         int // default 768 (Jina v5 nano)
-	LockPath    string
-	Progress    func(done, total int)
+	Corpus       corpus.Corpus
+	Embedder     Embedder
+	Upserter     Upserter
+	ProjectRoot  string
+	BatchSize    int // default 32
+	Dim          int // default 768 (Jina v5 nano)
+	LockPath     string
+	Progress     func(done, total int)
+	StatusWriter StatusWriter // optional; nil = no status updates
 }
 
 // Run performs one end-to-end index pass: enumerate, embed changed records,
-// upsert, delete orphans.
+// upsert, delete orphans. If cfg.StatusWriter is set, lifecycle events
+// (start, progress, finish/fail) are reported for the status file.
 func Run(ctx context.Context, cfg Config) error {
 	if cfg.BatchSize == 0 {
 		cfg.BatchSize = 32
@@ -53,7 +66,28 @@ func Run(ctx context.Context, cfg Config) error {
 	if cfg.Dim == 0 {
 		cfg.Dim = 768
 	}
+
+	corpusID := cfg.Corpus.ID()
+	startedAt := time.Now()
+
+	if cfg.StatusWriter != nil {
+		cfg.StatusWriter.StartCorpus(corpusID)
+	}
+
+	err := runIndex(ctx, cfg)
+	if err != nil && cfg.StatusWriter != nil {
+		cfg.StatusWriter.FailCorpus(corpusID, startedAt, err)
+	}
+	return err
+}
+
+// IndexedCount is set by runIndex and read by Run to report the final count.
+// It is stored on Config so the caller can also inspect it.
+
+func runIndex(ctx context.Context, cfg Config) error {
 	collection := cfg.Corpus.Collection(cfg.ProjectRoot)
+	corpusID := cfg.Corpus.ID()
+	startedAt := time.Now()
 
 	if cfg.LockPath != "" {
 		release, err := acquireLock(cfg.LockPath)
@@ -91,6 +125,18 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	total := len(toEmbed)
+
+	// Wrap progress to also update the status writer.
+	origProgress := cfg.Progress
+	wrappedProgress := func(done, totalPts int) {
+		if origProgress != nil {
+			origProgress(done, totalPts)
+		}
+		if cfg.StatusWriter != nil {
+			cfg.StatusWriter.UpdateProgress(done, totalPts)
+		}
+	}
+
 	for i := 0; i < total; i += cfg.BatchSize {
 		end := i + cfg.BatchSize
 		if end > total {
@@ -116,7 +162,7 @@ func Run(ctx context.Context, cfg Config) error {
 				Payload: payloadFor(r),
 			}
 		}
-		if err := cfg.Upserter.UpsertPoints(collection, points, cfg.BatchSize, cfg.Progress); err != nil {
+		if err := cfg.Upserter.UpsertPoints(collection, points, cfg.BatchSize, wrappedProgress); err != nil {
 			return fmt.Errorf("upsert: %w", err)
 		}
 	}
@@ -132,6 +178,12 @@ func Run(ctx context.Context, cfg Config) error {
 		if err := cfg.Upserter.DeletePoints(collection, orphans); err != nil {
 			return fmt.Errorf("delete orphans: %w", err)
 		}
+	}
+
+	// Report total indexed count (existing - orphans + new).
+	indexedCount := len(existing) - len(orphans) + total
+	if cfg.StatusWriter != nil {
+		cfg.StatusWriter.FinishCorpus(corpusID, startedAt, indexedCount)
 	}
 
 	return nil

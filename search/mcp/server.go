@@ -4,12 +4,16 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"strings"
+	"time"
 
 	"github.com/elliottregan/cspace/search/cluster"
 	"github.com/elliottregan/cspace/search/config"
+	"github.com/elliottregan/cspace/search/corpus"
 	"github.com/elliottregan/cspace/search/embed"
 	"github.com/elliottregan/cspace/search/qdrant"
 	"github.com/elliottregan/cspace/search/query"
+	"github.com/elliottregan/cspace/search/status"
 
 	mcpSDK "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -49,6 +53,13 @@ func (s *Server) Register(srv *mcpSDK.Server) {
 	}, func(ctx context.Context, req *mcpSDK.CallToolRequest, in listClustersInput) (*mcpSDK.CallToolResult, cluster.Result, error) {
 		return s.handleListClusters(ctx)
 	})
+
+	mcpSDK.AddTool[statusInput, StatusOutput](srv, &mcpSDK.Tool{
+		Name:        "search_status",
+		Description: "Show the index status and staleness for all search corpora. Returns per-corpus state (completed/failed/disabled/unknown), whether the index is stale, and any in-progress indexing run. Use before high-stakes queries to decide whether to reindex first.",
+	}, func(ctx context.Context, req *mcpSDK.CallToolRequest, in statusInput) (*mcpSDK.CallToolResult, StatusOutput, error) {
+		return s.handleStatus(ctx)
+	})
 }
 
 // --- Input types ---
@@ -62,6 +73,25 @@ type searchInput struct {
 }
 
 type listClustersInput struct{}
+
+type statusInput struct{}
+
+// StatusOutput is the structured output from the search_status MCP tool.
+type StatusOutput struct {
+	Corpora map[string]CorpusStatusEntry `json:"corpora"`
+	Current *status.RunningState         `json:"current"`
+}
+
+// CorpusStatusEntry describes one corpus's index state.
+type CorpusStatusEntry struct {
+	State        string `json:"state"`
+	FinishedAt   string `json:"finished_at,omitempty"`
+	DurationMS   int64  `json:"duration_ms,omitempty"`
+	IndexedCount int    `json:"indexed_count,omitempty"`
+	Error        string `json:"error,omitempty"`
+	Stale        bool   `json:"stale,omitempty"`
+	StaleReason  string `json:"stale_reason,omitempty"`
+}
 
 // --- Handlers ---
 
@@ -93,6 +123,10 @@ func (s *Server) handleSearch(ctx context.Context, corpusID string, in searchInp
 	if err != nil {
 		return nil, query.Envelope{}, err
 	}
+
+	// Annotate with staleness warning if applicable.
+	mcpAppendStalenessWarning(env, corpusID, s.ProjectRoot, s.Config)
+
 	buf, err := json.Marshal(env)
 	if err != nil {
 		return nil, query.Envelope{}, err
@@ -122,4 +156,109 @@ func (s *Server) handleListClusters(ctx context.Context) (*mcpSDK.CallToolResult
 	return &mcpSDK.CallToolResult{
 		Content: []mcpSDK.Content{&mcpSDK.TextContent{Text: string(buf)}},
 	}, *res, nil
+}
+
+func (s *Server) handleStatus(_ context.Context) (*mcpSDK.CallToolResult, StatusOutput, error) {
+	sf, err := status.Read(s.ProjectRoot)
+	if err != nil {
+		return nil, StatusOutput{}, err
+	}
+
+	allCorpora := []string{"code", "commits", "context", "issues"}
+	out := StatusOutput{Corpora: make(map[string]CorpusStatusEntry)}
+	if sf != nil {
+		out.Current = sf.Current
+	}
+
+	for _, id := range allCorpora {
+		entry := CorpusStatusEntry{State: "unknown"}
+
+		// Check if disabled in config.
+		if cc, ok := s.Config.Corpora[id]; ok && !cc.Enabled {
+			entry.State = "disabled"
+			out.Corpora[id] = entry
+			continue
+		}
+
+		// Pull state from status file.
+		if sf != nil {
+			if cs, ok := sf.Last[id]; ok {
+				entry.State = cs.State
+				if !cs.FinishedAt.IsZero() {
+					entry.FinishedAt = cs.FinishedAt.Format(time.RFC3339)
+				}
+				entry.DurationMS = cs.DurationMS
+				entry.IndexedCount = cs.IndexedCount
+				entry.Error = cs.Error
+			}
+		}
+
+		// Check staleness for code and commits.
+		if entry.State == "completed" && (id == "code" || id == "commits") {
+			qc := qdrant.NewQdrantClient(s.Config.Sidecars.QdrantURL)
+			adapter := &qdrant.Adapter{QdrantClient: qc}
+			collection := mcpCorpusCollection(id, s.ProjectRoot)
+			var st corpus.Staleness
+			switch id {
+			case "code":
+				st, _ = corpus.CodeStaleness(s.ProjectRoot, collection, adapter)
+			case "commits":
+				st, _ = corpus.CommitsStaleness(s.ProjectRoot, collection, adapter)
+			}
+			if st.IsStale {
+				entry.Stale = true
+				entry.StaleReason = st.Reason
+			}
+		}
+
+		out.Corpora[id] = entry
+	}
+
+	buf, err := json.Marshal(out)
+	if err != nil {
+		return nil, StatusOutput{}, err
+	}
+	return &mcpSDK.CallToolResult{
+		Content: []mcpSDK.Content{&mcpSDK.TextContent{Text: string(buf)}},
+	}, out, nil
+}
+
+// mcpCorpusCollection returns the qdrant collection name for a corpus.
+func mcpCorpusCollection(corpusID, projectRoot string) string {
+	switch corpusID {
+	case "code":
+		return "code-" + corpus.ProjectHash(projectRoot)
+	case "commits":
+		return "commits-" + corpus.ProjectHash(projectRoot)
+	default:
+		return ""
+	}
+}
+
+// mcpAppendStalenessWarning checks corpus staleness and appends a warning to
+// the envelope. Best-effort: errors are silently ignored.
+func mcpAppendStalenessWarning(env *query.Envelope, corpusID, projectRoot string, cfg *config.Config) {
+	if corpusID != "code" && corpusID != "commits" {
+		return
+	}
+	qc := qdrant.NewQdrantClient(cfg.Sidecars.QdrantURL)
+	adapter := &qdrant.Adapter{QdrantClient: qc}
+	collection := mcpCorpusCollection(corpusID, projectRoot)
+	if collection == "" {
+		return
+	}
+	var st corpus.Staleness
+	var err error
+	switch corpusID {
+	case "code":
+		st, err = corpus.CodeStaleness(projectRoot, collection, adapter)
+	case "commits":
+		st, err = corpus.CommitsStaleness(projectRoot, collection, adapter)
+	}
+	if err != nil || !st.IsStale {
+		return
+	}
+	warning := "index may be out of date: " + st.Reason +
+		" \u2014 run `cspace search " + corpusID + " index` to refresh"
+	env.Warning = strings.TrimSpace(env.Warning + "\n" + warning)
 }

@@ -8,14 +8,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/elliottregan/cspace/search/cluster"
 	"github.com/elliottregan/cspace/search/config"
+	"github.com/elliottregan/cspace/search/corpus"
 	"github.com/elliottregan/cspace/search/embed"
 	"github.com/elliottregan/cspace/search/index"
 	searchmcp "github.com/elliottregan/cspace/search/mcp"
 	"github.com/elliottregan/cspace/search/qdrant"
 	"github.com/elliottregan/cspace/search/query"
+	"github.com/elliottregan/cspace/search/status"
 
 	mcpSDK "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
@@ -45,6 +48,7 @@ func newSearchCmd() *cobra.Command {
 		newSearchSubcmd("issues"),
 		newSearchMCPCmd(),
 		newSearchInitCmd(),
+		newSearchStatusCmd(),
 	)
 	return cmd
 }
@@ -173,6 +177,10 @@ func runSearchQuery(corpusID, q string, opts searchQueryOpts) error {
 	if err != nil {
 		return err
 	}
+
+	// Check staleness and annotate the envelope.
+	appendStalenessWarning(env, corpusID, root, qc)
+
 	if opts.JSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -191,6 +199,47 @@ func runSearchQuery(corpusID, q string, opts searchQueryOpts) error {
 	return nil
 }
 
+// appendStalenessWarning checks corpus staleness and appends a warning to
+// the envelope if the index is out of date. Best-effort: errors are silently
+// ignored so queries are never blocked by staleness checks.
+func appendStalenessWarning(env *query.Envelope, corpusID, root string, qc *qdrant.QdrantClient) {
+	adapter := &qdrant.Adapter{QdrantClient: qc}
+	collection := corpusCollection(corpusID, root)
+	if collection == "" {
+		return
+	}
+	var st corpus.Staleness
+	var err error
+	switch corpusID {
+	case "code":
+		st, err = corpus.CodeStaleness(root, collection, adapter)
+	case "commits":
+		st, err = corpus.CommitsStaleness(root, collection, adapter)
+	default:
+		return // staleness not implemented for context/issues
+	}
+	if err != nil || !st.IsStale {
+		return
+	}
+	warning := "index may be out of date: " + st.Reason +
+		" \u2014 run `cspace search " + corpusID + " index` to refresh"
+	env.Warning = strings.TrimSpace(env.Warning + "\n" + warning)
+}
+
+// corpusCollection returns the qdrant collection name for a corpus, or ""
+// if the corpus ID is unknown. Used to avoid importing config.Build again
+// just for the collection name.
+func corpusCollection(corpusID, projectRoot string) string {
+	switch corpusID {
+	case "code":
+		return "code-" + corpus.ProjectHash(projectRoot)
+	case "commits":
+		return "commits-" + corpus.ProjectHash(projectRoot)
+	default:
+		return ""
+	}
+}
+
 func runSearchIndex(corpusID string, quiet bool) error {
 	root := searchProjectRoot()
 	rt, err := config.Build(root, corpusID)
@@ -205,13 +254,19 @@ func runSearchIndex(corpusID string, quiet bool) error {
 			fmt.Fprintf(os.Stderr, "\rindex: %d/%d", done, total)
 		}
 	}
+	sw, _ := status.NewWriter(root)
+	var statusWriter index.StatusWriter
+	if sw != nil {
+		statusWriter = sw
+	}
 	err = index.Run(context.Background(), index.Config{
-		Corpus:      rt.Corpus,
-		Embedder:    &embed.Adapter{Client: ec},
-		Upserter:    &qdrant.Adapter{QdrantClient: qc},
-		ProjectRoot: root,
-		LockPath:    filepath.Join(root, rt.Cfg.Index.LockPath),
-		Progress:    progress,
+		Corpus:       rt.Corpus,
+		Embedder:     &embed.Adapter{Client: ec},
+		Upserter:     &qdrant.Adapter{QdrantClient: qc},
+		ProjectRoot:  root,
+		LockPath:     filepath.Join(root, rt.Cfg.Index.LockPath),
+		Progress:     progress,
+		StatusWriter: statusWriter,
 	})
 	if !quiet {
 		fmt.Fprintln(os.Stderr)
@@ -254,4 +309,173 @@ func searchProjectRoot() string {
 		return cwd
 	}
 	return filepath.Clean(strings.TrimSpace(string(out)))
+}
+
+// newSearchStatusCmd builds `cspace search status`.
+func newSearchStatusCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show index status and staleness for all corpora",
+		Long: `Reads .cspace/search-index-status.json and checks each corpus for
+staleness against the current git state. Shows whether each corpus is
+completed, failed, disabled, or currently running, plus whether the
+index is out of date.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSearchStatus(asJSON)
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON output for programmatic consumers")
+	return cmd
+}
+
+// statusOutput is the JSON shape for `cspace search status --json`.
+type statusOutput struct {
+	Corpora  map[string]corpusStatusOutput `json:"corpora"`
+	Current  *status.RunningState          `json:"current"`
+}
+
+type corpusStatusOutput struct {
+	State        string `json:"state"`                     // completed, failed, disabled, unknown
+	FinishedAt   string `json:"finished_at,omitempty"`
+	DurationMS   int64  `json:"duration_ms,omitempty"`
+	IndexedCount int    `json:"indexed_count,omitempty"`
+	Error        string `json:"error,omitempty"`
+	Stale        bool   `json:"stale,omitempty"`
+	StaleReason  string `json:"stale_reason,omitempty"`
+}
+
+func runSearchStatus(asJSON bool) error {
+	root := searchProjectRoot()
+	cfg, err := config.Load(root)
+	if err != nil {
+		return err
+	}
+
+	sf, err := status.Read(root)
+	if err != nil {
+		return fmt.Errorf("reading status file: %w", err)
+	}
+
+	allCorpora := []string{"code", "commits", "context", "issues"}
+	out := statusOutput{
+		Corpora: make(map[string]corpusStatusOutput),
+	}
+	if sf != nil {
+		out.Current = sf.Current
+	}
+
+	for _, id := range allCorpora {
+		co := corpusStatusOutput{State: "unknown"}
+
+		// Check if disabled in config.
+		if cc, ok := cfg.Corpora[id]; ok && !cc.Enabled {
+			co.State = "disabled"
+			out.Corpora[id] = co
+			continue
+		}
+
+		// Pull state from status file if available.
+		if sf != nil {
+			if cs, ok := sf.Last[id]; ok {
+				co.State = cs.State
+				if !cs.FinishedAt.IsZero() {
+					co.FinishedAt = cs.FinishedAt.Format(time.RFC3339)
+				}
+				co.DurationMS = cs.DurationMS
+				co.IndexedCount = cs.IndexedCount
+				co.Error = cs.Error
+			}
+		}
+
+		// Check staleness for code and commits.
+		if co.State == "completed" && (id == "code" || id == "commits") {
+			qc := qdrant.NewQdrantClient(cfg.Sidecars.QdrantURL)
+			adapter := &qdrant.Adapter{QdrantClient: qc}
+			collection := corpusCollection(id, root)
+			var st corpus.Staleness
+			switch id {
+			case "code":
+				st, _ = corpus.CodeStaleness(root, collection, adapter)
+			case "commits":
+				st, _ = corpus.CommitsStaleness(root, collection, adapter)
+			}
+			if st.IsStale {
+				co.Stale = true
+				co.StaleReason = st.Reason
+			}
+		}
+
+		out.Corpora[id] = co
+	}
+
+	if asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
+
+	// Human-readable output.
+	for _, id := range allCorpora {
+		co := out.Corpora[id]
+		switch co.State {
+		case "disabled":
+			fmt.Printf("%-10s disabled (enable with corpora.%s.enabled=true in search.yaml)\n", id, id)
+		case "completed":
+			age := "unknown"
+			if co.FinishedAt != "" {
+				if t, err := time.Parse(time.RFC3339, co.FinishedAt); err == nil {
+					age = timeAgo(time.Since(t))
+				}
+			}
+			line := fmt.Sprintf("%-10s completed %s ago", id, age)
+			if co.IndexedCount > 0 {
+				line += fmt.Sprintf("   (%d chunks indexed)", co.IndexedCount)
+			}
+			if co.Stale {
+				line += fmt.Sprintf(" — STALE: %s", co.StaleReason)
+			} else {
+				line += " — up to date"
+			}
+			fmt.Println(line)
+		case "failed":
+			age := "unknown"
+			if co.FinishedAt != "" {
+				if t, err := time.Parse(time.RFC3339, co.FinishedAt); err == nil {
+					age = timeAgo(time.Since(t))
+				}
+			}
+			fmt.Printf("%-10s failed %s ago   error: %s\n", id, age, co.Error)
+		default:
+			fmt.Printf("%-10s never indexed\n", id)
+		}
+	}
+
+	// Show current run.
+	if out.Current != nil {
+		age := timeAgo(time.Since(out.Current.StartedAt))
+		fmt.Printf("\nCurrently running: %s  started %s ago", out.Current.Corpus, age)
+		if out.Current.Progress.Total > 0 {
+			fmt.Printf("  (%d/%d)", out.Current.Progress.Done, out.Current.Progress.Total)
+		}
+		fmt.Println()
+	} else {
+		fmt.Println("\nCurrently running: none.")
+	}
+
+	return nil
+}
+
+// timeAgo returns a human-friendly duration string.
+func timeAgo(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
