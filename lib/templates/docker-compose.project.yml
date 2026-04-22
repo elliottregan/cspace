@@ -1,0 +1,166 @@
+# Project-scoped search sidecars — one per project, shared by all instances.
+#
+# Launched by `cspace up` before the per-instance stack. Every instance
+# resolves these services via Docker network aliases on the project network
+# (e.g. http://qdrant:6333, http://llama-server:8080). The sidecar URLs
+# in search/config/default.yaml stay literal; no per-instance parameterization.
+#
+# Lifecycle:
+#   - `cspace up <instance>` brings this stack up if not already running.
+#   - `cspace down <instance>` leaves this stack running.
+#   - `cspace down --project` tears down all instances AND this stack.
+#   - `cspace down --everywhere` tears down everything.
+#
+# Compose project name: cspace-<project>-stack (set via COMPOSE_PROJECT_NAME).
+
+services:
+  # llama.cpp embedding server — provides on-device vector embeddings for
+  # `cspace search`. Uses jina-embeddings-v5-text-nano (retrieval adapter),
+  # 768-dim, 8K context. Accessible at http://llama-server:8080.
+  # Model is downloaded from HuggingFace on first start and cached in the
+  # llama-models volume. Override with LLAMA_HF_REPO / LLAMA_HF_FILE.
+  llama-server:
+    image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
+    container_name: ${CSPACE_PROJECT_STACK_NAME}-llama
+    command:
+      - --hf-repo
+      - ${LLAMA_HF_REPO:-jinaai/jina-embeddings-v5-text-nano-retrieval-GGUF}
+      - --hf-file
+      - ${LLAMA_HF_FILE:-v5-nano-retrieval-Q8_0.gguf}
+      - --embedding
+      - --port
+      - "8080"
+      - --host
+      - "0.0.0.0"
+      - -c
+      - "8192"
+      - -b
+      - "8192"
+      - -ub
+      - "8192"
+    volumes:
+      - llama-models:/root/.cache
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 120s
+    networks:
+      default: {}
+      project:
+        aliases:
+          - llama-server
+
+  # Second llama.cpp server running the Jina clustering adapter for
+  # `cspace search clusters`. Retrieval (query->document) and clustering
+  # (document<->document) need different adapters, so both run in parallel
+  # on separate containers. Accessible at http://llama-clustering:8080.
+  llama-clustering:
+    image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
+    container_name: ${CSPACE_PROJECT_STACK_NAME}-llama-c
+    command:
+      - --hf-repo
+      - ${LLAMA_CLUSTERING_HF_REPO:-jinaai/jina-embeddings-v5-text-nano-clustering-GGUF}
+      - --hf-file
+      - ${LLAMA_CLUSTERING_HF_FILE:-v5-nano-clustering-Q8_0.gguf}
+      - --embedding
+      - --port
+      - "8080"
+      - --host
+      - "0.0.0.0"
+      - -c
+      - "8192"
+      - -b
+      - "8192"
+      - -ub
+      - "8192"
+    volumes:
+      - llama-models:/root/.cache
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 120s
+    networks:
+      default: {}
+      project:
+        aliases:
+          - llama-clustering
+
+  # Dimension reduction service for `cspace search clusters`. Uses PaCMAP /
+  # LocalMAP to project high-dim embeddings onto 2D. Pre-built image from
+  # mindthemath — we only consume its /reduce endpoint.
+  reduce-api:
+    image: ${REDUCE_API_IMAGE:-mindthemath/reduce-api}
+    container_name: ${CSPACE_PROJECT_STACK_NAME}-reduce
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/health\")' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      default: {}
+      project:
+        aliases:
+          - reduce-api
+
+  # HDBSCAN clustering service for 2D points. Runs after reduce-api. Minimal
+  # image built locally from lib/hdbscan-api/ (just hdbscan + flask).
+  hdbscan-api:
+    image: ${HDBSCAN_API_IMAGE:-cspace-hdbscan-api}
+    container_name: ${CSPACE_PROJECT_STACK_NAME}-hdbscan
+    build:
+      context: ${CSPACE_HOME}/lib/hdbscan-api
+    healthcheck:
+      # hdbscan-api image has python but no wget/curl; match reduce-api's probe.
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8090/health\")' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      default: {}
+      project:
+        aliases:
+          - hdbscan-api
+
+  # Qdrant vector database — stores commit embeddings for `cspace search`.
+  # Accessible inside the container at http://qdrant:6333 (REST) / :6334 (gRPC).
+  # Data persists in the per-project qdrant volume across container restarts.
+  # Single qdrant process per project avoids the WAL-conflict crash (see
+  # commit 19293ee).
+  qdrant:
+    image: ${QDRANT_IMAGE:-qdrant/qdrant}
+    container_name: ${CSPACE_PROJECT_STACK_NAME}-qdrant
+    volumes:
+      - qdrant-storage:/qdrant/storage
+    healthcheck:
+      # qdrant/qdrant image ships without curl/wget; probe TCP via bash builtin.
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    networks:
+      default: {}
+      project:
+        aliases:
+          - qdrant
+
+volumes:
+  # Per-project named volumes. Unlike the old per-instance volumes, these
+  # are shared across all instances of the same project — safe because
+  # there's exactly one qdrant process and one llama-server process per project.
+  llama-models:
+    name: cspace-${CSPACE_PROJECT_NAME}-llama-models
+  qdrant-storage:
+    name: cspace-${CSPACE_PROJECT_NAME}-qdrant
+
+networks:
+  default: {}
+  project:
+    external: true
+    name: ${CSPACE_PROJECT_NETWORK}
