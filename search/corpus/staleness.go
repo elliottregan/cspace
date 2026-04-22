@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -58,7 +59,7 @@ func CodeStaleness(projectRoot string, collection string, lister PointLister) (S
 
 	// Walk git ls-files and compute sha256 for each tracked file, counting
 	// files whose hash is not in the index.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "git", "-C", projectRoot, "ls-files")
@@ -163,6 +164,73 @@ func CommitsStaleness(projectRoot string, collection string, lister PointLister)
 		IsStale: true,
 		Reason:  "HEAD commit is not in the index",
 	}, nil
+}
+
+// --------------- staleness cache ---------------
+//
+// Staleness checks run git I/O + qdrant scrolls that cost 100-500ms. Caching
+// the result for a short TTL avoids paying that cost on every MCP query while
+// keeping the signal fresh enough for advisory use.
+
+// StalenessCache TTL — configurable for tests via CacheTTL.
+var CacheTTL = 30 * time.Second
+
+type cachedStaleness struct {
+	at  time.Time
+	st  Staleness
+	err error
+}
+
+var (
+	staleCache = map[string]cachedStaleness{}
+	staleMu    sync.Mutex
+)
+
+func staleCacheKey(corpus, projectRoot string) string {
+	return corpus + "\x00" + projectRoot
+}
+
+// CodeStalenessCached wraps CodeStaleness with an in-process cache (TTL = CacheTTL).
+func CodeStalenessCached(projectRoot, collection string, lister PointLister) (Staleness, error) {
+	key := staleCacheKey("code", projectRoot)
+	staleMu.Lock()
+	if c, ok := staleCache[key]; ok && time.Since(c.at) < CacheTTL {
+		staleMu.Unlock()
+		return c.st, c.err
+	}
+	staleMu.Unlock()
+
+	st, err := CodeStaleness(projectRoot, collection, lister)
+
+	staleMu.Lock()
+	staleCache[key] = cachedStaleness{at: time.Now(), st: st, err: err}
+	staleMu.Unlock()
+	return st, err
+}
+
+// CommitsStalenessCached wraps CommitsStaleness with an in-process cache (TTL = CacheTTL).
+func CommitsStalenessCached(projectRoot, collection string, lister PointLister) (Staleness, error) {
+	key := staleCacheKey("commits", projectRoot)
+	staleMu.Lock()
+	if c, ok := staleCache[key]; ok && time.Since(c.at) < CacheTTL {
+		staleMu.Unlock()
+		return c.st, c.err
+	}
+	staleMu.Unlock()
+
+	st, err := CommitsStaleness(projectRoot, collection, lister)
+
+	staleMu.Lock()
+	staleCache[key] = cachedStaleness{at: time.Now(), st: st, err: err}
+	staleMu.Unlock()
+	return st, err
+}
+
+// ResetStalenessCache clears the cache. Exported for tests.
+func ResetStalenessCache() {
+	staleMu.Lock()
+	staleCache = map[string]cachedStaleness{}
+	staleMu.Unlock()
 }
 
 // gitOutput runs a git command and returns its stdout as a string.

@@ -213,9 +213,9 @@ func appendStalenessWarning(env *query.Envelope, corpusID, root string, qc *qdra
 	var err error
 	switch corpusID {
 	case "code":
-		st, err = corpus.CodeStaleness(root, collection, adapter)
+		st, err = corpus.CodeStalenessCached(root, collection, adapter)
 	case "commits":
-		st, err = corpus.CommitsStaleness(root, collection, adapter)
+		st, err = corpus.CommitsStalenessCached(root, collection, adapter)
 	default:
 		return // staleness not implemented for context/issues
 	}
@@ -397,7 +397,7 @@ func runSearchStatus(asJSON bool) error {
 			}
 		}
 
-		// Check staleness for code and commits.
+		// Check staleness for code and commits (cached to avoid per-query I/O).
 		if co.State == "completed" && (id == "code" || id == "commits") {
 			qc := qdrant.NewQdrantClient(cfg.Sidecars.QdrantURL)
 			adapter := &qdrant.Adapter{QdrantClient: qc}
@@ -405,9 +405,9 @@ func runSearchStatus(asJSON bool) error {
 			var st corpus.Staleness
 			switch id {
 			case "code":
-				st, _ = corpus.CodeStaleness(root, collection, adapter)
+				st, _ = corpus.CodeStalenessCached(root, collection, adapter)
 			case "commits":
-				st, _ = corpus.CommitsStaleness(root, collection, adapter)
+				st, _ = corpus.CommitsStalenessCached(root, collection, adapter)
 			}
 			if st.IsStale {
 				co.Stale = true

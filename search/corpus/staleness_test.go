@@ -234,3 +234,91 @@ func TestCommitsStaleness_RespectsLimit(t *testing.T) {
 		t.Errorf("expected not stale with matching HEAD date, got stale: %s", st.Reason)
 	}
 }
+
+// --- Cache tests ---
+
+// callCountLister wraps fakePointLister and counts ExistingPoints calls.
+type callCountLister struct {
+	fakePointLister
+	calls int
+}
+
+func (c *callCountLister) ExistingPoints(collection string) (map[uint64]string, error) {
+	c.calls++
+	return c.fakePointLister.ExistingPoints(collection)
+}
+
+func (c *callCountLister) MaxPayloadDate(collection string) (string, error) {
+	return c.fakePointLister.MaxPayloadDate(collection)
+}
+
+func TestStalenessCache_HitsWithinTTL(t *testing.T) {
+	ResetStalenessCache()
+	defer ResetStalenessCache()
+
+	dir := initGitRepo(t, map[string]string{"main.go": "package main"})
+	lister := &callCountLister{
+		fakePointLister: fakePointLister{
+			points: map[uint64]string{1: hashOf("package main")},
+		},
+	}
+
+	// First call — cache miss, hits the lister.
+	st1, err := CodeStalenessCached(dir, "test-collection", lister)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lister.calls != 1 {
+		t.Fatalf("expected 1 call, got %d", lister.calls)
+	}
+
+	// Second call within TTL — cache hit, no additional lister calls.
+	st2, err := CodeStalenessCached(dir, "test-collection", lister)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lister.calls != 1 {
+		t.Errorf("expected still 1 call (cached), got %d", lister.calls)
+	}
+	if st1.IsStale != st2.IsStale {
+		t.Errorf("cached result differs: %v vs %v", st1, st2)
+	}
+}
+
+func TestStalenessCache_ExpiresAfterTTL(t *testing.T) {
+	ResetStalenessCache()
+	defer ResetStalenessCache()
+
+	// Use a very short TTL for this test.
+	oldTTL := CacheTTL
+	CacheTTL = 1 * time.Millisecond
+	defer func() { CacheTTL = oldTTL }()
+
+	dir := initGitRepo(t, map[string]string{"main.go": "package main"})
+	lister := &callCountLister{
+		fakePointLister: fakePointLister{
+			points: map[uint64]string{1: hashOf("package main")},
+		},
+	}
+
+	// First call.
+	_, err := CodeStalenessCached(dir, "test-collection", lister)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lister.calls != 1 {
+		t.Fatalf("expected 1 call, got %d", lister.calls)
+	}
+
+	// Wait for the cache to expire.
+	time.Sleep(5 * time.Millisecond)
+
+	// Second call after TTL — cache miss, hits the lister again.
+	_, err = CodeStalenessCached(dir, "test-collection", lister)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lister.calls != 2 {
+		t.Errorf("expected 2 calls after TTL expiry, got %d", lister.calls)
+	}
+}

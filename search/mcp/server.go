@@ -193,7 +193,7 @@ func (s *Server) handleStatus(_ context.Context) (*mcpSDK.CallToolResult, Status
 			}
 		}
 
-		// Check staleness for code and commits.
+		// Check staleness for code and commits (cached to avoid per-query I/O).
 		if entry.State == "completed" && (id == "code" || id == "commits") {
 			qc := qdrant.NewQdrantClient(s.Config.Sidecars.QdrantURL)
 			adapter := &qdrant.Adapter{QdrantClient: qc}
@@ -201,9 +201,9 @@ func (s *Server) handleStatus(_ context.Context) (*mcpSDK.CallToolResult, Status
 			var st corpus.Staleness
 			switch id {
 			case "code":
-				st, _ = corpus.CodeStaleness(s.ProjectRoot, collection, adapter)
+				st, _ = corpus.CodeStalenessCached(s.ProjectRoot, collection, adapter)
 			case "commits":
-				st, _ = corpus.CommitsStaleness(s.ProjectRoot, collection, adapter)
+				st, _ = corpus.CommitsStalenessCached(s.ProjectRoot, collection, adapter)
 			}
 			if st.IsStale {
 				entry.Stale = true
@@ -251,9 +251,9 @@ func mcpAppendStalenessWarning(env *query.Envelope, corpusID, projectRoot string
 	var err error
 	switch corpusID {
 	case "code":
-		st, err = corpus.CodeStaleness(projectRoot, collection, adapter)
+		st, err = corpus.CodeStalenessCached(projectRoot, collection, adapter)
 	case "commits":
-		st, err = corpus.CommitsStaleness(projectRoot, collection, adapter)
+		st, err = corpus.CommitsStalenessCached(projectRoot, collection, adapter)
 	}
 	if err != nil || !st.IsStale {
 		return
