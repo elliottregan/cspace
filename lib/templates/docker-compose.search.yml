@@ -1,15 +1,13 @@
 # cspace-search-mcp sidecar — exposes the MCP server for semantic search.
-# Depends on shared search infrastructure (llama-server, qdrant, reduce-api,
-# hdbscan-api) from docker-compose.core.yml.
+# Per-instance: each Claude session gets its own MCP process.
+# Reaches the project-scoped search infrastructure (llama-server, qdrant,
+# reduce-api, hdbscan-api) via network aliases on the project network.
+# No depends_on — the project stack starts before the instance stack,
+# so sidecars are typically healthy by the time the first query arrives.
 services:
   cspace-search-mcp:
     image: ${CSPACE_IMAGE:-cspace-dev}
     container_name: ${CSPACE_CONTAINER_NAME}.search-mcp
-    depends_on:
-      llama-server:
-        condition: service_healthy
-      qdrant:
-        condition: service_healthy
     command: ["/usr/local/bin/cspace-search-mcp"]
     working_dir: /workspace
     volumes:
@@ -20,3 +18,4 @@ services:
     restart: unless-stopped
     networks:
       - default
+      - project
