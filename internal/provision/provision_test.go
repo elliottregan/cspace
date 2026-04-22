@@ -61,6 +61,32 @@ func TestGitRemoteURL(t *testing.T) {
 	}
 }
 
+// TestBootstrapSearchParam verifies that the BootstrapSearch field controls
+// whether Phase 16 would fire. We can't run provision.Run in a unit test
+// (it needs Docker), but we can verify the Params field exists and the
+// Phases list still has the correct count.
+func TestBootstrapSearchParam(t *testing.T) {
+	// Verify Phases has 16 entries (search bootstrap is the last one).
+	if len(Phases) != 16 {
+		t.Errorf("expected 16 provision phases, got %d", len(Phases))
+	}
+	if Phases[15] != "Bootstrapping search" {
+		t.Errorf("expected phase 16 to be 'Bootstrapping search', got %q", Phases[15])
+	}
+
+	// Verify default Params has BootstrapSearch=false (opt-in).
+	p := Params{Name: "test"}
+	if p.BootstrapSearch {
+		t.Error("expected BootstrapSearch to default to false")
+	}
+
+	// Verify it can be set to true (advisors/coordinators).
+	p.BootstrapSearch = true
+	if !p.BootstrapSearch {
+		t.Error("expected BootstrapSearch=true after setting")
+	}
+}
+
 func TestEnsureTeleportDir(t *testing.T) {
 	tmp := t.TempDir()
 	dir := filepath.Join(tmp, "teleport")

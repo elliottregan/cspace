@@ -137,9 +137,11 @@ When existing code surprises you:
 
 ## Index freshness
 
-Indexes do **not** auto-refresh. There are no post-commit hooks. The
-index is built once at provisioning time (`cspace search init`) and
-updated only when you explicitly run `cspace search <corpus> index`.
+Indexes do **not** auto-refresh. There are no post-commit hooks. Search
+bootstrap at provisioning time is opt-in: advisors and coordinators get
+it automatically; other roles must run `cspace search init` explicitly
+or pass `--index` to `cspace up`. Once built, update with
+`cspace search <corpus> index`.
 
 ### Before high-stakes queries
 
