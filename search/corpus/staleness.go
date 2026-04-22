@@ -101,13 +101,6 @@ func CommitsStaleness(projectRoot string, collection string, lister PointLister)
 		return Staleness{IsStale: true, Reason: "index is empty — never indexed"}, nil
 	}
 
-	// Get current HEAD hash.
-	headHash, err := gitOutput(projectRoot, "rev-parse", "HEAD")
-	if err != nil {
-		return Staleness{}, fmt.Errorf("git rev-parse HEAD: %w", err)
-	}
-	headHash = strings.TrimSpace(headHash)
-
 	// Count commits since the indexed set. We check whether HEAD's hash
 	// exists among indexed content_hashes (commit hashes are stored in
 	// the "path" field, but content_hash is not set for commits — so we

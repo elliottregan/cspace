@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -34,7 +35,7 @@ func TestServer_HandleStatus_NoStatusFile(t *testing.T) {
 			},
 		},
 	}
-	result, out, err := s.handleStatus(nil)
+	result, out, err := s.handleStatus(context.TODO())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +90,7 @@ func TestServer_HandleStatus_WithStatusFile(t *testing.T) {
 			},
 		},
 	}
-	_, out, err := s.handleStatus(nil)
+	_, out, err := s.handleStatus(context.TODO())
 	if err != nil {
 		t.Fatal(err)
 	}

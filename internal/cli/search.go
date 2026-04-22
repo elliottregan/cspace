@@ -331,12 +331,12 @@ index is out of date.`,
 
 // statusOutput is the JSON shape for `cspace search status --json`.
 type statusOutput struct {
-	Corpora  map[string]corpusStatusOutput `json:"corpora"`
-	Current  *status.RunningState          `json:"current"`
+	Corpora map[string]corpusStatusOutput `json:"corpora"`
+	Current *status.RunningState          `json:"current"`
 }
 
 type corpusStatusOutput struct {
-	State        string `json:"state"`                     // completed, failed, disabled, unknown
+	State        string `json:"state"` // completed, failed, disabled, unknown
 	FinishedAt   string `json:"finished_at,omitempty"`
 	DurationMS   int64  `json:"duration_ms,omitempty"`
 	IndexedCount int    `json:"indexed_count,omitempty"`
