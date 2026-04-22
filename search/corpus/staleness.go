@@ -152,17 +152,15 @@ func CommitsStaleness(projectRoot string, collection string, lister PointLister)
 		if maxDate == "" {
 			return Staleness{IsStale: true, Reason: "no indexed commit dates found"}, nil
 		}
-		maxTime, err := time.Parse("2006-01-02", maxDate)
-		if err != nil {
-			return Staleness{}, fmt.Errorf("parsing max indexed date %q: %w", maxDate, err)
-		}
-		// Truncate HEAD to date precision to match the indexed format.
-		headDay := headTime.Truncate(24 * time.Hour)
-		maxDay := maxTime.Truncate(24 * time.Hour)
-		if headDay.After(maxDay) {
+		// Compare as ISO-date strings in the commit's own timezone. Lexical
+		// order on YYYY-MM-DD is equivalent to calendar order and sidesteps
+		// the subtle time.Truncate(24h)-vs-timezone bug where a UTC-midnight
+		// truncation disagrees with a local-date format string.
+		headDay := headTime.Format("2006-01-02")
+		if headDay > maxDate {
 			return Staleness{
 				IsStale: true,
-				Reason:  fmt.Sprintf("HEAD (%s) is newer than latest indexed commit (%s)", headDay.Format("2006-01-02"), maxDate),
+				Reason:  fmt.Sprintf("HEAD (%s) is newer than latest indexed commit (%s)", headDay, maxDate),
 			}, nil
 		}
 		return Staleness{IsStale: false}, nil
