@@ -78,11 +78,12 @@ directly against the named instance.
 cat > /tmp/work-prompt.txt <<'EOF'
 Implement the change described above. Commit and push when done.
 EOF
-cspace up mars --prompt-file /tmp/work-prompt.txt
+cspace up session-validate --prompt-file /tmp/work-prompt.txt
 ```
 
-If you omit the name, the next free planet name is auto-assigned (`mercury`,
-`venus`, `earth`, `mars`, …).
+When spawning a cspace instance from an agent, use a descriptive or numbered
+name (`issue-<n>`, `cs-agent-<n>`, or a short task label like `review-fixes`).
+Planet names (`mercury`, `venus`, …) are reserved for the human-facing TUI.
 
 ### `cspace coordinate "<instructions>"` — multi-chunk coordinated work
 
@@ -139,7 +140,7 @@ The existing code is in $CONVEX_DIR — leave it alone and create a new
 helper. Add tests for the "empty token" and "wrong length" cases.
 PROMPT
 
-cspace up mars --prompt-file /tmp/delegate-prompt.txt
+cspace up token-validate --prompt-file /tmp/delegate-prompt.txt
 ```
 
 The `<<'PROMPT'` (single-quoted heredoc tag) prevents the shell from
@@ -176,8 +177,8 @@ All of these route through the supervisor sockets. Same quoting rules apply
 
 ## Cleanup
 
-Containers persist by design — you can reattach to the same `mars` later
-with `cspace up mars` (without `--prompt-file`) or `cspace ssh mars`. When
+Containers persist by design — you can reattach to the same instance later
+with `cspace up <name>` (without `--prompt-file`) or `cspace ssh <name>`. When
 a batch is genuinely done:
 
 ```bash
