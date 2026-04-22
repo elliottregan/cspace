@@ -28,6 +28,14 @@ type PointLister interface {
 	ExistingPoints(collection string) (map[uint64]string, error) // id -> content_hash
 }
 
+// MaxDateLister extends PointLister with the ability to retrieve the maximum
+// "date" payload field from a collection. Used by CommitsStaleness to compare
+// HEAD's commit date against the latest indexed commit, avoiding the false-
+// positive caused by comparing raw counts under a commits.limit.
+type MaxDateLister interface {
+	MaxPayloadDate(collection string) (string, error) // "2006-01-02" or ""
+}
+
 // CodeStaleness compares `git ls-files` content hashes against the indexed
 // hashes in qdrant. O(tracked-files) — typically sub-second.
 func CodeStaleness(projectRoot string, collection string, lister PointLister) (Staleness, error) {
@@ -89,9 +97,9 @@ func CodeStaleness(projectRoot string, collection string, lister PointLister) (S
 	return Staleness{IsStale: false}, nil
 }
 
-// CommitsStaleness compares the current HEAD commit against the latest
-// indexed commit date in qdrant. Cheap: one git log call + one qdrant
-// scroll for max date.
+// CommitsStaleness compares HEAD's commit date against the latest indexed
+// commit date in qdrant. Uses date identity (not count) so repos with more
+// commits than commits.limit don't produce permanent false-positive warnings.
 func CommitsStaleness(projectRoot string, collection string, lister PointLister) (Staleness, error) {
 	existing, err := lister.ExistingPoints(collection)
 	if err != nil {
@@ -101,32 +109,60 @@ func CommitsStaleness(projectRoot string, collection string, lister PointLister)
 		return Staleness{IsStale: true, Reason: "index is empty — never indexed"}, nil
 	}
 
-	// Count commits since the indexed set. We check whether HEAD's hash
-	// exists among indexed content_hashes (commit hashes are stored in
-	// the "path" field, but content_hash is not set for commits — so we
-	// use a different approach: count total commits and compare to indexed).
-	countStr, err := gitOutput(projectRoot, "rev-list", "--count", "HEAD")
+	// Get HEAD's commit date.
+	headDate, err := gitOutput(projectRoot, "log", "-1", "--format=%aI", "HEAD")
 	if err != nil {
-		return Staleness{}, fmt.Errorf("git rev-list --count: %w", err)
+		return Staleness{}, fmt.Errorf("git log HEAD date: %w", err)
 	}
-	countStr = strings.TrimSpace(countStr)
-
-	// The indexed set has N points; the repo has M commits. If M > N,
-	// there are new commits.
-	indexedCount := len(existing)
-	var repoCount int
-	if _, err := fmt.Sscanf(countStr, "%d", &repoCount); err != nil {
-		return Staleness{}, fmt.Errorf("parsing commit count: %w", err)
+	headDate = strings.TrimSpace(headDate)
+	headTime, err := time.Parse(time.RFC3339, headDate)
+	if err != nil {
+		return Staleness{}, fmt.Errorf("parsing HEAD date %q: %w", headDate, err)
 	}
 
-	diff := repoCount - indexedCount
-	if diff > 0 {
-		return Staleness{
-			IsStale: true,
-			Reason:  fmt.Sprintf("%d new commits since last index", diff),
-		}, nil
+	// Get the max indexed commit date. If the lister supports MaxDateLister,
+	// use it for a single-pass scroll; otherwise fall back to counting (which
+	// is wrong under limits but at least gives something).
+	if dl, ok := lister.(MaxDateLister); ok {
+		maxDate, err := dl.MaxPayloadDate(collection)
+		if err != nil {
+			return Staleness{}, fmt.Errorf("max payload date: %w", err)
+		}
+		if maxDate == "" {
+			return Staleness{IsStale: true, Reason: "no indexed commit dates found"}, nil
+		}
+		maxTime, err := time.Parse("2006-01-02", maxDate)
+		if err != nil {
+			return Staleness{}, fmt.Errorf("parsing max indexed date %q: %w", maxDate, err)
+		}
+		// Truncate HEAD to date precision to match the indexed format.
+		headDay := headTime.Truncate(24 * time.Hour)
+		maxDay := maxTime.Truncate(24 * time.Hour)
+		if headDay.After(maxDay) {
+			return Staleness{
+				IsStale: true,
+				Reason:  fmt.Sprintf("HEAD (%s) is newer than latest indexed commit (%s)", headDay.Format("2006-01-02"), maxDate),
+			}, nil
+		}
+		return Staleness{IsStale: false}, nil
 	}
-	return Staleness{IsStale: false}, nil
+
+	// Fallback for listers that don't support MaxDateLister: compare HEAD's
+	// commit hash against the indexed set via point ID lookup.
+	headHash, err := gitOutput(projectRoot, "rev-parse", "HEAD")
+	if err != nil {
+		return Staleness{}, fmt.Errorf("git rev-parse HEAD: %w", err)
+	}
+	headHash = strings.TrimSpace(headHash)
+	headRec := Record{Path: headHash, Kind: "commit"}
+	headID := headRec.ID()
+	if _, ok := existing[headID]; ok {
+		return Staleness{IsStale: false}, nil
+	}
+	return Staleness{
+		IsStale: true,
+		Reason:  "HEAD commit is not in the index",
+	}, nil
 }
 
 // gitOutput runs a git command and returns its stdout as a string.

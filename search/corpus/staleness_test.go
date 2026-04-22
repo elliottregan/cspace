@@ -8,15 +8,21 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
-// fakePointLister implements PointLister for tests.
+// fakePointLister implements PointLister and MaxDateLister for tests.
 type fakePointLister struct {
-	points map[uint64]string // id -> content_hash
+	points  map[uint64]string // id -> content_hash
+	maxDate string            // max date returned by MaxPayloadDate
 }
 
 func (f *fakePointLister) ExistingPoints(_ string) (map[uint64]string, error) {
 	return f.points, nil
+}
+
+func (f *fakePointLister) MaxPayloadDate(_ string) (string, error) {
+	return f.maxDate, nil
 }
 
 // initGitRepo creates a temp dir with a git repo containing the given files.
@@ -48,6 +54,17 @@ func runGit(t *testing.T, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
 	}
+}
+
+func gitOutputHelper(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
+	}
+	return string(out)
 }
 
 func hashOf(content string) string {
@@ -127,10 +144,18 @@ func TestCommitsStaleness_EmptyIndex(t *testing.T) {
 func TestCommitsStaleness_UpToDate(t *testing.T) {
 	dir := initGitRepo(t, map[string]string{"main.go": "package main"})
 
-	// One commit in repo, one point in index.
-	lister := &fakePointLister{points: map[uint64]string{
-		1: "",
-	}}
+	// Get HEAD's date so we can set maxDate to match.
+	headDate := gitOutputHelper(t, dir, "log", "-1", "--format=%aI", "HEAD")
+	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(headDate))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// One commit in repo, one point in index, maxDate matching HEAD.
+	lister := &fakePointLister{
+		points:  map[uint64]string{1: ""},
+		maxDate: parsed.Format("2006-01-02"),
+	}
 
 	st, err := CommitsStaleness(dir, "test-collection", lister)
 	if err != nil {
@@ -143,17 +168,24 @@ func TestCommitsStaleness_UpToDate(t *testing.T) {
 
 func TestCommitsStaleness_NewCommits(t *testing.T) {
 	dir := initGitRepo(t, map[string]string{"main.go": "package main"})
-	// Add a second commit.
-	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n// v2"), 0o644); err != nil {
+
+	// Record first commit's date as the "indexed" max date.
+	firstDate := gitOutputHelper(t, dir, "log", "-1", "--format=%aI", "HEAD")
+	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(firstDate))
+	if err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, dir, "add", "-A")
-	runGit(t, dir, "commit", "-m", "second")
+	indexedDate := parsed.Format("2006-01-02")
 
-	// Index only knows about one commit.
-	lister := &fakePointLister{points: map[uint64]string{
-		1: "",
-	}}
+	// Add a second commit with a future date so HEAD > indexed.
+	runGit(t, dir, "commit", "--allow-empty", "-m", "second",
+		"--date=2099-01-01T00:00:00+00:00")
+
+	// Index only knows about the first commit's date.
+	lister := &fakePointLister{
+		points:  map[uint64]string{1: ""},
+		maxDate: indexedDate,
+	}
 
 	st, err := CommitsStaleness(dir, "test-collection", lister)
 	if err != nil {
@@ -162,7 +194,43 @@ func TestCommitsStaleness_NewCommits(t *testing.T) {
 	if !st.IsStale {
 		t.Error("expected stale")
 	}
-	if !strings.Contains(st.Reason, "new commits") {
+	if !strings.Contains(st.Reason, "newer") {
 		t.Errorf("unexpected reason: %s", st.Reason)
+	}
+}
+
+// TestCommitsStaleness_RespectsLimit is a regression test for PR #61 item #2:
+// with commits.limit=2 on a 5-commit repo, CommitsStaleness should report
+// stale ONLY if HEAD is newer than the latest indexed, not because total
+// commit count != indexed count.
+func TestCommitsStaleness_RespectsLimit(t *testing.T) {
+	dir := initGitRepo(t, map[string]string{"main.go": "package main"})
+
+	// Add 4 more commits (5 total).
+	for i := 2; i <= 5; i++ {
+		runGit(t, dir, "commit", "--allow-empty", "-m", fmt.Sprintf("commit %d", i))
+	}
+
+	// Get HEAD's date.
+	headDate := gitOutputHelper(t, dir, "log", "-1", "--format=%aI", "HEAD")
+	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(headDate))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate commits.limit=2: index has 2 points, but maxDate matches HEAD.
+	// Under the old count-based logic this would be "3 new commits" (5-2=3).
+	// Under the new date-based logic, it should be not stale.
+	lister := &fakePointLister{
+		points:  map[uint64]string{1: "", 2: ""},
+		maxDate: parsed.Format("2006-01-02"),
+	}
+
+	st, err := CommitsStaleness(dir, "test-collection", lister)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.IsStale {
+		t.Errorf("expected not stale with matching HEAD date, got stale: %s", st.Reason)
 	}
 }
