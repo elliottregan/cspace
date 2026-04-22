@@ -38,7 +38,8 @@ type MaxDateLister interface {
 }
 
 // CodeStaleness compares `git ls-files` content hashes against the indexed
-// hashes in qdrant. O(tracked-files) — typically sub-second.
+// hashes in qdrant. Detects both changed/new files (tracked but not indexed)
+// and ghost entries (indexed but no longer tracked). O(tracked-files).
 func CodeStaleness(projectRoot string, collection string, lister PointLister) (Staleness, error) {
 	existing, err := lister.ExistingPoints(collection)
 	if err != nil {
@@ -49,16 +50,17 @@ func CodeStaleness(projectRoot string, collection string, lister PointLister) (S
 		return Staleness{IsStale: true, Reason: "index is empty — never indexed"}, nil
 	}
 
-	// Build a set of content_hash values that exist in qdrant.
-	indexedHashes := make(map[string]struct{}, len(existing))
+	// Build a set of content_hash values that exist in qdrant, tracking which
+	// ones are "seen" during the git walk so we can count ghosts afterward.
+	indexedHashes := make(map[string]bool, len(existing)) // hash -> seen
 	for _, h := range existing {
 		if h != "" {
-			indexedHashes[h] = struct{}{}
+			indexedHashes[h] = false // not seen yet
 		}
 	}
 
 	// Walk git ls-files and compute sha256 for each tracked file, counting
-	// files whose hash is not in the index.
+	// files whose hash is not in the index and marking indexed hashes as seen.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -82,17 +84,35 @@ func CodeStaleness(projectRoot string, collection string, lister PointLister) (S
 			continue // deleted/unreadable — skip
 		}
 		hash := fmt.Sprintf("%x", sha256.Sum256(data))
-		if _, ok := indexedHashes[hash]; !ok {
+		if _, ok := indexedHashes[hash]; ok {
+			indexedHashes[hash] = true // mark as seen
+		} else {
 			changed++
 		}
 	}
 	_ = sc.Err()
 	_ = cmd.Wait()
 
-	if changed > 0 {
+	// Count ghost entries: indexed hashes that were never seen in the git walk
+	// (files deleted or renamed since the last index).
+	ghosts := 0
+	for _, seen := range indexedHashes {
+		if !seen {
+			ghosts++
+		}
+	}
+
+	if changed > 0 || ghosts > 0 {
+		var parts []string
+		if changed > 0 {
+			parts = append(parts, fmt.Sprintf("%d files changed", changed))
+		}
+		if ghosts > 0 {
+			parts = append(parts, fmt.Sprintf("%d deleted since last index", ghosts))
+		}
 		return Staleness{
 			IsStale: true,
-			Reason:  fmt.Sprintf("%d files changed since last index", changed),
+			Reason:  strings.Join(parts, ", "),
 		}, nil
 	}
 	return Staleness{IsStale: false}, nil

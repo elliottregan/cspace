@@ -128,6 +128,42 @@ func TestCodeStaleness_FilesChanged(t *testing.T) {
 	}
 }
 
+// TestCodeStaleness_DeletedFiles verifies that CodeStaleness detects
+// "ghost" entries: files that are still in the index but no longer tracked
+// in git (deleted since last index). PR #61 review item #4.
+func TestCodeStaleness_DeletedFiles(t *testing.T) {
+	dir := initGitRepo(t, map[string]string{
+		"a.go": "package a",
+		"b.go": "package b",
+		"c.go": "package c",
+	})
+
+	// Index has hashes for all three files.
+	lister := &fakePointLister{points: map[uint64]string{
+		1: hashOf("package a"),
+		2: hashOf("package b"),
+		3: hashOf("package c"),
+	}}
+
+	// Delete c.go and commit.
+	if err := os.Remove(filepath.Join(dir, "c.go")); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "add", "-A")
+	runGit(t, dir, "commit", "-m", "delete c.go")
+
+	st, err := CodeStaleness(dir, "test-collection", lister)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.IsStale {
+		t.Error("expected stale after file deletion")
+	}
+	if !strings.Contains(st.Reason, "deleted") {
+		t.Errorf("expected deletion-aware reason, got: %s", st.Reason)
+	}
+}
+
 func TestCommitsStaleness_EmptyIndex(t *testing.T) {
 	dir := initGitRepo(t, map[string]string{"main.go": "package main"})
 	lister := &fakePointLister{points: map[uint64]string{}}
