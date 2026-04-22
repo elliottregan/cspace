@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -244,6 +245,14 @@ func runSearchIndex(corpusID string, quiet bool) error {
 	root := searchProjectRoot()
 	rt, err := config.Build(root, corpusID)
 	if err != nil {
+		// If the corpus is disabled, record that in the status file with a
+		// fresh single-use writer so we never clobber state written by prior
+		// iterations. Then return the sentinel so callers can report it.
+		if errors.Is(err, config.ErrCorpusDisabled) {
+			if sw, swErr := status.NewWriter(root); swErr == nil && sw != nil {
+				sw.DisableCorpus(corpusID)
+			}
+		}
 		return err
 	}
 	qc := qdrant.NewQdrantClient(rt.Cfg.Sidecars.QdrantURL)

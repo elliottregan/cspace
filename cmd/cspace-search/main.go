@@ -228,17 +228,15 @@ func initCmd() *cobra.Command {
 			}
 
 			if !skipIndex {
-				sw, _ := status.NewWriter(root)
 				for _, corpusID := range []string{"code", "commits", "context", "issues"} {
-					err := runIndexCorpus(cmd.Context(), root, corpusID, sw)
+					err := runIndexCorpus(cmd.Context(), root, corpusID)
 					switch {
 					case err == nil:
 						report("%s: indexed", corpusID)
 					case errors.Is(err, config.ErrCorpusDisabled):
+						// runIndexCorpus already wrote the disabled state with
+						// a fresh single-use writer — no outer writer needed.
 						report("%s: disabled in search.yaml (enable with corpora.%s.enabled=true)", corpusID, corpusID)
-						if sw != nil {
-							sw.DisableCorpus(corpusID)
-						}
 					default:
 						report("%s: skipped (%v)", corpusID, err)
 					}
@@ -257,13 +255,22 @@ func initCmd() *cobra.Command {
 // runIndexCorpus is a thin wrapper that runs index.Run for one corpus id,
 // used by initCmd to loop over corpora without rebuilding the cobra flag
 // plumbing that indexCmd exposes.
-func runIndexCorpus(ctx context.Context, root, corpusID string, sw *status.Writer) error {
+func runIndexCorpus(ctx context.Context, root, corpusID string) error {
 	rt, err := config.Build(root, corpusID)
 	if err != nil {
+		// If the corpus is disabled, record that in the status file with a
+		// fresh single-use writer so we never clobber state written by prior
+		// iterations. Then return the sentinel so callers can report it.
+		if errors.Is(err, config.ErrCorpusDisabled) {
+			if sw, swErr := status.NewWriter(root); swErr == nil && sw != nil {
+				sw.DisableCorpus(corpusID)
+			}
+		}
 		return err
 	}
 	qc := qdrant.NewQdrantClient(rt.Cfg.Sidecars.QdrantURL)
 	ec := embed.NewClient(rt.Cfg.Sidecars.LlamaRetrievalURL)
+	sw, _ := status.NewWriter(root)
 	var statusWriter index.StatusWriter
 	if sw != nil {
 		statusWriter = sw

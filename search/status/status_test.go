@@ -183,6 +183,79 @@ func TestRead_MissingFile(t *testing.T) {
 	}
 }
 
+// TestWriter_DisableCorpusDoesNotClobberExistingEntries is a regression test
+// for PR #61 item #1: an outer writer whose in-memory snapshot is stale can
+// clobber entries written by inner writers. The fix is single-use writers —
+// each DisableCorpus call uses a fresh writer that re-reads on construction.
+func TestWriter_DisableCorpusDoesNotClobberExistingEntries(t *testing.T) {
+	dir := t.TempDir()
+	projectRoot := dir
+	if err := os.MkdirAll(filepath.Join(projectRoot, ".cspace"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate runSearchIndex writing completed state for "code" and "commits"
+	// via fresh single-use writers (as index.Run does internally).
+	w1, err := NewWriter(projectRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w1.FinishCorpus("code", time.Now(), 100)
+
+	w2, err := NewWriter(projectRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w2.FinishCorpus("commits", time.Now(), 50)
+
+	// Now simulate the disabled-state writes for "context" and "issues" using
+	// fresh writers (as the fixed runSearchIndex does for ErrCorpusDisabled).
+	w3, err := NewWriter(projectRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w3.DisableCorpus("context")
+
+	w4, err := NewWriter(projectRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w4.DisableCorpus("issues")
+
+	// All four corpora must be present with correct states.
+	f, err := Read(projectRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f == nil {
+		t.Fatal("expected non-nil status file")
+	}
+
+	want := map[string]string{
+		"code":    "completed",
+		"commits": "completed",
+		"context": "disabled",
+		"issues":  "disabled",
+	}
+	for id, wantState := range want {
+		cs, ok := f.Last[id]
+		if !ok {
+			t.Errorf("corpus %q missing from Last map", id)
+			continue
+		}
+		if cs.State != wantState {
+			t.Errorf("corpus %q: want state=%q, got %q", id, wantState, cs.State)
+		}
+	}
+	// Check that code still has its indexed count (not clobbered).
+	if f.Last["code"].IndexedCount != 100 {
+		t.Errorf("code indexed_count clobbered: want 100, got %d", f.Last["code"].IndexedCount)
+	}
+	if f.Last["commits"].IndexedCount != 50 {
+		t.Errorf("commits indexed_count clobbered: want 50, got %d", f.Last["commits"].IndexedCount)
+	}
+}
+
 func TestWriter_UpdateProgress(t *testing.T) {
 	dir := t.TempDir()
 	projectRoot := dir
