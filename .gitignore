@@ -23,6 +23,9 @@ lib/agent-supervisor/node_modules/
 # sidecar URL overrides; embedded default.yaml holds the real defaults.
 /search.yaml
 
+# Runtime index status file — written by cspace search index, not source.
+.cspace/search-index-status.json
+
 # Go build artifacts
 bin/cspace-go
 bin/cspace-go-linux-amd64
