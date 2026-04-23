@@ -206,9 +206,22 @@ func Run(p Params) (result Result, err error) {
 		}
 
 		// Phase 9: start instance containers.
+		// OrbStack's runc occasionally fails the first container start with a
+		// transient "read-only file system" error when creating nested bind-mount
+		// points (e.g. .cspace/context inside /workspace). The containers get
+		// created fine; a follow-up `docker compose start` starts them cleanly.
 		reportPhase(9, Phases[8])
-		if err = compose.Run(name, cfg, "up", "-d"); err != nil {
-			return Result{}, fmt.Errorf("starting container: %w", err)
+		if out, upErr := compose.RunCapture(name, cfg, "up", "-d"); upErr != nil {
+			_, _ = fmt.Fprint(os.Stderr, out)
+			if !strings.Contains(out, "read-only file system") {
+				return Result{}, fmt.Errorf("starting container: %w", upErr)
+			}
+			reportWarn("orbstack/runc mount race on first start — retrying via docker compose start")
+			if err = compose.Run(name, cfg, "start"); err != nil {
+				return Result{}, fmt.Errorf("starting container (after retry): %w", err)
+			}
+		} else {
+			_, _ = fmt.Fprint(os.Stdout, out)
 		}
 
 		// Phase 10: wait for container readiness.

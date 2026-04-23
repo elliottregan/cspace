@@ -8,11 +8,16 @@ services:
   cspace-search-mcp:
     image: ${CSPACE_IMAGE:-cspace-dev}
     container_name: ${CSPACE_CONTAINER_NAME}.search-mcp
-    command: ["/usr/local/bin/cspace-search-mcp"]
+    command: ["cspace", "search", "mcp"]
     working_dir: /workspace
     volumes:
-      - workspace:/workspace:ro
-      - ${PROJECT_ROOT:-.}/.cspace/context:/workspace/.cspace/context
+      # workspace is RW (not :ro) because a nested bind mount for
+      # .cspace/context can't be layered onto a read-only parent mount;
+      # OrbStack/runc rejects the mkdirat on /workspace/.cspace when the
+      # parent is :ro. cspace-search-mcp doesn't write to /workspace
+      # anyway, so enforcing read-only was only defensive.
+      - workspace:/workspace
+      - ${CSPACE_PROJECT_ROOT:-.}/.cspace/context:/workspace/.cspace/context
     stdin_open: true
     tty: false
     restart: unless-stopped

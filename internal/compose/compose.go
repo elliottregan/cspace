@@ -120,7 +120,7 @@ func ComposeEnv(name string, cfg *config.Config) []string {
 		"CSPACE_SESSIONS_DIR=" + cfg.SessionsDir(),
 		"HOST_PORT_DEV=" + strconv.Itoa(pm.Dev),
 		"HOST_PORT_PREVIEW=" + strconv.Itoa(pm.Preview),
-		"PROJECT_ROOT=" + cfg.ProjectRoot,
+		"CSPACE_PROJECT_ROOT=" + cfg.ProjectRoot,
 	}
 
 	// Export container environment from config as CSPACE_ENV_* variables
@@ -199,6 +199,23 @@ func Run(name string, cfg *config.Config, args ...string) error {
 		return fmt.Errorf("docker compose %s: %w", strings.Join(args, " "), err)
 	}
 	return nil
+}
+
+// RunCapture runs docker compose and returns the combined stderr+stdout output
+// alongside any error. Output is NOT forwarded to the parent's terminals.
+// Use when the caller needs to inspect compose's error message (e.g., to retry
+// on specific transient errors).
+func RunCapture(name string, cfg *config.Config, args ...string) (string, error) {
+	cmd, err := Cmd(name, cfg, args...)
+	if err != nil {
+		return "", err
+	}
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("docker compose %s: %w", strings.Join(args, " "), err)
+	}
+	return string(out), nil
 }
 
 // RunDirect runs docker compose with an explicit project name, without

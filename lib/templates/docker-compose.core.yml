@@ -53,7 +53,7 @@ services:
       # log_finding in mercury is visible to agent B in venus without
       # git push/pull. Host pre-creates this dir in provision.Run so
       # it's owned by the invoking user, not Docker's auto-created root.
-      - ${PROJECT_ROOT:-.}/.cspace/context:/workspace/.cspace/context
+      - ${CSPACE_PROJECT_ROOT:-.}/.cspace/context:/workspace/.cspace/context
       - claude-home:/home/dev/.claude
       # Project-shared Claude sessions: one host directory holds every
       # session JSONL for this project, so teleport doesn't need to copy
@@ -67,14 +67,14 @@ services:
       # (docker layers per-path, specific-wins), so memory stays in the
       # repo while sessions live in $HOME. Host pre-creates both before
       # `docker compose up` so they're owned by the invoking user.
-      - ${PROJECT_ROOT:-.}/.cspace/memory:/home/dev/.claude/projects/-workspace/memory
+      - ${CSPACE_PROJECT_ROOT:-.}/.cspace/memory:/home/dev/.claude/projects/-workspace/memory
       - gh-config:/home/dev/.config/gh
       - cspace-logs:/logs
       - ${CSPACE_TELEPORT_DIR:-/tmp/cspace-teleport}:/teleport
       - /var/run/docker.sock:/var/run/docker.sock
 
     env_file:
-      - path: ${PROJECT_ROOT:-.}/.env
+      - path: ${CSPACE_PROJECT_ROOT:-.}/.env
         required: false
 
     environment:
