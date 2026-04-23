@@ -46,14 +46,6 @@ services:
 
     volumes:
       - workspace:/workspace
-      # .cspace/context/ is the cspace-context MCP server's store —
-      # decisions, discoveries, findings, and human-owned direction /
-      # principles / roadmap. Bind-mount from the host so every
-      # container in the project shares one live view: agent A's
-      # log_finding in mercury is visible to agent B in venus without
-      # git push/pull. Host pre-creates this dir in provision.Run so
-      # it's owned by the invoking user, not Docker's auto-created root.
-      - ${CSPACE_PROJECT_ROOT:-.}/.cspace/context:/workspace/.cspace/context
       - claude-home:/home/dev/.claude
       # Project-shared Claude sessions: one host directory holds every
       # session JSONL for this project, so teleport doesn't need to copy
@@ -62,20 +54,21 @@ services:
       # Outside the repo (contains conversation history, potentially large
       # and sensitive — not suitable for git).
       - ${CSPACE_SESSIONS_DIR}:/home/dev/.claude/projects/-workspace
-      # Project-shared Claude memory, bind-mounted from the host so it's
-      # committed alongside code. Nested under the sessions mount above
-      # (docker layers per-path, specific-wins), so memory stays in the
-      # repo while sessions live in $HOME. Host pre-creates both before
-      # `docker compose up` so they're owned by the invoking user.
-      - ${CSPACE_PROJECT_ROOT:-.}/.cspace/memory:/home/dev/.claude/projects/-workspace/memory
       - gh-config:/home/dev/.config/gh
       - cspace-logs:/logs
       - ${CSPACE_TELEPORT_DIR:-/tmp/cspace-teleport}:/teleport
       - /var/run/docker.sock:/var/run/docker.sock
-
-    env_file:
-      - path: ${CSPACE_PROJECT_ROOT:-.}/.env
-        required: false
+      # .cspace/context, .cspace/memory, and the project's .env are
+      # added at runtime through a generated compose override
+      # (writeProjectPathsOverride in internal/compose/compose.go) with
+      # absolute host paths. We used to interpolate them here with
+      # ${CSPACE_PROJECT_ROOT:-.}/..., but non-standard compose
+      # implementations (e.g. OrbStack's compose v5) don't reliably
+      # propagate process-level env vars into interpolation, so
+      # ${CSPACE_PROJECT_ROOT:-.} would fall back to "." and resolve
+      # relative to the compose file's directory instead of the project
+      # root. Go composes the override so the paths are absolute and
+      # interpolation-free.
 
     environment:
       - USE_BUILTIN_RIPGREP=0

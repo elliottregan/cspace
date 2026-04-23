@@ -17,7 +17,9 @@ services:
       # parent is :ro. cspace-search-mcp doesn't write to /workspace
       # anyway, so enforcing read-only was only defensive.
       - workspace:/workspace
-      - ${CSPACE_PROJECT_ROOT:-.}/.cspace/context:/workspace/.cspace/context
+      # .cspace/context is bind-mounted at runtime via a generated compose
+      # override — see writeProjectPathsOverride in internal/compose/compose.go
+      # and the matching note in docker-compose.core.yml.
     stdin_open: true
     tty: false
     restart: unless-stopped

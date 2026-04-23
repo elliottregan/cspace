@@ -55,8 +55,9 @@ func TestComposeFilesAutoDetect(t *testing.T) {
 		t.Fatalf("ComposeFiles returned error: %v", err)
 	}
 
-	if len(files) != 2 {
-		t.Fatalf("expected 2 files, got %d: %v", len(files), files)
+	// core + auto-detected devcontainer + generated project-paths override
+	if len(files) != 3 {
+		t.Fatalf("expected 3 files, got %d: %v", len(files), files)
 	}
 	if files[0] != coreFile {
 		t.Errorf("files[0] = %q, want %q", files[0], coreFile)
@@ -105,8 +106,9 @@ func TestComposeFilesExplicitOverridesAutoDetect(t *testing.T) {
 		t.Fatalf("ComposeFiles returned error: %v", err)
 	}
 
-	if len(files) != 2 {
-		t.Fatalf("expected 2 files, got %d: %v", len(files), files)
+	// core + explicit services + generated project-paths override
+	if len(files) != 3 {
+		t.Fatalf("expected 3 files, got %d: %v", len(files), files)
 	}
 	if files[0] != coreFile {
 		t.Errorf("files[0] = %q, want %q", files[0], coreFile)
@@ -139,8 +141,9 @@ func TestComposeFilesNoAutoDetect(t *testing.T) {
 		t.Fatalf("ComposeFiles returned error: %v", err)
 	}
 
-	if len(files) != 1 {
-		t.Fatalf("expected 1 file, got %d: %v", len(files), files)
+	// core + generated project-paths override
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files, got %d: %v", len(files), files)
 	}
 	if files[0] != coreFile {
 		t.Errorf("files[0] = %q, want %q", files[0], coreFile)
