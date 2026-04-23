@@ -44,7 +44,11 @@ func TestComposeFilesAutoDetect(t *testing.T) {
 		t.Fatalf("creating .devcontainer dir: %v", err)
 	}
 	autoFile := filepath.Join(devcontainerDir, "docker-compose.yml")
-	if err := os.WriteFile(autoFile, []byte("# devcontainer compose\n"), 0644); err != nil {
+	// Auto-detect only fires when the devcontainer compose extends the
+	// cspace service — otherwise it's a standalone devcontainer that
+	// should not be layered onto cspace's stack.
+	autoContent := "services:\n  cspace:\n    environment:\n      - FOO=bar\n"
+	if err := os.WriteFile(autoFile, []byte(autoContent), 0644); err != nil {
 		t.Fatalf("writing devcontainer compose: %v", err)
 	}
 
@@ -64,6 +68,53 @@ func TestComposeFilesAutoDetect(t *testing.T) {
 	}
 	if files[1] != autoFile {
 		t.Errorf("files[1] = %q, want %q", files[1], autoFile)
+	}
+}
+
+// TestComposeFilesSkipsStandaloneDevcontainer verifies that auto-detection
+// skips a devcontainer/docker-compose.yml that does not extend the cspace
+// service. Standalone devcontainer compose files commonly carry relative
+// paths (e.g. env_file: - ../.env) that compose can mis-resolve when layered
+// onto a compose file from a different directory, and they're rarely
+// meaningful to layer in anyway.
+func TestComposeFilesSkipsStandaloneDevcontainer(t *testing.T) {
+	projectRoot := t.TempDir()
+	assetsDir := t.TempDir()
+
+	templatesDir := filepath.Join(assetsDir, "templates")
+	if err := os.MkdirAll(templatesDir, 0755); err != nil {
+		t.Fatalf("creating templates dir: %v", err)
+	}
+	coreFile := filepath.Join(templatesDir, "docker-compose.core.yml")
+	if err := os.WriteFile(coreFile, []byte("# core compose\n"), 0644); err != nil {
+		t.Fatalf("writing core template: %v", err)
+	}
+
+	devcontainerDir := filepath.Join(projectRoot, ".devcontainer")
+	if err := os.MkdirAll(devcontainerDir, 0755); err != nil {
+		t.Fatalf("creating .devcontainer dir: %v", err)
+	}
+	autoFile := filepath.Join(devcontainerDir, "docker-compose.yml")
+	standaloneContent := "services:\n  devcontainer:\n    build: .\n    env_file:\n      - ../.env\n"
+	if err := os.WriteFile(autoFile, []byte(standaloneContent), 0644); err != nil {
+		t.Fatalf("writing devcontainer compose: %v", err)
+	}
+
+	cfg := buildTestConfig(projectRoot, assetsDir, "")
+
+	files, err := ComposeFiles("mercury", cfg)
+	if err != nil {
+		t.Fatalf("ComposeFiles returned error: %v", err)
+	}
+
+	// core + generated project-paths override (devcontainer skipped)
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files (standalone devcontainer should be skipped), got %d: %v", len(files), files)
+	}
+	for _, f := range files {
+		if f == autoFile {
+			t.Errorf("unexpected devcontainer compose in files: %v", files)
+		}
 	}
 }
 

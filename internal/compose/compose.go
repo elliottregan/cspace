@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,6 +16,23 @@ import (
 	"github.com/elliottregan/cspace/internal/config"
 	"github.com/elliottregan/cspace/internal/ports"
 )
+
+// cspaceServiceLine matches a `cspace:` entry at the service level of a
+// docker-compose.yml (one level of indentation under `services:`). Used to
+// distinguish compose files that extend cspace's stack from standalone
+// devcontainer files that happen to live at .devcontainer/docker-compose.yml.
+var cspaceServiceLine = regexp.MustCompile(`(?m)^\s+cspace:\s*$`)
+
+// composeExtendsCspace reports whether the given compose file defines a
+// `cspace:` service (which cspace's own core.yml extends) and is therefore
+// safe to layer onto the -f list.
+func composeExtendsCspace(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return cspaceServiceLine.Match(data)
+}
 
 // ComposeFiles resolves the compose file list for an instance.
 // Returns the file paths in order: core.yml, project services (if any), then
@@ -29,7 +47,13 @@ func ComposeFiles(name string, cfg *config.Config) ([]string, error) {
 	files := []string{core}
 
 	// Add project-specific services: explicit config takes priority,
-	// then auto-detect from .devcontainer/docker-compose.yml.
+	// then auto-detect from .devcontainer/docker-compose.yml. Auto-detect
+	// is gated on the file actually extending cspace (i.e. defining a
+	// `cspace:` service) because a stock devcontainer-only compose would
+	// otherwise get layered in, dragging along its own build context,
+	// env_file, and volume bindings — most of which use relative paths
+	// that docker compose mis-resolves against the first -f file's
+	// directory on some runtimes (OrbStack v5).
 	if cfg.Services != "" {
 		svcPath := filepath.Join(cfg.ProjectRoot, cfg.Services)
 		if _, err := os.Stat(svcPath); err == nil {
@@ -37,7 +61,7 @@ func ComposeFiles(name string, cfg *config.Config) ([]string, error) {
 		}
 	} else {
 		autoPath := filepath.Join(cfg.ProjectRoot, ".devcontainer", "docker-compose.yml")
-		if _, err := os.Stat(autoPath); err == nil {
+		if _, err := os.Stat(autoPath); err == nil && composeExtendsCspace(autoPath) {
 			files = append(files, autoPath)
 		}
 	}
