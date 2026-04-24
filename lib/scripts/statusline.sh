@@ -211,8 +211,16 @@ if [ -n "$SELF_CONTAINER" ] && [ -f "$CSPACE_JSON" ]; then
             DISPLAY="localhost:${host_port}"
         fi
         printf "$DIV"
-        printf "$(label_color "$label")● %s${RST} " "$label"
-        link "$URL" "$DISPLAY"
+        printf "$(label_color "$label")● "
+        link "$URL" "$label"
+        printf "${RST}"
+        # Show the full URL only when Claude Code's no-flicker rendering is on;
+        # otherwise the statusline width changes every time a different port's
+        # hostname is chosen, which makes the surrounding line jitter on each
+        # re-render. The clickable label alone is enough to open the URL.
+        if [ "${CLAUDE_CODE_NO_FLICKER:-}" = "1" ]; then
+            printf " ${GRY}%s${RST}" "$DISPLAY"
+        fi
     done < <(jq -r '.container.ports // {} | to_entries[] | "\(.key)\t\(.value)"' "$CSPACE_JSON" 2>/dev/null)
 fi
 echo
