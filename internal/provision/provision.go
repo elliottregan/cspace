@@ -22,13 +22,12 @@ var nameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // Params holds everything needed to provision an instance.
 type Params struct {
-	Name            string         // Instance name (validated: alphanumeric + hyphens/underscores)
-	Branch          string         // Git branch to checkout (empty = host's current branch)
-	Cfg             *config.Config // Merged configuration
-	Reporter        Reporter       // Progress reporter; nil → logReporter{}
-	Stdout          io.Writer      // Subprocess stdout; nil → os.Stdout
-	Stderr          io.Writer      // Subprocess stderr; nil → os.Stderr
-	BootstrapSearch bool           // Run `cspace search init` during provisioning (opt-in)
+	Name     string         // Instance name (validated: alphanumeric + hyphens/underscores)
+	Branch   string         // Git branch to checkout (empty = host's current branch)
+	Cfg      *config.Config // Merged configuration
+	Reporter Reporter       // Progress reporter; nil → logReporter{}
+	Stdout   io.Writer      // Subprocess stdout; nil → os.Stdout
+	Stderr   io.Writer      // Subprocess stderr; nil → os.Stderr
 }
 
 func (p Params) reporter() Reporter {
@@ -73,18 +72,16 @@ type Result struct {
 //  3. Bundling repo
 //  4. Creating volumes
 //  5. Creating network
-//  6. Starting search stack (project-scoped sidecars, idempotent)
-//  7. Starting reverse proxy
-//  8. Setting up directories (teleport, memory, sessions, context)
-//  9. Starting containers (docker compose up -d)
-//  10. Waiting for container
-//  11. Configuring hosts (inject cspace.local → Traefik)
-//  12. Setting permissions (chown /workspace, /home/dev/.claude, /teleport)
-//  13. Initializing workspace (bundle unpack + init-workspace.sh)
-//  14. Configuring git & env (git identity, .env files, GH_TOKEN)
-//  15. Installing plugins (marketplace + plugins + post-setup)
-//  16. Syncing workspace (git fetch / checkout / pull, skip Claude onboarding)
-//  17. Bootstrapping search (cspace search init in the background)
+//  6. Starting reverse proxy
+//  7. Setting up directories (teleport, memory, sessions, context)
+//  8. Starting containers (docker compose up -d)
+//  9. Waiting for container
+//  10. Configuring hosts (inject cspace.local → Traefik)
+//  11. Setting permissions (chown /workspace, /home/dev/.claude, /teleport)
+//  12. Initializing workspace (bundle unpack + init-workspace.sh)
+//  13. Configuring git & env (git identity, .env files, GH_TOKEN)
+//  14. Installing plugins (marketplace + plugins + post-setup)
+//  15. Syncing workspace (git fetch / checkout / pull, skip Claude onboarding)
 func Run(p Params) (result Result, err error) {
 	reporter := p.reporter()
 	currentPhase := ""
@@ -162,20 +159,10 @@ func Run(p Params) (result Result, err error) {
 			return Result{}, fmt.Errorf("creating project network: %w", err)
 		}
 
-		// Phase 6: start the project-scoped search sidecar stack
-		// (qdrant, llama-server, etc.). Idempotent — if the stack is
-		// already running from a prior instance's boot, this is a no-op.
-		// Runs before the instance compose up so sidecars are reachable
-		// via network aliases when the instance starts.
-		reportPhase(6, Phases[5])
-		if perr := compose.ProjectStackUp(cfg); perr != nil {
-			reportWarn(fmt.Sprintf("project search stack: %v", perr))
-		}
-
-		// Phase 7: start the global reverse proxy and connect it to the
+		// Phase 6: start the global reverse proxy and connect it to the
 		// project network so Traefik can route traffic to instance
 		// containers.
-		reportPhase(7, Phases[6])
+		reportPhase(6, Phases[5])
 		if perr := docker.EnsureProxy(cfg.AssetsDir); perr != nil {
 			reportWarn(fmt.Sprintf("proxy: %v", perr))
 		}
@@ -183,11 +170,11 @@ func Run(p Params) (result Result, err error) {
 			reportWarn(fmt.Sprintf("connecting proxy to project network: %v", perr))
 		}
 
-		// Phase 8: set up host-side directories that compose will bind
+		// Phase 7: set up host-side directories that compose will bind
 		// mount (teleport, memory, sessions, context). Docker auto-creates
 		// missing bind-mount paths as root-owned — we create them first so
 		// they're writable by the invoking user.
-		reportPhase(8, Phases[7])
+		reportPhase(7, Phases[6])
 		tpDir := teleportHostDir()
 		if err = ensureTeleportDir(tpDir); err != nil {
 			return Result{}, err
@@ -205,12 +192,12 @@ func Run(p Params) (result Result, err error) {
 			return Result{}, err
 		}
 
-		// Phase 9: start instance containers.
+		// Phase 8: start instance containers.
 		// OrbStack's runc occasionally fails the first container start with a
 		// transient "read-only file system" error when creating nested bind-mount
 		// points (e.g. .cspace/context inside /workspace). The containers get
 		// created fine; a follow-up `docker compose start` starts them cleanly.
-		reportPhase(9, Phases[8])
+		reportPhase(8, Phases[7])
 		if out, upErr := compose.RunCapture(name, cfg, "up", "-d"); upErr != nil {
 			_, _ = fmt.Fprint(os.Stderr, out)
 			if !strings.Contains(out, "read-only file system") {
@@ -224,38 +211,38 @@ func Run(p Params) (result Result, err error) {
 			_, _ = fmt.Fprint(os.Stdout, out)
 		}
 
-		// Phase 10: wait for container readiness.
-		reportPhase(10, Phases[9])
+		// Phase 9: wait for container readiness.
+		reportPhase(9, Phases[8])
 		if err = WaitForReady(composeName, 120*time.Second); err != nil {
 			return Result{}, err
 		}
 
-		// Phase 11: inject /etc/hosts entries so cspace.local hostnames
+		// Phase 10: inject /etc/hosts entries so cspace.local hostnames
 		// resolve to Traefik's Docker IP inside all containers.
-		reportPhase(11, Phases[10])
+		reportPhase(10, Phases[9])
 		if herr := docker.InjectHosts(composeName, cfg.ProjectNetwork()); herr != nil {
 			reportWarn(fmt.Sprintf("hosts injection: %v", herr))
 		}
 
-		// Phase 12: fix volume ownership. /teleport is a host bind mount
+		// Phase 11: fix volume ownership. /teleport is a host bind mount
 		// that Docker auto-creates as root when the host path doesn't
 		// already exist (common in nested DinD setups), so explicitly fix
 		// it alongside the named volumes to ensure the dev user can write
 		// bundles there.
-		reportPhase(12, Phases[11])
+		reportPhase(11, Phases[10])
 		if _, err = instance.DcExecRoot(composeName, "chown", "-R", "dev:dev", "/workspace", "/home/dev/.claude", "/teleport"); err != nil {
 			return Result{}, fmt.Errorf("fixing ownership: %w", err)
 		}
 
-		// Phase 13: copy bundle and init workspace.
-		reportPhase(13, Phases[12])
+		// Phase 12: copy bundle and init workspace.
+		reportPhase(12, Phases[11])
 		if err = initWorkspace(composeName, bundlePath, branch, remoteURL); err != nil {
 			return Result{}, fmt.Errorf("initializing workspace: %w", err)
 		}
 
-		// Phase 14: configure git identity, copy .env files, setup
+		// Phase 13: configure git identity, copy .env files, setup
 		// GH_TOKEN + gh auth.
-		reportPhase(14, Phases[13])
+		reportPhase(13, Phases[12])
 		configureGit(composeName, cfg.ProjectRoot)
 		copyEnvFile(composeName, cfg.ProjectRoot, ".env")
 		copyEnvFile(composeName, cfg.ProjectRoot, ".env.local")
@@ -274,9 +261,9 @@ func Run(p Params) (result Result, err error) {
 		reporter.Port(b.Label, b.URL)
 	}
 
-	// Phase 15: idempotent tail (marketplace + plugins + post-setup). Runs
+	// Phase 14: idempotent tail (marketplace + plugins + post-setup). Runs
 	// for both new and reused containers.
-	reportPhase(15, Phases[14])
+	reportPhase(14, Phases[13])
 	if merr := ensureMarketplace(composeName); merr != nil {
 		reportWarn(fmt.Sprintf("marketplace setup: %v", merr))
 	}
@@ -287,12 +274,12 @@ func Run(p Params) (result Result, err error) {
 		reportWarn(fmt.Sprintf("post-setup: %v", perr))
 	}
 
-	// Phase 16: last-mile workspace sync. Folded into provision.Run so
+	// Phase 15: last-mile workspace sync. Folded into provision.Run so
 	// callers can exec Claude immediately after Run returns, with no
 	// post-overlay shell commands flashing the main terminal buffer.
 	// SkipOnboarding pre-accepts Claude Code's first-run prompts; the
 	// git ops bring /workspace up to date before handoff.
-	reportPhase(16, Phases[15])
+	reportPhase(15, Phases[14])
 	if sErr := instance.SkipOnboarding(composeName); sErr != nil {
 		reportWarn(fmt.Sprintf("skip onboarding: %v", sErr))
 	}
@@ -304,18 +291,6 @@ func Run(p Params) (result Result, err error) {
 		_, _ = instance.DcExec(composeName, "git", "reset", "--hard", "origin/"+p.Branch)
 	} else {
 		_, _ = instance.DcExec(composeName, "git", "pull", "--ff-only", "--quiet")
-	}
-
-	// Phase 17: bootstrap semantic search — opt-in. Fires only when
-	// BootstrapSearch is true (advisors, coordinators, or explicit --index).
-	// Runs `cspace search init` in the background so the Claude handoff
-	// isn't blocked. Content-hash check makes re-runs a near no-op.
-	if p.BootstrapSearch {
-		reportPhase(17, Phases[16])
-		if _, err := instance.DcExec(composeName, "bash", "-c",
-			"mkdir -p /workspace/.cspace && nohup cspace search init --quiet >>/workspace/.cspace/search-index.log 2>&1 &"); err != nil {
-			reportWarn(fmt.Sprintf("search bootstrap: %v", err))
-		}
 	}
 
 	return Result{Created: created, Name: name}, nil

@@ -90,12 +90,12 @@ func ComposeFiles(name string, cfg *config.Config) ([]string, error) {
 
 // writeProjectPathsOverride generates a compose override that binds
 // project-root-relative host paths (.cspace/context, .cspace/memory, and
-// the optional .env) into the cspace and cspace-search-mcp services using
-// absolute paths. Required because non-standard compose implementations
-// (notably OrbStack's compose v5) don't reliably expand process-level env
-// vars inside compose-file interpolation, so ${CSPACE_PROJECT_ROOT:-.}
-// would collapse to "." and resolve relative to the compose file's
-// directory (~/.cspace/lib/) rather than the actual project root.
+// the optional .env) into the cspace service using absolute paths.
+// Required because non-standard compose implementations (notably
+// OrbStack's compose v5) don't reliably expand process-level env vars
+// inside compose-file interpolation, so ${CSPACE_PROJECT_ROOT:-.} would
+// collapse to "." and resolve relative to the compose file's directory
+// (~/.cspace/lib/) rather than the actual project root.
 func writeProjectPathsOverride(name string, cfg *config.Config) (string, error) {
 	if cfg.ProjectRoot == "" || name == "" {
 		return "", nil
@@ -116,10 +116,7 @@ services:
     volumes:
       - %s:/workspace/.cspace/context
       - %s:/home/dev/.claude/projects/-workspace/memory
-%s  cspace-search-mcp:
-    volumes:
-      - %s:/workspace/.cspace/context
-`, contextSrc, memorySrc, envFileBlock, contextSrc)
+%s`, contextSrc, memorySrc, envFileBlock)
 
 	path := filepath.Join(os.TempDir(), fmt.Sprintf("cspace-%s-project-paths.yml", cfg.ComposeName(name)))
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -189,7 +186,6 @@ func ComposeEnv(name string, cfg *config.Config) []string {
 		"CSPACE_LOGS_VOLUME=" + cfg.LogsVolume(),
 		"CSPACE_LABEL=" + cfg.InstanceLabel(),
 		"CSPACE_PROJECT_NETWORK=" + cfg.ProjectNetwork(),
-		"CSPACE_PROJECT_STACK_NAME=" + cfg.ProjectStackName(),
 		"CSPACE_HOME=" + cspaceHome,
 		"CSPACE_SESSIONS_DIR=" + cfg.SessionsDir(),
 		"HOST_PORT_DEV=" + strconv.Itoa(pm.Dev),

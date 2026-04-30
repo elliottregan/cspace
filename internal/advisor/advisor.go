@@ -100,7 +100,7 @@ func Launch(cfg *config.Config, name string) (reused bool, err error) {
 		return true, nil
 	}
 
-	if _, err := provision.Run(provision.Params{Name: name, Cfg: cfg, BootstrapSearch: true}); err != nil {
+	if _, err := provision.Run(provision.Params{Name: name, Cfg: cfg}); err != nil {
 		return false, fmt.Errorf("provisioning advisor %s: %w", name, err)
 	}
 

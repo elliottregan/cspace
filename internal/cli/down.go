@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/elliottregan/cspace/internal/compose"
 	"github.com/elliottregan/cspace/internal/docker"
@@ -44,7 +43,7 @@ func newDownCmd() *cobra.Command {
 	}
 
 	cmd.Flags().Bool("all", false, "Destroy all instances for this project")
-	cmd.Flags().Bool("project", false, "Destroy all instances AND the shared search stack for this project")
+	cmd.Flags().Bool("project", false, "Destroy all instances and the project network")
 	cmd.Flags().Bool("everywhere", false, "Destroy ALL cspace instances across all projects")
 
 	return cmd
@@ -101,13 +100,6 @@ func runDownProject() error {
 		}
 	}
 
-	// Then tear down the project search stack + its volumes.
-	stackName := cfg.ProjectStackName()
-	fmt.Printf("Tearing down project search stack: %s\n", stackName)
-	if err := compose.ProjectStackDown(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "  warning: %v\n", err)
-	}
-
 	// Remove the project network last.
 	docker.NetworkRemove(cfg.ProjectNetwork())
 
@@ -123,11 +115,8 @@ func downEverywhere() error {
 		return err
 	}
 
-	// Discover project stacks to tear down.
-	projectStacks := discoverProjectStacks()
-
-	if len(infos) == 0 && len(projectStacks) == 0 {
-		fmt.Println("No cspace instances or project stacks running anywhere.")
+	if len(infos) == 0 {
+		fmt.Println("No cspace instances running anywhere.")
 		return nil
 	}
 
@@ -143,13 +132,6 @@ func downEverywhere() error {
 				project = "?"
 			}
 			fmt.Printf("  %-16s %-20s\n", info.ComposeName, project)
-		}
-		fmt.Println()
-	}
-	if len(projectStacks) > 0 {
-		fmt.Println("  Project search stacks:")
-		for _, stack := range projectStacks {
-			fmt.Printf("    %s\n", stack)
 		}
 		fmt.Println()
 	}
@@ -170,14 +152,6 @@ func downEverywhere() error {
 		}
 	}
 
-	// Tear down project stacks
-	for _, stack := range projectStacks {
-		fmt.Printf("Tearing down project stack: %s\n", stack)
-		if err := compose.ProjectStackDownDirect(stack); err != nil {
-			fmt.Fprintf(os.Stderr, "  warning: %v\n", err)
-		}
-	}
-
 	// Remove project networks for each unique project
 	seen := make(map[string]bool)
 	for _, info := range infos {
@@ -189,29 +163,4 @@ func downEverywhere() error {
 
 	fmt.Println("Done.")
 	return nil
-}
-
-// discoverProjectStacks finds all running project-scoped search sidecar
-// stacks by querying Docker for compose projects matching the naming
-// convention "cspace-*-stack".
-func discoverProjectStacks() []string {
-	out, err := docker.Exec("ps", "--filter", "label=com.docker.compose.project",
-		"--format", `{{.Label "com.docker.compose.project"}}`)
-	if err != nil {
-		return nil
-	}
-
-	seen := make(map[string]bool)
-	var stacks []string
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "cspace-") && strings.HasSuffix(line, "-stack") && !seen[line] {
-			seen[line] = true
-			stacks = append(stacks, line)
-		}
-	}
-	return stacks
 }

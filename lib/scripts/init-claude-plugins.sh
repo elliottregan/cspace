@@ -121,15 +121,6 @@ if ! sudo -u dev "$CLAUDE_BIN" mcp add --scope user cspace-context -- \
     echo "  - cspace-context: registration failed (continuing)"
 fi
 
-# cspace-search MCP — semantic search over commits + code (search_code,
-# list_clusters). Lets advisors, coordinators, and implementers ground
-# their reasoning in current code rather than vocabulary-matching grep.
-echo "  - cspace-search: registering"
-if ! sudo -u dev "$CLAUDE_BIN" mcp add --scope user cspace-search -- \
-    cspace search mcp --root /workspace 2>&1 | sed 's/^/      /'; then
-    echo "  - cspace-search: registration failed (continuing)"
-fi
-
 # Skip plugin init if already done
 if [ -f "$MARKER_FILE" ]; then
     exit 0
@@ -234,12 +225,3 @@ touch "$MARKER_FILE"
 chown -R dev:dev "$PLUGINS_DIR"
 
 echo "Claude plugins initialized"
-
-# Semantic search bootstrap (`cspace search init`) is NOT invoked here.
-# entrypoint.sh fires this script on every container start, including the
-# very first start when /workspace is still empty — the git bundle is
-# unpacked later, in provision phase 12. Running the bootstrap here would
-# fail with "not a git repository", and the marker file above then
-# prevents any retry. The host-side provisioner calls the bootstrap after
-# phase 12 (see internal/provision/provision.go), where the workspace is
-# populated and sidecars have had time to become healthy.

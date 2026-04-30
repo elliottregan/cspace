@@ -2,14 +2,6 @@
 # Project-specific services are added via compose file layering (-f).
 # Browser sidecar provides Chrome CDP + Playwright run-server per instance.
 
-include:
-  - docker-compose.search.yml
-
-# Search sidecars (qdrant, llama-server, llama-clustering, reduce-api,
-# hdbscan-api) are defined in docker-compose.project.yml and run at
-# project scope — one set shared by all instances. Instances reach them
-# via network aliases on the project network (http://qdrant:6333, etc.).
-
 services:
   cspace:
     image: ${CSPACE_IMAGE:-cspace-dev}
@@ -160,12 +152,6 @@ volumes:
   # NDJSON events under /logs/events/<instance>/ and opens per-instance
   # sockets under /logs/messages/<instance>/, so the host-side `cspace` CLI
   # can reach every running instance through one mount.
-  #
-  # Search sidecar volumes (qdrant-storage, llama-models) are now per-project
-  # named volumes in docker-compose.project.yml — one qdrant process per
-  # project avoids the WAL-conflict crash while sharing a single index. Keep
-  # cspace-logs LAST so its `name:`/`external:` subkeys don't get silently
-  # claimed by a newly-inserted volume above.
   cspace-logs:
     name: ${CSPACE_LOGS_VOLUME:-cspace-logs}
     external: true

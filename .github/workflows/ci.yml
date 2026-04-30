@@ -46,19 +46,3 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y shellcheck
           shellcheck lib/scripts/*.sh lib/hooks/*.sh
-
-  integration-search:
-    runs-on: ubuntu-latest
-    services:
-      qdrant:
-        image: qdrant/qdrant:latest
-        ports: ["6333:6333"]
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-
-      - name: Integration tests (Qdrant)
-        run: go test -tags=integration_qdrant ./search/...
