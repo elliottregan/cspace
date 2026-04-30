@@ -309,13 +309,6 @@ func (c *Config) SessionsDir() string {
 	return filepath.Join(home, ".cspace", "sessions", c.Project.Name)
 }
 
-// ProjectStackName returns the docker-compose project name for the
-// project-scoped search sidecar stack. Distinct from any instance
-// compose project name (which uses ComposeName).
-func (c *Config) ProjectStackName() string {
-	return appPrefix + "-" + c.Project.Name + "-stack"
-}
-
 // InstanceLabel returns the Docker label for this project's instances.
 func (c *Config) InstanceLabel() string {
 	return appPrefix + ".project=" + c.Project.Name

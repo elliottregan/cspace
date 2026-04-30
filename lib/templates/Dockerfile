@@ -33,14 +33,6 @@ RUN mkdir -p /var/run/sshd && \
     echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config && \
     echo 'PubkeyAuthentication yes' >> /etc/ssh/sshd_config
 
-# Install lefthook — cspace-search's post-commit/post-checkout/post-merge
-# hooks are installed via `cspace search init`, but only when this binary
-# is on PATH. Without it, auto-reindex on commit silently does nothing
-# and agents end up querying a stale index. Stamping it into the image
-# means every container gets it for free.
-RUN GOBIN=/usr/local/bin go install github.com/evilmartians/lefthook@latest && \
-    rm -rf /root/go /root/.cache/go-build
-
 # Create non-root user
 RUN adduser -D -s /bin/bash dev && \
     adduser dev wheel && \

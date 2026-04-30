@@ -38,22 +38,19 @@ func TestReporterInterfaceImplementations(t *testing.T) {
 }
 
 func TestPhasesReference(t *testing.T) {
-	if len(Phases) != 17 {
-		t.Errorf("Phases: got %d entries, want 17", len(Phases))
+	if len(Phases) != 15 {
+		t.Errorf("Phases: got %d entries, want 15", len(Phases))
 	}
 	if Phases[0] != "Validating name" {
 		t.Errorf("Phases[0]: got %q", Phases[0])
 	}
-	if Phases[5] != "Starting search stack" {
+	if Phases[5] != "Starting reverse proxy" {
 		t.Errorf("Phases[5]: got %q", Phases[5])
 	}
-	if Phases[14] != "Installing plugins" {
+	if Phases[13] != "Installing plugins" {
+		t.Errorf("Phases[13]: got %q", Phases[13])
+	}
+	if Phases[14] != "Syncing workspace" {
 		t.Errorf("Phases[14]: got %q", Phases[14])
-	}
-	if Phases[15] != "Syncing workspace" {
-		t.Errorf("Phases[15]: got %q", Phases[15])
-	}
-	if Phases[16] != "Bootstrapping search" {
-		t.Errorf("Phases[16]: got %q", Phases[16])
 	}
 }

@@ -155,7 +155,7 @@ func tuiNew() error {
 		fmt.Printf("Instance name: %s\n", name)
 	}
 
-	return runUpWithArgs(name, "", false, false, "", "", "", false, false)
+	return runUpWithArgs(name, "", false, false, "", "", "", false)
 }
 
 // tuiConnect shows a sub-menu for connecting to a running instance.
@@ -186,7 +186,7 @@ func tuiConnect(details []instance.Detail) error {
 	composeName := cfg.ComposeName(name)
 	switch action {
 	case tuiActionConnect:
-		return runUpWithArgs(name, "", false, false, "", "", "", false, false)
+		return runUpWithArgs(name, "", false, false, "", "", "", false)
 	case tuiActionSSH:
 		return instance.DcExecInteractive(composeName, "bash")
 	case tuiActionPorts:
@@ -268,22 +268,14 @@ func tuiCoordinate() error {
 	return runCoordinateWithArgs(prompt, "", name, "")
 }
 
-// tuiRebuild confirms and triggers a rebuild. Optionally refreshes
-// semantic search indexes on every running instance of this project
-// afterwards — answers both questions in one form so the user isn't
-// bounced back to a second prompt.
+// tuiRebuild confirms and triggers a rebuild.
 func tuiRebuild() error {
 	var confirm bool
-	var reindex bool
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewConfirm().
 				Title("Rebuild the container image?").
 				Value(&confirm),
-			huh.NewConfirm().
-				Title("After rebuild, reindex semantic search on running instances?").
-				Description("Runs `cspace search init --quiet` inside each running instance of this project, in the background.").
-				Value(&reindex),
 		),
 	)
 
@@ -295,7 +287,7 @@ func tuiRebuild() error {
 		return nil
 	}
 
-	return runRebuild(reindex)
+	return runRebuild()
 }
 
 // pickFromDetails presents a selection menu from pre-fetched instance details.
