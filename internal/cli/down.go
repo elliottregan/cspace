@@ -43,7 +43,7 @@ func newDownCmd() *cobra.Command {
 	}
 
 	cmd.Flags().Bool("all", false, "Destroy all instances for this project")
-	cmd.Flags().Bool("project", false, "Destroy all instances AND the shared search stack for this project")
+	cmd.Flags().Bool("project", false, "Destroy all instances and the project network")
 	cmd.Flags().Bool("everywhere", false, "Destroy ALL cspace instances across all projects")
 
 	return cmd
@@ -164,4 +164,3 @@ func downEverywhere() error {
 	fmt.Println("Done.")
 	return nil
 }
-

@@ -9,6 +9,7 @@ func TestUpCmdHasTeleportFromFlag(t *testing.T) {
 	flag := cmd.Flag("teleport-from")
 	if flag == nil {
 		t.Fatal("expected --teleport-from flag to be registered")
+		return // unreachable; satisfies staticcheck SA5011
 	}
 	if flag.Value.String() != "" {
 		t.Errorf("expected default empty, got %q", flag.Value.String())
