@@ -224,6 +224,16 @@ func newCspace2UpCmd() *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(),
 				"sandbox %s up: control %s  ip %s  token %s…\n",
 				name, ctlURL, ip, token[:8])
+
+			// Friendly-URL hint. Always print the browse line when DNS is
+			// installed (it's helpful, not nagging). Otherwise, suggest
+			// `cspace dns install` once per user via a sentinel.
+			if dnsInstalled() {
+				fmt.Fprintf(cmd.OutOrStdout(),
+					"browse:  http://%s.cspace2.local/  (friendly URL via cspace dns)\n", name)
+			} else {
+				maybeNudgeMissingDnsInstall(cmd.OutOrStdout())
+			}
 			return nil
 		},
 	}
@@ -368,6 +378,33 @@ func maybeNudgeMissingAnthropicAuth(out io.Writer, env map[string]string) {
 	fmt.Fprintln(out, "note: no Anthropic credential reachable. Run `cspace keychain init` to set one up")
 	fmt.Fprintln(out, "      (or set ANTHROPIC_API_KEY in ~/.cspace/secrets.env). Sandbox will boot,")
 	fmt.Fprintln(out, "      but Claude SDK calls will fail until auth is configured.")
+	if err := os.MkdirAll(cspaceDir, 0o755); err != nil {
+		return
+	}
+	_ = os.WriteFile(sentinel, []byte("shown\n"), 0o644)
+}
+
+// dnsInstallNudgeSentinel is the per-user marker for "the dns-install nudge
+// has already been shown". Lives in ~/.cspace/. Once it exists the nudge
+// stays silent forever.
+const dnsInstallNudgeSentinel = ".no-dns-install-nudge-shown"
+
+// maybeNudgeMissingDnsInstall prints a one-time hint when DNS is not
+// installed, suggesting the user run `cspace dns install` for friendly
+// URLs. Gated by ~/.cspace/.no-dns-install-nudge-shown so it fires at
+// most once per user. Failure to write the sentinel is swallowed — the
+// nudge already printed and a future re-print is harmless.
+func maybeNudgeMissingDnsInstall(out io.Writer) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return
+	}
+	cspaceDir := filepath.Join(home, ".cspace")
+	sentinel := filepath.Join(cspaceDir, dnsInstallNudgeSentinel)
+	if _, err := os.Stat(sentinel); err == nil {
+		return
+	}
+	fmt.Fprintln(out, "note: friendly URLs disabled. Run `cspace dns install` once to enable http://<sandbox>.cspace2.local/.")
 	if err := os.MkdirAll(cspaceDir, 0o755); err != nil {
 		return
 	}

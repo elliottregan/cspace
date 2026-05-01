@@ -54,3 +54,28 @@ func TestMaybeNudgeSilentWhenAuthPresent(t *testing.T) {
 		t.Errorf("sentinel should not be created when nudge silent")
 	}
 }
+
+// TestMaybeNudgeMissingDnsInstallFiresOnce verifies the dns-install nudge
+// prints on the first call, then stays silent on subsequent calls because
+// the sentinel file gates it.
+func TestMaybeNudgeMissingDnsInstallFiresOnce(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	var buf bytes.Buffer
+	maybeNudgeMissingDnsInstall(&buf)
+	if !strings.Contains(buf.String(), "cspace dns install") {
+		t.Errorf("first call should print nudge; got: %q", buf.String())
+	}
+
+	sentinel := filepath.Join(tmp, ".cspace", ".no-dns-install-nudge-shown")
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Errorf("sentinel file not created: %v", err)
+	}
+
+	buf.Reset()
+	maybeNudgeMissingDnsInstall(&buf)
+	if buf.Len() != 0 {
+		t.Errorf("second call should be silent; got: %q", buf.String())
+	}
+}
