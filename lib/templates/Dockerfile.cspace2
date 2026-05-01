@@ -118,8 +118,15 @@ COPY bin/cspace-linux-arm64 /usr/local/bin/cspace
 COPY --from=supervisor-builder /build/dist/cspace-supervisor /usr/local/bin/cspace-supervisor
 
 # Workspace + sessions dirs are owned by dev so the agent can write them.
-RUN mkdir -p /workspace /sessions \
- && chown -R dev:dev /workspace /sessions \
+# The Claude Code SDK writes session JSONLs under
+# ~/.claude/projects/-workspace/sessions/<session_id>.jsonl. Pre-create the
+# parent directory tree as dev so a runtime bind mount of the host's
+# claude-projects-workspace dir lands on a known, dev-owned target.
+# (mkdir -p /home/dev/.claude/projects/-workspace creates parent dirs as
+# root by default; chowning the whole /home/dev/.claude tree to dev fixes
+# ownership.)
+RUN mkdir -p /workspace /sessions /home/dev/.claude/projects/-workspace \
+ && chown -R dev:dev /workspace /sessions /home/dev/.claude \
  && chmod +x /usr/local/bin/cspace /usr/local/bin/cspace-supervisor
 
 # GOPATH dir owned by dev so module downloads don't require sudo.

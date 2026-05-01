@@ -37,6 +37,15 @@ export async function runClaude(
       // (lib/agent-supervisor/args.mjs) and is required for the agent to
       // actually USE its tools (Bash, Read, Write, Edit, etc.).
       permissionMode: "bypassPermissions",
+      // Resume an existing session when cspace2-up detected one and
+      // injected the session_id as env. Without this, every cspace2-up
+      // boots a fresh session even when the host has prior conversation
+      // state on disk. The session JSONL itself is reachable because the
+      // host bind-mounts ~/.claude/projects/-workspace/ into this
+      // sandbox at the same path the SDK reads from.
+      ...(process.env.CSPACE_RESUME_SESSION_ID
+        ? { resume: process.env.CSPACE_RESUME_SESSION_ID }
+        : {}),
       // Browser MCP servers — clients only. Chrome itself runs in a sidecar
       // container launched by cspace2-up. The MCP servers attach over CDP at
       // $CSPACE_BROWSER_CDP_URL. If the env var is unset, the MCP servers
