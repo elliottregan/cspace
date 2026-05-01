@@ -102,5 +102,14 @@ RUN mkdir -p /home/dev/go && chown -R dev:dev /home/dev/go
 USER dev
 WORKDIR /workspace
 
-ENTRYPOINT ["/usr/bin/tini", "--"]
+# Sandbox entrypoint wrapper — runs once at container start, configures git's
+# credential helper for github.com when GH_TOKEN is present, then exec's the
+# supervisor. Keeps the supervisor focused on the SDK loop while ensuring
+# `git push` from inside the sandbox doesn't prompt for auth.
+USER root
+COPY lib/scripts/cspace2-entrypoint.sh /usr/local/bin/cspace2-entrypoint.sh
+RUN chmod +x /usr/local/bin/cspace2-entrypoint.sh
+USER dev
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/cspace2-entrypoint.sh"]
 CMD ["/usr/local/bin/cspace-supervisor"]

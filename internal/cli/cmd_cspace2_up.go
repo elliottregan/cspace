@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -111,6 +112,11 @@ func newCspace2UpCmd() *cobra.Command {
 			// sync if shell env updated one alias.
 			propagateFamily(env, []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"})
 			propagateFamily(env, []string{"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN"})
+
+			// First-run nudge if no Anthropic credential is reachable from any
+			// source (secrets file, shell env, alias propagation). Prints once
+			// per user via a sentinel in ~/.cspace/. Sandbox still boots.
+			maybeNudgeMissingAnthropicAuth(cmd.OutOrStdout(), env)
 
 			containerName := fmt.Sprintf("cspace2-%s-%s", project, name)
 
@@ -334,4 +340,36 @@ func ensureRegistryDaemon() error {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return fmt.Errorf("daemon started but not accepting connections")
+}
+
+// nudgeSentinelName is the per-user marker file that records "the no-auth
+// nudge has already been shown". Lives in ~/.cspace/. Once it exists the
+// nudge stays silent forever — the message has done its job.
+const nudgeSentinelName = ".no-claude-auth-nudge-shown"
+
+// maybeNudgeMissingAnthropicAuth prints a one-time hint when no Anthropic
+// credential is reachable in env. Gated by a sentinel file in ~/.cspace/ so
+// it fires at most once per user. Failure to write the sentinel is swallowed
+// — the nudge already printed and a future re-print is harmless.
+func maybeNudgeMissingAnthropicAuth(out io.Writer, env map[string]string) {
+	if env["ANTHROPIC_API_KEY"] != "" {
+		return
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return
+	}
+	cspaceDir := filepath.Join(home, ".cspace")
+	sentinel := filepath.Join(cspaceDir, nudgeSentinelName)
+	if _, err := os.Stat(sentinel); err == nil {
+		// Already shown.
+		return
+	}
+	fmt.Fprintln(out, "note: no Anthropic credential reachable. Run `cspace keychain init` to set one up")
+	fmt.Fprintln(out, "      (or set ANTHROPIC_API_KEY in ~/.cspace/secrets.env). Sandbox will boot,")
+	fmt.Fprintln(out, "      but Claude SDK calls will fail until auth is configured.")
+	if err := os.MkdirAll(cspaceDir, 0o755); err != nil {
+		return
+	}
+	_ = os.WriteFile(sentinel, []byte("shown\n"), 0o644)
 }
