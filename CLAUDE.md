@@ -16,6 +16,25 @@ The `.cspace/context/` directory holds layered planning context accessible via t
 
 Agents call `read_context` at the start of non-trivial work. `.cspace/context/` is bind-mounted from the host into every cspace container for the project, so writes (decisions, discoveries, findings) by one agent are visible to siblings in real time without git push/pull. The cspace-context MCP server reads/writes directly against this bind mount; `writeEntry` uses `O_EXCL` create for race-safe concurrent creates across containers. See `docs/superpowers/specs/2026-04-13-context-mcp-server-design.md` for the original contract (findings are a later extension).
 
+## Anthropic credentials
+
+cspace sandboxes need an Anthropic credential to drive Claude Code. Three forms work via `ANTHROPIC_API_KEY` (the SDK auto-detects format):
+
+- **Long-lived API key** (`sk-ant-api-...`) from <https://console.anthropic.com/settings/keys>. Stable across sessions, no expiry. **Recommended for daily use** — paste once into Keychain via `cspace keychain init` and forget about it. This is the right choice for any multi-day or autonomous run.
+- **Long-lived OAuth token** (`sk-ant-oat-...`) from `claude setup-token`. Functionally similar to an API key — also fine to paste into `cspace keychain init`.
+- **Short-lived OAuth token** auto-discovered from `claude /login`'s macOS Keychain entry (the `Claude Code-credentials` envelope). Refreshes when the host's `claude` CLI runs; otherwise expires within ~hours. Convenient for first-run / demo, but **don't rely on it for sessions over a day** — the agent will lose auth mid-task.
+
+`cspace keychain status` shows where each credential is sourced from. If you see `auto-discovered (Claude Code OAuth)` with an expiry date approaching, run `cspace keychain init` and paste a long-lived token.
+
+Resolution order (highest precedence first; first reachable wins):
+
+1. `<project>/.cspace/secrets.env` — project-scoped lock-in
+2. `~/.cspace/secrets.env` — user-global manual entry
+3. macOS Keychain `cspace-ANTHROPIC_API_KEY` — set via `cspace keychain init`
+4. Auto-discovery from host's `claude /login` state — convenience layer (short-lived OAuth)
+
+GitHub credentials (`GH_TOKEN` / `GITHUB_TOKEN` / `GITHUB_PERSONAL_ACCESS_TOKEN`) follow the same precedence; auto-discovery uses `gh auth token`.
+
 ## Advisors
 
 Advisors are long-running specialist agents consulted alongside the coordinator. Each runs in its own cspace container as `role=advisor` — persistent, session-continuous across `cspace coordinate` invocations. They are declared in `.cspace.json` under `advisors` (see defaults for the decision-maker).

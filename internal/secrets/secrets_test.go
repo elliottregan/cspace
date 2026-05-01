@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseBasic(t *testing.T) {
@@ -93,7 +94,7 @@ func TestAutoDiscoverFillsMissingKeys(t *testing.T) {
 		discoverClaudeOauthToken = prev1
 		discoverGhAuthToken = prev2
 	})
-	discoverClaudeOauthToken = func() (string, error) { return "sk-ant-oat-stub", nil }
+	discoverClaudeOauthToken = func() (string, time.Time, error) { return "sk-ant-oat-stub", time.Time{}, nil }
 	discoverGhAuthToken = func() (string, error) { return "gho_stub", nil }
 
 	if err := autoDiscover(out); err != nil {
@@ -122,9 +123,9 @@ func TestAutoDiscoverDoesNotOverwriteExisting(t *testing.T) {
 		discoverClaudeOauthToken = prev1
 		discoverGhAuthToken = prev2
 	})
-	discoverClaudeOauthToken = func() (string, error) {
+	discoverClaudeOauthToken = func() (string, time.Time, error) {
 		t.Errorf("discoverClaudeOauthToken should not be called when key is already set")
-		return "", nil
+		return "", time.Time{}, nil
 	}
 	discoverGhAuthToken = func() (string, error) {
 		t.Errorf("discoverGhAuthToken should not be called when key is already set")
@@ -149,9 +150,9 @@ func TestAutoDiscoverSkipsClaudeWhenAnthropicSet(t *testing.T) {
 		discoverClaudeOauthToken = prev1
 		discoverGhAuthToken = prev2
 	})
-	discoverClaudeOauthToken = func() (string, error) {
+	discoverClaudeOauthToken = func() (string, time.Time, error) {
 		t.Errorf("discoverClaudeOauthToken should not be called when ANTHROPIC_API_KEY is set")
-		return "", nil
+		return "", time.Time{}, nil
 	}
 	discoverGhAuthToken = func() (string, error) { return "", nil }
 
@@ -173,7 +174,7 @@ func TestAutoDiscoverSkipsGhWhenAnyGhAliasSet(t *testing.T) {
 				discoverClaudeOauthToken = prev1
 				discoverGhAuthToken = prev2
 			})
-			discoverClaudeOauthToken = func() (string, error) { return "", nil }
+			discoverClaudeOauthToken = func() (string, time.Time, error) { return "", time.Time{}, nil }
 			discoverGhAuthToken = func() (string, error) {
 				t.Errorf("discoverGhAuthToken should not be called when %s is set", key)
 				return "", nil

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // ReadKeychain reads a generic password from the macOS Keychain.
@@ -48,16 +49,18 @@ func WriteKeychain(serviceName, password string) error {
 
 // DiscoverClaudeOauthToken reads the Claude Code-credentials Keychain entry
 // (written by `claude /login`), parses the JSON envelope, and returns the
-// accessToken. Empty string with nil error when the entry is missing.
+// accessToken plus its expiry time. Empty string + zero time + nil error
+// when the entry is missing. Zero time also indicates an envelope that
+// lacks an expiresAt field (older Claude Code builds).
 //
 // The token is an OAuth access token (sk-ant-oat-...) that Claude Code
 // refreshes when the user runs claude on the host. cspace consumes this as
 // a convenience layer; users wanting a stable long-lived credential should
 // instead store an API key (sk-ant-api-...) via `cspace keychain init`.
-func DiscoverClaudeOauthToken() (string, error) {
+func DiscoverClaudeOauthToken() (string, time.Time, error) {
 	user := os.Getenv("USER")
 	if user == "" {
-		return "", nil
+		return "", time.Time{}, nil
 	}
 	cmd := exec.Command("security", "find-generic-password",
 		"-s", "Claude Code-credentials", "-a", user, "-w")
@@ -67,14 +70,14 @@ func DiscoverClaudeOauthToken() (string, error) {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			if exitErr.ExitCode() == 44 || strings.Contains(stderr.String(), "could not be found") {
-				return "", nil
+				return "", time.Time{}, nil
 			}
 		}
-		return "", fmt.Errorf("security find-generic-password Claude Code-credentials: %w", err)
+		return "", time.Time{}, fmt.Errorf("security find-generic-password Claude Code-credentials: %w", err)
 	}
 	raw := strings.TrimSpace(stdout.String())
 	if raw == "" {
-		return "", nil
+		return "", time.Time{}, nil
 	}
 
 	var envelope struct {
@@ -84,7 +87,11 @@ func DiscoverClaudeOauthToken() (string, error) {
 		} `json:"claudeAiOauth"`
 	}
 	if err := json.Unmarshal([]byte(raw), &envelope); err != nil {
-		return "", fmt.Errorf("parse Claude Code-credentials JSON: %w", err)
+		return "", time.Time{}, fmt.Errorf("parse Claude Code-credentials JSON: %w", err)
 	}
-	return envelope.ClaudeAiOauth.AccessToken, nil
+	var expiresAt time.Time
+	if envelope.ClaudeAiOauth.ExpiresAt > 0 {
+		expiresAt = time.UnixMilli(envelope.ClaudeAiOauth.ExpiresAt)
+	}
+	return envelope.ClaudeAiOauth.AccessToken, expiresAt, nil
 }

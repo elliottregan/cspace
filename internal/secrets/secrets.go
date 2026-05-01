@@ -118,7 +118,7 @@ func autoDiscover(out map[string]string) error {
 	// Anthropic credential: Claude Code-credentials JSON envelope on macOS.
 	if _, present := out["ANTHROPIC_API_KEY"]; !present {
 		if _, present := out["CLAUDE_CODE_OAUTH_TOKEN"]; !present {
-			tok, err := discoverClaudeOauthToken()
+			tok, _, err := discoverClaudeOauthToken()
 			if err != nil {
 				return err
 			}

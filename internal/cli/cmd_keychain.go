@@ -61,20 +61,27 @@ func runKeychainInit(out io.Writer, in io.Reader) error {
 		if err != nil {
 			return fmt.Errorf("read keychain cspace-ANTHROPIC_API_KEY: %w", err)
 		}
-		oauth, _ := secrets.DiscoverClaudeOauthToken()
+		oauth, expires, _ := secrets.DiscoverClaudeOauthToken()
 
 		fmt.Fprintln(out, "ANTHROPIC API KEY")
 		fmt.Fprintln(out, "  Recommended: paste a long-lived API key (sk-ant-api-...) from")
 		fmt.Fprintln(out, "  https://console.anthropic.com/settings/keys. Stable across sessions,")
-		fmt.Fprintln(out, "  no refresh dance.")
+		fmt.Fprintln(out, "  no refresh dance. Use this for any multi-day or autonomous run.")
+		fmt.Fprintln(out, "  An OAuth token (sk-ant-oat-...) works too but is short-lived;")
+		fmt.Fprintln(out, "  reserve it for short / casual sessions.")
 		switch {
 		case existing != "":
 			fmt.Fprintln(out, "  Status: already set in Keychain (cspace-ANTHROPIC_API_KEY).")
 		case oauth != "":
-			fmt.Fprintln(out, "  Status: not set. Auto-discovery will fall back to your Claude")
-			fmt.Fprintln(out, "  Code OAuth token, which refreshes via the host's `claude` CLI.")
-			fmt.Fprintln(out, "  That works for casual use; long-running sandboxes will lose auth")
-			fmt.Fprintln(out, "  when the OAuth token expires (typically within a few days).")
+			expiry := "an unknown time (older Claude Code build — no expiresAt field)"
+			if !expires.IsZero() {
+				expiry = expires.Local().Format("2006-01-02 15:04 MST")
+			}
+			fmt.Fprintln(out, "  Status: not set in cspace Keychain. Auto-discovery will fall back to your")
+			fmt.Fprintf(out, "          Claude Code OAuth token, which expires %s.\n", expiry)
+			fmt.Fprintln(out, "  Recommendation: paste a long-lived API key here for stable, multi-day work.")
+			fmt.Fprintln(out, "  The OAuth token is fine for short / casual sessions, but long-running")
+			fmt.Fprintln(out, "  sandboxes will lose auth mid-task when it expires.")
 		default:
 			fmt.Fprintln(out, "  Status: not set, and no auto-discoverable host credential found.")
 		}
@@ -217,9 +224,13 @@ func credentialSource(projectRoot, userHome, key string) (source, hint string) {
 	// Layer 4: auto-discovery — only relevant for canonical names.
 	switch key {
 	case "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN":
-		if oauth, _ := secrets.DiscoverClaudeOauthToken(); oauth != "" {
-			return "auto-discovered (Claude Code OAuth)",
-				"refreshes when host runs `claude`; sandbox may lose auth on long sessions"
+		if oauth, expires, _ := secrets.DiscoverClaudeOauthToken(); oauth != "" {
+			hint := "refreshes when host runs `claude`; sandbox may lose auth on long sessions"
+			if !expires.IsZero() {
+				hint = fmt.Sprintf("expires %s; %s",
+					expires.Local().Format("2006-01-02 15:04 MST"), hint)
+			}
+			return "auto-discovered (Claude Code OAuth)", hint
 		}
 	case "GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN":
 		if gh, _ := secrets.DiscoverGhAuthToken(); gh != "" {
