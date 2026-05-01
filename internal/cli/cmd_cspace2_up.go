@@ -88,20 +88,29 @@ func newCspace2UpCmd() *cobra.Command {
 				}
 				env[kv[:eq]] = kv[eq+1:]
 			}
+			// Anthropic credential family. Claude Code SDK reads ANTHROPIC_API_KEY,
+			// but users typically have the value under CLAUDE_CODE_OAUTH_TOKEN
+			// (the name `claude /login` writes to Keychain and what Task A's
+			// auto-discovery layer fills). Either name works as the carrier.
+			propagateFamily(env, []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"})
+
+			// GitHub credential family. gh CLI reads GH_TOKEN; the GitHub MCP
+			// server reads GITHUB_PERSONAL_ACCESS_TOKEN; Actions ambient is
+			// GITHUB_TOKEN. Same value under all three so any tool sees its
+			// expected name.
+			propagateFamily(env, []string{"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN"})
+
 			// Host shell env wins for explicitly-set keys (e.g. one-off override).
 			if k := os.Getenv("ANTHROPIC_API_KEY"); k != "" {
 				env["ANTHROPIC_API_KEY"] = k
 			}
-			// Claude Code reads ANTHROPIC_API_KEY for both API keys (sk-ant-api…)
-			// and long-lived OAuth tokens (sk-ant-oat…). Users typically have
-			// the OAuth token under the name CLAUDE_CODE_OAUTH_TOKEN (matches
-			// `claude setup-token` output). Alias it onto ANTHROPIC_API_KEY
-			// when the latter isn't already set, so either name works.
-			if env["ANTHROPIC_API_KEY"] == "" {
-				if t := env["CLAUDE_CODE_OAUTH_TOKEN"]; t != "" {
-					env["ANTHROPIC_API_KEY"] = t
-				}
+			if k := os.Getenv("GH_TOKEN"); k != "" {
+				env["GH_TOKEN"] = k
 			}
+			// Re-propagate after shell-env overrides so the family stays in
+			// sync if shell env updated one alias.
+			propagateFamily(env, []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"})
+			propagateFamily(env, []string{"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN"})
 
 			containerName := fmt.Sprintf("cspace2-%s-%s", project, name)
 
@@ -261,6 +270,28 @@ func projectName() string {
 		return cfg.Project.Name
 	}
 	return "default"
+}
+
+// propagateFamily ensures every name in `family` has the same value as the
+// first non-empty entry. If no entry has a value, the family is left empty.
+//
+// Used to make a single user-supplied credential satisfy all the env-var
+// names different tools look for — e.g. one GH_TOKEN supplies gh CLI, the
+// GitHub MCP server, and any tool that reads GITHUB_TOKEN ambient.
+func propagateFamily(env map[string]string, family []string) {
+	var value string
+	for _, name := range family {
+		if v := env[name]; v != "" {
+			value = v
+			break
+		}
+	}
+	if value == "" {
+		return
+	}
+	for _, name := range family {
+		env[name] = value
+	}
 }
 
 func randHex(n int) string {
