@@ -8,6 +8,7 @@ import (
 
 	"github.com/elliottregan/cspace/internal/assets"
 	"github.com/elliottregan/cspace/internal/config"
+	"github.com/elliottregan/cspace/internal/sandboxmode"
 	"github.com/spf13/cobra"
 )
 
@@ -38,13 +39,12 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 				return nil
 			}
 
-			// P0 prototype-* commands resolve the project name from CSPACE_PROJECT
-			// (or fall back to "default") and don't read .cspace.json. Tolerate
-			// config-load failures so they work both inside sandboxes (no git
-			// repo at /workspace) and outside any cspace project.
-			switch cmd.Name() {
-			case "prototype-up", "prototype-down", "prototype-send":
-				_ = loadConfig()
+			// In-sandbox: env vars (CSPACE_PROJECT, CSPACE_SANDBOX_NAME,
+			// CSPACE_REGISTRY_URL) carry project context. Skip the host-style
+			// git-repo / .cspace.json discovery so commands like
+			// `cspace prototype-send` (and future cspace2-*) work even when
+			// /workspace isn't a git repo at the cspace level.
+			if sandboxmode.IsInSandbox() {
 				return nil
 			}
 
