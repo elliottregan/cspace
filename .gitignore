@@ -17,6 +17,8 @@ lib/agent-supervisor-bun/node_modules/
 # ignore .cspace/.
 .cspace.local.json
 .cspace/secrets.env
+# cspace-context server atomic-write artifacts — should never be tracked
+.cspace/context/**/*.lock
 
 .env
 .pnpm-store/
