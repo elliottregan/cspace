@@ -21,8 +21,8 @@ const (
 	dnsLocalPort    = "5354"
 	dnsDomain       = "cspace2.local"
 	dnsResolverBody = `# Written by ` + "`cspace dns install`" + `. Routes *.cspace2.local lookups to the
-# cspace-registry-daemon's local DNS server on 127.0.0.1. Safe to delete;
-# uninstall via ` + "`cspace dns uninstall`" + `.
+# cspace daemon's local DNS server on 127.0.0.1. Safe to delete; uninstall
+# via ` + "`cspace dns uninstall`" + `.
 nameserver 127.0.0.1
 port 5354
 `
@@ -33,8 +33,8 @@ func newDnsCmd() *cobra.Command {
 		Use:   "dns",
 		Short: "Manage local DNS routing for *.cspace2.local",
 		Long: `cspace2-up registers each sandbox in ~/.cspace/sandbox-registry.json. The
-cspace-registry-daemon serves that registry over DNS at 127.0.0.1:5354,
-answering A queries for <sandbox>.cspace2.local with the sandbox's IP.
+cspace daemon serves that registry over DNS at 127.0.0.1:5354, answering
+A queries for <sandbox>.cspace2.local with the sandbox's IP.
 
 ` + "`cspace dns install`" + ` writes /etc/resolver/cspace2.local so macOS routes
 those queries through the daemon. After install, sandboxes are reachable
@@ -215,7 +215,7 @@ func runDnsStatus(out io.Writer) error {
 		}
 	}
 	fmt.Fprintln(out)
-	fmt.Fprintf(out, "  %s registry-daemon DNS answering on 127.0.0.1:%s/udp\n", mark(daemonAnswering), dnsLocalPort)
+	fmt.Fprintf(out, "  %s cspace daemon DNS answering on 127.0.0.1:%s/udp\n", mark(daemonAnswering), dnsLocalPort)
 	if !daemonAnswering {
 		fmt.Fprintln(out, "      (start a sandbox with `cspace cspace2-up` to spawn the daemon)")
 	}

@@ -411,25 +411,28 @@ func readLastSessionID(eventsPath string) (string, error) {
 	return lastID, nil
 }
 
-// ensureRegistryDaemon starts cspace-registry-daemon on 127.0.0.1:6280 if it
-// is not already accepting connections. It is idempotent — concurrent
-// cspace2-up calls that race here will at most spawn one extra daemon, and
-// only one will manage to bind the port; the others exit immediately.
+// ensureRegistryDaemon starts the cspace daemon on 127.0.0.1:6280 if it is
+// not already accepting connections. It re-execs the running cspace binary
+// itself (`cspace daemon serve`) rather than a separate binary, so the
+// daemon and the cspace2-up that spawned it are version-locked.
 //
-// P0: the daemon is left running until manually killed (no idle shutdown,
-// no stop subcommand). Tracked for P1.
+// Idempotent — concurrent cspace2-up calls that race here will at most spawn
+// one extra daemon, and only one will manage to bind the port; the others
+// exit immediately.
 func ensureRegistryDaemon() error {
 	conn, err := net.DialTimeout("tcp", "127.0.0.1:6280", time.Second)
 	if err == nil {
 		conn.Close()
 		return nil
 	}
-	bin, err := exec.LookPath("cspace-registry-daemon")
+	// Use os.Executable() so the daemon spawns the SAME cspace binary the
+	// user just invoked, not whatever "cspace" might exist on PATH from an
+	// older install.
+	self, err := os.Executable()
 	if err != nil {
-		// Fall back to the local build output.
-		bin = "./bin/cspace-registry-daemon"
+		return fmt.Errorf("locate cspace binary: %w", err)
 	}
-	c := exec.Command(bin)
+	c := exec.Command(self, "daemon", "serve")
 	c.Stdout, c.Stderr = nil, nil
 	if err := c.Start(); err != nil {
 		return err

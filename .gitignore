@@ -38,7 +38,6 @@ bin/cspace-linux
 bin/cspace-linux-arm64
 bin/cspace-search
 bin/cspace-search-mcp
-bin/cspace-registry-daemon
 dist/
 
 # Bun supervisor binary — built inside the cspace2 image's supervisor-builder

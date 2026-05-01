@@ -4,6 +4,7 @@ LDFLAGS_RELEASE := -ldflags "-s -w -X github.com/elliottregan/cspace/internal/cl
 GOBIN           := ./bin/cspace-go
 
 .PHONY: build build-linux clean test test-node vet sync-embedded overlay-demo overlay-web fmt fmt-check lint check install-tools setup-hooks check-hooks cspace-linux cspace2-image
+# (registry-daemon target removed; daemon is embedded as `cspace daemon serve`.)
 
 # Sync lib/ contents into internal/assets/embedded/ for go:embed
 sync-embedded:
@@ -110,7 +111,3 @@ cspace2-image: cspace-linux
 		--file lib/templates/Dockerfile.cspace2 \
 		.
 
-# P0: host-side HTTP daemon that exposes registry lookups to in-sandbox cspace.
-.PHONY: registry-daemon
-registry-daemon:
-	go build -o bin/cspace-registry-daemon ./cmd/cspace-registry-daemon
