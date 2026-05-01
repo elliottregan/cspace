@@ -41,12 +41,11 @@ bin/cspace-search-mcp
 bin/cspace-registry-daemon
 dist/
 
-# The Phase 0 Bun supervisor binary lives under lib/agent-supervisor-bun/dist/
-# and is COPYed into the prototype image. We track the file (Task 3 ships a
-# stub; Task 4 replaces it with the compiled Bun binary) so the image build
-# works on a fresh clone. Override the global `dist/` ignore here.
-!lib/agent-supervisor-bun/dist/
-!lib/agent-supervisor-bun/dist/cspace-supervisor
+# Bun supervisor binary — built inside the cspace2 image's supervisor-builder
+# stage from lib/agent-supervisor-bun/src/. Never tracked in git; the global
+# `dist/` rule above already ignores it, but this explicit entry documents
+# the contract for future readers and survives any reorg of the global rules.
+lib/agent-supervisor-bun/dist/
 
 # Embedded assets (generated from lib/ by make sync-embedded).
 # .gitkeep is tracked so `go:embed all:embedded` has at least one match

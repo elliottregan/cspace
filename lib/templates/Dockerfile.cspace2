@@ -1,4 +1,30 @@
 # cspace2 sandbox image. Minimal: Bun + Claude Code + cspace + supervisor.
+
+# ── Stage 1: compile the Bun TS supervisor ─────────────────────────────────
+# Produces a single Linux/arm64 ELF at /build/dist/cspace-supervisor that
+# the runtime stage copies into /usr/local/bin/cspace-supervisor.
+#
+# This stage runs only during image build — the resulting binary is the
+# cspace-supervisor process running inside every cspace2 sandbox. Source
+# of truth lives in lib/agent-supervisor-bun/src/; no compiled artifact
+# is tracked in git.
+#
+# IMPORTANT: We use the Debian-flavored Bun image (glibc), not -alpine
+# (musl). The runtime stage below is debian:bookworm-slim, which has
+# glibc. A musl-linked supervisor binary fails at exec time in the
+# runtime stage with "cannot execute: required file not found" because
+# libc.musl-aarch64.so.1 isn't present. Keep the libc family aligned
+# between builder and runtime.
+FROM docker.io/oven/bun:1.3-debian AS supervisor-builder
+WORKDIR /build
+COPY lib/agent-supervisor-bun/package.json lib/agent-supervisor-bun/bun.lock ./
+RUN bun install --frozen-lockfile
+COPY lib/agent-supervisor-bun/src ./src
+COPY lib/agent-supervisor-bun/build.ts ./
+RUN bun run build
+# At this point /build/dist/cspace-supervisor exists.
+
+# ── Stage 2: cspace2 runtime ───────────────────────────────────────────────
 FROM docker.io/library/debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -88,8 +114,8 @@ RUN ln -sf /home/dev/.bun/bin/bun /usr/local/bin/bun \
 # cspace (linux/arm64 host CLI) for in-sandbox `cspace send`/`cspace exec`.
 COPY bin/cspace-linux-arm64 /usr/local/bin/cspace
 
-# Bun supervisor single binary.
-COPY lib/agent-supervisor-bun/dist/cspace-supervisor /usr/local/bin/cspace-supervisor
+# Bun supervisor single binary — built in the supervisor-builder stage above.
+COPY --from=supervisor-builder /build/dist/cspace-supervisor /usr/local/bin/cspace-supervisor
 
 # Workspace + sessions dirs are owned by dev so the agent can write them.
 RUN mkdir -p /workspace /sessions \
