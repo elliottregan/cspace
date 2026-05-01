@@ -16,6 +16,7 @@ lib/agent-supervisor-bun/node_modules/
 # and MUST stay in git (see CLAUDE.md "Agent memory"). Do not blanket-
 # ignore .cspace/.
 .cspace.local.json
+.cspace/secrets.env
 
 .env
 .pnpm-store/

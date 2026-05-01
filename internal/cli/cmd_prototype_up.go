@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/elliottregan/cspace/internal/registry"
+	"github.com/elliottregan/cspace/internal/secrets"
 	"github.com/elliottregan/cspace/internal/substrate"
 	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
 	"github.com/spf13/cobra"
@@ -55,7 +56,21 @@ func newPrototypeUpCmd() *cobra.Command {
 				"CSPACE_REGISTRY_URL":  "http://192.168.64.1:6280",
 				"CSPACE_HOST_GATEWAY":  "192.168.64.1",
 			}
-			// If the host has an Anthropic API key, propagate it so Claude can authenticate.
+
+			// Load cspace-owned secrets from ~/.cspace/secrets.env and
+			// <project>/.cspace/secrets.env. Project-local overrides global.
+			projectRoot := ""
+			if cfg != nil {
+				projectRoot = cfg.ProjectRoot
+			}
+			loaded, err := secrets.Load(projectRoot)
+			if err != nil {
+				return fmt.Errorf("load secrets: %w", err)
+			}
+			for k, v := range loaded {
+				env[k] = v
+			}
+			// Host shell env wins for explicitly-set keys (e.g. one-off override).
 			if k := os.Getenv("ANTHROPIC_API_KEY"); k != "" {
 				env["ANTHROPIC_API_KEY"] = k
 			}
