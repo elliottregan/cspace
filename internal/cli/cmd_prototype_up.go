@@ -76,6 +76,16 @@ func newPrototypeUpCmd() *cobra.Command {
 			if k := os.Getenv("ANTHROPIC_API_KEY"); k != "" {
 				env["ANTHROPIC_API_KEY"] = k
 			}
+			// Claude Code reads ANTHROPIC_API_KEY for both API keys (sk-ant-api…)
+			// and long-lived OAuth tokens (sk-ant-oat…). Users typically have
+			// the OAuth token under the name CLAUDE_CODE_OAUTH_TOKEN (matches
+			// `claude setup-token` output). Alias it onto ANTHROPIC_API_KEY
+			// when the latter isn't already set, so either name works.
+			if env["ANTHROPIC_API_KEY"] == "" {
+				if t := env["CLAUDE_CODE_OAUTH_TOKEN"]; t != "" {
+					env["ANTHROPIC_API_KEY"] = t
+				}
+			}
 
 			containerName := fmt.Sprintf("cspace-%s-%s", project, name)
 

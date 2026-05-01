@@ -14,6 +14,7 @@ type RunSpec struct {
 	Env         map[string]string // environment variables
 	Mounts      []Mount           // host-to-container bind mounts
 	PublishPort []PortMap         // ports to publish on the host
+	DNS         []string          // resolvers to inject; empty = adapter default
 }
 
 // Mount is a host-to-container bind mount.

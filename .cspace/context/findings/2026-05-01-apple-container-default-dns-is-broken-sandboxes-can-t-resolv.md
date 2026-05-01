@@ -2,7 +2,7 @@
 title: Apple Container default DNS is broken; sandboxes can't resolve hostnames
 date: 2026-05-01
 kind: finding
-status: acknowledged
+status: resolved
 category: bug
 tags: networking, apple-container, dns, p1-blocker
 related: docs/superpowers/spikes/2026-05-01-github-access-spike.md, docs/superpowers/spikes/2026-05-01-playwright-spike.md, docs/superpowers/spikes/2026-04-30-apple-container-spike.md
@@ -19,41 +19,16 @@ Containers launched by Apple Container 0.12.3 ship with `/etc/resolv.conf` point
 filed
 
 ### 2026-05-01T03:17:53Z — @agent — status: acknowledged
-## Decision
 
-User reviewed the three mitigation options and locked in **Option A** (extend `RunSpec` with `DNS []string`, pass via `--dns` flags from the substrate adapter, default to `["1.1.1.1","8.8.8.8"]`, project override via `.cspace.json`).
+### 2026-05-01T04:44:53Z — @agent — status: resolved
+## Landed in P0 extension branch (early)
 
-## Verification
+Originally scheduled for P1 Task 8. Promoted to P0 extension because Claude auth is fully blocked without it (api.anthropic.com fails to resolve), and Claude auth is the gate for every subsequent real-Claude spike.
 
-Before committing the plan change, verified that Apple Container 0.12.3 actually supports `--dns` and that the injected resolvers solve the symptom:
+Implementation:
+- `internal/substrate/substrate.go` — `RunSpec.DNS []string` field added.
+- `internal/substrate/applecontainer/adapter.go:Run` — appends `--dns <ns>` per entry; defaults `["1.1.1.1", "8.8.8.8"]` when empty.
 
-```
-$ container run --help | grep -i dns
-  --dns <ip>              DNS nameserver IP address
-  --dns-domain <domain>   Default DNS domain
-  --dns-option <option>   DNS options
-  --dns-search <domain>   DNS search domains
-  --no-dns                Do not configure DNS in the container
+Verified end-to-end via `scripts/spikes/2026-05-01-claude-auth.sh` (PASS, real Claude response with `is_error: false`). Status moves to `resolved`.
 
-$ container run --rm --dns 1.1.1.1 --dns 8.8.8.8 docker.io/library/alpine:latest \
-    sh -c 'cat /etc/resolv.conf; echo ---; nslookup -timeout=3 api.github.com'
-nameserver 1.1.1.1
-nameserver 8.8.8.8
----
-Non-authoritative answer:
-Name:    api.github.com
-Address: 140.82.114.6
-```
-
-Confirms: `--dns` flags overwrite `/etc/resolv.conf` inside the sandbox, and DNS resolution succeeds against the public resolvers. Same flow that was previously hanging on `192.168.64.1:53` now works.
-
-## Implementation
-
-P1 plan Task 8 updated with the concrete steps:
-
-- Add `DNS []string` to `substrate.RunSpec`.
-- Adapter `Run`: append `--dns <ns>` for each entry; default to `["1.1.1.1","8.8.8.8"]` when `spec.DNS` is empty.
-- Add `Sandbox.DNS []string` to project config so users on networks where public resolvers are blocked can override via `.cspace.json`.
-- Smoke test: `container exec ... cat /etc/resolv.conf` shows injected resolvers; `getent hosts api.github.com` returns a real IP.
-
-Status moved from `open` to `acknowledged` — fix is designed and verified, awaiting P1 implementation. Will move to `resolved` once the change lands and a fresh `cspace2-up` shows working DNS without manual intervention.
+P1 still owns adding `Sandbox.DNS []string` to project config so users on networks where public resolvers are blocked can override via `.cspace.json` — that wiring is not in this commit but the substrate layer is ready for it.

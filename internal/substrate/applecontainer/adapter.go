@@ -50,6 +50,18 @@ func (a *Adapter) Run(ctx context.Context, spec substrate.RunSpec) error {
 		args = append(args, "--publish",
 			fmt.Sprintf("%d:%d", p.HostPort, p.ContainerPort))
 	}
+	// DNS injection: Apple Container's default vmnet gateway (192.168.64.1)
+	// doesn't answer port 53, so containers can't resolve hostnames out of
+	// the box. We inject explicit resolvers via --dns. Default to public
+	// resolvers when the caller hasn't specified any. See finding
+	// 2026-05-01-apple-container-default-dns-is-broken-...
+	dns := spec.DNS
+	if len(dns) == 0 {
+		dns = []string{"1.1.1.1", "8.8.8.8"}
+	}
+	for _, ns := range dns {
+		args = append(args, "--dns", ns)
+	}
 	args = append(args, spec.Image)
 	args = append(args, spec.Command...)
 

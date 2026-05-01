@@ -34,20 +34,27 @@ if [[ ! -x "$CSPACE" ]]; then
   exit 1
 fi
 
-# Helpful precheck — let the user see at a glance whether a key is reachable.
+# Precheck: at least one of the recognized Claude auth credentials must be
+# reachable from somewhere the secrets layer will see. Claude Code accepts:
+#   - ANTHROPIC_API_KEY       (direct API key)
+#   - CLAUDE_CODE_OAUTH_TOKEN (subscription-backed OAuth token from `claude /login`)
 have_key="no"
-for f in "$HOME/.cspace/secrets.env" ".cspace/secrets.env"; do
-  if [[ -f "$f" ]] && grep -q '^ANTHROPIC_API_KEY=' "$f"; then
-    have_key="yes (in $f)"
+for var in ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN; do
+  for f in "$HOME/.cspace/secrets.env" ".cspace/secrets.env"; do
+    if [[ -f "$f" ]] && grep -q "^${var}=" "$f"; then
+      have_key="yes ($var in $f)"
+      break 2
+    fi
+  done
+  if [[ -n "${!var:-}" ]]; then
+    have_key="yes ($var in host shell env)"
     break
   fi
 done
-if [[ "$have_key" == "no" ]] && [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-  have_key="yes (host shell env)"
-fi
-echo "==> ANTHROPIC_API_KEY available: $have_key"
+echo "==> Claude auth credential available: $have_key"
 if [[ "$have_key" == "no" ]]; then
-  echo "FAIL: no ANTHROPIC_API_KEY in ~/.cspace/secrets.env, .cspace/secrets.env, or shell env." >&2
+  echo "FAIL: no ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN in" >&2
+  echo "      ~/.cspace/secrets.env, .cspace/secrets.env, or shell env." >&2
   exit 1
 fi
 
