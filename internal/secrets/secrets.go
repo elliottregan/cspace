@@ -22,7 +22,8 @@ import (
 )
 
 // cspaceKeys is the built-in list of secret keys whose values are looked up
-// in the macOS Keychain by Load() under service name "cspace-<KEY>".
+// in the macOS Keychain by Load() under service name "cspace-<KEY>" and
+// (where applicable) auto-discovered from host state on macOS.
 // File-based values in ~/.cspace/secrets.env or <project>/.cspace/secrets.env
 // override the Keychain layer per the documented precedence.
 var cspaceKeys = []string{
@@ -30,35 +31,37 @@ var cspaceKeys = []string{
 	"CLAUDE_CODE_OAUTH_TOKEN",
 	"GH_TOKEN",
 	"GITHUB_TOKEN",
+	"GITHUB_PERSONAL_ACCESS_TOKEN",
 }
 
+// discoverClaudeOauthToken and discoverGhAuthToken are package-level function
+// variables so tests can swap them with stubs without exec'ing real binaries.
+var (
+	discoverClaudeOauthToken = DiscoverClaudeOauthToken
+	discoverGhAuthToken      = DiscoverGhAuthToken
+)
+
 // Load returns the merged cspace secrets for a project. Resolution order
-// (later layers override earlier ones):
+// (later layers override earlier ones; first reachable value wins):
 //
-//  1. macOS Keychain entries for known cspace keys (service "cspace-<KEY>").
-//  2. ~/.cspace/secrets.env
-//  3. <projectRoot>/.cspace/secrets.env
-//  4. value-prefix references of the form `keychain:<service>` are resolved
-//     against the Keychain in-place.
+//  1. ~/.cspace/secrets.env       (user-global manual)
+//  2. <projectRoot>/.cspace/secrets.env  (project-scoped lock-in; wins over user)
+//  3. macOS Keychain cspace-<KEY>  (user explicitly stored via `cspace keychain init`)
+//  4. macOS auto-discovery        (Claude Code OAuth blob; gh auth token)
 //
-// Missing files are not errors. On non-darwin platforms the Keychain layers
-// are no-ops.
+// Note layer order: file values WIN over Keychain. This is intentional —
+// project owners who want to lock a specific PAT or API key in a file
+// shouldn't have it shadowed by ambient Keychain state.
+//
+// Shell env (os.Getenv) is NOT applied here; cmd_cspace2_up.go handles
+// shell env as the highest-precedence override after this function returns.
+//
+// Missing files / missing Keychain entries are not errors. On non-darwin
+// platforms the Keychain layers are no-ops.
 func Load(projectRoot string) (map[string]string, error) {
 	out := map[string]string{}
 
-	// Layer 1: Keychain for known cspace keys.
-	for _, key := range cspaceKeys {
-		val, err := ReadKeychain("cspace-" + key)
-		if err != nil {
-			return nil, err
-		}
-		if val != "" {
-			out[key] = val
-		}
-	}
-
-	// Layers 2 + 3: file loaders. Project overrides global, both override
-	// Keychain.
+	// Layers 1+2: file loaders (project overrides user). Builds the initial map.
 	home, err := os.UserHomeDir()
 	if err != nil {
 		// No home dir — fall through to project-only.
@@ -72,7 +75,27 @@ func Load(projectRoot string) (map[string]string, error) {
 		out[k] = v
 	}
 
-	// Layer 4: resolve `keychain:<service>` value-prefix references.
+	// Layer 3: cspace-<KEY> Keychain entries — only fill in keys NOT already set.
+	for _, key := range cspaceKeys {
+		if _, present := out[key]; present {
+			continue
+		}
+		val, err := ReadKeychain("cspace-" + key)
+		if err != nil {
+			return nil, err
+		}
+		if val != "" {
+			out[key] = val
+		}
+	}
+
+	// Layer 4: auto-discovery — only fill in keys still missing.
+	if err := autoDiscover(out); err != nil {
+		return nil, err
+	}
+
+	// Layer 4b: resolve `keychain:<service>` value-prefix references in any
+	// file-supplied values. Same behavior as before.
 	for k, v := range out {
 		if strings.HasPrefix(v, "keychain:") {
 			service := strings.TrimPrefix(v, "keychain:")
@@ -85,6 +108,54 @@ func Load(projectRoot string) (map[string]string, error) {
 	}
 
 	return out, nil
+}
+
+// autoDiscover fills in Anthropic + GitHub credentials from host state when
+// the corresponding key is not already set in `out`. This is the
+// last-resort convenience layer: file values, Keychain `cspace-<KEY>`
+// entries, and shell env (applied later) all take precedence.
+func autoDiscover(out map[string]string) error {
+	// Anthropic credential: Claude Code-credentials JSON envelope on macOS.
+	if _, present := out["ANTHROPIC_API_KEY"]; !present {
+		if _, present := out["CLAUDE_CODE_OAUTH_TOKEN"]; !present {
+			tok, err := discoverClaudeOauthToken()
+			if err != nil {
+				return err
+			}
+			if tok != "" {
+				// Single source, single fill — the cmd_cspace2_up alias logic
+				// takes care of mapping CLAUDE_CODE_OAUTH_TOKEN onto
+				// ANTHROPIC_API_KEY. Fill CLAUDE_CODE_OAUTH_TOKEN here and
+				// let the existing alias propagate (so users who ALREADY
+				// have a real ANTHROPIC_API_KEY in their file aren't
+				// overridden).
+				out["CLAUDE_CODE_OAUTH_TOKEN"] = tok
+			}
+		}
+	}
+
+	// GitHub credential: `gh auth token` on any platform with gh.
+	needsGh := true
+	for _, key := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN"} {
+		if _, present := out[key]; present {
+			needsGh = false
+			break
+		}
+	}
+	if needsGh {
+		tok, err := discoverGhAuthToken()
+		if err != nil {
+			return err
+		}
+		if tok != "" {
+			// Fill GH_TOKEN as the canonical name; cmd_cspace2_up's alias
+			// propagation (Task B, separate task) makes GITHUB_TOKEN /
+			// GITHUB_PERSONAL_ACCESS_TOKEN see the same value.
+			out["GH_TOKEN"] = tok
+		}
+	}
+
+	return nil
 }
 
 // loadFromDirs is the testable core of Load. globalDir and projectDir are

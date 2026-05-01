@@ -86,6 +86,106 @@ func TestLoadProjectOverridesGlobal(t *testing.T) {
 	}
 }
 
+func TestAutoDiscoverFillsMissingKeys(t *testing.T) {
+	out := map[string]string{}
+	prev1, prev2 := discoverClaudeOauthToken, discoverGhAuthToken
+	t.Cleanup(func() {
+		discoverClaudeOauthToken = prev1
+		discoverGhAuthToken = prev2
+	})
+	discoverClaudeOauthToken = func() (string, error) { return "sk-ant-oat-stub", nil }
+	discoverGhAuthToken = func() (string, error) { return "gho_stub", nil }
+
+	if err := autoDiscover(out); err != nil {
+		t.Fatalf("autoDiscover: %v", err)
+	}
+	if out["CLAUDE_CODE_OAUTH_TOKEN"] != "sk-ant-oat-stub" {
+		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN: got %q, want %q", out["CLAUDE_CODE_OAUTH_TOKEN"], "sk-ant-oat-stub")
+	}
+	if out["GH_TOKEN"] != "gho_stub" {
+		t.Errorf("GH_TOKEN: got %q, want %q", out["GH_TOKEN"], "gho_stub")
+	}
+	// Auto-discovery does not fill ANTHROPIC_API_KEY directly — that's the
+	// alias propagation step's job (Task B).
+	if _, present := out["ANTHROPIC_API_KEY"]; present {
+		t.Errorf("ANTHROPIC_API_KEY: should not be filled by autoDiscover; got %q", out["ANTHROPIC_API_KEY"])
+	}
+}
+
+func TestAutoDiscoverDoesNotOverwriteExisting(t *testing.T) {
+	out := map[string]string{
+		"CLAUDE_CODE_OAUTH_TOKEN": "from-file",
+		"GH_TOKEN":                "from-file-gh",
+	}
+	prev1, prev2 := discoverClaudeOauthToken, discoverGhAuthToken
+	t.Cleanup(func() {
+		discoverClaudeOauthToken = prev1
+		discoverGhAuthToken = prev2
+	})
+	discoverClaudeOauthToken = func() (string, error) {
+		t.Errorf("discoverClaudeOauthToken should not be called when key is already set")
+		return "", nil
+	}
+	discoverGhAuthToken = func() (string, error) {
+		t.Errorf("discoverGhAuthToken should not be called when key is already set")
+		return "", nil
+	}
+
+	if err := autoDiscover(out); err != nil {
+		t.Fatalf("autoDiscover: %v", err)
+	}
+	if out["CLAUDE_CODE_OAUTH_TOKEN"] != "from-file" {
+		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN: got %q, want %q", out["CLAUDE_CODE_OAUTH_TOKEN"], "from-file")
+	}
+	if out["GH_TOKEN"] != "from-file-gh" {
+		t.Errorf("GH_TOKEN: got %q, want %q", out["GH_TOKEN"], "from-file-gh")
+	}
+}
+
+func TestAutoDiscoverSkipsClaudeWhenAnthropicSet(t *testing.T) {
+	out := map[string]string{"ANTHROPIC_API_KEY": "sk-ant-api-real"}
+	prev1, prev2 := discoverClaudeOauthToken, discoverGhAuthToken
+	t.Cleanup(func() {
+		discoverClaudeOauthToken = prev1
+		discoverGhAuthToken = prev2
+	})
+	discoverClaudeOauthToken = func() (string, error) {
+		t.Errorf("discoverClaudeOauthToken should not be called when ANTHROPIC_API_KEY is set")
+		return "", nil
+	}
+	discoverGhAuthToken = func() (string, error) { return "", nil }
+
+	if err := autoDiscover(out); err != nil {
+		t.Fatalf("autoDiscover: %v", err)
+	}
+	if _, present := out["CLAUDE_CODE_OAUTH_TOKEN"]; present {
+		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN should not be filled when ANTHROPIC_API_KEY is set")
+	}
+}
+
+func TestAutoDiscoverSkipsGhWhenAnyGhAliasSet(t *testing.T) {
+	cases := []string{"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN"}
+	for _, key := range cases {
+		t.Run(key, func(t *testing.T) {
+			out := map[string]string{key: "gh-from-file"}
+			prev1, prev2 := discoverClaudeOauthToken, discoverGhAuthToken
+			t.Cleanup(func() {
+				discoverClaudeOauthToken = prev1
+				discoverGhAuthToken = prev2
+			})
+			discoverClaudeOauthToken = func() (string, error) { return "", nil }
+			discoverGhAuthToken = func() (string, error) {
+				t.Errorf("discoverGhAuthToken should not be called when %s is set", key)
+				return "", nil
+			}
+
+			if err := autoDiscover(out); err != nil {
+				t.Fatalf("autoDiscover: %v", err)
+			}
+		})
+	}
+}
+
 func equal(a, b map[string]string) bool {
 	if len(a) != len(b) {
 		return false
