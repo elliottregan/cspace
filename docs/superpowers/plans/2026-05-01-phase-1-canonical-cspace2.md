@@ -820,9 +820,12 @@ git commit -m "Add cspace init-keychain: prompt for ANTHROPIC_API_KEY into Keych
 
 **Files:**
 
+- Modify: `internal/substrate/substrate.go`
 - Modify: `internal/substrate/applecontainer/adapter.go`
+- Modify: `internal/cli/cmd_cspace2_up.go`
+- Modify: `internal/config/config.go` (or wherever sandbox-level config lives) — add `Sandbox.DNS []string` field.
 
-**Goal:** Address concerns flagged by P0's Task 2 implementer: apiserver health preflight + run-then-exec race timing.
+**Goal:** Address concerns flagged by P0's Task 2 implementer (apiserver health preflight) and the DNS finding (`2026-05-01-apple-container-default-dns-is-broken-sandboxes-can-t-resolv`) surfaced by both P0 extension spikes — sandbox `/etc/resolv.conf` ships pointing at `192.168.64.1` which doesn't answer port 53, breaking `gh` / `git` / `npm` / Chromium / any DNS-dependent code path.
 
 - [ ] **Step 1: Add `HealthCheck` to the Substrate interface**
 
@@ -880,20 +883,112 @@ func TestHealthCheck(t *testing.T) {
 }
 ```
 
-- [ ] **Step 5: Build, test, smoke**
+- [ ] **Step 5: Add `DNS []string` to `RunSpec` and inject `--dns` flags**
+
+This addresses the DNS finding (`2026-05-01-apple-container-default-dns-is-broken-sandboxes-can-t-resolv`).
+
+In `internal/substrate/substrate.go`, add a field to `RunSpec`:
+
+```go
+type RunSpec struct {
+    Name        string
+    Image       string
+    Command     []string
+    Env         map[string]string
+    Mounts      []Mount
+    PublishPort []PortMap
+    DNS         []string // resolvers to inject into the sandbox; empty = adapter default
+}
+```
+
+In `internal/substrate/applecontainer/adapter.go:Run`, after the Env / Mounts / PublishPort args:
+
+```go
+dns := spec.DNS
+if len(dns) == 0 {
+    dns = []string{"1.1.1.1", "8.8.8.8"}
+}
+for _, ns := range dns {
+    args = append(args, "--dns", ns)
+}
+```
+
+- [ ] **Step 6: Plumb `DNS` through `cspace2-up` from project config**
+
+In `internal/config/config.go` (or the existing sandbox-level config struct), add:
+
+```go
+type SandboxConfig struct {
+    // ... existing fields
+    DNS []string `json:"dns,omitempty"`
+}
+```
+
+In `internal/cli/cmd_cspace2_up.go`, when building `RunSpec`:
+
+```go
+spec := substrate.RunSpec{
+    Name:  containerName,
+    Image: "cspace2:latest",
+    Env:   env,
+    DNS:   nil, // adapter applies default 1.1.1.1, 8.8.8.8
+}
+if cfg != nil && len(cfg.Sandbox.DNS) > 0 {
+    spec.DNS = cfg.Sandbox.DNS
+}
+```
+
+(Adjust to whatever the config field path actually is once you wire it up.)
+
+- [ ] **Step 7: Test the DNS injection**
+
+Add to `adapter_test.go`:
+
+```go
+func TestDNSInjection(t *testing.T) {
+    requireContainerCLI(t)
+    a := New()
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+
+    name := "cspace-test-" + randSuffix()
+    t.Cleanup(func() { _ = a.Stop(context.Background(), name) })
+
+    if err := a.Run(ctx, RunSpec{
+        Name:    name,
+        Image:   "docker.io/library/alpine:latest",
+        Command: []string{"sleep", "30"},
+        DNS:     []string{"1.1.1.1"},
+    }); err != nil {
+        t.Fatalf("Run: %v", err)
+    }
+    res, err := a.Exec(ctx, name, []string{"cat", "/etc/resolv.conf"}, ExecOpts{})
+    if err != nil {
+        t.Fatalf("Exec: %v", err)
+    }
+    if !strings.Contains(res.Stdout, "1.1.1.1") {
+        t.Fatalf("expected /etc/resolv.conf to contain 1.1.1.1, got: %s", res.Stdout)
+    }
+}
+```
+
+- [ ] **Step 8: Build, test, smoke**
 
 ```bash
 go test ./internal/substrate/applecontainer/...
 make build
 ./bin/cspace-go cspace2-up p1
+container exec cspace2-cspace-p1 sh -c 'cat /etc/resolv.conf; getent hosts api.github.com'
 ./bin/cspace-go cspace2-down p1
 ```
 
-- [ ] **Step 6: Commit**
+Expected: `/etc/resolv.conf` shows `nameserver 1.1.1.1` (and 8.8.8.8); `getent hosts` resolves api.github.com to a real IP.
+
+- [ ] **Step 9: Commit**
 
 ```bash
-git add internal/substrate/
-git commit -m "Substrate: add HealthCheck (apiserver preflight) and call from cspace2-up"
+git add internal/substrate/ internal/cli/cmd_cspace2_up.go internal/config/
+git commit -m "Substrate: HealthCheck preflight + RunSpec.DNS for sandbox name resolution"
 ```
 
 ---
