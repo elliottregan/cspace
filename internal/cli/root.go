@@ -49,8 +49,11 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 			}
 
 			// For the root command (no subcommand), attempt config loading
-			// but tolerate failure — the TUI falls back to help when cfg is nil.
-			tolerateErr := cmd.Name() == "cspace" && cmd.Parent() == nil
+			// but tolerate failure — the TUI falls back to help when cfg is
+			// nil. `cspace doctor` is informational and runnable from any
+			// directory; the per-credential probes degrade gracefully when
+			// cfg is nil (no project secrets file is checked).
+			tolerateErr := (cmd.Name() == "cspace" && cmd.Parent() == nil) || cmd.Name() == "doctor"
 
 			if err := loadConfig(); err != nil {
 				if tolerateErr {
@@ -122,6 +125,7 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 		// Other
 		newContextServerCmd(),
 		newDiagnosticsServerCmd(),
+		newDoctorCmd(),
 		newSelfUpdateCmd(),
 		newVersionCmd(),
 		newCompletionCmd(),
