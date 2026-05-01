@@ -37,6 +37,27 @@ export async function runClaude(
       // (lib/agent-supervisor/args.mjs) and is required for the agent to
       // actually USE its tools (Bash, Read, Write, Edit, etc.).
       permissionMode: "bypassPermissions",
+      // Browser MCP servers — clients only. Chrome itself runs in a sidecar
+      // container launched by cspace2-up. The MCP servers attach over CDP at
+      // $CSPACE_BROWSER_CDP_URL. If the env var is unset, the MCP servers
+      // are still registered but their tool calls will fail at runtime —
+      // declined gracefully, doesn't crash the supervisor.
+      mcpServers: {
+        playwright: {
+          type: "stdio",
+          command: "playwright-mcp",
+          args: process.env.CSPACE_BROWSER_CDP_URL
+            ? ["--cdp-endpoint", process.env.CSPACE_BROWSER_CDP_URL]
+            : [],
+        },
+        "chrome-devtools": {
+          type: "stdio",
+          command: "chrome-devtools-mcp",
+          args: process.env.CSPACE_BROWSER_CDP_URL
+            ? ["--browser-url", process.env.CSPACE_BROWSER_CDP_URL]
+            : [],
+        },
+      },
       ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
     },
   });

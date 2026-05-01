@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/elliottregan/cspace/internal/registry"
@@ -22,6 +23,7 @@ const supervisorPort = 6201
 
 func newPrototypeUpCmd() *cobra.Command {
 	var workspaceMount string
+	var extraEnv []string
 	cmd := &cobra.Command{
 		Use:   "prototype-up <name>",
 		Short: "P0: launch a prototype sandbox",
@@ -71,6 +73,15 @@ func newPrototypeUpCmd() *cobra.Command {
 			}
 			for k, v := range loaded {
 				env[k] = v
+			}
+			// CLI --env flag wins over secrets file (used for spike-test
+			// injection like CSPACE_BROWSER_CDP_URL).
+			for _, kv := range extraEnv {
+				eq := strings.Index(kv, "=")
+				if eq < 1 {
+					return fmt.Errorf("--env value %q must be KEY=VALUE", kv)
+				}
+				env[kv[:eq]] = kv[eq+1:]
 			}
 			// Host shell env wins for explicitly-set keys (e.g. one-off override).
 			if k := os.Getenv("ANTHROPIC_API_KEY"); k != "" {
@@ -146,6 +157,8 @@ func newPrototypeUpCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&workspaceMount, "workspace", "",
 		"host path to bind-mount as /workspace (typically a per-sandbox git clone)")
+	cmd.Flags().StringArrayVar(&extraEnv, "env", nil,
+		"extra KEY=VALUE env vars to inject into the sandbox (repeatable)")
 	return cmd
 }
 

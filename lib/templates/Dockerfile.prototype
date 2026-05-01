@@ -27,6 +27,13 @@ RUN useradd -m -s /bin/bash -u 1000 dev \
  && echo 'dev ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/dev \
  && chmod 0440 /etc/sudoers.d/dev
 
+# Node.js for the npm-based MCP servers (Playwright + Chrome DevTools).
+# Chromium itself is pulled by Playwright after npm install.
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/* \
+ && node --version && npm --version
+
 # Bun + Claude as the dev user so the install lands in /home/dev.
 USER dev
 ENV HOME=/home/dev
@@ -42,8 +49,14 @@ RUN curl -fsSL https://bun.sh/install | bash \
 RUN /home/dev/.bun/bin/bun install --global @anthropic-ai/claude-code \
  && /home/dev/.bun/bin/claude --version
 
-# Drop back to root to install system-wide binaries and set ownership.
+# Browser MCP servers — clients only.
+# Chromium itself runs in a sidecar container launched by cspace2-up;
+# the supervisor injects $CSPACE_BROWSER_CDP_URL into the sandbox env,
+# and the MCP servers (running here as stdio children of Claude Code)
+# attach to the sidecar's Chrome over CDP. Image stays lean (~300 MB).
 USER root
+RUN npm install -g @playwright/mcp@0.0.72 chrome-devtools-mcp@0.23.0 \
+ && playwright-mcp --version
 
 # Make the dev-user-installed bun + claude visible at /usr/local/bin so any
 # script that hardcodes /usr/local/bin/claude (e.g. CSPACE_CLAUDE_PATH) works.
