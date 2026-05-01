@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -13,7 +14,92 @@ import (
 	"time"
 
 	"github.com/elliottregan/cspace/internal/registry"
+	"github.com/miekg/dns"
 )
+
+const (
+	// dnsListenAddr: 127.0.0.1:5354 rather than the mDNS-conventional :5353,
+	// because macOS mDNSResponder owns UDP/5353 wildcard and we can't share
+	// it. 5354 is the well-known "alt-mdns" port and is unclaimed on macOS.
+	// DNS B (cspace dns install) writes /etc/resolver/cspace2.local with
+	// `port 5354` to match.
+	dnsListenAddr = "127.0.0.1:5354"
+	dnsDomain     = "cspace2.local." // trailing dot is canonical
+	dnsTTL        = 5                // seconds; sandbox IPs change across restarts
+)
+
+// dnsHandler answers A queries for <sandbox>.cspace2.local from the live
+// registry. Unknown names and the wrong domain return NXDOMAIN; AAAA and
+// other qtypes return NOERROR with no answer so IPv6-aware clients fall
+// back to A instead of caching a "no such name".
+func dnsHandler(r *registry.Registry, lastActivity *atomic.Int64) dns.Handler {
+	return dns.HandlerFunc(func(w dns.ResponseWriter, msg *dns.Msg) {
+		lastActivity.Store(time.Now().Unix())
+
+		reply := new(dns.Msg)
+		reply.SetReply(msg)
+		reply.Authoritative = true
+
+		for _, q := range msg.Question {
+			name := strings.ToLower(q.Name)
+			if !strings.HasSuffix(name, "."+dnsDomain) && name != dnsDomain {
+				reply.Rcode = dns.RcodeNameError
+				continue
+			}
+			// Strip the suffix to get the sandbox name. For now we only
+			// support a single label before the domain (e.g.
+			// "mercury.cspace2.local"). Multi-label or empty names are
+			// not sandbox lookups.
+			sandbox := strings.TrimSuffix(name, "."+dnsDomain)
+			sandbox = strings.TrimSuffix(sandbox, ".")
+			if sandbox == "" || strings.Contains(sandbox, ".") {
+				reply.Rcode = dns.RcodeNameError
+				continue
+			}
+
+			entries, err := r.List()
+			if err != nil {
+				log.Printf("dns: registry list: %v", err)
+				reply.Rcode = dns.RcodeServerFailure
+				continue
+			}
+			var ip string
+			for _, e := range entries {
+				if e.Name == sandbox && e.IP != "" {
+					ip = e.IP
+					break
+				}
+			}
+			if ip == "" {
+				reply.Rcode = dns.RcodeNameError
+				continue
+			}
+
+			// Only A queries get a record; AAAA / others get NOERROR
+			// with no answer.
+			if q.Qtype == dns.TypeA {
+				parsed := net.ParseIP(ip).To4()
+				if parsed == nil {
+					// Registry has a non-IPv4 entry; treat as no answer.
+					continue
+				}
+				reply.Answer = append(reply.Answer, &dns.A{
+					Hdr: dns.RR_Header{
+						Name:   q.Name,
+						Rrtype: dns.TypeA,
+						Class:  dns.ClassINET,
+						Ttl:    dnsTTL,
+					},
+					A: parsed,
+				})
+			}
+		}
+
+		if err := w.WriteMsg(reply); err != nil {
+			log.Printf("dns: write reply: %v", err)
+		}
+	})
+}
 
 func main() {
 	port := os.Getenv("CSPACE_REGISTRY_DAEMON_PORT")
@@ -109,6 +195,27 @@ func main() {
 			}
 			log.Printf("cspace-registry-daemon: idle %s with no entries; exiting", idleSince)
 			os.Exit(0)
+		}
+	}()
+
+	// DNS listener for *.cspace2.local. Bound to 127.0.0.1 so it's host-only;
+	// sandboxes use their own resolver via the substrate adapter's --dns
+	// flag. macOS resolver(5) `port` directive (installed by `cspace dns
+	// install`, DNS B's job) routes per-domain queries here. Both UDP and
+	// TCP are served — standard practice and macOS may use either.
+	dh := dnsHandler(r, &lastActivity)
+	go func() {
+		server := &dns.Server{Addr: dnsListenAddr, Net: "udp", Handler: dh}
+		log.Printf("cspace-registry-daemon: DNS listening on %s/udp", dnsListenAddr)
+		if err := server.ListenAndServe(); err != nil {
+			log.Printf("dns udp: %v", err)
+		}
+	}()
+	go func() {
+		server := &dns.Server{Addr: dnsListenAddr, Net: "tcp", Handler: dh}
+		log.Printf("cspace-registry-daemon: DNS listening on %s/tcp", dnsListenAddr)
+		if err := server.ListenAndServe(); err != nil {
+			log.Printf("dns tcp: %v", err)
 		}
 	}()
 
