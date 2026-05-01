@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -27,23 +28,21 @@ func newPrototypeSendCmd() *cobra.Command {
 			}
 
 			project := projectName()
-			path, err := registry.DefaultPath()
+
+			entry, err := resolveEntry(project, name)
 			if err != nil {
 				return err
 			}
-			entry, err := (&registry.Registry{Path: path}).Lookup(project, name)
-			if err != nil {
-				return err
+
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = cmd.Root().Context()
 			}
 
 			body, _ := json.Marshal(map[string]string{
 				"session": session,
 				"text":    text,
 			})
-			ctx := cmd.Context()
-			if ctx == nil {
-				ctx = cmd.Root().Context()
-			}
 			req, _ := http.NewRequestWithContext(ctx,
 				"POST", entry.ControlURL+"/send", bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
@@ -65,4 +64,38 @@ func newPrototypeSendCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// resolveEntry looks up a sandbox entry. When CSPACE_REGISTRY_URL is set
+// (in-sandbox path), it queries the host registry-daemon over HTTP. Otherwise
+// it falls back to the local sandbox-registry.json file (host path).
+func resolveEntry(project, name string) (registry.Entry, error) {
+	if rURL := os.Getenv("CSPACE_REGISTRY_URL"); rURL != "" {
+		client := &http.Client{Timeout: 5 * time.Second}
+		url := fmt.Sprintf("%s/lookup/%s/%s", strings.TrimRight(rURL, "/"), project, name)
+		resp, err := client.Get(url)
+		if err != nil {
+			return registry.Entry{}, fmt.Errorf("registry daemon %s: %w", rURL, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			body, _ := io.ReadAll(resp.Body)
+			return registry.Entry{}, fmt.Errorf("registry lookup status %d: %s",
+				resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		var entry registry.Entry
+		if err := json.NewDecoder(resp.Body).Decode(&entry); err != nil {
+			return registry.Entry{}, fmt.Errorf("decode registry response: %w", err)
+		}
+		// The daemon doesn't populate Project/Name (they're map keys);
+		// patch them in case downstream code wants them.
+		entry.Project, entry.Name = project, name
+		return entry, nil
+	}
+
+	path, err := registry.DefaultPath()
+	if err != nil {
+		return registry.Entry{}, err
+	}
+	return (&registry.Registry{Path: path}).Lookup(project, name)
 }

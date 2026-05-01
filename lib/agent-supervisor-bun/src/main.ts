@@ -39,6 +39,7 @@ runClaude(
 
 const server = Bun.serve({
   port: CONTROL_PORT,
+  hostname: "0.0.0.0", // bind on all interfaces so sibling sandboxes can reach us via direct IP
   async fetch(req) {
     const url = new URL(req.url);
 

@@ -38,6 +38,16 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 				return nil
 			}
 
+			// P0 prototype-* commands resolve the project name from CSPACE_PROJECT
+			// (or fall back to "default") and don't read .cspace.json. Tolerate
+			// config-load failures so they work both inside sandboxes (no git
+			// repo at /workspace) and outside any cspace project.
+			switch cmd.Name() {
+			case "prototype-up", "prototype-down", "prototype-send":
+				_ = loadConfig()
+				return nil
+			}
+
 			// For the root command (no subcommand), attempt config loading
 			// but tolerate failure — the TUI falls back to help when cfg is nil.
 			tolerateErr := cmd.Name() == "cspace" && cmd.Parent() == nil

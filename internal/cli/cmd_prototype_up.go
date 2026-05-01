@@ -126,11 +126,18 @@ func waitForIP(ctx context.Context, a *applecontainer.Adapter, name string, max 
 	}
 }
 
-// projectName returns the current project's name from loaded config, or
-// "default" when no .cspace.json has been loaded (e.g. invoked outside an
-// initialized project). It is the single fix-up point for the prototype-*
-// commands.
+// projectName returns the current project's name. Resolution order:
+//  1. $CSPACE_PROJECT env var (set inside sandboxes by prototype-up so the
+//     in-sandbox cspace binary resolves the same project key the host used
+//     when it registered the sibling).
+//  2. cfg.Project.Name from a loaded .cspace.json.
+//  3. "default" when neither is available.
+//
+// It is the single fix-up point for the prototype-* commands.
 func projectName() string {
+	if p := os.Getenv("CSPACE_PROJECT"); p != "" {
+		return p
+	}
 	if cfg != nil && cfg.Project.Name != "" {
 		return cfg.Project.Name
 	}
