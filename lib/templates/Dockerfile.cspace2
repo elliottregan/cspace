@@ -137,12 +137,20 @@ WORKDIR /workspace
 
 # Sandbox entrypoint wrapper — runs once at container start, configures git's
 # credential helper for github.com when GH_TOKEN is present, then exec's the
-# supervisor. Keeps the supervisor focused on the SDK loop while ensuring
-# `git push` from inside the sandbox doesn't prompt for auth.
+# supervisor (via the restart-loop wrapper). Keeps the supervisor focused on
+# the SDK loop while ensuring `git push` from inside the sandbox doesn't
+# prompt for auth.
+#
+# The supervisor-loop wrapper respawns cspace-supervisor on crash (any exit
+# other than 0/143/137) so a Bun panic / OOM / SDK error doesn't leave the
+# sandbox silent. Resume continuity is handled by the supervisor reading
+# CSPACE_RESUME_SESSION_ID from container env, which cspace2-up injects at
+# create time and persists across in-container restarts.
 USER root
 COPY lib/scripts/cspace2-entrypoint.sh /usr/local/bin/cspace2-entrypoint.sh
-RUN chmod +x /usr/local/bin/cspace2-entrypoint.sh
+COPY lib/scripts/cspace-supervisor-loop.sh /usr/local/bin/cspace-supervisor-loop.sh
+RUN chmod +x /usr/local/bin/cspace2-entrypoint.sh /usr/local/bin/cspace-supervisor-loop.sh
 USER dev
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/cspace2-entrypoint.sh"]
-CMD ["/usr/local/bin/cspace-supervisor"]
+CMD ["/usr/local/bin/cspace-supervisor-loop.sh"]
