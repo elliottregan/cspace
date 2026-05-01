@@ -118,6 +118,7 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 		// P0 prototype (Phase 0 spike)
 		newPrototypeUpCmd(),
 		newPrototypeDownCmd(),
+		newPrototypeSendCmd(),
 	)
 
 	return root
