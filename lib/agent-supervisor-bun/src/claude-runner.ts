@@ -32,6 +32,11 @@ export async function runClaude(
     prompt: toUserMessages(prompts),
     options: {
       cwd,
+      // Sandboxes are unattended — there's no human to confirm tool calls.
+      // bypassPermissions matches the existing Node supervisor's behavior
+      // (lib/agent-supervisor/args.mjs) and is required for the agent to
+      // actually USE its tools (Bash, Read, Write, Edit, etc.).
+      permissionMode: "bypassPermissions",
       ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
     },
   });
