@@ -35,15 +35,15 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			// Skip config/asset loading for commands that don't need a project context
 			switch cmd.Name() {
-			case "version", "help", "completion", "init", "self-update", "context-server", "diagnostics-server":
+			case "version", "help", "completion", "self-update":
 				return nil
 			}
 
 			// In-sandbox: env vars (CSPACE_PROJECT, CSPACE_SANDBOX_NAME,
 			// CSPACE_REGISTRY_URL) carry project context. Skip the host-style
 			// git-repo / .cspace.json discovery so commands like
-			// `cspace cspace2-send` work even when /workspace isn't a git
-			// repo at the cspace level.
+			// `cspace send` work even when /workspace isn't a git repo at
+			// the cspace level.
 			if sandboxmode.IsInSandbox() {
 				return nil
 			}
@@ -62,78 +62,34 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 				return err
 			}
 
-			// Commands that modify or create instances require an initialized project
-			switch cmd.Name() {
-			case "up", "coordinate", "issue", "warm", "rebuild":
-				if !cfg.IsInitialized() {
-					return fmt.Errorf("no .cspace.json found in %s\nRun 'cspace init' first", cfg.ProjectRoot)
-				}
-			}
-
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// No subcommand given — launch TUI if interactive and config loaded
-			if cfg != nil && isInteractive() {
-				return runTUI(cmd)
-			}
+			// No subcommand given — print help.
 			return cmd.Help()
 		},
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
 
-	// Define command groups for organized help output
-	root.AddGroup(
-		&cobra.Group{ID: "instance", Title: "Instance Management:"},
-		&cobra.Group{ID: "agents", Title: "Autonomous Agents:"},
-		&cobra.Group{ID: "supervisor", Title: "Supervisor:"},
-		&cobra.Group{ID: "setup", Title: "Project Setup:"},
-		&cobra.Group{ID: "other", Title: "Other:"},
-	)
-
 	// Register all subcommands
 	root.AddCommand(
 		// Instance Management
 		newUpCmd(),
 		newDownCmd(),
-		newStopCmd(),
-		newSSHCmd(),
-		newListCmd(),
 		newPortsCmd(),
-		newWarmCmd(),
-		newRebuildCmd(),
-
-		// Autonomous Agents
-		newAdvisorCmd(),
-		newCoordinateCmd(),
-		newIssueCmd(),
-		newResumeCmd(),
 
 		// Supervisor
 		newSendCmd(),
-		newInterruptCmd(),
-		newAgentStatusCmd(),
-		newRestartSupervisorCmd(),
 
 		// Project Setup
-		newInitCmd(),
 		newKeychainCmd(),
-		newMemoryCmd(),
-		newSessionsCmd(),
 
 		// Other
-		newContextServerCmd(),
-		newDiagnosticsServerCmd(),
 		newDoctorCmd(),
 		newSelfUpdateCmd(),
 		newVersionCmd(),
 		newCompletionCmd(),
-
-		// cspace2-* (Phase 1 staging name)
-		newCspace2UpCmd(),
-		newCspace2DownCmd(),
-		newCspace2SendCmd(),
 		newRegistryCmd(),
 		newDaemonCmd(),
 		newDnsCmd(),

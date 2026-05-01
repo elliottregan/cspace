@@ -25,13 +25,13 @@ import (
 
 const supervisorPort = 6201
 
-func newCspace2UpCmd() *cobra.Command {
+func newUpCmd() *cobra.Command {
 	var workspaceMount string
 	var extraEnv []string
 	var baseBranch string
 	var withBrowser bool
 	cmd := &cobra.Command{
-		Use:   "cspace2-up <name>",
+		Use:   "up <name>",
 		Short: "Launch a sandbox (Apple Container substrate)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) (err error) {
@@ -134,11 +134,11 @@ func newCspace2UpCmd() *cobra.Command {
 			// per user via a sentinel in ~/.cspace/. Sandbox still boots.
 			maybeNudgeMissingAnthropicAuth(cmd.OutOrStdout(), env)
 
-			containerName := fmt.Sprintf("cspace2-%s-%s", project, name)
+			containerName := fmt.Sprintf("cspace-%s-%s", project, name)
 
 			spec := substrate.RunSpec{
 				Name:  containerName,
-				Image: "cspace2:latest",
+				Image: "cspace:latest",
 				Env:   env,
 			}
 			// Auto-provision a per-sandbox git clone unless the user supplied
@@ -177,8 +177,8 @@ func newCspace2UpCmd() *cobra.Command {
 
 			// Sessions persistence — supervisor's events.ndjson plus Claude
 			// Code's per-session JSONLs both live on the host so they survive
-			// cspace2-down and enable transparent resume on the next
-			// cspace2-up of the same sandbox name.
+			// cspace down and enable transparent resume on the next
+			// cspace up of the same sandbox name.
 			//
 			//   ~/.cspace/sessions/<project>/<sandbox>/
 			//     primary/events.ndjson              <- supervisor stream
@@ -206,15 +206,15 @@ func newCspace2UpCmd() *cobra.Command {
 			// /sessions/primary/events.ndjson at startup, finds the latest
 			// SDK system/init session_id, and passes it to query()'s
 			// `resume` option. That makes resume work uniformly across
-			// fresh boot, restart-loop respawn, and cspace2-down +
-			// cspace2-up cycles — no host-side env injection required.
+			// fresh boot, restart-loop respawn, and cspace down +
+			// cspace up cycles — no host-side env injection required.
 			// See lib/agent-supervisor-bun/src/main.ts:resumeSessionId.
 
 			// --browser: start a Playwright sidecar before launching the sandbox
 			// so we can inject CSPACE_BROWSER_CDP_URL into spec.Env. The
 			// supervisor's claude-runner.ts reads this and registers
 			// playwright-mcp via --cdp-endpoint, giving the agent browser
-			// tools without bundling a browser into the cspace2 image.
+			// tools without bundling a browser into the cspace image.
 			//
 			// On any subsequent error (substrate run, IP capture, registry
 			// write, …) we tear the sidecar down via the deferred cleanup
@@ -296,7 +296,7 @@ func newCspace2UpCmd() *cobra.Command {
 
 			// Wait for the supervisor to come up. /health responding 200 is
 			// the load-bearing readiness signal — the Bun process is listening
-			// and able to serve cspace2-send. Only then do we flip the entry
+			// and able to serve cspace send. Only then do we flip the entry
 			// to state=ready.
 			healthURL := fmt.Sprintf("%s/health", ctlURL)
 			if hErr := waitForHealth(ctx, healthURL, token, 10*time.Second); hErr != nil {
@@ -317,7 +317,7 @@ func newCspace2UpCmd() *cobra.Command {
 			// `cspace dns install` once per user via a sentinel.
 			if dnsInstalled() {
 				fmt.Fprintf(cmd.OutOrStdout(),
-					"browse:  http://%s.cspace2.local/  (friendly URL via cspace dns)\n", name)
+					"browse:  http://%s.%s/  (friendly URL via cspace dns)\n", name, dnsDomain)
 			} else {
 				maybeNudgeMissingDnsInstall(cmd.OutOrStdout())
 			}
@@ -336,7 +336,7 @@ func newCspace2UpCmd() *cobra.Command {
 }
 
 // waitForHealth polls a /health URL with the supervisor's bearer token until
-// it returns 200 or the deadline passes. Used by cspace2-up to gate the
+// it returns 200 or the deadline passes. Used by cspace up to gate the
 // state=starting → state=ready transition on a real readiness signal: the
 // Bun supervisor process being up and able to serve requests.
 //
@@ -395,13 +395,13 @@ func waitForIP(ctx context.Context, a *applecontainer.Adapter, name string, max 
 }
 
 // projectName returns the current project's name. Resolution order:
-//  1. $CSPACE_PROJECT env var (set inside sandboxes by cspace2-up so the
+//  1. $CSPACE_PROJECT env var (set inside sandboxes by cspace up so the
 //     in-sandbox cspace binary resolves the same project key the host used
 //     when it registered the sibling).
 //  2. cfg.Project.Name from a loaded .cspace.json.
 //  3. "default" when neither is available.
 //
-// It is the single fix-up point for the cspace2-* commands.
+// It is the single fix-up point for the cspace command-suite.
 func projectName() string {
 	if p := os.Getenv("CSPACE_PROJECT"); p != "" {
 		return p
@@ -443,9 +443,9 @@ func randHex(n int) string {
 // ensureRegistryDaemon starts the cspace daemon on 127.0.0.1:6280 if it is
 // not already accepting connections. It re-execs the running cspace binary
 // itself (`cspace daemon serve`) rather than a separate binary, so the
-// daemon and the cspace2-up that spawned it are version-locked.
+// daemon and the cspace up that spawned it are version-locked.
 //
-// Idempotent — concurrent cspace2-up calls that race here will at most spawn
+// Idempotent — concurrent cspace up calls that race here will at most spawn
 // one extra daemon, and only one will manage to bind the port; the others
 // exit immediately.
 func ensureRegistryDaemon() error {
@@ -592,7 +592,7 @@ func maybeNudgeMissingDnsInstall(out io.Writer) {
 	if _, err := os.Stat(sentinel); err == nil {
 		return
 	}
-	fmt.Fprintln(out, "note: friendly URLs disabled. Run `cspace dns install` once to enable http://<sandbox>.cspace2.local/.")
+	fmt.Fprintf(out, "note: friendly URLs disabled. Run `cspace dns install` once to enable http://<sandbox>.%s/.\n", dnsDomain)
 	if err := os.MkdirAll(cspaceDir, 0o755); err != nil {
 		return
 	}

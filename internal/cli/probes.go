@@ -125,7 +125,7 @@ func ProbeDaemon(ctx context.Context) ProbeResult {
 		r.Checks = append(r.Checks, ProbeCheck{
 			Status:  ProbeFail,
 			Title:   "HTTP not responding on 127.0.0.1:" + daemonHTTPPort,
-			Details: []string{"daemon auto-starts via `cspace cspace2-up`; or run `cspace daemon serve` manually"},
+			Details: []string{"daemon auto-starts via `cspace up`; or run `cspace daemon serve` manually"},
 		})
 	case httpResp.StatusCode != 200:
 		_ = httpResp.Body.Close()
@@ -166,7 +166,7 @@ func ProbeDaemon(ctx context.Context) ProbeResult {
 	return r
 }
 
-// ProbeDns reports the macOS resolver state for *.cspace2.local. On non-darwin
+// ProbeDns reports the macOS resolver state for *.<dnsDomain>. On non-darwin
 // hosts this is "not applicable".
 func ProbeDns(ctx context.Context) ProbeResult {
 	r := ProbeResult{Subsystem: "DNS routing for *." + dnsDomain}
@@ -200,7 +200,7 @@ func ProbeDns(ctx context.Context) ProbeResult {
 		})
 	}
 
-	// Check 2: scutil reports a routing for cspace2.local.
+	// Check 2: scutil reports a routing for the dns domain.
 	if scutilHasCspaceRouting() {
 		r.Checks = append(r.Checks, ProbeCheck{
 			Status: ProbePass,
@@ -225,14 +225,14 @@ func ProbeDns(ctx context.Context) ProbeResult {
 		r.Checks = append(r.Checks, ProbeCheck{
 			Status:  ProbeWarn,
 			Title:   "daemon DNS not answering — end-to-end resolution will fail",
-			Details: []string{"start a sandbox with `cspace cspace2-up` to spawn the daemon"},
+			Details: []string{"start a sandbox with `cspace up` to spawn the daemon"},
 		})
 	}
 	return r
 }
 
 // scutilHasCspaceRouting parses `scutil --dns` for a per-domain routing
-// entry covering cspace2.local. Returns false on any error.
+// entry covering dnsDomain. Returns false on any error.
 func scutilHasCspaceRouting() bool {
 	cmd := exec.Command("scutil", "--dns")
 	out, err := cmd.Output()

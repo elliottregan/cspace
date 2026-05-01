@@ -18,7 +18,7 @@ into a single overview report:
 
   - Apple Container CLI (darwin only): installed, supported version, apiserver running
   - cspace daemon: HTTP responding, DNS responding
-  - DNS routing for *.cspace2.local: resolver file, scutil routing, end-to-end
+  - DNS routing for the cspace dns domain: resolver file, scutil routing, end-to-end
   - Anthropic credentials: source per alias, OAuth-expiry warnings
   - GitHub credentials: source per alias
   - Sandboxes: alive count, stuck-booting count, dead registry entries

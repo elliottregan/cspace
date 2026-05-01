@@ -22,8 +22,7 @@ func newSelfUpdateCmd() *cobra.Command {
 
 Downloads the correct binary for the current OS/architecture and
 atomically replaces the running binary.`,
-		GroupID: "other",
-		RunE:    runSelfUpdate,
+		RunE: runSelfUpdate,
 	}
 
 	cmd.Flags().Bool("check", false, "Only check for updates, don't install")

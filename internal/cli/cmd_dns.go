@@ -16,6 +16,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// dnsDomain stays "cspace2.local" even after the cspace2-* → cspace * cutover.
+// The legacy cspace project (and OrbStack) used cspace.local with conflicting
+// configurations on many users' machines. The "2" suffix here is a vestigial
+// staging-phase marker that's intentionally kept for collision avoidance.
 const (
 	dnsResolverFile = "/etc/resolver/cspace2.local"
 	dnsLocalPort    = "5354"
@@ -32,7 +36,7 @@ func newDnsCmd() *cobra.Command {
 	parent := &cobra.Command{
 		Use:   "dns",
 		Short: "Manage local DNS routing for *.cspace2.local",
-		Long: `cspace2-up registers each sandbox in ~/.cspace/sandbox-registry.json. The
+		Long: `cspace up registers each sandbox in ~/.cspace/sandbox-registry.json. The
 cspace daemon serves that registry over DNS at 127.0.0.1:5354, answering
 A queries for <sandbox>.cspace2.local with the sandbox's IP.
 
@@ -217,7 +221,7 @@ func runDnsStatus(out io.Writer) error {
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "  %s cspace daemon DNS answering on 127.0.0.1:%s/udp\n", mark(daemonAnswering), dnsLocalPort)
 	if !daemonAnswering {
-		fmt.Fprintln(out, "      (start a sandbox with `cspace cspace2-up` to spawn the daemon)")
+		fmt.Fprintln(out, "      (start a sandbox with `cspace up` to spawn the daemon)")
 		fmt.Fprintf(out, "      if the daemon HTTP is up but DNS isn't answering, another process may have UDP/%s; check `lsof -nP -iUDP:%s`\n", dnsLocalPort, dnsLocalPort)
 	}
 	fmt.Fprintln(out)

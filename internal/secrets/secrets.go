@@ -53,8 +53,8 @@ var (
 // project owners who want to lock a specific PAT or API key in a file
 // shouldn't have it shadowed by ambient Keychain state.
 //
-// Shell env (os.Getenv) is NOT applied here; cmd_cspace2_up.go handles
-// shell env as the highest-precedence override after this function returns.
+// Shell env (os.Getenv) is NOT applied here; cmd_up.go handles shell env
+// as the highest-precedence override after this function returns.
 //
 // Missing files / missing Keychain entries are not errors. On non-darwin
 // platforms the Keychain layers are no-ops.
@@ -123,7 +123,7 @@ func autoDiscover(out map[string]string) error {
 				return err
 			}
 			if tok != "" {
-				// Single source, single fill — the cmd_cspace2_up alias logic
+				// Single source, single fill — the cmd_up alias logic
 				// takes care of mapping CLAUDE_CODE_OAUTH_TOKEN onto
 				// ANTHROPIC_API_KEY. Fill CLAUDE_CODE_OAUTH_TOKEN here and
 				// let the existing alias propagate (so users who ALREADY
@@ -148,7 +148,7 @@ func autoDiscover(out map[string]string) error {
 			return err
 		}
 		if tok != "" {
-			// Fill GH_TOKEN as the canonical name; cmd_cspace2_up's alias
+			// Fill GH_TOKEN as the canonical name; cmd_up's alias
 			// propagation (Task B, separate task) makes GITHUB_TOKEN /
 			// GITHUB_PERSONAL_ACCESS_TOKEN see the same value.
 			out["GH_TOKEN"] = tok

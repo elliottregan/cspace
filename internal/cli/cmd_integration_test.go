@@ -19,7 +19,7 @@ import (
 	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
 )
 
-// TestCspace2Lifecycle exercises the full cspace2 sandbox lifecycle:
+// TestCspaceLifecycle exercises the full sandbox lifecycle:
 // up -> /health curl with bearer -> send -> events.ndjson -> down.
 //
 // Skipped when the substrate isn't ready (CLI missing, apiserver down,
@@ -30,7 +30,7 @@ import (
 // regardless of whether Claude actually responds, which is the load-bearing
 // signal here. The browser sidecar path (--browser) is intentionally out
 // of scope for this test (slow, separate concern from lifecycle parity).
-func TestCspace2Lifecycle(t *testing.T) {
+func TestCspaceLifecycle(t *testing.T) {
 	a := applecontainer.New()
 	if !a.Available() {
 		t.Skip("Apple Container CLI not on PATH")
@@ -40,8 +40,8 @@ func TestCspace2Lifecycle(t *testing.T) {
 	if err := a.HealthCheck(ctx); err != nil {
 		t.Skipf("apiserver not running: %v", err)
 	}
-	if !imagePresent(t, "cspace2:latest") {
-		t.Skip("cspace2:latest image not built; run `make cspace2-image` first")
+	if !imagePresent(t, "cspace:latest") {
+		t.Skip("cspace:latest image not built; run `make cspace-image` first")
 	}
 
 	cspaceBin := findCspaceBinary(t)
@@ -51,17 +51,17 @@ func TestCspace2Lifecycle(t *testing.T) {
 	sandbox := "int-" + shortSuffix()
 	t.Cleanup(func() {
 		// Best-effort teardown — never fail the test on cleanup errors.
-		_ = exec.Command(cspaceBin, "cspace2-down", sandbox).Run()
+		_ = exec.Command(cspaceBin, "down", sandbox).Run()
 		// Clean the auto-provisioned clone too so repeated runs don't
 		// accumulate ~/.cspace/clones/cspace/int-* directories.
 		home, _ := os.UserHomeDir()
 		_ = os.RemoveAll(filepath.Join(home, ".cspace", "clones", "cspace", sandbox))
 	})
 
-	// 1. cspace2-up.
-	upOut := runCspaceCmd(t, cspaceBin, "cspace2-up", sandbox)
+	// 1. cspace up.
+	upOut := runCspaceCmd(t, cspaceBin, "up", sandbox)
 	if !strings.Contains(upOut, "sandbox "+sandbox+" up:") {
-		t.Fatalf("cspace2-up output missing expected prefix:\n%s", upOut)
+		t.Fatalf("cspace up output missing expected prefix:\n%s", upOut)
 	}
 
 	// 2. Registry has the entry, with a non-empty token + control URL.
@@ -83,32 +83,32 @@ func TestCspace2Lifecycle(t *testing.T) {
 		t.Fatalf("waiting for /health: %v", err)
 	}
 
-	// 4. cspace2-send injects a user turn.
+	// 4. cspace send injects a user turn.
 	const ping = "lifecycle integration test ping"
-	sendOut := runCspaceCmd(t, cspaceBin, "cspace2-send", sandbox, ping)
+	sendOut := runCspaceCmd(t, cspaceBin, "send", sandbox, ping)
 	if !strings.Contains(sendOut, `"ok":true`) {
-		t.Fatalf("cspace2-send output missing ok:true:\n%s", sendOut)
+		t.Fatalf("cspace send output missing ok:true:\n%s", sendOut)
 	}
 
 	// 5. user-turn event lands in events.ndjson inside the container.
-	containerName := "cspace2-cspace-" + sandbox
+	containerName := "cspace-cspace-" + sandbox
 	if err := waitForUserTurn(ctx, containerName, ping, 30*time.Second); err != nil {
 		t.Fatalf("waiting for user-turn event: %v", err)
 	}
 
-	// 6. cspace2-down tears the sandbox down.
-	downOut := runCspaceCmd(t, cspaceBin, "cspace2-down", sandbox)
+	// 6. cspace down tears the sandbox down.
+	downOut := runCspaceCmd(t, cspaceBin, "down", sandbox)
 	if !strings.Contains(downOut, "sandbox "+sandbox+" down") {
-		t.Fatalf("cspace2-down output missing expected text:\n%s", downOut)
+		t.Fatalf("cspace down output missing expected text:\n%s", downOut)
 	}
 
 	// 7. Registry entry removed.
 	if _, err := r.Lookup("cspace", sandbox); err == nil {
-		t.Fatalf("registry entry still present after cspace2-down")
+		t.Fatalf("registry entry still present after cspace down")
 	}
 }
 
-// imagePresent returns true if the named image (e.g. "cspace2:latest") is in
+// imagePresent returns true if the named image (e.g. "cspace:latest") is in
 // the local Apple Container store. The Apple `container` CLI splits NAME and
 // TAG into separate columns, so we check that the parsed entries contain a
 // row matching name and tag.
@@ -157,7 +157,7 @@ func findCspaceBinary(t *testing.T) string {
 }
 
 // runCspaceCmd runs a cspace subcommand and returns its combined stdout/stderr.
-// Fails the test if the command errors — every cspace2-* invocation in this
+// Fails the test if the command errors — every cspace invocation in this
 // test is expected to succeed.
 func runCspaceCmd(t *testing.T, bin string, args ...string) string {
 	t.Helper()

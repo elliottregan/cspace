@@ -82,7 +82,7 @@ func TestRegisterAndLookupBrowserContainer(t *testing.T) {
 		Token:            "tok456",
 		IP:               "192.168.64.7",
 		StartedAt:        time.Now().UTC(),
-		BrowserContainer: "cspace2-myproj-withbrowser-browser",
+		BrowserContainer: "cspace-myproj-withbrowser-browser",
 	}
 	if err := r.Register(entry); err != nil {
 		t.Fatalf("Register: %v", err)

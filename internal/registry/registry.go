@@ -29,7 +29,7 @@ type Entry struct {
 	IP               string    `json:"ip,omitempty"`
 	StartedAt        time.Time `json:"started_at"`
 	BrowserContainer string    `json:"browser_container,omitempty"`
-	// State is the entry-internal lifecycle: "starting" while cspace2-up is
+	// State is the entry-internal lifecycle: "starting" while cspace up is
 	// still booting the sandbox, "ready" once /health responded 200. Empty
 	// State on legacy entries (written before this field existed) is treated
 	// as "ready" by callers — those sandboxes were already past boot when
@@ -123,8 +123,8 @@ func (r *Registry) Register(e Entry) error {
 
 // MarkReady transitions an existing entry's State to "ready". No-op if the
 // entry is missing — callers should not treat that as an error since the
-// most common reason for it is a racing Unregister (e.g. cspace2-down ran
-// while cspace2-up was still in its /health-poll window).
+// most common reason for it is a racing Unregister (e.g. cspace down ran
+// while cspace up was still in its /health-poll window).
 func (r *Registry) MarkReady(project, name string) error {
 	return r.withLock(func() error {
 		m, err := r.load()

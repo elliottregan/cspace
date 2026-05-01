@@ -18,14 +18,13 @@ func newRegistryCmd() *cobra.Command {
 	parent := &cobra.Command{
 		Use:   "registry",
 		Short: "Inspect and prune the cspace sandbox registry",
-		Long: `cspace2-up registers each sandbox in ~/.cspace/sandbox-registry.json with
+		Long: `cspace up registers each sandbox in ~/.cspace/sandbox-registry.json with
 its control URL, IP, token, and (when applicable) browser-sidecar name.
 
-Stale entries accumulate when cspace2-down doesn't run cleanly (Ctrl-C
-mid-teardown, host reboot, externally stopped containers, legacy prototype-*
-entries from before the cspace2-* rename). These subcommands inspect the
-registry against live container state and clean up entries whose containers
-are gone.`,
+Stale entries accumulate when cspace down doesn't run cleanly (Ctrl-C
+mid-teardown, host reboot, externally stopped containers). These subcommands
+inspect the registry against live container state and clean up entries whose
+containers are gone.`,
 	}
 	parent.AddCommand(newRegistryListCmd())
 	parent.AddCommand(newRegistryPruneCmd())
@@ -79,9 +78,9 @@ func containerExists(ctx context.Context, name string) bool {
 }
 
 // containerNameForEntry constructs the canonical sandbox container name from
-// the registry entry. Matches cspace2-up's containerName template.
+// the registry entry. Matches cspace up's containerName template.
 func containerNameForEntry(e registry.Entry) string {
-	return fmt.Sprintf("cspace2-%s-%s", e.Project, e.Name)
+	return fmt.Sprintf("cspace-%s-%s", e.Project, e.Name)
 }
 
 func runRegistryList(out io.Writer) error {
@@ -184,7 +183,7 @@ func runRegistryPrune(out io.Writer, dryRun bool) error {
 			pruneCount++
 		case e.State == "starting":
 			// Container alive but the entry never reached state=ready.
-			// Boot might still be in progress, or cspace2-up may have
+			// Boot might still be in progress, or cspace up may have
 			// died after Run returned but before /health responded. Don't
 			// auto-remove; report so the user can decide. Once the
 			// container exits (or is stopped), a future prune will reap

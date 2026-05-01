@@ -10,9 +10,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newCspace2DownCmd() *cobra.Command {
+func newDownCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "cspace2-down <name>",
+		Use:   "down <name>",
 		Short: "Stop and remove a sandbox",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -37,7 +37,7 @@ func newCspace2DownCmd() *cobra.Command {
 			entry, _ := r.Lookup(project, name)
 
 			a := applecontainer.New()
-			_ = a.Stop(ctx, fmt.Sprintf("cspace2-%s-%s", project, name))
+			_ = a.Stop(ctx, fmt.Sprintf("cspace-%s-%s", project, name))
 
 			// Stop+remove the sidecar AFTER the sandbox so the agent's
 			// outstanding CDP connections drain naturally. stopBrowserSidecar

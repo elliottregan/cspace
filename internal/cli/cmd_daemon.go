@@ -19,7 +19,7 @@ import (
 
 const (
 	// daemonHTTPPort is the loopback HTTP port the daemon binds for registry
-	// lookups. cspace2-up injects http://192.168.64.1:<port> as
+	// lookups. cspace up injects http://192.168.64.1:<port> as
 	// CSPACE_REGISTRY_URL into sandboxes so they can resolve siblings.
 	daemonHTTPPort = "6280"
 
@@ -27,7 +27,8 @@ const (
 	// :5353, because macOS mDNSResponder owns UDP/5353 wildcard and we can't
 	// share it. 5354 is the well-known "alt-mdns" port and is unclaimed on
 	// macOS. `cspace dns install` writes /etc/resolver/cspace2.local with
-	// `port 5354` to match.
+	// `port 5354` to match. (See dnsDomain in cmd_dns.go for why the domain
+	// keeps the "2" suffix even after the cspace2-* → cspace * cutover.)
 	daemonDNSListenAddr = "127.0.0.1:5354"
 	daemonDNSDomain     = "cspace2.local." // trailing dot is canonical
 	daemonDNSTTL        = 5                // seconds; sandbox IPs change across restarts
@@ -41,7 +42,7 @@ func newDaemonCmd() *cobra.Command {
 	parent := &cobra.Command{
 		Use:   "daemon",
 		Short: "Manage the cspace background daemon (registry HTTP + DNS)",
-		Long: `cspace2-up auto-spawns the cspace daemon (HTTP registry lookup on
+		Long: `cspace up auto-spawns the cspace daemon (HTTP registry lookup on
 :6280, DNS for *.cspace2.local on :5354). The daemon idle-exits after 30
 minutes of no requests AND no active sandboxes. Most users never run
 these subcommands; they're for debugging and manual cleanup.`,
@@ -55,7 +56,7 @@ these subcommands; they're for debugging and manual cleanup.`,
 func newDaemonServeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:    "serve",
-		Short:  "Run the cspace daemon (auto-spawned by cspace2-up; rarely run by hand)",
+		Short:  "Run the cspace daemon (auto-spawned by cspace up; rarely run by hand)",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDaemonServe()
@@ -173,7 +174,7 @@ func runDaemonServe() error {
 	// resolve <name>.cspace2.local even though HTTP /lookup still works, and
 	// `cspace dns status` would (today) report "running" via the HTTP probe
 	// while users see broken name resolution. Exit non-zero so the parent
-	// (cspace2-up's ensureRegistryDaemon, which captures stderr) can surface
+	// (cspace up's ensureRegistryDaemon, which captures stderr) can surface
 	// the real error.
 	dh := daemonDNSHandler(r, &lastActivity)
 	dnsPort := daemonDNSListenAddr

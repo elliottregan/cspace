@@ -74,7 +74,7 @@ func TestHealthCheckRunning(t *testing.T) {
 // TestVersionMatchesSupported logs the locally-installed Apple Container
 // CLI version. Does NOT fail on supported=false — this test runs on dev
 // machines where the user may have moved off the tested range; we want to
-// know about drift, not block CI. The warning path in cspace2-up is the
+// know about drift, not block CI. The warning path in cspace up is the
 // user-facing surface for that.
 func TestVersionMatchesSupported(t *testing.T) {
 	requireContainerCLI(t)

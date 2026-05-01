@@ -17,10 +17,10 @@ import (
 const browserImage = "mcr.microsoft.com/playwright:v1.58.0-noble"
 
 // browserContainerName returns the canonical sidecar name for a sandbox,
-// in lockstep with cspace2-up's containerName template plus a "-browser"
+// in lockstep with cspace up's containerName template plus a "-browser"
 // suffix.
 func browserContainerName(project, sandbox string) string {
-	return fmt.Sprintf("cspace2-%s-%s-browser", project, sandbox)
+	return fmt.Sprintf("cspace-%s-%s-browser", project, sandbox)
 }
 
 // startBrowserSidecar runs the Playwright sidecar container, waits for its
@@ -35,7 +35,7 @@ func browserContainerName(project, sandbox string) string {
 // lib/templates/docker-compose.shared.yml (legacy compose).
 //
 // The sidecar gets --dns 1.1.1.1 --dns 8.8.8.8 because Apple Container's
-// default DNS is broken, and the sidecar is NOT a cspace2 container so it
+// default DNS is broken, and the sidecar is NOT a cspace container so it
 // doesn't go through our substrate adapter's DNS injection. Without these,
 // `apt-get update` inside the sidecar hangs.
 func startBrowserSidecar(ctx context.Context, project, sandbox string) (containerName, cdpURL string, err error) {

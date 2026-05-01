@@ -7,11 +7,11 @@
 # logs the failure and respawns after a brief backoff.
 #
 # Resume continuity: the supervisor reads CSPACE_RESUME_SESSION_ID from env
-# at startup. cspace2-up injects this value once at sandbox-create time;
+# at startup. cspace up injects this value once at sandbox-create time;
 # it persists across restarts inside the container. So the new supervisor
 # picks up the same Claude conversation thread without external glue.
 #
-# This wrapper is invoked by /usr/local/bin/cspace2-entrypoint.sh via exec.
+# This wrapper is invoked by /usr/local/bin/cspace-entrypoint.sh via exec.
 
 # NOTE: -u (treat unset vars as errors), but NOT -e — we want to handle
 # the supervisor's exit code manually, not propagate it.

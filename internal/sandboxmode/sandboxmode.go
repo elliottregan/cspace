@@ -1,13 +1,13 @@
 // Package sandboxmode detects whether the running cspace process is
 // executing inside a sandbox. When in-sandbox, the binary should skip
 // project-root / git-repo discovery and read its context from env vars
-// injected by the host's cspace2-up command.
+// injected by the host's cspace up command.
 package sandboxmode
 
 import "os"
 
 // IsInSandbox returns true when the process is running inside a cspace sandbox.
-// Detection is based on CSPACE_SANDBOX_NAME (always injected by cspace2-up).
+// Detection is based on CSPACE_SANDBOX_NAME (always injected by cspace up).
 func IsInSandbox() bool {
 	return os.Getenv("CSPACE_SANDBOX_NAME") != ""
 }

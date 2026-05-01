@@ -14,7 +14,7 @@
 //     fresh installs (the apiserver's first start tries to read stdin).
 //
 // VersionStatus() reports whether the installed CLI matches the tested
-// minor version. cspace2-up logs a one-line warning when out of range.
+// minor version. cspace up logs a one-line warning when out of range.
 package applecontainer
 
 import (
@@ -34,7 +34,7 @@ import (
 
 // supportedMinorVersion is the Apple Container CLI MAJOR.MINOR version cspace
 // has been tested against. Versions outside this range trigger a warning
-// (non-fatal) at cspace2-up time. Bumping this is a deliberate act: verify
+// (non-fatal) at cspace up time. Bumping this is a deliberate act: verify
 // the JSON shape of `container inspect` and the other quirks listed in the
 // package doc still hold.
 const supportedMinorVersion = "0.12"

@@ -61,7 +61,7 @@ func newPortsCmd() *cobra.Command {
 			}
 
 			useFriendly := dnsInstalled()
-			fqdn := fmt.Sprintf("%s.cspace2.local", sandbox)
+			fqdn := fmt.Sprintf("%s.%s", sandbox, dnsDomain)
 			for _, port := range open {
 				label := portLabel[port]
 				if label == "" {
@@ -77,7 +77,7 @@ func newPortsCmd() *cobra.Command {
 			}
 			if !useFriendly {
 				fmt.Fprintln(out, "")
-				fmt.Fprintln(out, "note: friendly URLs disabled. Run `cspace dns install` once to enable http://<sandbox>.cspace2.local/.")
+				fmt.Fprintf(out, "note: friendly URLs disabled. Run `cspace dns install` once to enable http://<sandbox>.%s/.\n", dnsDomain)
 			}
 			return nil
 		},

@@ -3,7 +3,7 @@ LDFLAGS         := -ldflags "-X github.com/elliottregan/cspace/internal/cli.Vers
 LDFLAGS_RELEASE := -ldflags "-s -w -X github.com/elliottregan/cspace/internal/cli.Version=$(VERSION)"
 GOBIN           := ./bin/cspace-go
 
-.PHONY: build build-linux clean test test-node vet sync-embedded overlay-demo overlay-web fmt fmt-check lint check install-tools setup-hooks check-hooks cspace-linux cspace2-image
+.PHONY: build build-linux clean test vet sync-embedded fmt fmt-check lint check install-tools setup-hooks check-hooks cspace-linux cspace-image
 # (registry-daemon target removed; daemon is embedded as `cspace daemon serve`.)
 
 # Sync lib/ contents into internal/assets/embedded/ for go:embed
@@ -13,44 +13,22 @@ sync-embedded:
 	@touch internal/assets/embedded/.gitkeep
 	@cp -r lib/templates internal/assets/embedded/
 	@cp -r lib/scripts internal/assets/embedded/
-	@cp -r lib/hooks internal/assets/embedded/
-	@cp -r lib/agents internal/assets/embedded/
-	@cp -r lib/advisors internal/assets/embedded/
-	@cp -r lib/agent-supervisor internal/assets/embedded/
-	@rm -rf internal/assets/embedded/agent-supervisor/node_modules
-	@cp -r lib/skills internal/assets/embedded/
-	@cp -r lib/commands internal/assets/embedded/
+	@cp -r lib/agent-supervisor-bun internal/assets/embedded/
+	@rm -rf internal/assets/embedded/agent-supervisor-bun/node_modules
 	@cp lib/defaults.json internal/assets/embedded/
-	@cp lib/planets.json internal/assets/embedded/
 
 build: check-hooks sync-embedded bin/cspace-go
 
 bin/cspace-go: $(shell find cmd/cspace internal -name '*.go') sync-embedded
 	go build $(LDFLAGS) -o $@ ./cmd/cspace
 
-# Run the provisioning overlay against synthesized phase events. Useful for
-# iterating on the UI without spinning up a real container. Forwards any
-# extra args through ARGS, e.g. `make overlay-demo ARGS="--planet=jupiter"`.
-overlay-demo: sync-embedded
-	@go run ./cmd/overlay-demo/ $(ARGS)
-
-# Serve a browser preview of the overlay at http://localhost:3000/ with
-# sliders for the main image parameters. Faster visual iteration than
-# the TUI demo. Override the port with ARGS="-addr :9000".
-overlay-web: sync-embedded
-	@go run ./cmd/overlay-web/ $(ARGS)
-
 build-linux: sync-embedded
 	@mkdir -p dist
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS_RELEASE) -o dist/cspace-linux-amd64 ./cmd/cspace
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(LDFLAGS_RELEASE) -o dist/cspace-linux-arm64 ./cmd/cspace
 
-test: sync-embedded test-node
+test: sync-embedded
 	go test ./...
-
-# Run Node tests in lib/agent-supervisor. node:test runner, no extra deps.
-test-node:
-	cd lib/agent-supervisor && node --test
 
 vet: sync-embedded
 	go vet ./...
@@ -72,7 +50,7 @@ fmt-check:
 
 lint: sync-embedded
 	golangci-lint run ./...
-	shellcheck lib/scripts/*.sh lib/hooks/*.sh
+	shellcheck lib/scripts/*.sh
 
 check: fmt-check vet lint test
 
@@ -91,7 +69,7 @@ setup-hooks:
 check-hooks:
 	@if [ -d .git ] && [ ! -f .git/hooks/pre-commit ]; then \
 		echo "" >&2; \
-		echo "⚠  Git hooks are not installed. Run 'make setup-hooks' to enable pre-commit and pre-push checks." >&2; \
+		echo "WARNING: Git hooks are not installed. Run 'make setup-hooks' to enable pre-commit and pre-push checks." >&2; \
 		echo "" >&2; \
 	fi
 
@@ -102,12 +80,11 @@ cspace-linux:
 		-o bin/cspace-linux-arm64 \
 		./cmd/cspace
 
-# Build the cspace2 sandbox image.
-.PHONY: cspace2-image
-cspace2-image: cspace-linux
+# Build the cspace sandbox image.
+.PHONY: cspace-image
+cspace-image: cspace-linux
 	container build \
 		--platform linux/arm64 \
-		--tag cspace2:latest \
-		--file lib/templates/Dockerfile.cspace2 \
+		--tag cspace:latest \
+		--file lib/templates/Dockerfile \
 		.
-

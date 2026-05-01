@@ -14,9 +14,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newCspace2SendCmd() *cobra.Command {
+func newSendCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "cspace2-send <name>[:<session>] <text>",
+		Use:   "send <name>[:<session>] <text>",
 		Short: "Inject a user turn into a sandbox session",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
