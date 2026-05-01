@@ -24,6 +24,7 @@ const supervisorPort = 6201
 func newCspace2UpCmd() *cobra.Command {
 	var workspaceMount string
 	var extraEnv []string
+	var baseBranch string
 	cmd := &cobra.Command{
 		Use:   "cspace2-up <name>",
 		Short: "Launch a sandbox (Apple Container substrate)",
@@ -108,11 +109,29 @@ func newCspace2UpCmd() *cobra.Command {
 				Image: "cspace2:latest",
 				Env:   env,
 			}
-			// P0 workspace mount (POC for the per-sandbox-clone design):
-			// when --workspace <host-path> is given, bind-mount it as /workspace
-			// so the agent sees a normal main worktree of a git clone. P1 will
-			// own the clone provisioning end-to-end inside cspace2-up; for now
-			// the spike script handles `git clone` outside this command.
+			// Auto-provision a per-sandbox git clone unless the user supplied
+			// --workspace explicitly (which acts as an override). The clone
+			// lives at ~/.cspace/clones/<project>/<sandbox>/ and is checked
+			// out as branch cspace/<sandbox>. See finding
+			// 2026-05-01-per-sandbox-git-clone-bind-mounted-as-workspace-works-as-des
+			// for the locked design.
+			if workspaceMount == "" {
+				auto, err := provisionClone(projectRoot, project, name, baseBranch)
+				if err != nil {
+					return fmt.Errorf("provision workspace clone: %w", err)
+				}
+				if auto != "" {
+					workspaceMount = auto
+					fmt.Fprintf(cmd.OutOrStdout(),
+						"workspace clone: %s (branch cspace/%s)\n", auto, name)
+				} else if projectRoot != "" {
+					fmt.Fprintln(cmd.OutOrStdout(),
+						"warning: project root is not a git repo; sandbox /workspace will be empty")
+				}
+			}
+			// Bind-mount the resolved workspace (auto-provisioned or explicit
+			// --workspace override) as /workspace so the agent sees a normal
+			// main worktree of a git clone.
 			if workspaceMount != "" {
 				abs, err := filepath.Abs(workspaceMount)
 				if err != nil {
@@ -159,9 +178,11 @@ func newCspace2UpCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&workspaceMount, "workspace", "",
-		"host path to bind-mount as /workspace (typically a per-sandbox git clone)")
+		"host path to bind-mount as /workspace (overrides auto-provisioned per-sandbox clone)")
 	cmd.Flags().StringArrayVar(&extraEnv, "env", nil,
 		"extra KEY=VALUE env vars to inject into the sandbox (repeatable)")
+	cmd.Flags().StringVar(&baseBranch, "base", "",
+		"base branch for the auto-provisioned cspace/<sandbox> branch (defaults to host project's current HEAD)")
 	return cmd
 }
 
