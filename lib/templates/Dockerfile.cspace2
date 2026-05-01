@@ -3,10 +3,28 @@ FROM docker.io/library/debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Root-only: system packages.
+# Root-only: system packages. Includes the dev toolchain so agents don't burn
+# turns self-bootstrapping (resolves finding sandbox-image-lacks-dev-toolchain):
+#  - make: drives project Makefiles
+#  - python3: hook scripts and a few utility tools
+#  - build-essential: gcc/g++/libc6-dev for cgo'd Go projects and npm native deps
+#  - ripgrep: Claude Code uses `rg` heavily
+#  - jq: ubiquitous in shell/MCP tooling
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl unzip git tini sudo \
+    make python3 build-essential ripgrep jq \
  && rm -rf /var/lib/apt/lists/*
+
+# Go toolchain. Pinned arm64 tarball install rather than apt's golang-go
+# (which lags upstream). Address the open finding sandbox-image-lacks-dev-
+# toolchain — agents should never need to download Go themselves.
+ARG GO_VERSION=1.23.4
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-arm64.tar.gz" -o /tmp/go.tar.gz \
+ && tar -C /usr/local -xzf /tmp/go.tar.gz \
+ && rm /tmp/go.tar.gz \
+ && /usr/local/go/bin/go version
+ENV PATH="/usr/local/go/bin:${PATH}"
+ENV GOPATH=/home/dev/go
 
 # GitHub CLI. Apt repo install (the static binary release is also fine; this
 # matches the pattern in the existing cspace Dockerfile).
@@ -34,10 +52,14 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
  && rm -rf /var/lib/apt/lists/* \
  && node --version && npm --version
 
+# pnpm — used by many JS projects in this codebase pattern. Install into the
+# system npm prefix (still root) so it's available to both root and dev.
+RUN npm install -g pnpm@9 && pnpm --version
+
 # Bun + Claude as the dev user so the install lands in /home/dev.
 USER dev
 ENV HOME=/home/dev
-ENV PATH=/home/dev/.bun/bin:/home/dev/.local/bin:/usr/local/bin:/usr/bin:/bin
+ENV PATH=/home/dev/.bun/bin:/home/dev/.local/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
 
 RUN curl -fsSL https://bun.sh/install | bash \
  && /home/dev/.bun/bin/bun --version
@@ -73,6 +95,9 @@ COPY lib/agent-supervisor-bun/dist/cspace-supervisor /usr/local/bin/cspace-super
 RUN mkdir -p /workspace /sessions \
  && chown -R dev:dev /workspace /sessions \
  && chmod +x /usr/local/bin/cspace /usr/local/bin/cspace-supervisor
+
+# GOPATH dir owned by dev so module downloads don't require sudo.
+RUN mkdir -p /home/dev/go && chown -R dev:dev /home/dev/go
 
 USER dev
 WORKDIR /workspace
