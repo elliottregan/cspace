@@ -20,12 +20,13 @@ import (
 )
 
 type Entry struct {
-	Project    string    `json:"-"`
-	Name       string    `json:"-"`
-	ControlURL string    `json:"control_url"`
-	Token      string    `json:"token,omitempty"`
-	IP         string    `json:"ip,omitempty"`
-	StartedAt  time.Time `json:"started_at"`
+	Project          string    `json:"-"`
+	Name             string    `json:"-"`
+	ControlURL       string    `json:"control_url"`
+	Token            string    `json:"token,omitempty"`
+	IP               string    `json:"ip,omitempty"`
+	StartedAt        time.Time `json:"started_at"`
+	BrowserContainer string    `json:"browser_container,omitempty"`
 }
 
 type Registry struct {

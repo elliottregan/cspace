@@ -26,11 +26,26 @@ func newCspace2DownCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 			defer cancel()
 
+			// Look up the registry entry BEFORE we tear anything down so
+			// we know whether there's a sidecar to stop alongside the
+			// sandbox. A missing entry is fine — we still try to stop the
+			// canonical sandbox container by name (be permissive: the
+			// sandbox might not be in the registry but a stale container
+			// could still be running).
+			path, _ := registry.DefaultPath()
+			r := &registry.Registry{Path: path}
+			entry, _ := r.Lookup(project, name)
+
 			a := applecontainer.New()
 			_ = a.Stop(ctx, fmt.Sprintf("cspace2-%s-%s", project, name))
 
-			path, _ := registry.DefaultPath()
-			r := &registry.Registry{Path: path}
+			// Stop+remove the sidecar AFTER the sandbox so the agent's
+			// outstanding CDP connections drain naturally. stopBrowserSidecar
+			// is idempotent; safe to call with an empty name.
+			if entry.BrowserContainer != "" {
+				stopBrowserSidecar(ctx, entry.BrowserContainer)
+			}
+
 			_ = r.Unregister(project, name)
 
 			fmt.Fprintf(cmd.OutOrStdout(), "sandbox %s down\n", name)

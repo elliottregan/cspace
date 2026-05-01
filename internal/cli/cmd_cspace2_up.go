@@ -25,11 +25,12 @@ func newCspace2UpCmd() *cobra.Command {
 	var workspaceMount string
 	var extraEnv []string
 	var baseBranch string
+	var withBrowser bool
 	cmd := &cobra.Command{
 		Use:   "cspace2-up <name>",
 		Short: "Launch a sandbox (Apple Container substrate)",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (err error) {
 			name := args[0]
 			project := projectName()
 
@@ -142,32 +143,66 @@ func newCspace2UpCmd() *cobra.Command {
 					ContainerPath: "/workspace",
 				})
 			}
-			if err := a.Run(ctx, spec); err != nil {
-				return fmt.Errorf("substrate run: %w", err)
+
+			// --browser: start a Playwright sidecar before launching the sandbox
+			// so we can inject CSPACE_BROWSER_CDP_URL into spec.Env. The
+			// supervisor's claude-runner.ts reads this and registers
+			// playwright-mcp via --cdp-endpoint, giving the agent browser
+			// tools without bundling a browser into the cspace2 image.
+			//
+			// On any subsequent error (substrate run, IP capture, registry
+			// write, …) we tear the sidecar down via the deferred cleanup
+			// below so we don't leak containers.
+			var browserContainer string
+			if withBrowser {
+				cName, cdpURL, berr := startBrowserSidecar(ctx, project, name)
+				if berr != nil {
+					return fmt.Errorf("browser sidecar: %w", berr)
+				}
+				browserContainer = cName
+				env["CSPACE_BROWSER_CDP_URL"] = cdpURL
+				fmt.Fprintf(cmd.OutOrStdout(),
+					"browser sidecar: %s (cdp %s)\n", cName, cdpURL)
+				defer func() {
+					if err != nil {
+						stopBrowserSidecar(context.Background(), cName)
+					}
+				}()
+			}
+
+			if runErr := a.Run(ctx, spec); runErr != nil {
+				err = fmt.Errorf("substrate run: %w", runErr)
+				return err
 			}
 
 			// Container IP is assigned at run time; poll briefly until non-empty.
-			ip, err := waitForIP(ctx, a, containerName, 10*time.Second)
-			if err != nil {
+			ip, ipErr := waitForIP(ctx, a, containerName, 10*time.Second)
+			if ipErr != nil {
 				_ = a.Stop(context.Background(), containerName)
-				return fmt.Errorf("acquire container IP: %w", err)
+				err = fmt.Errorf("acquire container IP: %w", ipErr)
+				return err
 			}
 
 			ctlURL := fmt.Sprintf("http://%s:%d", ip, supervisorPort)
 
-			path, err := registry.DefaultPath()
-			if err != nil {
+			path, pathErr := registry.DefaultPath()
+			if pathErr != nil {
+				_ = a.Stop(context.Background(), containerName)
+				err = pathErr
 				return err
 			}
 			r := &registry.Registry{Path: path}
-			if err := r.Register(registry.Entry{
-				Project:    project,
-				Name:       name,
-				ControlURL: ctlURL,
-				Token:      token,
-				IP:         ip,
-				StartedAt:  time.Now().UTC(),
-			}); err != nil {
+			if regErr := r.Register(registry.Entry{
+				Project:          project,
+				Name:             name,
+				ControlURL:       ctlURL,
+				Token:            token,
+				IP:               ip,
+				StartedAt:        time.Now().UTC(),
+				BrowserContainer: browserContainer,
+			}); regErr != nil {
+				_ = a.Stop(context.Background(), containerName)
+				err = regErr
 				return err
 			}
 
@@ -183,6 +218,8 @@ func newCspace2UpCmd() *cobra.Command {
 		"extra KEY=VALUE env vars to inject into the sandbox (repeatable)")
 	cmd.Flags().StringVar(&baseBranch, "base", "",
 		"base branch for the auto-provisioned cspace/<sandbox> branch (defaults to host project's current HEAD)")
+	cmd.Flags().BoolVar(&withBrowser, "browser", false,
+		"start a Playwright browser sidecar; agent's playwright-mcp connects via CDP")
 	return cmd
 }
 
