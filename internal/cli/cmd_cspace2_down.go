@@ -10,10 +10,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newPrototypeDownCmd() *cobra.Command {
+func newCspace2DownCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "prototype-down <name>",
-		Short: "P0: stop and remove a prototype sandbox",
+		Use:   "cspace2-down <name>",
+		Short: "Stop and remove a sandbox",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -27,7 +27,7 @@ func newPrototypeDownCmd() *cobra.Command {
 			defer cancel()
 
 			a := applecontainer.New()
-			_ = a.Stop(ctx, fmt.Sprintf("cspace-%s-%s", project, name))
+			_ = a.Stop(ctx, fmt.Sprintf("cspace2-%s-%s", project, name))
 
 			path, _ := registry.DefaultPath()
 			r := &registry.Registry{Path: path}

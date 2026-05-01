@@ -1,4 +1,4 @@
-# Phase 0 prototype sandbox image. Minimal: Bun + Claude Code + cspace + supervisor.
+# cspace2 sandbox image. Minimal: Bun + Claude Code + cspace + supervisor.
 FROM docker.io/library/debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive

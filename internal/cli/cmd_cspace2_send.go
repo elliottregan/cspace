@@ -14,10 +14,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newPrototypeSendCmd() *cobra.Command {
+func newCspace2SendCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "prototype-send <name>[:<session>] <text>",
-		Short: "P0: inject a user turn into a sandbox session",
+		Use:   "cspace2-send <name>[:<session>] <text>",
+		Short: "Inject a user turn into a sandbox session",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target, text := args[0], args[1]

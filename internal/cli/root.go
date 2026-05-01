@@ -42,8 +42,8 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 			// In-sandbox: env vars (CSPACE_PROJECT, CSPACE_SANDBOX_NAME,
 			// CSPACE_REGISTRY_URL) carry project context. Skip the host-style
 			// git-repo / .cspace.json discovery so commands like
-			// `cspace prototype-send` (and future cspace2-*) work even when
-			// /workspace isn't a git repo at the cspace level.
+			// `cspace cspace2-send` work even when /workspace isn't a git
+			// repo at the cspace level.
 			if sandboxmode.IsInSandbox() {
 				return nil
 			}
@@ -125,10 +125,10 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 		newVersionCmd(),
 		newCompletionCmd(),
 
-		// P0 prototype (Phase 0 spike)
-		newPrototypeUpCmd(),
-		newPrototypeDownCmd(),
-		newPrototypeSendCmd(),
+		// cspace2-* (Phase 1 staging name)
+		newCspace2UpCmd(),
+		newCspace2DownCmd(),
+		newCspace2SendCmd(),
 	)
 
 	return root

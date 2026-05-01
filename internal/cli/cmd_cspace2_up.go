@@ -21,12 +21,12 @@ import (
 
 const supervisorPort = 6201
 
-func newPrototypeUpCmd() *cobra.Command {
+func newCspace2UpCmd() *cobra.Command {
 	var workspaceMount string
 	var extraEnv []string
 	cmd := &cobra.Command{
-		Use:   "prototype-up <name>",
-		Short: "P0: launch a prototype sandbox",
+		Use:   "cspace2-up <name>",
+		Short: "Launch a sandbox (Apple Container substrate)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -98,11 +98,11 @@ func newPrototypeUpCmd() *cobra.Command {
 				}
 			}
 
-			containerName := fmt.Sprintf("cspace-%s-%s", project, name)
+			containerName := fmt.Sprintf("cspace2-%s-%s", project, name)
 
 			spec := substrate.RunSpec{
 				Name:  containerName,
-				Image: "cspace-prototype:latest",
+				Image: "cspace2:latest",
 				Env:   env,
 			}
 			// P0 workspace mount (POC for the per-sandbox-clone design):
@@ -185,13 +185,13 @@ func waitForIP(ctx context.Context, a *applecontainer.Adapter, name string, max 
 }
 
 // projectName returns the current project's name. Resolution order:
-//  1. $CSPACE_PROJECT env var (set inside sandboxes by prototype-up so the
+//  1. $CSPACE_PROJECT env var (set inside sandboxes by cspace2-up so the
 //     in-sandbox cspace binary resolves the same project key the host used
 //     when it registered the sibling).
 //  2. cfg.Project.Name from a loaded .cspace.json.
 //  3. "default" when neither is available.
 //
-// It is the single fix-up point for the prototype-* commands.
+// It is the single fix-up point for the cspace2-* commands.
 func projectName() string {
 	if p := os.Getenv("CSPACE_PROJECT"); p != "" {
 		return p
@@ -210,7 +210,7 @@ func randHex(n int) string {
 
 // ensureRegistryDaemon starts cspace-registry-daemon on 127.0.0.1:6280 if it
 // is not already accepting connections. It is idempotent — concurrent
-// prototype-up calls that race here will at most spawn one extra daemon, and
+// cspace2-up calls that race here will at most spawn one extra daemon, and
 // only one will manage to bind the port; the others exit immediately.
 //
 // P0: the daemon is left running until manually killed (no idle shutdown,

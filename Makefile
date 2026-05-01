@@ -3,7 +3,7 @@ LDFLAGS         := -ldflags "-X github.com/elliottregan/cspace/internal/cli.Vers
 LDFLAGS_RELEASE := -ldflags "-s -w -X github.com/elliottregan/cspace/internal/cli.Version=$(VERSION)"
 GOBIN           := ./bin/cspace-go
 
-.PHONY: build build-linux clean test test-node vet sync-embedded overlay-demo overlay-web fmt fmt-check lint check install-tools setup-hooks check-hooks cspace-linux prototype-image
+.PHONY: build build-linux clean test test-node vet sync-embedded overlay-demo overlay-web fmt fmt-check lint check install-tools setup-hooks check-hooks cspace-linux cspace2-image
 
 # Sync lib/ contents into internal/assets/embedded/ for go:embed
 sync-embedded:
@@ -101,13 +101,13 @@ cspace-linux:
 		-o bin/cspace-linux-arm64 \
 		./cmd/cspace
 
-# P0: build the prototype sandbox image.
-.PHONY: prototype-image
-prototype-image: cspace-linux
+# Build the cspace2 sandbox image.
+.PHONY: cspace2-image
+cspace2-image: cspace-linux
 	container build \
 		--platform linux/arm64 \
-		--tag cspace-prototype:latest \
-		--file lib/templates/Dockerfile.prototype \
+		--tag cspace2:latest \
+		--file lib/templates/Dockerfile.cspace2 \
 		.
 
 # P0: host-side HTTP daemon that exposes registry lookups to in-sandbox cspace.
