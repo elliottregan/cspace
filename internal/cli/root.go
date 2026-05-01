@@ -131,6 +131,7 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 		newCspace2DownCmd(),
 		newCspace2SendCmd(),
 		newRegistryDaemonCmd(),
+		newDnsCmd(),
 	)
 
 	return root
