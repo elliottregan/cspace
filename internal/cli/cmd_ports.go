@@ -54,9 +54,9 @@ func newPortsCmd() *cobra.Command {
 			sort.Ints(open)
 
 			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "ports listening on sandbox %s (%s):\n", sandbox, entry.IP)
+			_, _ = fmt.Fprintf(out, "ports listening on sandbox %s (%s):\n", sandbox, entry.IP)
 			if len(open) == 0 {
-				fmt.Fprintln(out, "  (none — supervisor /control may not be ready yet)")
+				_, _ = fmt.Fprintln(out, "  (none — supervisor /control may not be ready yet)")
 				return nil
 			}
 
@@ -73,11 +73,11 @@ func newPortsCmd() *cobra.Command {
 				} else {
 					url = fmt.Sprintf("http://%s:%d/", entry.IP, port)
 				}
-				fmt.Fprintf(out, "  %-6d %-22s %s\n", port, label, url)
+				_, _ = fmt.Fprintf(out, "  %-6d %-22s %s\n", port, label, url)
 			}
 			if !useFriendly {
-				fmt.Fprintln(out, "")
-				fmt.Fprintf(out, "note: friendly URLs disabled. Run `cspace dns install` once to enable http://<sandbox>.%s/.\n", dnsDomain)
+				_, _ = fmt.Fprintln(out, "")
+				_, _ = fmt.Fprintf(out, "note: friendly URLs disabled. Run `cspace dns install` once to enable http://<sandbox>.%s/.\n", dnsDomain)
 			}
 			return nil
 		},
@@ -102,7 +102,7 @@ func probePorts(host string, ports []int, timeout time.Duration) []int {
 			if err != nil {
 				return
 			}
-			conn.Close()
+			_ = conn.Close()
 			mu.Lock()
 			open = append(open, p)
 			mu.Unlock()

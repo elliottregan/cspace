@@ -37,7 +37,7 @@ func newKeychainInitCmd() *cobra.Command {
 		Short: "Seed cspace credentials into macOS Keychain",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if runtime.GOOS != "darwin" {
-				fmt.Fprintln(cmd.OutOrStdout(),
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(),
 					"`cspace keychain init` is macOS-only. On Linux, put credentials in ~/.cspace/secrets.env.")
 				return nil
 			}
@@ -49,11 +49,11 @@ func newKeychainInitCmd() *cobra.Command {
 func runKeychainInit(out io.Writer, in io.Reader) error {
 	reader := bufio.NewReader(in)
 
-	fmt.Fprintln(out, "cspace keychain init — store credentials in macOS Keychain")
-	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "For each prompt: paste a value and press ENTER, or press ENTER alone to skip.")
-	fmt.Fprintln(out, "Existing entries display \"already set\" — typing a new value replaces them.")
-	fmt.Fprintln(out, "")
+	_, _ = fmt.Fprintln(out, "cspace keychain init — store credentials in macOS Keychain")
+	_, _ = fmt.Fprintln(out, "")
+	_, _ = fmt.Fprintln(out, "For each prompt: paste a value and press ENTER, or press ENTER alone to skip.")
+	_, _ = fmt.Fprintln(out, "Existing entries display \"already set\" — typing a new value replaces them.")
+	_, _ = fmt.Fprintln(out, "")
 
 	// Anthropic credential — strongly recommend an API key (long-lived).
 	{
@@ -63,45 +63,45 @@ func runKeychainInit(out io.Writer, in io.Reader) error {
 		}
 		oauth, expires, _ := secrets.DiscoverClaudeOauthToken()
 
-		fmt.Fprintln(out, "ANTHROPIC API KEY")
-		fmt.Fprintln(out, "  Recommended: paste a long-lived API key (sk-ant-api-...) from")
-		fmt.Fprintln(out, "  https://console.anthropic.com/settings/keys. Stable across sessions,")
-		fmt.Fprintln(out, "  no refresh dance. Use this for any multi-day or autonomous run.")
-		fmt.Fprintln(out, "  An OAuth token (sk-ant-oat-...) works too but is short-lived;")
-		fmt.Fprintln(out, "  reserve it for short / casual sessions.")
+		_, _ = fmt.Fprintln(out, "ANTHROPIC API KEY")
+		_, _ = fmt.Fprintln(out, "  Recommended: paste a long-lived API key (sk-ant-api-...) from")
+		_, _ = fmt.Fprintln(out, "  https://console.anthropic.com/settings/keys. Stable across sessions,")
+		_, _ = fmt.Fprintln(out, "  no refresh dance. Use this for any multi-day or autonomous run.")
+		_, _ = fmt.Fprintln(out, "  An OAuth token (sk-ant-oat-...) works too but is short-lived;")
+		_, _ = fmt.Fprintln(out, "  reserve it for short / casual sessions.")
 		switch {
 		case existing != "":
-			fmt.Fprintln(out, "  Status: already set in Keychain (cspace-ANTHROPIC_API_KEY).")
+			_, _ = fmt.Fprintln(out, "  Status: already set in Keychain (cspace-ANTHROPIC_API_KEY).")
 		case oauth != "":
 			expiry := "an unknown time (older Claude Code build — no expiresAt field)"
 			if !expires.IsZero() {
 				expiry = expires.Local().Format("2006-01-02 15:04 MST")
 			}
-			fmt.Fprintln(out, "  Status: not set in cspace Keychain. Auto-discovery will fall back to your")
-			fmt.Fprintf(out, "          Claude Code OAuth token, which expires %s.\n", expiry)
-			fmt.Fprintln(out, "  Recommendation: paste a long-lived API key here for stable, multi-day work.")
-			fmt.Fprintln(out, "  The OAuth token is fine for short / casual sessions, but long-running")
-			fmt.Fprintln(out, "  sandboxes will lose auth mid-task when it expires.")
+			_, _ = fmt.Fprintln(out, "  Status: not set in cspace Keychain. Auto-discovery will fall back to your")
+			_, _ = fmt.Fprintf(out, "          Claude Code OAuth token, which expires %s.\n", expiry)
+			_, _ = fmt.Fprintln(out, "  Recommendation: paste a long-lived API key here for stable, multi-day work.")
+			_, _ = fmt.Fprintln(out, "  The OAuth token is fine for short / casual sessions, but long-running")
+			_, _ = fmt.Fprintln(out, "  sandboxes will lose auth mid-task when it expires.")
 		default:
-			fmt.Fprintln(out, "  Status: not set, and no auto-discoverable host credential found.")
+			_, _ = fmt.Fprintln(out, "  Status: not set, and no auto-discoverable host credential found.")
 		}
-		fmt.Fprintf(out, "  ANTHROPIC_API_KEY > ")
+		_, _ = fmt.Fprintf(out, "  ANTHROPIC_API_KEY > ")
 		val, err := readLine(reader)
 		if err != nil {
 			return err
 		}
 		switch {
 		case val == "":
-			fmt.Fprintln(out, "  (skipped)")
+			_, _ = fmt.Fprintln(out, "  (skipped)")
 		case !strings.HasPrefix(val, "sk-ant-"):
-			fmt.Fprintln(out, "  (input does not start with `sk-ant-`; skipping to avoid storing a typo)")
+			_, _ = fmt.Fprintln(out, "  (input does not start with `sk-ant-`; skipping to avoid storing a typo)")
 		default:
 			if err := secrets.WriteKeychain("cspace-ANTHROPIC_API_KEY", val); err != nil {
 				return fmt.Errorf("write keychain cspace-ANTHROPIC_API_KEY: %w", err)
 			}
-			fmt.Fprintln(out, "  stored at Keychain service \"cspace-ANTHROPIC_API_KEY\".")
+			_, _ = fmt.Fprintln(out, "  stored at Keychain service \"cspace-ANTHROPIC_API_KEY\".")
 		}
-		fmt.Fprintln(out, "")
+		_, _ = fmt.Fprintln(out, "")
 	}
 
 	// GitHub credential — auto-discovery from gh CLI is fine for most users.
@@ -112,37 +112,37 @@ func runKeychainInit(out io.Writer, in io.Reader) error {
 		}
 		gh, _ := secrets.DiscoverGhAuthToken()
 
-		fmt.Fprintln(out, "GITHUB TOKEN (PAT)")
-		fmt.Fprintln(out, "  Most users don't need to set this — gh CLI auth is auto-discovered.")
-		fmt.Fprintln(out, "  Set this to lock a specific PAT for cspace's use (e.g. project")
-		fmt.Fprintln(out, "  scoped, narrower permissions than your gh login).")
+		_, _ = fmt.Fprintln(out, "GITHUB TOKEN (PAT)")
+		_, _ = fmt.Fprintln(out, "  Most users don't need to set this — gh CLI auth is auto-discovered.")
+		_, _ = fmt.Fprintln(out, "  Set this to lock a specific PAT for cspace's use (e.g. project")
+		_, _ = fmt.Fprintln(out, "  scoped, narrower permissions than your gh login).")
 		switch {
 		case existing != "":
-			fmt.Fprintln(out, "  Status: already set in Keychain (cspace-GH_TOKEN).")
+			_, _ = fmt.Fprintln(out, "  Status: already set in Keychain (cspace-GH_TOKEN).")
 		case gh != "":
-			fmt.Fprintf(out, "  Status: not set. Auto-discovery will use `gh auth token` (gho_..., len %d).\n", len(gh))
+			_, _ = fmt.Fprintf(out, "  Status: not set. Auto-discovery will use `gh auth token` (gho_..., len %d).\n", len(gh))
 		default:
-			fmt.Fprintln(out, "  Status: not set; `gh auth token` returned nothing. Sandboxes won't")
-			fmt.Fprintln(out, "  have GitHub auth unless you set this or run `gh auth login` on the host.")
+			_, _ = fmt.Fprintln(out, "  Status: not set; `gh auth token` returned nothing. Sandboxes won't")
+			_, _ = fmt.Fprintln(out, "  have GitHub auth unless you set this or run `gh auth login` on the host.")
 		}
-		fmt.Fprintf(out, "  GH_TOKEN > ")
+		_, _ = fmt.Fprintf(out, "  GH_TOKEN > ")
 		val, err := readLine(reader)
 		if err != nil {
 			return err
 		}
-		switch {
-		case val == "":
-			fmt.Fprintln(out, "  (skipped)")
+		switch val {
+		case "":
+			_, _ = fmt.Fprintln(out, "  (skipped)")
 		default:
 			if err := secrets.WriteKeychain("cspace-GH_TOKEN", val); err != nil {
 				return fmt.Errorf("write keychain cspace-GH_TOKEN: %w", err)
 			}
-			fmt.Fprintln(out, "  stored at Keychain service \"cspace-GH_TOKEN\".")
+			_, _ = fmt.Fprintln(out, "  stored at Keychain service \"cspace-GH_TOKEN\".")
 		}
-		fmt.Fprintln(out, "")
+		_, _ = fmt.Fprintln(out, "")
 	}
 
-	fmt.Fprintln(out, "Done. Run `cspace keychain status` to see what's reachable.")
+	_, _ = fmt.Fprintln(out, "Done. Run `cspace keychain status` to see what's reachable.")
 	return nil
 }
 
@@ -165,8 +165,8 @@ func newKeychainStatusCmd() *cobra.Command {
 }
 
 func runKeychainStatus(out io.Writer) error {
-	fmt.Fprintln(out, "cspace credential sources (highest precedence first):")
-	fmt.Fprintln(out, "")
+	_, _ = fmt.Fprintln(out, "cspace credential sources (highest precedence first):")
+	_, _ = fmt.Fprintln(out, "")
 
 	// Find the project root (cfg may be nil if not in a project).
 	projectRoot := ""
@@ -184,15 +184,15 @@ func runKeychainStatus(out io.Writer) error {
 	}
 
 	for _, fam := range families {
-		fmt.Fprintf(out, "%s:\n", fam.label)
+		_, _ = fmt.Fprintf(out, "%s:\n", fam.label)
 		for _, key := range fam.members {
 			source, hint := credentialSource(projectRoot, userHome, key)
-			fmt.Fprintf(out, "  %s\n    source: %s\n", key, source)
+			_, _ = fmt.Fprintf(out, "  %s\n    source: %s\n", key, source)
 			if hint != "" {
-				fmt.Fprintf(out, "    note:   %s\n", hint)
+				_, _ = fmt.Fprintf(out, "    note:   %s\n", hint)
 			}
 		}
-		fmt.Fprintln(out, "")
+		_, _ = fmt.Fprintln(out, "")
 	}
 	return nil
 }

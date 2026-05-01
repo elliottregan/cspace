@@ -55,12 +55,12 @@ func newSendCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("post /send: %w", err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			out, _ := io.ReadAll(resp.Body)
 			if resp.StatusCode != 200 {
 				return fmt.Errorf("status %d: %s", resp.StatusCode, out)
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), strings.TrimSpace(string(out)))
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), strings.TrimSpace(string(out)))
 			return nil
 		},
 	}
@@ -77,7 +77,7 @@ func resolveEntry(project, name string) (registry.Entry, error) {
 		if err != nil {
 			return registry.Entry{}, fmt.Errorf("registry daemon %s: %w", rURL, err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != 200 {
 			body, _ := io.ReadAll(resp.Body)
 			return registry.Entry{}, fmt.Errorf("registry lookup status %d: %s",

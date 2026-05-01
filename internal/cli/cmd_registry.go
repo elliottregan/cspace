@@ -94,7 +94,7 @@ func runRegistryList(out io.Writer) error {
 		return err
 	}
 	if len(entries) == 0 {
-		fmt.Fprintln(out, "no sandboxes registered")
+		_, _ = fmt.Fprintln(out, "no sandboxes registered")
 		return nil
 	}
 
@@ -102,7 +102,7 @@ func runRegistryList(out io.Writer) error {
 	defer cancel()
 
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "PROJECT\tSANDBOX\tIP\tBROWSER\tSTATE\tLIFECYCLE\tSTARTED")
+	_, _ = fmt.Fprintln(tw, "PROJECT\tSANDBOX\tIP\tBROWSER\tSTATE\tLIFECYCLE\tSTARTED")
 	for _, e := range entries {
 		alive := containerExists(ctx, containerNameForEntry(e))
 		lifecycleState := "dead"
@@ -131,7 +131,7 @@ func runRegistryList(out io.Writer) error {
 		if !e.StartedAt.IsZero() {
 			started = e.StartedAt.Local().Format("2006-01-02 15:04")
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			e.Project, e.Name, ipOrDash(e.IP), browserCol, entryState, lifecycleState, started)
 	}
 	return tw.Flush()
@@ -155,7 +155,7 @@ func runRegistryPrune(out io.Writer, dryRun bool) error {
 		return err
 	}
 	if len(entries) == 0 {
-		fmt.Fprintln(out, "no sandboxes registered")
+		_, _ = fmt.Fprintln(out, "no sandboxes registered")
 		return nil
 	}
 
@@ -173,12 +173,12 @@ func runRegistryPrune(out io.Writer, dryRun bool) error {
 			// state=ready entries whose sandbox went away, and orphaned
 			// state=starting entries from a boot that crashed.
 			if dryRun {
-				fmt.Fprintf(out, "would remove: %s:%s\n", e.Project, e.Name)
+				_, _ = fmt.Fprintf(out, "would remove: %s:%s\n", e.Project, e.Name)
 			} else {
 				if err := r.Unregister(e.Project, e.Name); err != nil {
 					return fmt.Errorf("unregister %s:%s: %w", e.Project, e.Name, err)
 				}
-				fmt.Fprintf(out, "removed: %s:%s\n", e.Project, e.Name)
+				_, _ = fmt.Fprintf(out, "removed: %s:%s\n", e.Project, e.Name)
 			}
 			pruneCount++
 		case e.State == "starting":
@@ -189,22 +189,22 @@ func runRegistryPrune(out io.Writer, dryRun bool) error {
 			// container exits (or is stopped), a future prune will reap
 			// the entry via the !sandboxAlive branch above.
 			if dryRun {
-				fmt.Fprintf(out, "stuck booting: %s:%s (alive but never reached ready)\n", e.Project, e.Name)
+				_, _ = fmt.Fprintf(out, "stuck booting: %s:%s (alive but never reached ready)\n", e.Project, e.Name)
 			} else {
-				fmt.Fprintf(out, "warning: %s:%s is alive but state=starting (boot may still be in progress; not removing)\n", e.Project, e.Name)
+				_, _ = fmt.Fprintf(out, "warning: %s:%s is alive but state=starting (boot may still be in progress; not removing)\n", e.Project, e.Name)
 			}
 			stuckBootingCount++
 		case e.BrowserContainer != "" && !containerExists(ctx, e.BrowserContainer):
 			// Sandbox alive but browser dead — clear the browser_container field.
 			if dryRun {
-				fmt.Fprintf(out, "would clear browser: %s:%s (was %s)\n", e.Project, e.Name, e.BrowserContainer)
+				_, _ = fmt.Fprintf(out, "would clear browser: %s:%s (was %s)\n", e.Project, e.Name, e.BrowserContainer)
 			} else {
 				e2 := e
 				e2.BrowserContainer = ""
 				if err := r.Register(e2); err != nil {
 					return fmt.Errorf("clear browser %s:%s: %w", e.Project, e.Name, err)
 				}
-				fmt.Fprintf(out, "cleared browser_container: %s:%s\n", e.Project, e.Name)
+				_, _ = fmt.Fprintf(out, "cleared browser_container: %s:%s\n", e.Project, e.Name)
 			}
 			clearedBrowserCount++
 		}
@@ -212,29 +212,29 @@ func runRegistryPrune(out io.Writer, dryRun bool) error {
 
 	switch {
 	case pruneCount == 0 && clearedBrowserCount == 0 && stuckBootingCount == 0:
-		fmt.Fprintln(out, "no dead entries to prune")
+		_, _ = fmt.Fprintln(out, "no dead entries to prune")
 	case pruneCount == 0 && clearedBrowserCount == 0:
 		// Only stuck-booting entries — nothing to prune, but the warnings
 		// above already informed the user. Add a one-line summary.
-		fmt.Fprintf(out, "no dead entries to prune (%d stuck booting; not removed)\n", stuckBootingCount)
+		_, _ = fmt.Fprintf(out, "no dead entries to prune (%d stuck booting; not removed)\n", stuckBootingCount)
 	case dryRun:
 		switch {
 		case clearedBrowserCount == 0:
-			fmt.Fprintf(out, "would prune %d entries\n", pruneCount)
+			_, _ = fmt.Fprintf(out, "would prune %d entries\n", pruneCount)
 		case pruneCount == 0:
-			fmt.Fprintf(out, "would clear browser_container on %d alive entries\n", clearedBrowserCount)
+			_, _ = fmt.Fprintf(out, "would clear browser_container on %d alive entries\n", clearedBrowserCount)
 		default:
-			fmt.Fprintf(out, "would prune %d dead entries; would clear browser_container on %d alive entries\n",
+			_, _ = fmt.Fprintf(out, "would prune %d dead entries; would clear browser_container on %d alive entries\n",
 				pruneCount, clearedBrowserCount)
 		}
 	default:
 		switch {
 		case clearedBrowserCount == 0:
-			fmt.Fprintf(out, "pruned %d dead entries\n", pruneCount)
+			_, _ = fmt.Fprintf(out, "pruned %d dead entries\n", pruneCount)
 		case pruneCount == 0:
-			fmt.Fprintf(out, "cleared browser_container on %d alive entries\n", clearedBrowserCount)
+			_, _ = fmt.Fprintf(out, "cleared browser_container on %d alive entries\n", clearedBrowserCount)
 		default:
-			fmt.Fprintf(out, "pruned %d dead entries; cleared browser_container on %d alive entries\n",
+			_, _ = fmt.Fprintf(out, "pruned %d dead entries; cleared browser_container on %d alive entries\n",
 				pruneCount, clearedBrowserCount)
 		}
 	}

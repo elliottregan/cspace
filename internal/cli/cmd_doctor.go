@@ -50,7 +50,7 @@ func runDoctor(ctx context.Context, out io.Writer) error {
 
 	warnings, failures := 0, 0
 	for _, p := range probes {
-		fmt.Fprintf(out, "%s\n", p.Subsystem)
+		_, _ = fmt.Fprintf(out, "%s\n", p.Subsystem)
 		for _, c := range p.Checks {
 			mark := "✓"
 			switch c.Status {
@@ -61,12 +61,12 @@ func runDoctor(ctx context.Context, out io.Writer) error {
 				mark = "✗"
 				failures++
 			}
-			fmt.Fprintf(out, "  %s %s\n", mark, c.Title)
+			_, _ = fmt.Fprintf(out, "  %s %s\n", mark, c.Title)
 			for _, d := range c.Details {
-				fmt.Fprintf(out, "    %s\n", d)
+				_, _ = fmt.Fprintf(out, "    %s\n", d)
 			}
 		}
-		fmt.Fprintln(out)
+		_, _ = fmt.Fprintln(out)
 	}
 
 	switch {
@@ -75,23 +75,23 @@ func runDoctor(ctx context.Context, out io.Writer) error {
 		if failures == 1 {
 			issueWord = "issue needs"
 		}
-		fmt.Fprintf(out, "Overall: %d %s attention", failures, issueWord)
+		_, _ = fmt.Fprintf(out, "Overall: %d %s attention", failures, issueWord)
 		if warnings > 0 {
 			advisoryWord := "advisory items"
 			if warnings == 1 {
 				advisoryWord = "advisory item"
 			}
-			fmt.Fprintf(out, " (and %d %s)", warnings, advisoryWord)
+			_, _ = fmt.Fprintf(out, " (and %d %s)", warnings, advisoryWord)
 		}
-		fmt.Fprintln(out)
+		_, _ = fmt.Fprintln(out)
 	case warnings > 0:
 		advisoryWord := "advisory items"
 		if warnings == 1 {
 			advisoryWord = "advisory item"
 		}
-		fmt.Fprintf(out, "Overall: %d %s; otherwise healthy.\n", warnings, advisoryWord)
+		_, _ = fmt.Fprintf(out, "Overall: %d %s; otherwise healthy.\n", warnings, advisoryWord)
 	default:
-		fmt.Fprintln(out, "Overall: healthy")
+		_, _ = fmt.Fprintln(out, "Overall: healthy")
 	}
 	return nil
 }

@@ -48,7 +48,7 @@ func newDownCmd() *cobra.Command {
 
 			_ = r.Unregister(project, name)
 
-			fmt.Fprintf(cmd.OutOrStdout(), "sandbox %s down\n", name)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "sandbox %s down\n", name)
 			return nil
 		},
 	}

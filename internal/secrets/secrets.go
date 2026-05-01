@@ -185,7 +185,7 @@ func mergeFile(into map[string]string, path string) error {
 		}
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	parsed, err := parse(f)
 	if err != nil {

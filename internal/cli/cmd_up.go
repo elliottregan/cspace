@@ -55,7 +55,7 @@ func newUpCmd() *cobra.Command {
 			// errors that may follow. If err is non-nil, Available() and
 			// HealthCheck() will surface clearer messages, so we ignore.
 			if version, supported, vErr := a.VersionStatus(ctx); vErr == nil && !supported {
-				fmt.Fprintf(cmd.ErrOrStderr(),
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
 					"warning: cspace tested with Apple Container %s.x; you have %q. "+
 						"Things may behave unexpectedly. File issues at "+
 						"https://github.com/elliottregan/cspace/issues with the output of "+
@@ -154,10 +154,10 @@ func newUpCmd() *cobra.Command {
 				}
 				if auto != "" {
 					workspaceMount = auto
-					fmt.Fprintf(cmd.OutOrStdout(),
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 						"workspace clone: %s (branch cspace/%s)\n", auto, name)
 				} else if projectRoot != "" {
-					fmt.Fprintln(cmd.OutOrStdout(),
+					_, _ = fmt.Fprintln(cmd.OutOrStdout(),
 						"warning: project root is not a git repo; sandbox /workspace will be empty")
 				}
 			}
@@ -227,7 +227,7 @@ func newUpCmd() *cobra.Command {
 				}
 				browserContainer = cName
 				env["CSPACE_BROWSER_CDP_URL"] = cdpURL
-				fmt.Fprintf(cmd.OutOrStdout(),
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 					"browser sidecar: %s (cdp %s)\n", cName, cdpURL)
 				defer func() {
 					if err != nil {
@@ -308,7 +308,7 @@ func newUpCmd() *cobra.Command {
 				return err
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(),
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 				"sandbox %s up: control %s  ip %s  token %s…\n",
 				name, ctlURL, ip, token[:8])
 
@@ -316,7 +316,7 @@ func newUpCmd() *cobra.Command {
 			// installed (it's helpful, not nagging). Otherwise, suggest
 			// `cspace dns install` once per user via a sentinel.
 			if dnsInstalled() {
-				fmt.Fprintf(cmd.OutOrStdout(),
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 					"browse:  http://%s.%s/  (friendly URL via cspace dns)\n", name, dnsDomain)
 			} else {
 				maybeNudgeMissingDnsInstall(cmd.OutOrStdout())
@@ -451,7 +451,7 @@ func randHex(n int) string {
 func ensureRegistryDaemon() error {
 	conn, err := net.DialTimeout("tcp", "127.0.0.1:6280", time.Second)
 	if err == nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil
 	}
 	// Use os.Executable() so the daemon spawns the SAME cspace binary the
@@ -482,7 +482,7 @@ func ensureRegistryDaemon() error {
 	for time.Now().Before(deadline) {
 		conn, derr := net.DialTimeout("tcp", "127.0.0.1:6280", 250*time.Millisecond)
 		if derr == nil {
-			conn.Close()
+			_ = conn.Close()
 			return nil
 		}
 		select {
@@ -563,9 +563,9 @@ func maybeNudgeMissingAnthropicAuth(out io.Writer, env map[string]string) {
 		// Already shown.
 		return
 	}
-	fmt.Fprintln(out, "note: no Anthropic credential reachable. Run `cspace keychain init` to set one up")
-	fmt.Fprintln(out, "      (or set ANTHROPIC_API_KEY in ~/.cspace/secrets.env). Sandbox will boot,")
-	fmt.Fprintln(out, "      but Claude SDK calls will fail until auth is configured.")
+	_, _ = fmt.Fprintln(out, "note: no Anthropic credential reachable. Run `cspace keychain init` to set one up")
+	_, _ = fmt.Fprintln(out, "      (or set ANTHROPIC_API_KEY in ~/.cspace/secrets.env). Sandbox will boot,")
+	_, _ = fmt.Fprintln(out, "      but Claude SDK calls will fail until auth is configured.")
 	if err := os.MkdirAll(cspaceDir, 0o755); err != nil {
 		return
 	}
@@ -592,7 +592,7 @@ func maybeNudgeMissingDnsInstall(out io.Writer) {
 	if _, err := os.Stat(sentinel); err == nil {
 		return
 	}
-	fmt.Fprintf(out, "note: friendly URLs disabled. Run `cspace dns install` once to enable http://<sandbox>.%s/.\n", dnsDomain)
+	_, _ = fmt.Fprintf(out, "note: friendly URLs disabled. Run `cspace dns install` once to enable http://<sandbox>.%s/.\n", dnsDomain)
 	if err := os.MkdirAll(cspaceDir, 0o755); err != nil {
 		return
 	}

@@ -207,4 +207,3 @@ func TestExtractTo_ReExtractsOnVersionChange(t *testing.T) {
 		t.Error("expected re-extraction to overwrite modified file")
 	}
 }
-

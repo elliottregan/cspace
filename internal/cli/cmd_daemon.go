@@ -114,7 +114,7 @@ func runDaemonServe() error {
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintln(w, `{"ok":true}`)
+		_, _ = fmt.Fprintln(w, `{"ok":true}`)
 	})
 
 	// Idle-shutdown: track time of last HTTP request via an atomic, and
@@ -293,14 +293,14 @@ func newDaemonStatusCmd() *cobra.Command {
 			client := &http.Client{Timeout: 2 * time.Second}
 			resp, err := client.Get("http://127.0.0.1:" + daemonHTTPPort + "/health")
 			if err != nil {
-				fmt.Fprintln(cmd.OutOrStdout(), "daemon: not running")
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "daemon: not running")
 				return nil
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode == 200 {
-				fmt.Fprintf(cmd.OutOrStdout(), "daemon: running on 127.0.0.1:%s\n", daemonHTTPPort)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "daemon: running on 127.0.0.1:%s\n", daemonHTTPPort)
 			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "daemon: unexpected status %d\n", resp.StatusCode)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "daemon: unexpected status %d\n", resp.StatusCode)
 			}
 			return nil
 		},
@@ -324,7 +324,7 @@ func newDaemonStopCmd() *cobra.Command {
 					return fmt.Errorf("pkill: %w (%s)", err, out)
 				}
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "daemon: stopped")
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "daemon: stopped")
 			return nil
 		},
 	}

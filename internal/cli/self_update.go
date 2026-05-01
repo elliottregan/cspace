@@ -122,12 +122,6 @@ func fetchLatestRelease(repo string) (*ghRelease, error) {
 	return fetchRelease(url)
 }
 
-// fetchReleaseByTag queries the GitHub Releases API for a release with the given tag.
-func fetchReleaseByTag(repo, tag string) (*ghRelease, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/tags/%s", repo, tag)
-	return fetchRelease(url)
-}
-
 // fetchRelease fetches a GitHub release from the given API URL.
 func fetchRelease(url string) (*ghRelease, error) {
 	resp, err := http.Get(url)

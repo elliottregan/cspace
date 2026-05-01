@@ -102,11 +102,11 @@ func (r *Registry) withLock(fn func() error) error {
 	if err != nil {
 		return fmt.Errorf("open lock file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
 		return fmt.Errorf("acquire lock: %w", err)
 	}
-	defer unix.Flock(int(f.Fd()), unix.LOCK_UN)
+	defer func() { _ = unix.Flock(int(f.Fd()), unix.LOCK_UN) }()
 	return fn()
 }
 
@@ -191,6 +191,6 @@ func FreePort() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 	return l.Addr().(*net.TCPAddr).Port, nil
 }

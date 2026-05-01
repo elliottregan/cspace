@@ -183,7 +183,7 @@ func waitHealth(ctx context.Context, url, token string, max time.Duration) error
 		req.Header.Set("Authorization", "Bearer "+token)
 		resp, err := client.Do(req)
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode == 200 {
 				return nil
 			}

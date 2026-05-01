@@ -56,7 +56,7 @@ func newDnsInstallCmd() *cobra.Command {
 		Short: "Install /etc/resolver/cspace2.local (requires sudo)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if runtime.GOOS != "darwin" {
-				fmt.Fprintln(cmd.OutOrStdout(), "cspace dns install is macOS-only.")
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "cspace dns install is macOS-only.")
 				return nil
 			}
 			return runDnsInstall(cmd.OutOrStdout())
@@ -68,14 +68,14 @@ func runDnsInstall(out io.Writer) error {
 	// Idempotency check.
 	if existing, err := os.ReadFile(dnsResolverFile); err == nil {
 		if string(existing) == dnsResolverBody {
-			fmt.Fprintln(out, "already installed; resolver file content matches.")
+			_, _ = fmt.Fprintln(out, "already installed; resolver file content matches.")
 			return nil
 		}
-		fmt.Fprintln(out, "warning: existing /etc/resolver/cspace2.local has DIFFERENT content:")
-		fmt.Fprintln(out, "----")
-		fmt.Fprint(out, string(existing))
-		fmt.Fprintln(out, "----")
-		fmt.Fprintln(out, "Continuing will OVERWRITE this file. (Press Ctrl-C now to abort; sudo password prompt provides a natural pause.)")
+		_, _ = fmt.Fprintln(out, "warning: existing /etc/resolver/cspace2.local has DIFFERENT content:")
+		_, _ = fmt.Fprintln(out, "----")
+		_, _ = fmt.Fprint(out, string(existing))
+		_, _ = fmt.Fprintln(out, "----")
+		_, _ = fmt.Fprintln(out, "Continuing will OVERWRITE this file. (Press Ctrl-C now to abort; sudo password prompt provides a natural pause.)")
 	}
 
 	// Stage the new file in tmp so we can `sudo install` it into place.
@@ -83,12 +83,14 @@ func runDnsInstall(out io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 	if _, err := tmpFile.WriteString(dnsResolverBody); err != nil {
-		tmpFile.Close()
+		_ = tmpFile.Close()
 		return fmt.Errorf("write temp file: %w", err)
 	}
-	tmpFile.Close()
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
 
 	// Ensure /etc/resolver exists.
 	mkdir := exec.Command("sudo", "mkdir", "-p", filepath.Dir(dnsResolverFile))
@@ -105,8 +107,8 @@ func runDnsInstall(out io.Writer) error {
 		return fmt.Errorf("sudo install %s: %w", dnsResolverFile, err)
 	}
 
-	fmt.Fprintf(out, "installed %s\n", dnsResolverFile)
-	fmt.Fprintln(out, "Run `cspace dns status` to verify; macOS picks up the change immediately for new lookups.")
+	_, _ = fmt.Fprintf(out, "installed %s\n", dnsResolverFile)
+	_, _ = fmt.Fprintln(out, "Run `cspace dns status` to verify; macOS picks up the change immediately for new lookups.")
 	return nil
 }
 
@@ -116,7 +118,7 @@ func newDnsUninstallCmd() *cobra.Command {
 		Short: "Remove /etc/resolver/cspace2.local (requires sudo)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if runtime.GOOS != "darwin" {
-				fmt.Fprintln(cmd.OutOrStdout(), "cspace dns uninstall is macOS-only.")
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "cspace dns uninstall is macOS-only.")
 				return nil
 			}
 			return runDnsUninstall(cmd.OutOrStdout())
@@ -126,7 +128,7 @@ func newDnsUninstallCmd() *cobra.Command {
 
 func runDnsUninstall(out io.Writer) error {
 	if _, err := os.Stat(dnsResolverFile); err != nil {
-		fmt.Fprintln(out, "already uninstalled (no resolver file present).")
+		_, _ = fmt.Fprintln(out, "already uninstalled (no resolver file present).")
 		return nil
 	}
 	rm := exec.Command("sudo", "rm", "-f", dnsResolverFile)
@@ -134,7 +136,7 @@ func runDnsUninstall(out io.Writer) error {
 	if err := rm.Run(); err != nil {
 		return fmt.Errorf("sudo rm %s: %w", dnsResolverFile, err)
 	}
-	fmt.Fprintf(out, "removed %s\n", dnsResolverFile)
+	_, _ = fmt.Fprintf(out, "removed %s\n", dnsResolverFile)
 	return nil
 }
 
@@ -144,7 +146,7 @@ func newDnsStatusCmd() *cobra.Command {
 		Short: "Report DNS routing for *.cspace2.local",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if runtime.GOOS != "darwin" {
-				fmt.Fprintln(cmd.OutOrStdout(), "cspace dns status is macOS-only.")
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "cspace dns status is macOS-only.")
 				return nil
 			}
 			return runDnsStatus(cmd.OutOrStdout())
@@ -166,7 +168,7 @@ func runDnsStatus(out io.Writer) error {
 	// Check 2: daemon DNS port answering UDP via a real query?
 	daemonAnswering := false
 	if c, err := net.DialTimeout("udp", "127.0.0.1:"+dnsLocalPort, 1*time.Second); err == nil {
-		c.Close()
+		_ = c.Close()
 		daemonAnswering = probeDnsDaemon(1 * time.Second)
 	}
 
@@ -205,45 +207,45 @@ func runDnsStatus(out io.Writer) error {
 		return "✗"
 	}
 
-	fmt.Fprintln(out, "cspace dns status:")
-	fmt.Fprintln(out)
-	fmt.Fprintf(out, "  %s /etc/resolver/cspace2.local present\n", mark(resolverInstalled))
+	_, _ = fmt.Fprintln(out, "cspace dns status:")
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintf(out, "  %s /etc/resolver/cspace2.local present\n", mark(resolverInstalled))
 	if resolverInstalled {
 		if resolverContentsMatch {
-			fmt.Fprintln(out, "      content: matches expected (nameserver 127.0.0.1, port 5354)")
+			_, _ = fmt.Fprintln(out, "      content: matches expected (nameserver 127.0.0.1, port 5354)")
 		} else {
-			fmt.Fprintln(out, "      content: DIFFERS from expected:")
+			_, _ = fmt.Fprintln(out, "      content: DIFFERS from expected:")
 			for _, line := range strings.Split(resolverContents, "\n") {
-				fmt.Fprintf(out, "        %s\n", line)
+				_, _ = fmt.Fprintf(out, "        %s\n", line)
 			}
 		}
 	}
-	fmt.Fprintln(out)
-	fmt.Fprintf(out, "  %s cspace daemon DNS answering on 127.0.0.1:%s/udp\n", mark(daemonAnswering), dnsLocalPort)
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintf(out, "  %s cspace daemon DNS answering on 127.0.0.1:%s/udp\n", mark(daemonAnswering), dnsLocalPort)
 	if !daemonAnswering {
-		fmt.Fprintln(out, "      (start a sandbox with `cspace up` to spawn the daemon)")
-		fmt.Fprintf(out, "      if the daemon HTTP is up but DNS isn't answering, another process may have UDP/%s; check `lsof -nP -iUDP:%s`\n", dnsLocalPort, dnsLocalPort)
+		_, _ = fmt.Fprintln(out, "      (start a sandbox with `cspace up` to spawn the daemon)")
+		_, _ = fmt.Fprintf(out, "      if the daemon HTTP is up but DNS isn't answering, another process may have UDP/%s; check `lsof -nP -iUDP:%s`\n", dnsLocalPort, dnsLocalPort)
 	}
-	fmt.Fprintln(out)
-	fmt.Fprintf(out, "  %s macOS resolver routes *.cspace2.local through 127.0.0.1\n", mark(scutilHasRouting))
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintf(out, "  %s macOS resolver routes *.cspace2.local through 127.0.0.1\n", mark(scutilHasRouting))
 	if scutilHasRouting {
 		for _, line := range strings.Split(scutilLine, "\n") {
-			fmt.Fprintf(out, "      %s\n", line)
+			_, _ = fmt.Fprintf(out, "      %s\n", line)
 		}
 	}
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out)
 
 	switch {
 	case resolverInstalled && resolverContentsMatch && daemonAnswering && scutilHasRouting:
-		fmt.Fprintln(out, "DNS routing for *.cspace2.local: WORKING")
+		_, _ = fmt.Fprintln(out, "DNS routing for *.cspace2.local: WORKING")
 	case !resolverInstalled:
-		fmt.Fprintln(out, "DNS routing for *.cspace2.local: NOT INSTALLED — run `cspace dns install`")
+		_, _ = fmt.Fprintln(out, "DNS routing for *.cspace2.local: NOT INSTALLED — run `cspace dns install`")
 	case resolverInstalled && !resolverContentsMatch:
-		fmt.Fprintln(out, "DNS routing for *.cspace2.local: WRONG CONTENT — run `cspace dns install` to overwrite")
+		_, _ = fmt.Fprintln(out, "DNS routing for *.cspace2.local: WRONG CONTENT — run `cspace dns install` to overwrite")
 	case resolverInstalled && !daemonAnswering:
-		fmt.Fprintln(out, "DNS routing for *.cspace2.local: INSTALLED BUT DAEMON DOWN")
+		_, _ = fmt.Fprintln(out, "DNS routing for *.cspace2.local: INSTALLED BUT DAEMON DOWN")
 	default:
-		fmt.Fprintln(out, "DNS routing for *.cspace2.local: PARTIAL")
+		_, _ = fmt.Fprintln(out, "DNS routing for *.cspace2.local: PARTIAL")
 	}
 	return nil
 }
