@@ -1,4 +1,4 @@
-import { mkdirSync, appendFileSync } from "node:fs";
+import { mkdirSync, appendFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { PromptStream } from "./prompt-stream";
 import { runClaude } from "./claude-runner";
@@ -26,6 +26,48 @@ function logEvent(kind: string, data: unknown): void {
   appendFileSync(eventLog, line + "\n");
 }
 
+// resumeSessionId returns the last SDK system/init session_id seen in
+// events.ndjson, or undefined if events.ndjson doesn't exist or has none.
+// Called at supervisor startup; lets us resume the conversation after a
+// crash (the restart-loop wrapper respawns this binary; events.ndjson is
+// on a host-bind-mount so it persists across restarts and even across
+// cspace2-down + cspace2-up cycles).
+//
+// Permissive parser: malformed JSON lines are skipped rather than fatal,
+// since events.ndjson is appended live and a partially-flushed final
+// line is normal during graceful shutdown.
+function resumeSessionId(eventsPath: string): string | undefined {
+  if (!existsSync(eventsPath)) return undefined;
+  const lines = readFileSync(eventsPath, "utf8").split("\n");
+  let last: string | undefined;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const e = JSON.parse(trimmed);
+      if (e.kind !== "sdk-event") continue;
+      const d = e.data ?? {};
+      if (
+        d.type === "system" &&
+        d.subtype === "init" &&
+        typeof d.session_id === "string" &&
+        d.session_id.length > 0
+      ) {
+        last = d.session_id;
+      }
+    } catch {
+      // skip malformed lines
+    }
+  }
+  return last;
+}
+
+const resumeID = resumeSessionId(eventLog);
+if (resumeID) {
+  logEvent("supervisor-resume", { sessionId: resumeID });
+  console.log(`cspace-supervisor: resuming session ${resumeID}`);
+}
+
 runClaude(
   prompts,
   WORKSPACE,
@@ -33,6 +75,7 @@ runClaude(
     logEvent("sdk-event", event);
   },
   CLAUDE_PATH,
+  resumeID,
 ).catch((err: unknown) => {
   logEvent("sdk-error", { error: String(err) });
 });

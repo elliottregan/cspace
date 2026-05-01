@@ -1,11 +1,9 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -189,21 +187,13 @@ func newCspace2UpCmd() *cobra.Command {
 				substrate.Mount{HostPath: claudeProjectsHostDir, ContainerPath: "/home/dev/.claude/projects/-workspace"},
 			)
 
-			// Auto-resume: if the supervisor has previously written events
-			// for this sandbox, find the most recent SDK system/init event
-			// and feed its session_id to the supervisor as
-			// CSPACE_RESUME_SESSION_ID. claude-runner.ts forwards it as the
-			// `resume` option on query() so the SDK reopens the matching
-			// JSONL and the conversation continues uninterrupted.
-			eventsLog := filepath.Join(sessionsHostDir, "primary", "events.ndjson")
-			sid, err := readLastSessionID(eventsLog)
-			if err != nil {
-				return fmt.Errorf("read events.ndjson for resume: %w", err)
-			}
-			if sid != "" {
-				env["CSPACE_RESUME_SESSION_ID"] = sid
-				fmt.Fprintf(cmd.OutOrStdout(), "resuming session %s\n", sid)
-			}
+			// Auto-resume is handled inside the supervisor itself: it reads
+			// /sessions/primary/events.ndjson at startup, finds the latest
+			// SDK system/init session_id, and passes it to query()'s
+			// `resume` option. That makes resume work uniformly across
+			// fresh boot, restart-loop respawn, and cspace2-down +
+			// cspace2-up cycles — no host-side env injection required.
+			// See lib/agent-supervisor-bun/src/main.ts:resumeSessionId.
 
 			// --browser: start a Playwright sidecar before launching the sandbox
 			// so we can inject CSPACE_BROWSER_CDP_URL into spec.Env. The
@@ -433,56 +423,6 @@ func randHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
-}
-
-// readLastSessionID returns the session_id from the most recent SDK
-// system/init event in events.ndjson, or "" if no such event exists. A
-// missing file is not an error — it just means this is a fresh sandbox
-// with no prior history to resume from.
-//
-// The scanner is permissive: malformed JSON lines are skipped rather than
-// fatal, since events.ndjson is appended live and a partially-flushed
-// final line is normal during graceful shutdown.
-//
-// Buffer is sized for events containing large tool inputs/outputs (16 MB
-// max line). NDJSON entries are wrapped in the supervisor envelope:
-//
-//	{"ts":..., "session":..., "kind":"sdk-event", "data": <SDKMessage>}
-//
-// where data.type=="system" && data.subtype=="init" carries session_id.
-func readLastSessionID(eventsPath string) (string, error) {
-	f, err := os.Open(eventsPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", err
-	}
-	defer f.Close()
-
-	var lastID string
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 1024*1024), 16*1024*1024)
-	for sc.Scan() {
-		var entry struct {
-			Kind string `json:"kind"`
-			Data struct {
-				Type      string `json:"type"`
-				Subtype   string `json:"subtype"`
-				SessionID string `json:"session_id"`
-			} `json:"data"`
-		}
-		if err := json.Unmarshal(sc.Bytes(), &entry); err != nil {
-			continue
-		}
-		if entry.Kind == "sdk-event" && entry.Data.Type == "system" && entry.Data.Subtype == "init" && entry.Data.SessionID != "" {
-			lastID = entry.Data.SessionID
-		}
-	}
-	if err := sc.Err(); err != nil {
-		return "", err
-	}
-	return lastID, nil
 }
 
 // ensureRegistryDaemon starts the cspace daemon on 127.0.0.1:6280 if it is

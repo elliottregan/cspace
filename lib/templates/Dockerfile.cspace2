@@ -36,8 +36,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 #  - build-essential: gcc/g++/libc6-dev for cgo'd Go projects and npm native deps
 #  - ripgrep: Claude Code uses `rg` heavily
 #  - jq: ubiquitous in shell/MCP tooling
+#  - procps: ps/pgrep/pkill/top for in-sandbox diagnostics (resume-loop,
+#    supervisor health checks, etc.). Adds ~5 MB.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl unzip git tini sudo \
+    ca-certificates curl unzip git tini sudo procps \
     make python3 build-essential ripgrep jq \
  && rm -rf /var/lib/apt/lists/*
 
@@ -143,9 +145,11 @@ WORKDIR /workspace
 #
 # The supervisor-loop wrapper respawns cspace-supervisor on crash (any exit
 # other than 0/143/137) so a Bun panic / OOM / SDK error doesn't leave the
-# sandbox silent. Resume continuity is handled by the supervisor reading
-# CSPACE_RESUME_SESSION_ID from container env, which cspace2-up injects at
-# create time and persists across in-container restarts.
+# sandbox silent. Resume continuity is handled by the supervisor itself: at
+# startup it reads /sessions/primary/events.ndjson for the latest SDK
+# system/init session_id and passes it to query()'s `resume` option. The
+# events.ndjson lives on a host bind-mount so it persists across restarts
+# and even cspace2-down + cspace2-up cycles.
 USER root
 COPY lib/scripts/cspace2-entrypoint.sh /usr/local/bin/cspace2-entrypoint.sh
 COPY lib/scripts/cspace-supervisor-loop.sh /usr/local/bin/cspace-supervisor-loop.sh
