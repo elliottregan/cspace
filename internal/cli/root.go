@@ -8,6 +8,7 @@ import (
 
 	"github.com/elliottregan/cspace/internal/assets"
 	"github.com/elliottregan/cspace/internal/config"
+	"github.com/elliottregan/cspace/internal/sandboxmode"
 	"github.com/spf13/cobra"
 )
 
@@ -34,13 +35,25 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			// Skip config/asset loading for commands that don't need a project context
 			switch cmd.Name() {
-			case "version", "help", "completion", "init", "self-update", "context-server", "diagnostics-server":
+			case "version", "help", "completion", "self-update":
+				return nil
+			}
+
+			// In-sandbox: env vars (CSPACE_PROJECT, CSPACE_SANDBOX_NAME,
+			// CSPACE_REGISTRY_URL) carry project context. Skip the host-style
+			// git-repo / .cspace.json discovery so commands like
+			// `cspace send` work even when /workspace isn't a git repo at
+			// the cspace level.
+			if sandboxmode.IsInSandbox() {
 				return nil
 			}
 
 			// For the root command (no subcommand), attempt config loading
-			// but tolerate failure — the TUI falls back to help when cfg is nil.
-			tolerateErr := cmd.Name() == "cspace" && cmd.Parent() == nil
+			// but tolerate failure — the TUI falls back to help when cfg is
+			// nil. `cspace doctor` is informational and runnable from any
+			// directory; the per-credential probes degrade gracefully when
+			// cfg is nil (no project secrets file is checked).
+			tolerateErr := (cmd.Name() == "cspace" && cmd.Parent() == nil) || cmd.Name() == "doctor"
 
 			if err := loadConfig(); err != nil {
 				if tolerateErr {
@@ -49,71 +62,37 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 				return err
 			}
 
-			// Commands that modify or create instances require an initialized project
-			switch cmd.Name() {
-			case "up", "coordinate", "issue", "warm", "rebuild":
-				if !cfg.IsInitialized() {
-					return fmt.Errorf("no .cspace.json found in %s\nRun 'cspace init' first", cfg.ProjectRoot)
-				}
-			}
-
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// No subcommand given — launch TUI if interactive and config loaded
-			if cfg != nil && isInteractive() {
-				return runTUI(cmd)
-			}
+			// No subcommand given — print help.
 			return cmd.Help()
 		},
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
 
-	// Define command groups for organized help output
-	root.AddGroup(
-		&cobra.Group{ID: "instance", Title: "Instance Management:"},
-		&cobra.Group{ID: "agents", Title: "Autonomous Agents:"},
-		&cobra.Group{ID: "supervisor", Title: "Supervisor:"},
-		&cobra.Group{ID: "setup", Title: "Project Setup:"},
-		&cobra.Group{ID: "other", Title: "Other:"},
-	)
-
 	// Register all subcommands
 	root.AddCommand(
 		// Instance Management
 		newUpCmd(),
 		newDownCmd(),
-		newStopCmd(),
-		newSSHCmd(),
-		newListCmd(),
 		newPortsCmd(),
-		newWarmCmd(),
-		newRebuildCmd(),
-
-		// Autonomous Agents
-		newAdvisorCmd(),
-		newCoordinateCmd(),
-		newIssueCmd(),
-		newResumeCmd(),
 
 		// Supervisor
 		newSendCmd(),
-		newInterruptCmd(),
-		newAgentStatusCmd(),
-		newRestartSupervisorCmd(),
 
 		// Project Setup
-		newInitCmd(),
-		newMemoryCmd(),
-		newSessionsCmd(),
+		newKeychainCmd(),
 
 		// Other
-		newContextServerCmd(),
-		newDiagnosticsServerCmd(),
+		newDoctorCmd(),
 		newSelfUpdateCmd(),
 		newVersionCmd(),
 		newCompletionCmd(),
+		newRegistryCmd(),
+		newDaemonCmd(),
+		newDnsCmd(),
 	)
 
 	return root

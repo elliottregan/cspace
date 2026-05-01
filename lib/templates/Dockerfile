@@ -1,128 +1,160 @@
-FROM node:alpine
+# cspace sandbox image. Minimal: Bun + Claude Code + cspace + supervisor.
 
-# Stamp the cspace CLI version the image was built with so `cspace up`
-# can warn the user when the host CLI has moved ahead (baked-in supervisor,
-# scripts, and lib/ assets won't know about new flags otherwise). Set by
-# `cspace rebuild` via --build-arg; defaults to "dev" for local iteration.
-ARG CSPACE_VERSION=dev
-LABEL cspace.version="${CSPACE_VERSION}"
+# ── Stage 1: compile the Bun TS supervisor ─────────────────────────────────
+# Produces a single Linux/arm64 ELF at /build/dist/cspace-supervisor that
+# the runtime stage copies into /usr/local/bin/cspace-supervisor.
+#
+# This stage runs only during image build — the resulting binary is the
+# cspace-supervisor process running inside every cspace sandbox. Source
+# of truth lives in lib/agent-supervisor-bun/src/; no compiled artifact
+# is tracked in git.
+#
+# IMPORTANT: We use the Debian-flavored Bun image (glibc), not -alpine
+# (musl). The runtime stage below is debian:bookworm-slim, which has
+# glibc. A musl-linked supervisor binary fails at exec time in the
+# runtime stage with "cannot execute: required file not found" because
+# libc.musl-aarch64.so.1 isn't present. Keep the libc family aligned
+# between builder and runtime.
+FROM docker.io/oven/bun:1.3-debian AS supervisor-builder
+WORKDIR /build
+COPY lib/agent-supervisor-bun/package.json lib/agent-supervisor-bun/bun.lock ./
+RUN bun install --frozen-lockfile
+COPY lib/agent-supervisor-bun/src ./src
+COPY lib/agent-supervisor-bun/build.ts ./
+RUN bun run build
+# At this point /build/dist/cspace-supervisor exists.
 
-# Install system dependencies for Claude Code, SSH, and GitHub CLI
-RUN apk add --no-cache \
-    git git-init-template curl ca-certificates openssh sudo github-cli bash \
-    # Claude Code dependencies for native install
-    libgcc libstdc++ ripgrep \
-    # glibc compat layer (Alpine uses musl; some tools need glibc)
-    gcompat \
-    # Firewall dependencies
-    iptables ipset bind-tools jq iproute2 \
-    # Docker-outside-of-Docker: CLI talks to host daemon via mounted socket
-    docker-cli docker-cli-compose \
-    # Go toolchain
-    go \
-    # Task runner (project uses Makefile)
-    make \
-    # Python 3 — used by hook scripts and the coordinator preamble renderer
-    python3 && \
-    npm install -g pnpm
+# ── Stage 2: cspace runtime ────────────────────────────────────────────────
+FROM docker.io/library/debian:bookworm-slim
 
-# Configure SSH
-RUN mkdir -p /var/run/sshd && \
-    ssh-keygen -A && \
-    echo 'PermitRootLogin no' >> /etc/ssh/sshd_config && \
-    echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config && \
-    echo 'PubkeyAuthentication yes' >> /etc/ssh/sshd_config
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Create non-root user
-RUN adduser -D -s /bin/bash dev && \
-    adduser dev wheel && \
-    echo 'dev ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers.d/dev
+# Root-only: system packages. Includes the dev toolchain so agents don't burn
+# turns self-bootstrapping (resolves finding sandbox-image-lacks-dev-toolchain):
+#  - make: drives project Makefiles
+#  - python3: hook scripts and a few utility tools
+#  - build-essential: gcc/g++/libc6-dev for cgo'd Go projects and npm native deps
+#  - ripgrep: Claude Code uses `rg` heavily
+#  - jq: ubiquitous in shell/MCP tooling
+#  - procps: ps/pgrep/pkill/top for in-sandbox diagnostics (resume-loop,
+#    supervisor health checks, etc.). Adds ~5 MB.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl unzip git tini sudo procps \
+    make python3 build-essential ripgrep jq \
+ && rm -rf /var/lib/apt/lists/*
 
-# Set default password for dev user
-RUN echo 'dev:devpass' | chpasswd
+# Go toolchain. Pinned arm64 tarball install rather than apt's golang-go
+# (which lags upstream). Address the open finding sandbox-image-lacks-dev-
+# toolchain — agents should never need to download Go themselves.
+ARG GO_VERSION=1.23.4
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-arm64.tar.gz" -o /tmp/go.tar.gz \
+ && tar -C /usr/local -xzf /tmp/go.tar.gz \
+ && rm /tmp/go.tar.gz \
+ && /usr/local/go/bin/go version
+ENV PATH="/usr/local/go/bin:${PATH}"
+ENV GOPATH=/home/dev/go
 
-# Install Claude Code as dev user
+# GitHub CLI. Apt repo install (the static binary release is also fine; this
+# matches the pattern in the existing cspace Dockerfile).
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      | tee /usr/share/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+ && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+ && apt-get update && apt-get install -y --no-install-recommends gh \
+ && rm -rf /var/lib/apt/lists/* \
+ && gh --version
+
+# Non-root user. Claude Code refuses --dangerously-skip-permissions
+# (and the SDK's permissionMode: "bypassPermissions") when running as root.
+# Sandboxes are unattended — no human to confirm tool calls — so we MUST
+# run as non-root for the agent to actually use its tools.
+RUN useradd -m -s /bin/bash -u 1000 dev \
+ && echo 'dev ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/dev \
+ && chmod 0440 /etc/sudoers.d/dev
+
+# Node.js for the npm-based MCP servers (Playwright + Chrome DevTools).
+# Chromium itself is pulled by Playwright after npm install.
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/* \
+ && node --version && npm --version
+
+# pnpm — used by many JS projects in this codebase pattern. Install into the
+# system npm prefix (still root) so it's available to both root and dev.
+RUN npm install -g pnpm@9 && pnpm --version
+
+# Bun + Claude as the dev user so the install lands in /home/dev.
 USER dev
-ENV PATH="/home/dev/.local/bin:$PATH"
-ENV COLORTERM=truecolor
-ENV LANG=C.UTF-8
-# BASH_ENV is sourced by every bash invocation (including non-interactive
-# `bash -c` from `docker exec`), giving us a hook to derive container env
-# vars from others. /etc/cspace-bash-env aliases GITHUB_TOKEN -> GH_TOKEN
-# so tooling that expects either name works.
-ENV BASH_ENV=/etc/cspace-bash-env
-RUN curl -fsSL https://claude.ai/install.sh | bash
-# Use HTTPS for GitHub (container doesn't have SSH agent access)
-RUN git config --global url."https://github.com/".insteadOf "git@github.com:"
+ENV HOME=/home/dev
+ENV PATH=/home/dev/.bun/bin:/home/dev/.local/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
+
+RUN curl -fsSL https://bun.sh/install | bash \
+ && /home/dev/.bun/bin/bun --version
+
+# Claude Code CLI. The npm package is a thin wrapper around a
+# platform-specific subpackage (e.g. @anthropic-ai/claude-code-linux-arm64),
+# and `bun install --global` already creates /home/dev/.bun/bin/claude as a
+# symlink to that platform binary.
+RUN /home/dev/.bun/bin/bun install --global @anthropic-ai/claude-code \
+ && /home/dev/.bun/bin/claude --version
+
+# Browser MCP servers — clients only.
+# Chromium itself runs in a sidecar container launched by cspace up;
+# the supervisor injects $CSPACE_BROWSER_CDP_URL into the sandbox env,
+# and the MCP servers (running here as stdio children of Claude Code)
+# attach to the sidecar's Chrome over CDP. Image stays lean (~300 MB).
 USER root
+RUN npm install -g @playwright/mcp@0.0.72 chrome-devtools-mcp@0.23.0 \
+ && playwright-mcp --version
 
-# Readline key bindings for iTerm2 over SSH
-RUN cat <<'EOF' > /home/dev/.inputrc
-# Option+Delete: backward kill word
-"\e\x7f": backward-kill-word
-# Option+Left: move back one word
-"\e[1;3D": backward-word
-"\eb": backward-word
-# Option+Right: move forward one word
-"\e[1;3C": forward-word
-"\ef": forward-word
-# Home/End
-"\e[H": beginning-of-line
-"\e[F": end-of-line
-EOF
-RUN chown dev:dev /home/dev/.inputrc
+# Make the dev-user-installed bun + claude visible at /usr/local/bin so any
+# script that hardcodes /usr/local/bin/claude (e.g. CSPACE_CLAUDE_PATH) works.
+RUN ln -sf /home/dev/.bun/bin/bun /usr/local/bin/bun \
+ && ln -sf /home/dev/.bun/bin/claude /usr/local/bin/claude
 
-# Workspace setup
-RUN mkdir -p /workspace && chown dev:dev /workspace
-RUN mkdir -p /home/dev/.claude && chown dev:dev /home/dev/.claude
-RUN mkdir -p /logs && chown dev:dev /logs
+# cspace (linux/arm64 host CLI) for in-sandbox `cspace send`/`cspace exec`.
+COPY bin/cspace-linux-arm64 /usr/local/bin/cspace
 
-# BASH_ENV hook: aliases GITHUB_TOKEN <-> GH_TOKEN so tooling expecting
-# either name works. Sourced on every bash invocation (interactive or `-c`).
-RUN cat > /etc/cspace-bash-env <<'EOF'
-# Sourced by every bash invocation via BASH_ENV.
-# Keep this file fast and side-effect-free.
-if [ -n "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]; then
-    export GITHUB_TOKEN="$GH_TOKEN"
-elif [ -n "${GITHUB_TOKEN:-}" ] && [ -z "${GH_TOKEN:-}" ]; then
-    export GH_TOKEN="$GITHUB_TOKEN"
-fi
-EOF
-RUN chmod 644 /etc/cspace-bash-env
+# Bun supervisor single binary — built in the supervisor-builder stage above.
+COPY --from=supervisor-builder /build/dist/cspace-supervisor /usr/local/bin/cspace-supervisor
 
-# Copy initialization scripts (build context is the cspace repo root)
-COPY lib/scripts/init-workspace.sh /usr/local/bin/init-workspace.sh
-COPY lib/scripts/init-firewall.sh /usr/local/bin/init-firewall.sh
-COPY lib/scripts/init-claude-plugins.sh /usr/local/bin/init-claude-plugins.sh
-COPY lib/scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/init-workspace.sh \
-    /usr/local/bin/init-firewall.sh \
-    /usr/local/bin/init-claude-plugins.sh \
-    /usr/local/bin/entrypoint.sh
+# Workspace + sessions dirs are owned by dev so the agent can write them.
+# The Claude Code SDK writes session JSONLs under
+# ~/.claude/projects/-workspace/sessions/<session_id>.jsonl. Pre-create the
+# parent directory tree as dev so a runtime bind mount of the host's
+# claude-projects-workspace dir lands on a known, dev-owned target.
+# (mkdir -p /home/dev/.claude/projects/-workspace creates parent dirs as
+# root by default; chowning the whole /home/dev/.claude tree to dev fixes
+# ownership.)
+RUN mkdir -p /workspace /sessions /home/dev/.claude/projects/-workspace \
+ && chown -R dev:dev /workspace /sessions /home/dev/.claude \
+ && chmod +x /usr/local/bin/cspace /usr/local/bin/cspace-supervisor
 
-# Bake the entire cspace CLI + lib into the image at /opt/cspace.
-# This gives agents inside containers the same `cspace` command the host has,
-# letting them spawn sibling containers via the docker socket (DooD).
-# The agent-supervisor's node_modules is installed at this canonical path,
-# so /opt/cspace/lib/agent-supervisor/supervisor.mjs runs out of the box.
-COPY lib/agent-supervisor/package.json lib/agent-supervisor/pnpm-lock.yaml /opt/cspace/lib/agent-supervisor/
-RUN cd /opt/cspace/lib/agent-supervisor && pnpm install --frozen-lockfile --prod
-COPY lib/ /opt/cspace/lib/
-# bin/cspace-linux is a statically-linked Go binary compiled for linux.
-# It is staged in the build context by `cspace rebuild` before docker build.
-# Named cspace-linux to avoid overwriting the host's darwin binary at bin/cspace.
-COPY bin/cspace-linux /opt/cspace/bin/cspace
-RUN chmod +x /opt/cspace/bin/cspace && \
-    ln -sf /opt/cspace/bin/cspace /usr/local/bin/cspace && \
-    chown -R dev:dev /opt/cspace
+# GOPATH dir owned by dev so module downloads don't require sudo.
+RUN mkdir -p /home/dev/go && chown -R dev:dev /home/dev/go
 
-# CSPACE_HOME tells the in-container cspace CLI and init scripts where the
-# bundled lib lives. Set via ENV (not passed from host) so it always matches
-# the in-image path regardless of where the host installed cspace.
-ENV CSPACE_HOME=/opt/cspace
-
+USER dev
 WORKDIR /workspace
-EXPOSE 22
 
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["/usr/sbin/sshd", "-D"]
+# Sandbox entrypoint wrapper — runs once at container start, configures git's
+# credential helper for github.com when GH_TOKEN is present, then exec's the
+# supervisor (via the restart-loop wrapper). Keeps the supervisor focused on
+# the SDK loop while ensuring `git push` from inside the sandbox doesn't
+# prompt for auth.
+#
+# The supervisor-loop wrapper respawns cspace-supervisor on crash (any exit
+# other than 0/143/137) so a Bun panic / OOM / SDK error doesn't leave the
+# sandbox silent. Resume continuity is handled by the supervisor itself: at
+# startup it reads /sessions/primary/events.ndjson for the latest SDK
+# system/init session_id and passes it to query()'s `resume` option. The
+# events.ndjson lives on a host bind-mount so it persists across restarts
+# and even cspace down + cspace up cycles.
+USER root
+COPY lib/scripts/cspace-entrypoint.sh /usr/local/bin/cspace-entrypoint.sh
+COPY lib/scripts/cspace-supervisor-loop.sh /usr/local/bin/cspace-supervisor-loop.sh
+RUN chmod +x /usr/local/bin/cspace-entrypoint.sh /usr/local/bin/cspace-supervisor-loop.sh
+USER dev
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/cspace-entrypoint.sh"]
+CMD ["/usr/local/bin/cspace-supervisor-loop.sh"]

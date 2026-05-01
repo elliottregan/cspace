@@ -9,12 +9,16 @@
 
 # Agent supervisor — node_modules is installed inside the container at build time
 lib/agent-supervisor/node_modules/
+lib/agent-supervisor-bun/node_modules/
 
 # Per-machine config override only — .cspace/ is otherwise tracked. In
 # particular, .cspace/memory/ is the project-shared Claude Code memory
 # and MUST stay in git (see CLAUDE.md "Agent memory"). Do not blanket-
 # ignore .cspace/.
 .cspace.local.json
+.cspace/secrets.env
+# cspace-context server atomic-write artifacts — should never be tracked
+.cspace/context/**/*.lock
 
 .env
 .pnpm-store/
@@ -31,9 +35,16 @@ bin/cspace-go
 bin/cspace-go-linux-amd64
 bin/cspace-go-linux-arm64
 bin/cspace-linux
+bin/cspace-linux-arm64
 bin/cspace-search
 bin/cspace-search-mcp
 dist/
+
+# Bun supervisor binary — built inside the cspace2 image's supervisor-builder
+# stage from lib/agent-supervisor-bun/src/. Never tracked in git; the global
+# `dist/` rule above already ignores it, but this explicit entry documents
+# the contract for future readers and survives any reorg of the global rules.
+lib/agent-supervisor-bun/dist/
 
 # Embedded assets (generated from lib/ by make sync-embedded).
 # .gitkeep is tracked so `go:embed all:embedded` has at least one match

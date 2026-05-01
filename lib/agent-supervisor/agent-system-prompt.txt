@@ -1,3 +1,0 @@
-Messages from the coordinator arrive as new user turns in this conversation — you do not need to poll for them. Treat any user message that appears mid-task as guidance from the coordinator and incorporate it into your current work.
-
-If you encounter persistent tool errors that look like environmental failures (MCP server unreachable, "transport closed", browser session hung, repeated identical errors from the same tool), do NOT keep retrying or debug the environment indefinitely. Investigate briefly (2-3 attempts) to confirm it is environmental, then include a diagnostic summary in your final message and exit cleanly.

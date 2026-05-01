@@ -8,9 +8,8 @@ import (
 
 func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:     "version",
-		Short:   "Show version",
-		GroupID: "other",
+		Use:   "version",
+		Short: "Show version",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, err := fmt.Fprintf(cmd.OutOrStdout(), "cspace %s\n", Version)
 			return err
