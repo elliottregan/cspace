@@ -21,16 +21,70 @@ import (
 	"strings"
 )
 
-// Load returns the merged cspace secrets for a project, reading
-// ~/.cspace/secrets.env first then <projectRoot>/.cspace/secrets.env on top.
-// Missing files are not errors.
+// cspaceKeys is the built-in list of secret keys whose values are looked up
+// in the macOS Keychain by Load() under service name "cspace-<KEY>".
+// File-based values in ~/.cspace/secrets.env or <project>/.cspace/secrets.env
+// override the Keychain layer per the documented precedence.
+var cspaceKeys = []string{
+	"ANTHROPIC_API_KEY",
+	"CLAUDE_CODE_OAUTH_TOKEN",
+	"GH_TOKEN",
+	"GITHUB_TOKEN",
+}
+
+// Load returns the merged cspace secrets for a project. Resolution order
+// (later layers override earlier ones):
+//
+//  1. macOS Keychain entries for known cspace keys (service "cspace-<KEY>").
+//  2. ~/.cspace/secrets.env
+//  3. <projectRoot>/.cspace/secrets.env
+//  4. value-prefix references of the form `keychain:<service>` are resolved
+//     against the Keychain in-place.
+//
+// Missing files are not errors. On non-darwin platforms the Keychain layers
+// are no-ops.
 func Load(projectRoot string) (map[string]string, error) {
+	out := map[string]string{}
+
+	// Layer 1: Keychain for known cspace keys.
+	for _, key := range cspaceKeys {
+		val, err := ReadKeychain("cspace-" + key)
+		if err != nil {
+			return nil, err
+		}
+		if val != "" {
+			out[key] = val
+		}
+	}
+
+	// Layers 2 + 3: file loaders. Project overrides global, both override
+	// Keychain.
 	home, err := os.UserHomeDir()
 	if err != nil {
 		// No home dir — fall through to project-only.
 		home = ""
 	}
-	return loadFromDirs(home, projectRoot)
+	fileMap, err := loadFromDirs(home, projectRoot)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range fileMap {
+		out[k] = v
+	}
+
+	// Layer 4: resolve `keychain:<service>` value-prefix references.
+	for k, v := range out {
+		if strings.HasPrefix(v, "keychain:") {
+			service := strings.TrimPrefix(v, "keychain:")
+			resolved, err := ReadKeychain(service)
+			if err != nil {
+				return nil, err
+			}
+			out[k] = resolved
+		}
+	}
+
+	return out, nil
 }
 
 // loadFromDirs is the testable core of Load. globalDir and projectDir are
