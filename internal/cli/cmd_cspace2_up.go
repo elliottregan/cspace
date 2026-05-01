@@ -43,6 +43,9 @@ func newCspace2UpCmd() *cobra.Command {
 			if !a.Available() {
 				return fmt.Errorf("apple `container` CLI not on PATH; install per Task 1")
 			}
+			if err := a.HealthCheck(ctx); err != nil {
+				return fmt.Errorf("apple container: %w. Run `container system start` and try again", err)
+			}
 
 			// Ensure the host registry-daemon is running so in-sandbox cspace can resolve siblings.
 			if err := ensureRegistryDaemon(); err != nil {

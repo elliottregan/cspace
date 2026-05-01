@@ -31,6 +31,26 @@ func (a *Adapter) Available() bool {
 	return err == nil
 }
 
+// HealthCheck verifies the Apple Container apiserver is running. Returns a
+// clear, user-actionable error when not — usually the user just needs to
+// run `container system start`.
+func (a *Adapter) HealthCheck(ctx context.Context) error {
+	cmd := exec.CommandContext(ctx, "container", "system", "status")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("container system status: %w (output: %s)",
+			err, strings.TrimSpace(string(out)))
+	}
+	text := strings.ToLower(string(out))
+	// `container system status` outputs vary, but contain the word "running"
+	// when the apiserver is up. Check for that.
+	if !strings.Contains(text, "running") {
+		return fmt.Errorf("apple container apiserver not running: %s",
+			strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // Run starts a sandbox in detached mode. Returns when the CLI exits, which
 // happens after the container is started but is not guaranteed to coincide
 // with the container being ready to accept exec.

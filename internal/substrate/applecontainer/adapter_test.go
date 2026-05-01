@@ -61,6 +61,16 @@ func TestStopIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestHealthCheckRunning(t *testing.T) {
+	requireContainerCLI(t)
+	a := New()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := a.HealthCheck(ctx); err != nil {
+		t.Fatalf("HealthCheck: %v", err)
+	}
+}
+
 func TestIP(t *testing.T) {
 	requireContainerCLI(t)
 	a := New()

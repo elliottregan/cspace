@@ -48,6 +48,9 @@ type ExecResult struct {
 // Substrate is the minimal P0 surface for a sandbox runtime.
 type Substrate interface {
 	Available() bool
+	// HealthCheck verifies the substrate is operational and ready to accept
+	// Run/Exec/Stop calls. Returns a clear, user-actionable error when not.
+	HealthCheck(ctx context.Context) error
 	Run(ctx context.Context, spec RunSpec) error
 	Exec(ctx context.Context, name string, cmd []string, opts ExecOpts) (ExecResult, error)
 	Stop(ctx context.Context, name string) error
