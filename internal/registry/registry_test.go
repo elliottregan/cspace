@@ -151,6 +151,47 @@ func TestConcurrentRegister(t *testing.T) {
 	}
 }
 
+func TestEntryStateRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	r := &Registry{Path: filepath.Join(dir, "sandbox-registry.json")}
+	if err := r.Register(Entry{
+		Project: "p", Name: "n",
+		ControlURL: "http://x", StartedAt: time.Now(),
+		State: "starting",
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	e, err := r.Lookup("p", "n")
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if e.State != "starting" {
+		t.Fatalf("State after Register: got %q, want %q", e.State, "starting")
+	}
+	if err := r.MarkReady("p", "n"); err != nil {
+		t.Fatalf("MarkReady: %v", err)
+	}
+	e, err = r.Lookup("p", "n")
+	if err != nil {
+		t.Fatalf("Lookup after MarkReady: %v", err)
+	}
+	if e.State != "ready" {
+		t.Fatalf("State after MarkReady: got %q, want %q", e.State, "ready")
+	}
+	// Other fields should be preserved through MarkReady.
+	if e.ControlURL != "http://x" {
+		t.Fatalf("ControlURL not preserved through MarkReady: got %q", e.ControlURL)
+	}
+}
+
+func TestMarkReadyOnMissingIsNoOp(t *testing.T) {
+	dir := t.TempDir()
+	r := &Registry{Path: filepath.Join(dir, "sandbox-registry.json")}
+	if err := r.MarkReady("missing", "missing"); err != nil {
+		t.Fatalf("MarkReady on missing should be no-op, got: %v", err)
+	}
+}
+
 func TestFreePort(t *testing.T) {
 	p, err := FreePort()
 	if err != nil {

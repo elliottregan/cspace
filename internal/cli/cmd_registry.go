@@ -103,12 +103,12 @@ func runRegistryList(out io.Writer) error {
 	defer cancel()
 
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "PROJECT\tSANDBOX\tIP\tBROWSER\tSTATE\tSTARTED")
+	fmt.Fprintln(tw, "PROJECT\tSANDBOX\tIP\tBROWSER\tSTATE\tLIFECYCLE\tSTARTED")
 	for _, e := range entries {
 		alive := containerExists(ctx, containerNameForEntry(e))
-		state := "dead"
+		lifecycleState := "dead"
 		if alive {
-			state = "alive"
+			lifecycleState = "alive"
 		}
 		browserCol := "—"
 		if e.BrowserContainer != "" {
@@ -117,16 +117,23 @@ func runRegistryList(out io.Writer) error {
 			} else {
 				browserCol = "dead"
 				if alive {
-					state = "alive (browser:dead)"
+					lifecycleState = "alive (browser:dead)"
 				}
 			}
+		}
+		// Empty State on legacy entries (written before the field existed)
+		// is treated as ready — those sandboxes were registered post-boot
+		// under the old single-write flow.
+		entryState := e.State
+		if entryState == "" {
+			entryState = "ready"
 		}
 		started := "—"
 		if !e.StartedAt.IsZero() {
 			started = e.StartedAt.Local().Format("2006-01-02 15:04")
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			e.Project, e.Name, ipOrDash(e.IP), browserCol, state, started)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			e.Project, e.Name, ipOrDash(e.IP), browserCol, entryState, lifecycleState, started)
 	}
 	return tw.Flush()
 }
@@ -158,10 +165,14 @@ func runRegistryPrune(out io.Writer, dryRun bool) error {
 
 	pruneCount := 0
 	clearedBrowserCount := 0
+	stuckBootingCount := 0
 	for _, e := range entries {
 		sandboxAlive := containerExists(ctx, containerNameForEntry(e))
 		switch {
 		case !sandboxAlive:
+			// Dead container — remove the entry. This catches both
+			// state=ready entries whose sandbox went away, and orphaned
+			// state=starting entries from a boot that crashed.
 			if dryRun {
 				fmt.Fprintf(out, "would remove: %s:%s\n", e.Project, e.Name)
 			} else {
@@ -171,6 +182,19 @@ func runRegistryPrune(out io.Writer, dryRun bool) error {
 				fmt.Fprintf(out, "removed: %s:%s\n", e.Project, e.Name)
 			}
 			pruneCount++
+		case e.State == "starting":
+			// Container alive but the entry never reached state=ready.
+			// Boot might still be in progress, or cspace2-up may have
+			// died after Run returned but before /health responded. Don't
+			// auto-remove; report so the user can decide. Once the
+			// container exits (or is stopped), a future prune will reap
+			// the entry via the !sandboxAlive branch above.
+			if dryRun {
+				fmt.Fprintf(out, "stuck booting: %s:%s (alive but never reached ready)\n", e.Project, e.Name)
+			} else {
+				fmt.Fprintf(out, "warning: %s:%s is alive but state=starting (boot may still be in progress; not removing)\n", e.Project, e.Name)
+			}
+			stuckBootingCount++
 		case e.BrowserContainer != "" && !containerExists(ctx, e.BrowserContainer):
 			// Sandbox alive but browser dead — clear the browser_container field.
 			if dryRun {
@@ -188,8 +212,12 @@ func runRegistryPrune(out io.Writer, dryRun bool) error {
 	}
 
 	switch {
-	case pruneCount == 0 && clearedBrowserCount == 0:
+	case pruneCount == 0 && clearedBrowserCount == 0 && stuckBootingCount == 0:
 		fmt.Fprintln(out, "no dead entries to prune")
+	case pruneCount == 0 && clearedBrowserCount == 0:
+		// Only stuck-booting entries — nothing to prune, but the warnings
+		// above already informed the user. Add a one-line summary.
+		fmt.Fprintf(out, "no dead entries to prune (%d stuck booting; not removed)\n", stuckBootingCount)
 	case dryRun:
 		switch {
 		case clearedBrowserCount == 0:

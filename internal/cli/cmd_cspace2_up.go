@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -230,6 +231,32 @@ func newCspace2UpCmd() *cobra.Command {
 				}()
 			}
 
+			// Early registry write — claim the slot BEFORE substrate Run so any
+			// crash between here and MarkReady leaves a state=starting entry
+			// that `cspace registry prune` can reap. ControlURL carries the
+			// host gateway as a placeholder until the container's IP is known
+			// (the real ControlURL is written below once waitForIP succeeds).
+			path, pathErr := registry.DefaultPath()
+			if pathErr != nil {
+				err = pathErr
+				return err
+			}
+			r := &registry.Registry{Path: path}
+			startedAt := time.Now().UTC()
+			if regErr := r.Register(registry.Entry{
+				Project:          project,
+				Name:             name,
+				ControlURL:       fmt.Sprintf("http://0.0.0.0:%d", supervisorPort),
+				Token:            token,
+				IP:               "",
+				StartedAt:        startedAt,
+				BrowserContainer: browserContainer,
+				State:            "starting",
+			}); regErr != nil {
+				err = fmt.Errorf("register entry: %w", regErr)
+				return err
+			}
+
 			if runErr := a.Run(ctx, spec); runErr != nil {
 				err = fmt.Errorf("substrate run: %w", runErr)
 				return err
@@ -245,24 +272,34 @@ func newCspace2UpCmd() *cobra.Command {
 
 			ctlURL := fmt.Sprintf("http://%s:%d", ip, supervisorPort)
 
-			path, pathErr := registry.DefaultPath()
-			if pathErr != nil {
-				_ = a.Stop(context.Background(), containerName)
-				err = pathErr
-				return err
-			}
-			r := &registry.Registry{Path: path}
+			// Re-register with the real ControlURL/IP. State stays "starting"
+			// until /health responds 200 below.
 			if regErr := r.Register(registry.Entry{
 				Project:          project,
 				Name:             name,
 				ControlURL:       ctlURL,
 				Token:            token,
 				IP:               ip,
-				StartedAt:        time.Now().UTC(),
+				StartedAt:        startedAt,
 				BrowserContainer: browserContainer,
+				State:            "starting",
 			}); regErr != nil {
 				_ = a.Stop(context.Background(), containerName)
 				err = regErr
+				return err
+			}
+
+			// Wait for the supervisor to come up. /health responding 200 is
+			// the load-bearing readiness signal — the Bun process is listening
+			// and able to serve cspace2-send. Only then do we flip the entry
+			// to state=ready.
+			healthURL := fmt.Sprintf("%s/health", ctlURL)
+			if hErr := waitForHealth(ctx, healthURL, token, 10*time.Second); hErr != nil {
+				err = fmt.Errorf("waiting for sandbox /health: %w", hErr)
+				return err
+			}
+			if mErr := r.MarkReady(project, name); mErr != nil {
+				err = fmt.Errorf("mark ready: %w", mErr)
 				return err
 			}
 
@@ -291,6 +328,43 @@ func newCspace2UpCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&withBrowser, "browser", false,
 		"start a Playwright browser sidecar; agent's playwright-mcp connects via CDP")
 	return cmd
+}
+
+// waitForHealth polls a /health URL with the supervisor's bearer token until
+// it returns 200 or the deadline passes. Used by cspace2-up to gate the
+// state=starting → state=ready transition on a real readiness signal: the
+// Bun supervisor process being up and able to serve requests.
+//
+// The 1s per-request timeout keeps the loop responsive on transient network
+// blips during boot. ctx cancellation short-circuits the poll cleanly.
+func waitForHealth(ctx context.Context, url, token string, max time.Duration) error {
+	deadline := time.Now().Add(max)
+	client := &http.Client{Timeout: 1 * time.Second}
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := client.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	return fmt.Errorf("/health did not respond in %s", max)
 }
 
 // waitForIP polls a.IP until it returns a non-empty value or the deadline passes.
