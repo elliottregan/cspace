@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/elliottregan/cspace/internal/registry"
@@ -20,7 +21,8 @@ import (
 const supervisorPort = 6201
 
 func newPrototypeUpCmd() *cobra.Command {
-	return &cobra.Command{
+	var workspaceMount string
+	cmd := &cobra.Command{
 		Use:   "prototype-up <name>",
 		Short: "P0: launch a prototype sandbox",
 		Args:  cobra.ExactArgs(1),
@@ -82,6 +84,21 @@ func newPrototypeUpCmd() *cobra.Command {
 				Image: "cspace-prototype:latest",
 				Env:   env,
 			}
+			// P0 workspace mount (POC for the per-sandbox-clone design):
+			// when --workspace <host-path> is given, bind-mount it as /workspace
+			// so the agent sees a normal main worktree of a git clone. P1 will
+			// own the clone provisioning end-to-end inside cspace2-up; for now
+			// the spike script handles `git clone` outside this command.
+			if workspaceMount != "" {
+				abs, err := filepath.Abs(workspaceMount)
+				if err != nil {
+					return fmt.Errorf("resolve --workspace path: %w", err)
+				}
+				spec.Mounts = append(spec.Mounts, substrate.Mount{
+					HostPath:      abs,
+					ContainerPath: "/workspace",
+				})
+			}
 			if err := a.Run(ctx, spec); err != nil {
 				return fmt.Errorf("substrate run: %w", err)
 			}
@@ -117,6 +134,9 @@ func newPrototypeUpCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&workspaceMount, "workspace", "",
+		"host path to bind-mount as /workspace (typically a per-sandbox git clone)")
+	return cmd
 }
 
 // waitForIP polls a.IP until it returns a non-empty value or the deadline passes.
