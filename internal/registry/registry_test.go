@@ -1,7 +1,9 @@
 package registry
 
 import (
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -114,6 +116,38 @@ func TestRegisterAndLookupBrowserContainer(t *testing.T) {
 	if gotPlain.BrowserContainer != "" {
 		t.Fatalf("BrowserContainer for plain entry: got %q, want empty",
 			gotPlain.BrowserContainer)
+	}
+}
+
+func TestConcurrentRegister(t *testing.T) {
+	dir := t.TempDir()
+	r := &Registry{Path: filepath.Join(dir, "sandbox-registry.json")}
+
+	const N = 20
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func(i int) {
+			defer wg.Done()
+			entry := Entry{
+				Project:    "p",
+				Name:       fmt.Sprintf("sandbox-%d", i),
+				ControlURL: fmt.Sprintf("http://x:%d", 6000+i),
+				StartedAt:  time.Now(),
+			}
+			if err := r.Register(entry); err != nil {
+				t.Errorf("Register %d: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	entries, err := r.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(entries) != N {
+		t.Fatalf("expected %d entries after concurrent register, got %d", N, len(entries))
 	}
 }
 

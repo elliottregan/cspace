@@ -17,6 +17,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 type Entry struct {
@@ -76,22 +78,52 @@ func (r *Registry) save(m map[string]Entry) error {
 
 func key(project, name string) string { return project + ":" + name }
 
-func (r *Registry) Register(e Entry) error {
-	m, err := r.load()
-	if err != nil {
+// withLock acquires an exclusive flock on r.Path + ".lock" for the duration of fn.
+// The lock file is created on demand. The lock is released when fn returns.
+//
+// This serializes read-modify-write operations across goroutines AND processes,
+// preventing the lost-write race where two concurrent Register/Unregister calls
+// both load the same snapshot and the later save clobbers the earlier one.
+//
+// Lookup and List are read-only and intentionally NOT wrapped — os.ReadFile is
+// kernel-atomic, and atomic-rename writes prevent torn reads.
+func (r *Registry) withLock(fn func() error) error {
+	lockPath := r.Path + ".lock"
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return err
 	}
-	m[key(e.Project, e.Name)] = e
-	return r.save(m)
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return fmt.Errorf("open lock file: %w", err)
+	}
+	defer f.Close()
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
+		return fmt.Errorf("acquire lock: %w", err)
+	}
+	defer unix.Flock(int(f.Fd()), unix.LOCK_UN)
+	return fn()
+}
+
+func (r *Registry) Register(e Entry) error {
+	return r.withLock(func() error {
+		m, err := r.load()
+		if err != nil {
+			return err
+		}
+		m[key(e.Project, e.Name)] = e
+		return r.save(m)
+	})
 }
 
 func (r *Registry) Unregister(project, name string) error {
-	m, err := r.load()
-	if err != nil {
-		return err
-	}
-	delete(m, key(project, name))
-	return r.save(m)
+	return r.withLock(func() error {
+		m, err := r.load()
+		if err != nil {
+			return err
+		}
+		delete(m, key(project, name))
+		return r.save(m)
+	})
 }
 
 func (r *Registry) Lookup(project, name string) (Entry, error) {
