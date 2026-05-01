@@ -71,6 +71,24 @@ func TestHealthCheckRunning(t *testing.T) {
 	}
 }
 
+// TestVersionMatchesSupported logs the locally-installed Apple Container
+// CLI version. Does NOT fail on supported=false — this test runs on dev
+// machines where the user may have moved off the tested range; we want to
+// know about drift, not block CI. The warning path in cspace2-up is the
+// user-facing surface for that.
+func TestVersionMatchesSupported(t *testing.T) {
+	requireContainerCLI(t)
+	a := New()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	version, supported, err := a.VersionStatus(ctx)
+	if err != nil {
+		t.Fatalf("VersionStatus: %v", err)
+	}
+	t.Logf("Apple Container version: %q (supported=%v, tested=%s.x)",
+		version, supported, SupportedMinorVersion())
+}
+
 func TestIP(t *testing.T) {
 	requireContainerCLI(t)
 	a := New()

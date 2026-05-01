@@ -47,6 +47,19 @@ func newCspace2UpCmd() *cobra.Command {
 			if !a.Available() {
 				return fmt.Errorf("apple `container` CLI not on PATH; install per Task 1")
 			}
+			// Version drift warning — non-fatal. The CLI is pre-1.0 with
+			// occasional shape changes; if the user is on a version we
+			// haven't tested, surface that BEFORE the more opaque parse
+			// errors that may follow. If err is non-nil, Available() and
+			// HealthCheck() will surface clearer messages, so we ignore.
+			if version, supported, vErr := a.VersionStatus(ctx); vErr == nil && !supported {
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"warning: cspace tested with Apple Container %s.x; you have %q. "+
+						"Things may behave unexpectedly. File issues at "+
+						"https://github.com/elliottregan/cspace/issues with the output of "+
+						"`container --version`.\n",
+					applecontainer.SupportedMinorVersion(), version)
+			}
 			if err := a.HealthCheck(ctx); err != nil {
 				return fmt.Errorf("apple container: %w. Run `container system start` and try again", err)
 			}

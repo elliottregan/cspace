@@ -55,4 +55,8 @@ type Substrate interface {
 	Exec(ctx context.Context, name string, cmd []string, opts ExecOpts) (ExecResult, error)
 	Stop(ctx context.Context, name string) error
 	IP(ctx context.Context, name string) (string, error)
+	// Version returns the raw output of the substrate's CLI version probe
+	// (e.g. `container --version`). Adapters define their own version-range
+	// policy via separate helpers — this method returns the raw string only.
+	Version(ctx context.Context) (string, error)
 }

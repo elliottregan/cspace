@@ -1,5 +1,20 @@
 // Package applecontainer implements substrate.Substrate against Apple's
 // `container` CLI (github.com/apple/container).
+//
+// VERSION COUPLING: tested against 0.12.x. The CLI is pre-1.0 with active
+// development; expect occasional breakage. Known quirks:
+//
+//   - `container inspect` does NOT support a --format flag. We parse JSON.
+//   - `container inspect` of a missing container exits 0 with body "[]"
+//     (NOT non-zero) on 0.12.x — the registry-prune `containerExists`
+//     helper handles this defensively.
+//   - The DNS port 5353/udp conflicts with macOS's mDNSResponder, so the
+//     daemon binds on 5354 (see internal/cli/cmd_daemon.go).
+//   - `container system kernel set --recommended` must be run by hand on
+//     fresh installs (the apiserver's first start tries to read stdin).
+//
+// VersionStatus() reports whether the installed CLI matches the tested
+// minor version. cspace2-up logs a one-line warning when out of range.
 package applecontainer
 
 import (
@@ -11,10 +26,24 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 
 	"github.com/elliottregan/cspace/internal/substrate"
 )
+
+// supportedMinorVersion is the Apple Container CLI MAJOR.MINOR version cspace
+// has been tested against. Versions outside this range trigger a warning
+// (non-fatal) at cspace2-up time. Bumping this is a deliberate act: verify
+// the JSON shape of `container inspect` and the other quirks listed in the
+// package doc still hold.
+const supportedMinorVersion = "0.12"
+
+// SupportedMinorVersion returns the Apple Container CLI MAJOR.MINOR version
+// cspace has been tested against. Exposed as a function (rather than the raw
+// const) so the cli package can format warning messages without coupling to
+// the constant's name.
+func SupportedMinorVersion() string { return supportedMinorVersion }
 
 // Adapter is the substrate.Substrate implementation backed by `container`.
 type Adapter struct{}
@@ -29,6 +58,44 @@ func New() *Adapter { return &Adapter{} }
 func (a *Adapter) Available() bool {
 	_, err := exec.LookPath("container")
 	return err == nil
+}
+
+// Version returns the raw output of `container --version`. The output shape
+// is unstable across pre-1.0 releases (currently "container CLI version
+// 0.12.3 (build: release, commit: ...)"); callers that need a parsed minor
+// version should use VersionStatus instead.
+func (a *Adapter) Version(ctx context.Context) (string, error) {
+	cmd := exec.CommandContext(ctx, "container", "--version")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("container --version: %w (output: %s)",
+			err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// versionRE matches a semver-like X.Y.Z anywhere in a version string. It is
+// deliberately permissive so it survives format churn ("container 0.12.3",
+// "container CLI version 0.12.3", "container CLI version 0.12.3 (build:
+// release, commit: ...)" all work).
+var versionRE = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+)`)
+
+// VersionStatus reports whether `container --version` is within cspace's
+// tested range. Returns the raw version string, an "ok" tag, and any error
+// encountered probing. A version that can't be parsed is reported as
+// supported=false rather than as an error so callers can degrade to a
+// warning rather than failing closed on a format change.
+func (a *Adapter) VersionStatus(ctx context.Context) (rawVersion string, supported bool, err error) {
+	raw, err := a.Version(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	m := versionRE.FindStringSubmatch(raw)
+	if len(m) < 3 {
+		return raw, false, nil
+	}
+	minor := m[1] + "." + m[2]
+	return raw, minor == supportedMinorVersion, nil
 }
 
 // HealthCheck verifies the Apple Container apiserver is running. Returns a
@@ -163,7 +230,11 @@ func (a *Adapter) IP(ctx context.Context, name string) (string, error) {
 
 	var records []inspectRecord
 	if err := json.Unmarshal(stdout.Bytes(), &records); err != nil {
-		return "", fmt.Errorf("container inspect %s: parse JSON: %w", name, err)
+		return "", fmt.Errorf("parse `container inspect %s` output: %w "+
+			"(the Apple Container CLI's JSON shape may have changed; "+
+			"cspace tested with %s.x — run `container --version` and file "+
+			"an issue at https://github.com/elliottregan/cspace/issues if "+
+			"this version differs)", name, err, supportedMinorVersion)
 	}
 	if len(records) == 0 {
 		return "", fmt.Errorf("container inspect %s: no records returned", name)
