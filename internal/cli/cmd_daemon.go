@@ -168,19 +168,38 @@ func runDaemonServe() error {
 	// flag. macOS resolver(5) `port` directive (installed by `cspace dns
 	// install`) routes per-domain queries here. Both UDP and TCP are served —
 	// standard practice and macOS may use either.
+	//
+	// Either listener failing to bind is fatal: with no DNS, sandboxes can't
+	// resolve <name>.cspace2.local even though HTTP /lookup still works, and
+	// `cspace dns status` would (today) report "running" via the HTTP probe
+	// while users see broken name resolution. Exit non-zero so the parent
+	// (cspace2-up's ensureRegistryDaemon, which captures stderr) can surface
+	// the real error.
 	dh := daemonDNSHandler(r, &lastActivity)
+	dnsPort := daemonDNSListenAddr
+	if i := strings.LastIndex(daemonDNSListenAddr, ":"); i >= 0 {
+		dnsPort = daemonDNSListenAddr[i+1:]
+	}
 	go func() {
 		server := &dns.Server{Addr: daemonDNSListenAddr, Net: "udp", Handler: dh}
 		log.Printf("cspace daemon: DNS listening on %s/udp", daemonDNSListenAddr)
 		if err := server.ListenAndServe(); err != nil {
-			log.Printf("dns udp: %v", err)
+			log.Printf("FATAL: cspace daemon DNS UDP bind on %s failed: %v", daemonDNSListenAddr, err)
+			log.Printf("       another process may be using this port; check with `lsof -nP -iUDP:%s`", dnsPort)
+			log.Printf("       common culprits: another cspace daemon process, or mDNSResponder if 5353 was mistakenly chosen")
+			log.Printf("       cspace daemon cannot serve DNS without UDP; exiting")
+			os.Exit(1)
 		}
 	}()
 	go func() {
 		server := &dns.Server{Addr: daemonDNSListenAddr, Net: "tcp", Handler: dh}
 		log.Printf("cspace daemon: DNS listening on %s/tcp", daemonDNSListenAddr)
 		if err := server.ListenAndServe(); err != nil {
-			log.Printf("dns tcp: %v", err)
+			log.Printf("FATAL: cspace daemon DNS TCP bind on %s failed: %v", daemonDNSListenAddr, err)
+			log.Printf("       another process may be using this port; check with `lsof -nP -iTCP:%s`", dnsPort)
+			log.Printf("       common culprits: another cspace daemon process holding the port")
+			log.Printf("       cspace daemon cannot serve DNS without TCP; exiting")
+			os.Exit(1)
 		}
 	}()
 

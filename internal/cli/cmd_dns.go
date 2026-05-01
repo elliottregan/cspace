@@ -218,6 +218,7 @@ func runDnsStatus(out io.Writer) error {
 	fmt.Fprintf(out, "  %s cspace daemon DNS answering on 127.0.0.1:%s/udp\n", mark(daemonAnswering), dnsLocalPort)
 	if !daemonAnswering {
 		fmt.Fprintln(out, "      (start a sandbox with `cspace cspace2-up` to spawn the daemon)")
+		fmt.Fprintf(out, "      if the daemon HTTP is up but DNS isn't answering, another process may have UDP/%s; check `lsof -nP -iUDP:%s`\n", dnsLocalPort, dnsLocalPort)
 	}
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "  %s macOS resolver routes *.cspace2.local through 127.0.0.1\n", mark(scutilHasRouting))

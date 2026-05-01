@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -12,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/elliottregan/cspace/internal/registry"
@@ -460,21 +462,82 @@ func ensureRegistryDaemon() error {
 		return fmt.Errorf("locate cspace binary: %w", err)
 	}
 	c := exec.Command(self, "daemon", "serve")
-	c.Stdout, c.Stderr = nil, nil
+	// Capture daemon stderr so a fast-fail (e.g. DNS UDP bind failure on a
+	// squatted port 5354) bubbles up as a useful error instead of "not
+	// accepting connections" with no context. The buffer is bounded by
+	// limitedBuffer so a misbehaving daemon can't grow it without bound.
+	stderrBuf := &limitedBuffer{max: 8 * 1024}
+	c.Stdout = nil
+	c.Stderr = stderrBuf
 	if err := c.Start(); err != nil {
-		return err
+		return fmt.Errorf("spawn cspace daemon: %w", err)
 	}
-	// Daemon takes ~250ms to bind in practice. Wait for the port to actually accept connections.
+	// Daemon takes ~250ms to bind in practice. Wait for the port to actually
+	// accept connections, but also short-circuit if the daemon process exits
+	// (which it does on DNS bind failure — see runDaemonServe).
+	exited := make(chan error, 1)
+	go func() { exited <- c.Wait() }()
+
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", "127.0.0.1:6280", 250*time.Millisecond)
-		if err == nil {
+		conn, derr := net.DialTimeout("tcp", "127.0.0.1:6280", 250*time.Millisecond)
+		if derr == nil {
 			conn.Close()
 			return nil
 		}
-		time.Sleep(100 * time.Millisecond)
+		select {
+		case waitErr := <-exited:
+			// Daemon already exited. Surface its stderr.
+			msg := strings.TrimSpace(stderrBuf.String())
+			if msg != "" {
+				return fmt.Errorf("daemon exited before accepting connections: %w\nstderr:\n%s", waitErr, msg)
+			}
+			return fmt.Errorf("daemon exited before accepting connections: %w", waitErr)
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+
+	// Deadline expired without HTTP coming up and without the process
+	// exiting. Kill the orphan child, drain Wait, and surface whatever
+	// stderr we collected.
+	_ = c.Process.Kill()
+	<-exited
+	msg := strings.TrimSpace(stderrBuf.String())
+	if msg != "" {
+		return fmt.Errorf("daemon failed to start within 3s; stderr:\n%s", msg)
 	}
 	return fmt.Errorf("daemon started but not accepting connections")
+}
+
+// limitedBuffer is a goroutine-safe bytes.Buffer wrapper that caps its size,
+// dropping any writes that would exceed `max`. Used to capture daemon stderr
+// without unbounded growth in pathological cases (e.g. log spam loop).
+type limitedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+	max int
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	remaining := b.max - b.buf.Len()
+	if remaining <= 0 {
+		// Pretend the write succeeded; we just drop overflow.
+		return len(p), nil
+	}
+	if len(p) > remaining {
+		b.buf.Write(p[:remaining])
+		return len(p), nil
+	}
+	b.buf.Write(p)
+	return len(p), nil
+}
+
+func (b *limitedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // nudgeSentinelName is the per-user marker file that records "the no-auth
