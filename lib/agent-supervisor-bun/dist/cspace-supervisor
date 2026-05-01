@@ -1,0 +1,3 @@
+#!/bin/sh
+echo "supervisor stub; replaced in Task 4"
+sleep infinity

@@ -1,0 +1,34 @@
+# Phase 0 prototype sandbox image. Minimal: Bun + Claude Code + cspace + supervisor.
+FROM docker.io/library/debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl unzip git tini \
+ && rm -rf /var/lib/apt/lists/*
+
+# Bun (single binary install).
+RUN curl -fsSL https://bun.sh/install | bash \
+ && mv /root/.bun/bin/bun /usr/local/bin/bun \
+ && bun --version
+
+# Claude Code CLI. The npm package is a thin wrapper around a
+# platform-specific subpackage (e.g. @anthropic-ai/claude-code-linux-arm64),
+# and `bun install --global` already creates /root/.bun/bin/claude as a
+# symlink to that platform binary. We re-symlink it to /usr/local/bin/claude
+# so it lands on PATH without depending on /root/.bun/bin.
+RUN bun install --global @anthropic-ai/claude-code \
+ && ln -s /root/.bun/bin/claude /usr/local/bin/claude \
+ && claude --version
+
+# cspace (linux/arm64 host CLI) for in-sandbox `cspace send`/`cspace exec`.
+COPY bin/cspace-linux-arm64 /usr/local/bin/cspace
+
+# Bun supervisor single binary, dropped in by Task 4's build.
+COPY lib/agent-supervisor-bun/dist/cspace-supervisor /usr/local/bin/cspace-supervisor
+
+RUN mkdir -p /workspace /sessions
+WORKDIR /workspace
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/usr/local/bin/cspace-supervisor"]

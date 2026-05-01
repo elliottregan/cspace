@@ -3,7 +3,7 @@ LDFLAGS         := -ldflags "-X github.com/elliottregan/cspace/internal/cli.Vers
 LDFLAGS_RELEASE := -ldflags "-s -w -X github.com/elliottregan/cspace/internal/cli.Version=$(VERSION)"
 GOBIN           := ./bin/cspace-go
 
-.PHONY: build build-linux clean test test-node vet sync-embedded overlay-demo overlay-web fmt fmt-check lint check install-tools setup-hooks check-hooks
+.PHONY: build build-linux clean test test-node vet sync-embedded overlay-demo overlay-web fmt fmt-check lint check install-tools setup-hooks check-hooks cspace-linux prototype-image
 
 # Sync lib/ contents into internal/assets/embedded/ for go:embed
 sync-embedded:
@@ -93,3 +93,19 @@ check-hooks:
 		echo "⚠  Git hooks are not installed. Run 'make setup-hooks' to enable pre-commit and pre-push checks." >&2; \
 		echo "" >&2; \
 	fi
+
+# P0: cross-compile cspace for the Linux microVM.
+.PHONY: cspace-linux
+cspace-linux:
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build \
+		-o bin/cspace-linux-arm64 \
+		./cmd/cspace
+
+# P0: build the prototype sandbox image.
+.PHONY: prototype-image
+prototype-image: cspace-linux
+	container build \
+		--platform linux/arm64 \
+		--tag cspace-prototype:latest \
+		--file lib/templates/Dockerfile.prototype \
+		.
