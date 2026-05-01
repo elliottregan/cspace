@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/elliottregan/cspace/internal/registry"
 )
@@ -63,9 +65,56 @@ func main() {
 		fmt.Fprintln(w, `{"ok":true}`)
 	})
 
+	// Idle-shutdown: track time of last HTTP request via an atomic, and
+	// have a background ticker exit the daemon once it has been idle past
+	// idleTimeout AND the registry has no live entries. The "no entries"
+	// gate is critical — a coordinator may idle for hours but still have
+	// sandboxes registered, and those sandboxes need this daemon to
+	// resolve siblings.
+	var lastActivity atomic.Int64
+	lastActivity.Store(time.Now().Unix())
+
+	bumpActivity := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			lastActivity.Store(time.Now().Unix())
+			next.ServeHTTP(w, req)
+		})
+	}
+
+	idleTimeout := 30 * time.Minute
+	if s := os.Getenv("CSPACE_REGISTRY_DAEMON_IDLE"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			idleTimeout = d
+		}
+	}
+
+	// Tick at most once per minute, but cap at idleTimeout/2 so short
+	// timeouts (used in tests) don't have to wait up to a full minute
+	// past the deadline before we notice.
+	tickInterval := time.Minute
+	if half := idleTimeout / 2; half > 0 && half < tickInterval {
+		tickInterval = half
+	}
+	go func() {
+		tick := time.NewTicker(tickInterval)
+		defer tick.Stop()
+		for range tick.C {
+			idleSince := time.Since(time.Unix(lastActivity.Load(), 0))
+			if idleSince < idleTimeout {
+				continue
+			}
+			entries, err := r.List()
+			if err != nil || len(entries) > 0 {
+				continue
+			}
+			log.Printf("cspace-registry-daemon: idle %s with no entries; exiting", idleSince)
+			os.Exit(0)
+		}
+	}()
+
 	addr := bindAddr + ":" + port
-	log.Printf("cspace-registry-daemon: listening on %s", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	log.Printf("cspace-registry-daemon: listening on %s (idle timeout %s)", addr, idleTimeout)
+	if err := http.ListenAndServe(addr, bumpActivity(mux)); err != nil {
 		log.Fatal(err)
 	}
 }
