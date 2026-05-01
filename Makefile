@@ -109,3 +109,8 @@ prototype-image: cspace-linux
 		--tag cspace-prototype:latest \
 		--file lib/templates/Dockerfile.prototype \
 		.
+
+# P0: host-side HTTP daemon that exposes registry lookups to in-sandbox cspace.
+.PHONY: registry-daemon
+registry-daemon:
+	go build -o bin/cspace-registry-daemon ./cmd/cspace-registry-daemon

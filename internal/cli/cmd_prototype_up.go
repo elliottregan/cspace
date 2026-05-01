@@ -5,7 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
+	"os/exec"
 	"time"
 
 	"github.com/elliottregan/cspace/internal/registry"
@@ -37,6 +39,11 @@ func newPrototypeUpCmd() *cobra.Command {
 				return fmt.Errorf("apple `container` CLI not on PATH; install per Task 1")
 			}
 
+			// Ensure the host registry-daemon is running so in-sandbox cspace can resolve siblings.
+			if err := ensureRegistryDaemon(); err != nil {
+				return fmt.Errorf("registry daemon: %w", err)
+			}
+
 			token := randHex(16)
 
 			env := map[string]string{
@@ -45,6 +52,8 @@ func newPrototypeUpCmd() *cobra.Command {
 				"CSPACE_PROJECT":       project,
 				"CSPACE_SANDBOX_NAME":  name,
 				"CSPACE_CLAUDE_PATH":   "/usr/local/bin/claude",
+				"CSPACE_REGISTRY_URL":  "http://192.168.64.1:6280",
+				"CSPACE_HOST_GATEWAY":  "192.168.64.1",
 			}
 			// If the host has an Anthropic API key, propagate it so Claude can authenticate.
 			if k := os.Getenv("ANTHROPIC_API_KEY"); k != "" {
@@ -132,4 +141,40 @@ func randHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// ensureRegistryDaemon starts cspace-registry-daemon on 127.0.0.1:6280 if it
+// is not already accepting connections. It is idempotent — concurrent
+// prototype-up calls that race here will at most spawn one extra daemon, and
+// only one will manage to bind the port; the others exit immediately.
+//
+// P0: the daemon is left running until manually killed (no idle shutdown,
+// no stop subcommand). Tracked for P1.
+func ensureRegistryDaemon() error {
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:6280", time.Second)
+	if err == nil {
+		conn.Close()
+		return nil
+	}
+	bin, err := exec.LookPath("cspace-registry-daemon")
+	if err != nil {
+		// Fall back to the local build output.
+		bin = "./bin/cspace-registry-daemon"
+	}
+	c := exec.Command(bin)
+	c.Stdout, c.Stderr = nil, nil
+	if err := c.Start(); err != nil {
+		return err
+	}
+	// Daemon takes ~250ms to bind in practice. Wait for the port to actually accept connections.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", "127.0.0.1:6280", 250*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("daemon started but not accepting connections")
 }

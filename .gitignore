@@ -35,6 +35,7 @@ bin/cspace-linux
 bin/cspace-linux-arm64
 bin/cspace-search
 bin/cspace-search-mcp
+bin/cspace-registry-daemon
 dist/
 
 # The Phase 0 Bun supervisor binary lives under lib/agent-supervisor-bun/dist/
