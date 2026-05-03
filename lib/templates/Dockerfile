@@ -73,9 +73,11 @@ RUN useradd -m -s /bin/bash -u 1000 dev \
  && echo 'dev ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/dev \
  && chmod 0440 /etc/sudoers.d/dev
 
-# Node.js for the npm-based MCP servers (Playwright + Chrome DevTools).
+# Node.js for the npm-based MCP servers (Playwright + Chrome DevTools)
+# and as the runtime many JS projects target. Pinned to the current
+# Active LTS line; bump deliberately when Node cuts a new LTS.
 # Chromium itself is pulled by Playwright after npm install.
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
  && rm -rf /var/lib/apt/lists/* \
  && node --version && npm --version
