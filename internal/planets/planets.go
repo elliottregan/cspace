@@ -47,6 +47,20 @@ func Get(name string) (Planet, bool) {
 	return p, ok
 }
 
+// MustGet returns Get(name) on hit, or a neutral grey fallback otherwise.
+// Callers use this when the instance name was user-provided and may not
+// correspond to a known planet (e.g. a custom instance name like "ci-bot").
+func MustGet(name string) Planet {
+	if p, ok := all[name]; ok {
+		return p
+	}
+	return Planet{
+		Symbol: "●",
+		Color:  [3]uint8{128, 128, 128},
+		Accent: [3]uint8{90, 90, 90},
+	}
+}
+
 // SymbolFor returns the planet glyph for name, or an empty string if name
 // is not a known planet — callers that want to prefix text output with a
 // symbol can simply concatenate without a nil check.

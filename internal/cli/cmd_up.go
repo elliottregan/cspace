@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/elliottregan/cspace/internal/overlay"
 	"github.com/elliottregan/cspace/internal/planets"
 	"github.com/elliottregan/cspace/internal/registry"
 	"github.com/elliottregan/cspace/internal/secrets"
@@ -33,6 +34,7 @@ func newUpCmd() *cobra.Command {
 	var withBrowser bool
 	var cpus int
 	var memoryMiB int
+	var noOverlay bool
 	cmd := &cobra.Command{
 		Use:   "up [<name>]",
 		Short: "Launch a sandbox (Apple Container substrate)",
@@ -83,6 +85,46 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			if err := a.HealthCheck(ctx); err != nil {
 				return fmt.Errorf("apple container: %w. Run `container system start` and try again", err)
 			}
+
+			// Boot from here on: route in-flight chatter to a buffer if
+			// the planet overlay is going to run, so bubbletea isn't
+			// fighting other writes for the terminal. Buffer is flushed
+			// to real stdout after the overlay tears down. With
+			// --no-overlay or piped stdout, output flows normally and
+			// boot phases print as plain "[N/5] phase" lines.
+			useOverlay := !noOverlay && isStdoutTTY()
+			realOut := cmd.OutOrStdout()
+			var pendingOut bytes.Buffer
+			var rep overlay.Reporter
+			var teaDone <-chan struct{}
+			if useOverlay {
+				cmd.SetOut(&pendingOut)
+				rep, teaDone = overlay.Start(name)
+			} else {
+				rep = &overlay.LineReporter{Out: realOut}
+			}
+			// Always tear down the overlay before returning. On
+			// success we Done() explicitly below; on error paths a
+			// deferred Error() guarantees bubbletea exits.
+			defer func() {
+				if teaDone != nil {
+					select {
+					case <-teaDone:
+						// already torn down by an earlier Done/Error
+					default:
+						if err != nil {
+							rep.Error(err)
+						} else {
+							rep.Done()
+						}
+						<-teaDone
+					}
+					cmd.SetOut(realOut)
+					_, _ = io.Copy(realOut, &pendingOut)
+				}
+			}()
+
+			rep.Phase(overlay.PhaseDaemon)
 
 			// Ensure the host registry-daemon is running so in-sandbox cspace can resolve siblings.
 			if err := ensureRegistryDaemon(); err != nil {
@@ -182,6 +224,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// out as branch cspace/<sandbox>. See finding
 			// 2026-05-01-per-sandbox-git-clone-bind-mounted-as-workspace-works-as-des
 			// for the locked design.
+			rep.Phase(overlay.PhaseClone)
 			if workspaceMount == "" {
 				auto, err := provisionClone(projectRoot, project, name, baseBranch)
 				if err != nil {
@@ -297,6 +340,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				return err
 			}
 
+			rep.Phase(overlay.PhaseBoot)
 			if runErr := a.Run(ctx, spec); runErr != nil {
 				err = fmt.Errorf("substrate run: %w", runErr)
 				return err
@@ -333,6 +377,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// the load-bearing readiness signal — the Bun process is listening
 			// and able to serve cspace send. Only then do we flip the entry
 			// to state=ready.
+			rep.Phase(overlay.PhaseSupervisor)
 			healthURL := fmt.Sprintf("%s/health", ctlURL)
 			if hErr := waitForHealth(ctx, healthURL, token, 10*time.Second); hErr != nil {
 				err = fmt.Errorf("waiting for sandbox /health: %w", hErr)
@@ -342,6 +387,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				err = fmt.Errorf("mark ready: %w", mErr)
 				return err
 			}
+			rep.Phase(overlay.PhaseReady)
 
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 				"%ssandbox %s up: control %s  ip %s  token %s…\n",
@@ -371,6 +417,8 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 		"CPU cap for this sandbox (overrides .cspace.json resources.cpus and the default of 4)")
 	cmd.Flags().IntVar(&memoryMiB, "memory", 0,
 		"memory cap in MiB for this sandbox (overrides .cspace.json resources.memoryMiB and the default of 4096)")
+	cmd.Flags().BoolVar(&noOverlay, "no-overlay", false,
+		"skip the planet boot animation; phases print as plain '[N/5] phase' lines (auto-disabled when stdout is not a TTY)")
 	return cmd
 }
 
