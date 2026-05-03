@@ -218,9 +218,9 @@ if [ -n "$CONTAINER" ] && command -v ss >/dev/null 2>&1; then
     # the same name without DNS collision. Falls back to sandbox-only
     # form when CSPACE_PROJECT is unset (older sandboxes pre-rc.5).
     if [ -n "$PROJECT" ]; then
-        FQDN="${CONTAINER}.${PROJECT}.cspace2.local"
+        FQDN="${CONTAINER}.${PROJECT}.cspace.local"
     else
-        FQDN="${CONTAINER}.cspace2.local"
+        FQDN="${CONTAINER}.cspace.local"
     fi
     for port in $LISTENING_PORTS; do
         [ -z "$port" ] && continue
@@ -236,16 +236,28 @@ if [ -n "$CONTAINER" ] && command -v ss >/dev/null 2>&1; then
             loopback_only=1
         fi
         printf "%s" "$DIV"
+        # Pick the dot/text color: red when loopback-only (currently
+        # broken; user needs to switch the dev server to --host=0.0.0.0)
+        # else label color when labeled, else cyan.
         if [ "$loopback_only" = "1" ]; then
-            # Red dot + plain ":port" text + literal warning. No OSC 8
-            # hyperlink because the URL won't actually load.
-            printf "%s● :%s ${GRY}(loopback — set --host=0.0.0.0)${RST}" "$RED" "$port"
+            dot_color="$RED"
         elif [ -n "$label" ]; then
-            printf "%s● " "$(label_color "$label")"
+            dot_color="$(label_color "$label")"
+        else
+            dot_color="$CYN"
+        fi
+        printf "%s● " "$dot_color"
+        # Always emit a clickable hyperlink. For loopback ports the
+        # link won't currently load — but it's still useful as a
+        # copy/paste target, and starts working the moment the dev
+        # server rebinds. The warning suffix tells the user what to do.
+        if [ -n "$label" ]; then
             link "$URL" "$label"
         else
-            printf "%s● " "$CYN"
             link "$URL" ":${port}"
+        fi
+        if [ "$loopback_only" = "1" ]; then
+            printf " ${GRY}(loopback — set --host=0.0.0.0)${RST}"
         fi
         printf "%s" "$RST"
     done
