@@ -33,12 +33,27 @@ func newUpCmd() *cobra.Command {
 	var cpus int
 	var memoryMiB int
 	cmd := &cobra.Command{
-		Use:   "up <name>",
+		Use:   "up [<name>]",
 		Short: "Launch a sandbox (Apple Container substrate)",
-		Args:  cobra.ExactArgs(1),
+		Long: `Launch a sandbox.
+
+If <name> is omitted, cspace assigns the first unused planet name in
+solar order (mercury, venus, earth, mars, jupiter, saturn, uranus,
+neptune) for this project. Pass an explicit name for anything outside
+that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) (err error) {
-			name := args[0]
 			project := projectName()
+			var name string
+			if len(args) == 1 {
+				name = args[0]
+			} else {
+				picked, err := pickPlanetName(project)
+				if err != nil {
+					return err
+				}
+				name = picked
+			}
 
 			parent := cmd.Context()
 			if parent == nil {
@@ -433,6 +448,41 @@ func projectName() string {
 		return cfg.Project.Name
 	}
 	return "default"
+}
+
+// planetOrder is the canonical solar-system order cspace draws from when
+// auto-naming sandboxes. Eight names is enough that running out is a strong
+// signal you should be passing explicit task-shaped names instead.
+var planetOrder = []string{
+	"mercury", "venus", "earth", "mars",
+	"jupiter", "saturn", "uranus", "neptune",
+}
+
+// pickPlanetName returns the first planet not currently registered for this
+// project. Errors if all eight are taken — at that point the user should be
+// using descriptive names anyway.
+func pickPlanetName(project string) (string, error) {
+	path, err := registry.DefaultPath()
+	if err != nil {
+		return "", fmt.Errorf("registry path: %w", err)
+	}
+	r := &registry.Registry{Path: path}
+	entries, err := r.List()
+	if err != nil {
+		return "", fmt.Errorf("registry list: %w", err)
+	}
+	taken := map[string]bool{}
+	for _, e := range entries {
+		if e.Project == project {
+			taken[e.Name] = true
+		}
+	}
+	for _, name := range planetOrder {
+		if !taken[name] {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("all 8 planet names are in use for project %q; pass an explicit name (e.g. `cspace up issue-42`)", project)
 }
 
 // propagateFamily ensures every name in `family` has the same value as the
