@@ -16,6 +16,25 @@ The `.cspace/context/` directory holds layered planning context accessible via t
 
 Agents call `read_context` at the start of non-trivial work. `.cspace/context/` is bind-mounted from the host into every cspace container for the project, so writes (decisions, discoveries, findings) by one agent are visible to siblings in real time without git push/pull. The cspace-context MCP server reads/writes directly against this bind mount; `writeEntry` uses `O_EXCL` create for race-safe concurrent creates across containers. See `docs/superpowers/specs/2026-04-13-context-mcp-server-design.md` for the original contract (findings are a later extension).
 
+## Anthropic credentials
+
+cspace sandboxes need an Anthropic credential to drive Claude Code. Three forms work via `ANTHROPIC_API_KEY` (the SDK auto-detects format):
+
+- **Long-lived API key** (`sk-ant-api-...`) from <https://console.anthropic.com/settings/keys>. Stable across sessions, no expiry. **Recommended for daily use** — paste once into Keychain via `cspace keychain init` and forget about it. This is the right choice for any multi-day or autonomous run.
+- **Long-lived OAuth token** (`sk-ant-oat-...`) from `claude setup-token`. Functionally similar to an API key — also fine to paste into `cspace keychain init`.
+- **Short-lived OAuth token** auto-discovered from `claude /login`'s macOS Keychain entry (the `Claude Code-credentials` envelope). Refreshes when the host's `claude` CLI runs; otherwise expires within ~hours. Convenient for first-run / demo, but **don't rely on it for sessions over a day** — the agent will lose auth mid-task.
+
+`cspace keychain status` shows where each credential is sourced from. If you see `auto-discovered (Claude Code OAuth)` with an expiry date approaching, run `cspace keychain init` and paste a long-lived token.
+
+Resolution order (highest precedence first; first reachable wins):
+
+1. `<project>/.cspace/secrets.env` — project-scoped lock-in
+2. `~/.cspace/secrets.env` — user-global manual entry
+3. macOS Keychain `cspace-ANTHROPIC_API_KEY` — set via `cspace keychain init`
+4. Auto-discovery from host's `claude /login` state — convenience layer (short-lived OAuth)
+
+GitHub credentials (`GH_TOKEN` / `GITHUB_TOKEN` / `GITHUB_PERSONAL_ACCESS_TOKEN`) follow the same precedence; auto-discovery uses `gh auth token`.
+
 ## Advisors
 
 Advisors are long-running specialist agents consulted alongside the coordinator. Each runs in its own cspace container as `role=advisor` — persistent, session-continuous across `cspace coordinate` invocations. They are declared in `.cspace.json` under `advisors` (see defaults for the decision-maker).
@@ -111,6 +130,9 @@ Shell scripts fired by Claude Code's hook system: progress logging on `PostToolU
 **Agent memory** (Claude Code's built-in): Each project's `.cspace/memory/` directory is bind-mounted into every container at `/home/dev/.claude/projects/-workspace/memory`. Committed to git so learnings persist across volume wipes, container rebuilds, and fresh clones. Agents read/write via Claude Code's built-in memory system (four types: user, feedback, project, reference); `MEMORY.md` is the index. `cspace up` creates the directory with an empty stub on first provision. If you have pre-existing memory in the legacy `cspace-<project>-memory` Docker volume, run `cspace memory migrate` once to copy it into the repo. cspace does not intercept or reconcile Claude's memory writes — treat this as per-session personal memory that happens to persist. For cross-container collaborative memory (decisions, discoveries, findings), use the cspace-context MCP server (`.cspace/context/`, see the "Project Context" section above) — that layer is explicitly designed for live sharing.
 
 **Agent sessions**: Every Claude Code session JSONL for a project lives in `$HOME/.cspace/sessions/<project-name>/` on the host (outside the repo — contains conversation history, potentially large, may include secrets). That directory is bind-mounted into every container at `/home/dev/.claude/projects/-workspace/`, overlaid with the nested memory mount above. Effect: sessions survive volume wipes and `cspace down`; all instances for a project see the same sessions; teleport is a resume-by-session-id operation with no JSONL copy. `cspace up` creates the host directory with user ownership before compose. Run `cspace sessions migrate` once to rescue sessions from the legacy per-instance `claude-home` Docker volumes. `CSPACE_TELEPORT_DIR` is deliberately not propagated into containers — it names a host path used only for the `/teleport` bind mount, and in-container scripts use `/teleport` directly so host-OS paths can't leak across the boundary.
+
+**Agent secrets** (Phase 0+): cspace-owned secrets (Anthropic API key, future GH tokens, etc.) live in `~/.cspace/secrets.env` (user-global) and `<project>/.cspace/secrets.env` (project-local override; gitignored). Project-local overrides global; an explicitly-set host shell env var still wins for one-off overrides. Format is dotenv-style (`KEY=value`, `# comments`, optional `"…"` or `'…'` quoting). The project's own `.env` is **not** loaded by cspace — that file is the app's domain and is read at runtime by the app's own dotenv tooling. Keep cspace and app secrets separate.
+Security caveat: secrets currently transit `-e` flags into the substrate. Apple Container's `vminitd` is known to log the full process env, so anyone with `container logs` access on the host can read these values. P1 will add Keychain-backed values (`KEY=keychain:<service-name>` resolved via `security find-generic-password` on macOS, equivalents on Linux) and an alternative delivery path that doesn't transit `-e`.
 
 ## Commit Style
 

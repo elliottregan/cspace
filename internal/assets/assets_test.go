@@ -2,7 +2,6 @@ package assets
 
 import (
 	"encoding/json"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -62,12 +61,8 @@ func TestExtractTo_CreatesFiles(t *testing.T) {
 	keyFiles := []string{
 		"defaults.json",
 		"templates/Dockerfile",
-		"templates/docker-compose.core.yml",
-		"templates/docker-compose.shared.yml",
-		"scripts/entrypoint.sh",
-		"hooks/claude-progress-logger.sh",
-		"agents/coordinator.md",
-		"agents/implementer.md",
+		"scripts/cspace-entrypoint.sh",
+		"scripts/cspace-supervisor-loop.sh",
 	}
 
 	for _, f := range keyFiles {
@@ -90,10 +85,7 @@ func TestExtractTo_PreservesStructure(t *testing.T) {
 	expectedDirs := []string{
 		"templates",
 		"scripts",
-		"hooks",
-		"agents",
-		"agent-supervisor",
-		"skills",
+		"agent-supervisor-bun",
 	}
 
 	for _, d := range expectedDirs {
@@ -119,8 +111,8 @@ func TestExtractTo_ShellScriptsExecutable(t *testing.T) {
 
 	// Check that .sh files are executable
 	shFiles := []string{
-		"scripts/entrypoint.sh",
-		"hooks/claude-progress-logger.sh",
+		"scripts/cspace-entrypoint.sh",
+		"scripts/cspace-supervisor-loop.sh",
 	}
 
 	for _, f := range shFiles {
@@ -213,26 +205,5 @@ func TestExtractTo_ReExtractsOnVersionChange(t *testing.T) {
 	}
 	if string(data) == "modified" {
 		t.Error("expected re-extraction to overwrite modified file")
-	}
-}
-
-func TestCommandsDirectoryEmbedded(t *testing.T) {
-	entries, err := fs.ReadDir(EmbeddedFS, "embedded/commands")
-	if err != nil {
-		t.Fatalf("reading embedded commands dir: %v", err)
-	}
-
-	// Assert the teleport slash command ships. Using a specific file rather
-	// than "at least one .md" catches the case where a future refactor
-	// accidentally drops cspace-teleport.md while leaving the directory.
-	var found bool
-	for _, e := range entries {
-		if e.Name() == "cspace-teleport.md" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected cspace-teleport.md in embedded commands dir; got: %v", entries)
 	}
 }

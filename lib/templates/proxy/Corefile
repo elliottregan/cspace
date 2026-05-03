@@ -1,5 +1,0 @@
-cspace.local {
-    template IN A {
-        answer "{{ .Name }} 60 IN A 127.0.0.1"
-    }
-}

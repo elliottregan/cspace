@@ -22,8 +22,7 @@ func newSelfUpdateCmd() *cobra.Command {
 
 Downloads the correct binary for the current OS/architecture and
 atomically replaces the running binary.`,
-		GroupID: "other",
-		RunE:    runSelfUpdate,
+		RunE: runSelfUpdate,
 	}
 
 	cmd.Flags().Bool("check", false, "Only check for updates, don't install")
@@ -120,12 +119,6 @@ func runSelfUpdate(cmd *cobra.Command, args []string) error {
 // Uses net/http directly so it works without the gh CLI.
 func fetchLatestRelease(repo string) (*ghRelease, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
-	return fetchRelease(url)
-}
-
-// fetchReleaseByTag queries the GitHub Releases API for a release with the given tag.
-func fetchReleaseByTag(repo, tag string) (*ghRelease, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/tags/%s", repo, tag)
 	return fetchRelease(url)
 }
 
