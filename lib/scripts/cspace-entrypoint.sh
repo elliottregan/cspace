@@ -79,5 +79,13 @@ if [ ! -f "$SETTINGS_JSON" ]; then
 JSON
 fi
 
+# Install Claude Code plugins declared in /workspace/.claude/settings.json.
+# Idempotent and best-effort — failures here don't block the supervisor.
+# Marketplaces are pre-baked under /opt/cspace/marketplaces/ so first
+# boot doesn't have to clone anything from GitHub.
+if [ -x /usr/local/bin/cspace-install-plugins.sh ]; then
+    /usr/local/bin/cspace-install-plugins.sh || true
+fi
+
 # Hand off to the actual command (cspace-supervisor by default).
 exec "$@"

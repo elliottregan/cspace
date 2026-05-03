@@ -405,7 +405,14 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// to state=ready.
 			rep.Phase(overlay.PhaseSupervisor)
 			healthURL := fmt.Sprintf("%s/health", ctlURL)
-			if hErr := waitForHealth(ctx, healthURL, token, 10*time.Second); hErr != nil {
+			// 60s rather than 10s: the entrypoint installs Claude Code
+			// plugins declared in /workspace/.claude/settings.json
+			// before exec'ing the supervisor. A project with a dozen
+			// plugins takes ~2s/plugin against GitHub on a warm cache,
+			// closer to 5s/plugin cold. 60s is enough for ~12 plugins
+			// cold or many more warm. The supervisor itself responds
+			// in <1 s once it actually starts.
+			if hErr := waitForHealth(ctx, healthURL, token, 60*time.Second); hErr != nil {
 				err = fmt.Errorf("waiting for sandbox /health: %w", hErr)
 				return err
 			}

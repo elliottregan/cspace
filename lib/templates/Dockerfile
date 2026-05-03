@@ -117,6 +117,7 @@ RUN npm install -g @playwright/mcp@0.0.72 chrome-devtools-mcp@0.23.0 \
 RUN ln -sf /home/dev/.bun/bin/bun /usr/local/bin/bun \
  && ln -sf /home/dev/.bun/bin/claude /usr/local/bin/claude
 
+
 # cspace (linux/arm64 host CLI) for in-sandbox `cspace send`/`cspace exec`.
 COPY bin/cspace-linux-arm64 /usr/local/bin/cspace
 
@@ -157,9 +158,11 @@ WORKDIR /workspace
 USER root
 COPY lib/scripts/cspace-entrypoint.sh /usr/local/bin/cspace-entrypoint.sh
 COPY lib/scripts/cspace-supervisor-loop.sh /usr/local/bin/cspace-supervisor-loop.sh
+COPY lib/scripts/cspace-install-plugins.sh /usr/local/bin/cspace-install-plugins.sh
 COPY lib/scripts/statusline.sh /usr/local/bin/cspace-statusline.sh
 RUN chmod +x /usr/local/bin/cspace-entrypoint.sh \
             /usr/local/bin/cspace-supervisor-loop.sh \
+            /usr/local/bin/cspace-install-plugins.sh \
             /usr/local/bin/cspace-statusline.sh
 USER dev
 
