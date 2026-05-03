@@ -11,7 +11,9 @@ package overlay
 import (
 	"fmt"
 	"io"
+	"math"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -137,54 +139,113 @@ func nextEventCmd(ch <-chan Event) tea.Cmd {
 	}
 }
 
+// Animation tunables. These are the levers if the boot animation
+// feels too sluggish or too snappy.
+//
+//   - animFPS: how often we redraw the focus pull. 30 is plenty
+//     for half-block-character animation; 60 is overkill.
+//   - focusTraversalDur: how long it takes the planet to traverse
+//     the entire 0→1 focus range when the boot finishes
+//     instantaneously. Anchors the visual minimum-runtime.
+//   - finalHoldDur: how long to keep the fully focused planet on
+//     screen after Done arrives. Without this the end frame can
+//     flash by faster than the eye registers.
+//
+// Long-running phases (project install hooks, cold image pulls)
+// are handled implicitly: the animation reaches the phase's target
+// focus quickly, then sits calmly with the spinner until the next
+// phase advances. No frame jitter.
+const (
+	animFPS           = 30
+	focusTraversalDur = 1500 * time.Millisecond
+	finalHoldDur      = 500 * time.Millisecond
+)
+
+// animTickMsg is the per-frame animation pulse — separate from
+// spinner.TickMsg so the two clocks don't fight.
+type animTickMsg time.Time
+
+func animTickCmd() tea.Cmd {
+	return tea.Tick(time.Second/animFPS, func(t time.Time) tea.Msg {
+		return animTickMsg(t)
+	})
+}
+
 type model struct {
-	name    string
-	planet  planets.Planet
-	phase   Phase
-	err     error
-	done    bool
-	events  <-chan Event
-	spinner spinner.Model
-	width   int
-	height  int
+	name        string
+	planet      planets.Planet
+	targetPhase Phase     // last phase the reporter advanced to
+	focus       float64   // animated 0.0..1.0; lerps toward targetPhase/TotalPhases
+	doneAt      time.Time // when reporter signaled Done; zero = still in progress
+	err         error
+	events      <-chan Event
+	spinner     spinner.Model
+	width       int
+	height      int
 }
 
 func initialModel(name string, events <-chan Event) model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	return model{
-		name:    name,
-		planet:  planets.MustGet(name),
-		phase:   PhasePending,
-		events:  events,
-		spinner: sp,
+		name:        name,
+		planet:      planets.MustGet(name),
+		targetPhase: PhasePending,
+		focus:       0,
+		events:      events,
+		spinner:     sp,
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, nextEventCmd(m.events))
+	return tea.Batch(m.spinner.Tick, animTickCmd(), nextEventCmd(m.events))
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case Event:
-		if msg.Done {
-			m.phase = PhaseReady
-			m.done = true
-			// Quit after one final render so the fully-focused planet
-			// flashes briefly. tea.Quit fires immediately; the View
-			// for the current state is what the user sees last.
-			return m, tea.Quit
-		}
-		if msg.Err != nil {
+		switch {
+		case msg.Err != nil:
 			m.err = msg.Err
 			return m, tea.Quit
+		case msg.Done:
+			// Latch a target of full focus. Don't quit yet — the
+			// animation tick will let the planet finish its focus
+			// pull and then quit after finalHoldDur. Without this,
+			// fast boots flash through the last few frames.
+			m.targetPhase = PhaseReady
+			if m.doneAt.IsZero() {
+				m.doneAt = time.Now()
+			}
+		default:
+			if msg.Phase > m.targetPhase {
+				m.targetPhase = msg.Phase
+			}
 		}
-		if msg.Phase > m.phase {
-			m.phase = msg.Phase
-		}
-		// Pull the next event.
 		return m, nextEventCmd(m.events)
+	case animTickMsg:
+		// Animate focus toward the target at a constant velocity.
+		// The integer phase enum maps to focus as targetPhase /
+		// TotalPhases — events advance the target, the visual chases
+		// it smoothly regardless of how fast or slow they arrive.
+		target := float64(m.targetPhase) / float64(TotalPhases)
+		if target > 1 {
+			target = 1
+		}
+		velocity := 1.0 / focusTraversalDur.Seconds() / float64(animFPS)
+		switch {
+		case m.focus < target:
+			m.focus = math.Min(target, m.focus+velocity)
+		case m.focus > target:
+			m.focus = math.Max(target, m.focus-velocity)
+		}
+		// Quit only when Done has been signaled, focus has reached
+		// 1.0, and we've held the final frame long enough for the
+		// eye to register it.
+		if !m.doneAt.IsZero() && m.focus >= 1.0 && time.Since(m.doneAt) >= finalHoldDur {
+			return m, tea.Quit
+		}
+		return m, animTickCmd()
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -205,32 +266,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m model) View() string {
 	var b strings.Builder
 
-	// Planet rendering. Capped at TotalPhases so PhaseReady renders
-	// at full focus. Overlays (clouds, Great Red Spot, ring shadows…)
-	// resolve in lockstep with the base shape.
-	phase := int(m.phase)
-	if phase > TotalPhases {
-		phase = TotalPhases
-	}
+	// Planet rendering. m.focus is animated continuously by the
+	// animTick clock — we re-express it as int phase/total so the
+	// existing renderer (which interpolates internally) sees the
+	// fractional value. ×100 is more than enough granularity at
+	// 30 FPS over our typical few-second boot.
 	shape := planets.GetShape(m.name)
 	opts := DefaultRenderOptions()
 	opts.Overlays = planets.GetOverlays(m.name)
-	b.WriteString(RenderPlanetWith(shape, m.planet, phase, TotalPhases, opts))
+	b.WriteString(RenderPlanetWith(shape, m.planet, int(m.focus*100), 100, opts))
 	b.WriteString("\n\n")
 
 	// Status line: spinner + phase label, dimmed when done.
-	label := phaseLabels[m.phase]
+	label := phaseLabels[m.targetPhase]
 	if m.err != nil {
 		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5555")).Bold(true)
 		b.WriteString(errStyle.Render("✗ failed: ") + m.err.Error())
 		b.WriteString("\n")
 		return b.String()
 	}
-	if m.done {
+	if !m.doneAt.IsZero() && m.focus >= 1.0 {
 		okStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#5fffaf")).Bold(true)
 		b.WriteString(okStyle.Render("✓ " + m.name) + "  " + label)
 		b.WriteString("\n")
-		return b.String()
+		content := b.String()
+		if m.width > 0 && m.height > 0 {
+			return lipgloss.Place(m.width, m.height,
+				lipgloss.Center, lipgloss.Center, content,
+				lipgloss.WithWhitespaceBackground(lipgloss.Color("#000000")))
+		}
+		return content
 	}
 	dim := lipgloss.NewStyle().Faint(true)
 	b.WriteString(m.spinner.View() + dim.Render(" "+m.name+"  "+label))
