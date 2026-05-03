@@ -23,6 +23,11 @@ fi
 # and a stack of tips before becoming usable. We approve all of them up
 # front. Idempotent: skip if the file already exists (so user-made
 # changes inside the sandbox persist across restarts).
+#
+# IMPORTANT: hasTrustDialogAccepted is a PER-DIRECTORY flag stored under
+# projects[<cwd>] — the global key alone doesn't suppress the prompt.
+# Pre-seed projects["/workspace"] (where claude is launched from) so the
+# trust dialog never fires.
 CLAUDE_JSON="$HOME/.claude.json"
 if [ ! -f "$CLAUDE_JSON" ]; then
     mkdir -p "$HOME/.claude"
@@ -41,7 +46,35 @@ if [ ! -f "$CLAUDE_JSON" ]; then
   "hasTrustDialogAccepted": true,
   "bypassPermissionsModeAccepted": true,
   "theme": "dark",
-  "customApiKeyResponses": { "approved": ${APPROVED}, "rejected": [] }
+  "customApiKeyResponses": { "approved": ${APPROVED}, "rejected": [] },
+  "projects": {
+    "/workspace": {
+      "hasTrustDialogAccepted": true,
+      "projectOnboardingSeenCount": 1,
+      "hasClaudeMdExternalIncludesApproved": true,
+      "hasClaudeMdExternalIncludesWarningShown": true
+    }
+  }
+}
+JSON
+fi
+
+# Pre-create ~/.claude/settings.json so the cspace statusline shows up
+# in interactive `claude`. The shipped script is at
+# /usr/local/bin/cspace-statusline.sh; project overrides at
+# /workspace/.cspace/scripts/statusline.sh take precedence so projects
+# can ship their own. Idempotent.
+SETTINGS_JSON="$HOME/.claude/settings.json"
+if [ ! -f "$SETTINGS_JSON" ]; then
+    mkdir -p "$HOME/.claude"
+    statusline_cmd="/usr/local/bin/cspace-statusline.sh"
+    [ -x "/workspace/.cspace/scripts/statusline.sh" ] && statusline_cmd="/workspace/.cspace/scripts/statusline.sh"
+    cat > "$SETTINGS_JSON" <<JSON
+{
+  "statusLine": {
+    "type": "command",
+    "command": "${statusline_cmd}"
+  }
 }
 JSON
 fi

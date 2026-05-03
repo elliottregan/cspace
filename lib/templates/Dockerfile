@@ -155,7 +155,10 @@ WORKDIR /workspace
 USER root
 COPY lib/scripts/cspace-entrypoint.sh /usr/local/bin/cspace-entrypoint.sh
 COPY lib/scripts/cspace-supervisor-loop.sh /usr/local/bin/cspace-supervisor-loop.sh
-RUN chmod +x /usr/local/bin/cspace-entrypoint.sh /usr/local/bin/cspace-supervisor-loop.sh
+COPY lib/scripts/statusline.sh /usr/local/bin/cspace-statusline.sh
+RUN chmod +x /usr/local/bin/cspace-entrypoint.sh \
+            /usr/local/bin/cspace-supervisor-loop.sh \
+            /usr/local/bin/cspace-statusline.sh
 USER dev
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/cspace-entrypoint.sh"]
