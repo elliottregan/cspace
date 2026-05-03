@@ -131,8 +131,12 @@ func runRegistryList(out io.Writer) error {
 		if !e.StartedAt.IsZero() {
 			started = e.StartedAt.Local().Format("2006-01-02 15:04")
 		}
+		// Prefix the SANDBOX column with the planet glyph (colored when
+		// stdout is a TTY) so registry list scans the same way `cspace
+		// up`'s success line does. Custom names get no prefix.
+		nameCol := glyphPrefix(e.Name) + e.Name
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			e.Project, e.Name, ipOrDash(e.IP), browserCol, entryState, lifecycleState, started)
+			e.Project, nameCol, ipOrDash(e.IP), browserCol, entryState, lifecycleState, started)
 	}
 	return tw.Flush()
 }

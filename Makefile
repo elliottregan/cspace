@@ -16,6 +16,7 @@ sync-embedded:
 	@cp -r lib/agent-supervisor-bun internal/assets/embedded/
 	@rm -rf internal/assets/embedded/agent-supervisor-bun/node_modules
 	@cp lib/defaults.json internal/assets/embedded/
+	@cp lib/planets.json internal/assets/embedded/
 
 build: check-hooks sync-embedded bin/cspace-go
 

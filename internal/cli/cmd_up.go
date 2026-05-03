@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/elliottregan/cspace/internal/planets"
 	"github.com/elliottregan/cspace/internal/registry"
 	"github.com/elliottregan/cspace/internal/secrets"
 	"github.com/elliottregan/cspace/internal/substrate"
@@ -343,8 +344,8 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			}
 
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-				"sandbox %s up: control %s  ip %s  token %s…\n",
-				name, ctlURL, ip, token[:8])
+				"%ssandbox %s up: control %s  ip %s  token %s…\n",
+				glyphPrefix(name), name, ctlURL, ip, token[:8])
 
 			// Friendly-URL hint. Always print the browse line when DNS is
 			// installed (it's helpful, not nagging). Otherwise, suggest
@@ -456,6 +457,32 @@ func projectName() string {
 var planetOrder = []string{
 	"mercury", "venus", "earth", "mars",
 	"jupiter", "saturn", "uranus", "neptune",
+}
+
+// glyphPrefix returns "<colored-symbol> " when name is a known planet and
+// stdout is a TTY, "<plain-symbol> " when it's a planet but stdout is piped
+// (so the symbol still survives `cspace up | tee log`), and "" for custom
+// names. Trailing space is included so call sites can blindly concatenate.
+func glyphPrefix(name string) string {
+	p, ok := planets.Get(name)
+	if !ok {
+		return ""
+	}
+	if !isStdoutTTY() {
+		return p.Symbol + " "
+	}
+	r, g, b := p.Color[0], p.Color[1], p.Color[2]
+	return fmt.Sprintf("\x1b[38;2;%d;%d;%dm%s\x1b[0m ", r, g, b, p.Symbol)
+}
+
+// isStdoutTTY returns true when os.Stdout is a terminal — used to gate ANSI
+// color so piped output stays clean.
+func isStdoutTTY() bool {
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
 // pickPlanetName returns the first planet not currently registered for this
