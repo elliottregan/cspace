@@ -166,28 +166,53 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				}
 				env[kv[:eq]] = kv[eq+1:]
 			}
-			// Anthropic credential family. Claude Code SDK reads ANTHROPIC_API_KEY,
-			// but users typically have the value under CLAUDE_CODE_OAUTH_TOKEN
-			// (the name `claude /login` writes to Keychain and what Task A's
-			// auto-discovery layer fills). Either name works as the carrier.
-			propagateFamily(env, []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"})
+			// Anthropic credentials: pass through ONLY what the user set.
+			// Setting both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN
+			// trips claude CLI's "Auth conflict" warning every session,
+			// and the SDK + CLI both accept either env var as the
+			// carrier. So if the user's secrets file (or host shell) has
+			// CLAUDE_CODE_OAUTH_TOKEN set, we leave ANTHROPIC_API_KEY
+			// unset in the sandbox, and vice versa.
+			if k := os.Getenv("ANTHROPIC_API_KEY"); k != "" {
+				env["ANTHROPIC_API_KEY"] = k
+			}
+			if k := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"); k != "" {
+				env["CLAUDE_CODE_OAUTH_TOKEN"] = k
+			}
+			// If the user explicitly set ANTHROPIC_API_KEY in the secrets
+			// file or host shell, drop CLAUDE_CODE_OAUTH_TOKEN to avoid
+			// the conflict. If only CLAUDE_CODE_OAUTH_TOKEN was set,
+			// drop ANTHROPIC_API_KEY for the same reason.
+			if env["ANTHROPIC_API_KEY"] != "" && env["CLAUDE_CODE_OAUTH_TOKEN"] != "" {
+				// Both are present from auto-discovery + secrets file.
+				// Prefer whichever was set by the user explicitly (host
+				// shell wins, then secrets file). For the common case
+				// where the secrets file set CLAUDE_CODE_OAUTH_TOKEN
+				// and auto-discovery filled ANTHROPIC_API_KEY, drop the
+				// auto-discovered one.
+				if loaded["CLAUDE_CODE_OAUTH_TOKEN"] != "" && loaded["ANTHROPIC_API_KEY"] == "" {
+					delete(env, "ANTHROPIC_API_KEY")
+				} else if loaded["ANTHROPIC_API_KEY"] != "" && loaded["CLAUDE_CODE_OAUTH_TOKEN"] == "" {
+					delete(env, "CLAUDE_CODE_OAUTH_TOKEN")
+				} else {
+					// Default tiebreak: keep ANTHROPIC_API_KEY, drop OAuth
+					// (the SDK and CLI both accept any value format under
+					// ANTHROPIC_API_KEY).
+					delete(env, "CLAUDE_CODE_OAUTH_TOKEN")
+				}
+			}
 
 			// GitHub credential family. gh CLI reads GH_TOKEN; the GitHub MCP
 			// server reads GITHUB_PERSONAL_ACCESS_TOKEN; Actions ambient is
 			// GITHUB_TOKEN. Same value under all three so any tool sees its
-			// expected name.
+			// expected name. (No conflict warning here, so the dual-write
+			// pattern is safe.)
 			propagateFamily(env, []string{"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN"})
 
 			// Host shell env wins for explicitly-set keys (e.g. one-off override).
-			if k := os.Getenv("ANTHROPIC_API_KEY"); k != "" {
-				env["ANTHROPIC_API_KEY"] = k
-			}
 			if k := os.Getenv("GH_TOKEN"); k != "" {
 				env["GH_TOKEN"] = k
 			}
-			// Re-propagate after shell-env overrides so the family stays in
-			// sync if shell env updated one alias.
-			propagateFamily(env, []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"})
 			propagateFamily(env, []string{"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN"})
 
 			// First-run nudge if no Anthropic credential is reachable from any

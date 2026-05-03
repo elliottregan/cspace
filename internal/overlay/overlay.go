@@ -237,8 +237,14 @@ func (m model) View() string {
 	b.WriteString("\n")
 	content := b.String()
 	if m.width > 0 && m.height > 0 {
+		// Fill the entire alt-screen with the same near-black the
+		// planet renderer uses for its viewport background — without
+		// this, the area outside the planet's bounding box inherits
+		// the host terminal's bg and the dialog reads as "rendered on
+		// top of my prior shell" instead of "took over the screen".
 		return lipgloss.Place(m.width, m.height,
-			lipgloss.Center, lipgloss.Center, content)
+			lipgloss.Center, lipgloss.Center, content,
+			lipgloss.WithWhitespaceBackground(lipgloss.Color("#000000")))
 	}
 	return content
 }
