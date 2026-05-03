@@ -195,19 +195,52 @@ if [ -n "$CONTAINER" ] && command -v ss >/dev/null 2>&1; then
             [ -n "$p" ] && PORT_LABELS["$p"]="$lbl"
         done < <(jq -r '.container.ports // {} | to_entries[] | "\(.key)\t\(.value)"' "$CSPACE_JSON" 2>/dev/null)
     fi
-    # Enumerate listening TCP ports. ss prints lines like:
+    # Enumerate listening TCP ports + their bind addresses. ss prints
+    # lines like:
     #   LISTEN 0 511 *:5173 *:*
-    # Strip everything except the local port. dedup + sort numerically.
-    LISTENING_PORTS=$(ss -tln 2>/dev/null \
-        | awk 'NR>1 {n=split($4,a,":"); print a[n]}' \
-        | sort -un)
+    #   LISTEN 0 511 127.0.0.1:5174 0.0.0.0:*
+    # We need the bind to detect loopback-only listeners — those aren't
+    # reachable from outside the microVM and need --host=0.0.0.0 in the
+    # dev server config.
+    LISTENING=$(ss -tln 2>/dev/null \
+        | awk 'NR>1 {print $4}' \
+        | sort -u)
+    declare -A PORT_BIND=()
+    LISTENING_PORTS=""
+    for sock in $LISTENING; do
+        bind="${sock%:*}"
+        port="${sock##*:}"
+        PORT_BIND["$port"]="$bind"
+        LISTENING_PORTS="$LISTENING_PORTS $port"
+    done
+    LISTENING_PORTS=$(echo "$LISTENING_PORTS" | tr ' ' '\n' | sort -un)
+    # Project-qualified hostname so two projects can run a sandbox with
+    # the same name without DNS collision. Falls back to sandbox-only
+    # form when CSPACE_PROJECT is unset (older sandboxes pre-rc.5).
+    if [ -n "$PROJECT" ]; then
+        FQDN="${CONTAINER}.${PROJECT}.cspace2.local"
+    else
+        FQDN="${CONTAINER}.cspace2.local"
+    fi
     for port in $LISTENING_PORTS; do
         [ -z "$port" ] && continue
         [ "$port" = "$SUPERVISOR_PORT" ] && continue
-        URL="http://${CONTAINER}.cspace2.local:${port}"
+        URL="http://${FQDN}:${port}"
         label="${PORT_LABELS[$port]:-}"
+        # Loopback-only listeners (127.0.0.1, [::1]) are not reachable
+        # from the host browser via the microVM IP. Color the dot red
+        # and append a hint so the user knows to switch to 0.0.0.0.
+        bind="${PORT_BIND[$port]:-}"
+        loopback_only=0
+        if [ "$bind" = "127.0.0.1" ] || [ "$bind" = "[::1]" ]; then
+            loopback_only=1
+        fi
         printf "%s" "$DIV"
-        if [ -n "$label" ]; then
+        if [ "$loopback_only" = "1" ]; then
+            # Red dot + plain ":port" text + literal warning. No OSC 8
+            # hyperlink because the URL won't actually load.
+            printf "%s● :%s ${GRY}(loopback — set --host=0.0.0.0)${RST}" "$RED" "$port"
+        elif [ -n "$label" ]; then
             printf "%s● " "$(label_color "$label")"
             link "$URL" "$label"
         else

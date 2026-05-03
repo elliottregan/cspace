@@ -230,13 +230,26 @@ func daemonDNSHandler(r *registry.Registry, lastActivity *atomic.Int64) dns.Hand
 				reply.Rcode = dns.RcodeNameError
 				continue
 			}
-			// Strip the suffix to get the sandbox name. For now we only
-			// support a single label before the domain (e.g.
-			// "mercury.cspace2.local"). Multi-label or empty names are
-			// not sandbox lookups.
-			sandbox := strings.TrimSuffix(name, "."+daemonDNSDomain)
-			sandbox = strings.TrimSuffix(sandbox, ".")
-			if sandbox == "" || strings.Contains(sandbox, ".") {
+			// Strip the suffix and split remaining labels. We accept:
+			//   <sandbox>.cspace2.local             — single project shortcut
+			//   <sandbox>.<project>.cspace2.local   — fully qualified
+			// Multi-label names beyond two parts are not sandbox lookups.
+			labels := strings.TrimSuffix(name, "."+daemonDNSDomain)
+			labels = strings.TrimSuffix(labels, ".")
+			if labels == "" {
+				reply.Rcode = dns.RcodeNameError
+				continue
+			}
+			parts := strings.Split(labels, ".")
+			var sandbox, project string
+			switch len(parts) {
+			case 1:
+				sandbox = parts[0]
+			case 2:
+				// Labels are emitted closest-first per DNS, so the
+				// sandbox label is the leftmost (parts[0]).
+				sandbox, project = parts[0], parts[1]
+			default:
 				reply.Rcode = dns.RcodeNameError
 				continue
 			}
@@ -247,14 +260,35 @@ func daemonDNSHandler(r *registry.Registry, lastActivity *atomic.Int64) dns.Hand
 				reply.Rcode = dns.RcodeServerFailure
 				continue
 			}
-			var ip string
+			var matches []registry.Entry
 			for _, e := range entries {
-				if e.Name == sandbox && e.IP != "" {
-					ip = e.IP
-					break
+				if e.Name != sandbox || e.IP == "" {
+					continue
 				}
+				if project != "" && e.Project != project {
+					continue
+				}
+				matches = append(matches, e)
 			}
-			if ip == "" {
+			var ip string
+			switch len(matches) {
+			case 0:
+				reply.Rcode = dns.RcodeNameError
+				continue
+			case 1:
+				ip = matches[0].IP
+			default:
+				// Multiple projects have this sandbox name and the user
+				// didn't specify which. Force them to disambiguate via
+				// <sandbox>.<project>.cspace2.local. Logging the
+				// ambiguity helps diagnose "why doesn't this resolve?"
+				// when two projects collide.
+				projects := make([]string, 0, len(matches))
+				for _, e := range matches {
+					projects = append(projects, e.Project)
+				}
+				log.Printf("dns: ambiguous %s — sandbox %q exists in %v; use <sandbox>.<project>.cspace2.local",
+					name, sandbox, projects)
 				reply.Rcode = dns.RcodeNameError
 				continue
 			}

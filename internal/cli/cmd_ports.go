@@ -61,7 +61,7 @@ func newPortsCmd() *cobra.Command {
 			}
 
 			useFriendly := dnsInstalled()
-			fqdn := fmt.Sprintf("%s.%s", sandbox, dnsDomain)
+			fqdn := fmt.Sprintf("%s.%s.%s", sandbox, project, dnsDomain)
 			for _, port := range open {
 				label := portLabel[port]
 				if label == "" {

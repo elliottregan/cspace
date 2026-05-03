@@ -430,8 +430,11 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// installed (it's helpful, not nagging). Otherwise, suggest
 			// `cspace dns install` once per user via a sentinel.
 			if dnsInstalled() {
+				// Project-qualified hostname so two projects can run a
+				// sandbox with the same name simultaneously.
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-					"browse:  http://%s.%s/  (friendly URL via cspace dns)\n", name, dnsDomain)
+					"browse:  http://%s.%s.%s/  (friendly URL via cspace dns)\n",
+					name, project, dnsDomain)
 			} else {
 				maybeNudgeMissingDnsInstall(cmd.OutOrStdout())
 			}
