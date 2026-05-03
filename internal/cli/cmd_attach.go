@@ -45,7 +45,15 @@ func attachInteractive(containerName string) error {
 	if err != nil {
 		return fmt.Errorf("apple `container` CLI not on PATH: %w", err)
 	}
-	args := []string{"container", "exec", "-it", containerName, "claude"}
+	// --dangerously-skip-permissions matches the v0 default: sandboxes
+	// are isolated, so the per-tool confirmation prompts that protect
+	// host-shell users just get in the way. The supervisor's
+	// non-interactive runner already passes bypassPermissions; this
+	// makes the interactive path consistent.
+	args := []string{
+		"container", "exec", "-it", containerName,
+		"claude", "--dangerously-skip-permissions",
+	}
 	env := os.Environ()
 	return syscall.Exec(bin, args, env)
 }

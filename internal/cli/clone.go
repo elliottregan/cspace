@@ -65,12 +65,39 @@ func provisionClone(projectRoot, projectName, sandboxName, baseBranch string) (s
 		return "", fmt.Errorf("git clone: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 
+	// Rewrite the clone's "origin" to the host project's upstream when one
+	// exists (typically https://github.com/<owner>/<repo>.git). Without
+	// this, origin points at projectRoot's filesystem path — which means
+	// gh can't recognize the repo, `gh pr list` errors out with "none of
+	// the git remotes ... point to a known GitHub host", and the agent
+	// can't open PRs from inside the sandbox. Keep the local path under
+	// a sibling remote called "host" so users can still `git push host`
+	// or `git fetch host` for round-trips that don't go through GitHub.
+	if upstream, err := readOrigin(projectRoot); err == nil && upstream != "" {
+		_ = runGit(clonePath, "remote", "rename", "origin", "host")
+		_ = runGit(clonePath, "remote", "add", "origin", upstream)
+	}
+
 	// Create the cspace/<sandbox> branch (off whatever the clone now points at).
 	if err := runGit(clonePath, "checkout", "-b", branch); err != nil {
 		return "", fmt.Errorf("create branch %s: %w", branch, err)
 	}
 
 	return clonePath, nil
+}
+
+// readOrigin returns the URL of `origin` in the given git repo, or "" if
+// origin is missing or not configured. Errors only on transport failures
+// running the command itself; callers that just want "best-effort
+// upstream URL" can ignore the error.
+func readOrigin(dir string) (string, error) {
+	cmd := exec.Command("git", "remote", "get-url", "origin")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // runGit executes `git <args...>` with cwd set to the given directory and

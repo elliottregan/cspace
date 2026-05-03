@@ -164,6 +164,33 @@ if [ -n "$PR_LINK" ]; then
     printf "%s" "$DIV"
     printf "${PR_IC}${NF_PR}${RST} "; link "$PR_LINK" "#${PR_NUM}"
 fi
+
+# --- Service URLs ---
+# Read .cspace.json container.ports = { "<port>": "<label>", ... }, probe
+# each port for a listening socket inside the sandbox, and emit a clickable
+# URL via the sandbox's daemon-DNS hostname. Skipped if jq or .cspace.json
+# is missing, or no labeled port is listening.
+label_color() {
+    case "$1" in
+        dev)        printf '%s' "$GRN" ;;
+        preview)    printf '%s' "$YLW" ;;
+        brainstorm) printf '%s' "$MAG" ;;
+        *)          printf '%s' "$CYN" ;;
+    esac
+}
+CSPACE_JSON="/workspace/.cspace.json"
+if [ -n "$CONTAINER" ] && [ -f "$CSPACE_JSON" ] && command -v jq >/dev/null 2>&1; then
+    while IFS=$'\t' read -r internal_port label; do
+        [ -z "$internal_port" ] && continue
+        # Only show URLs for ports actually listening right now.
+        ss -tlnp 2>/dev/null | grep -q ":${internal_port} " || continue
+        URL="http://${CONTAINER}.cspace2.local:${internal_port}"
+        printf "%s" "$DIV"
+        printf "%s● " "$(label_color "$label")"
+        link "$URL" "$label"
+        printf "%s" "$RST"
+    done < <(jq -r '.container.ports // {} | to_entries[] | "\(.key)\t\(.value)"' "$CSPACE_JSON" 2>/dev/null)
+fi
 echo
 
 # --- Format token counts as K ---
