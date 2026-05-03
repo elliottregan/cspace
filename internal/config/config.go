@@ -36,6 +36,7 @@ type Config struct {
 	Advisors   map[string]AdvisorConfig `json:"advisors,omitempty"`
 	Services   string                   `json:"services"`
 	PostSetup  string                   `json:"post_setup"`
+	Resources  ResourcesConfig          `json:"resources,omitempty"`
 
 	// ServiceURLs declares Traefik-routed project services whose URLs cspace
 	// should inject into the main container as env vars. Key is the subdomain
@@ -70,6 +71,15 @@ type ContainerConfig struct {
 	Ports       map[string]string `json:"ports"`
 	Environment map[string]string `json:"environment"`
 	Packages    []string          `json:"packages"`
+}
+
+// ResourcesConfig caps the substrate runtime allocation per sandbox.
+// Zero values mean "use the substrate adapter's default" (Apple
+// Container: 4 CPU / 4096 MiB) — projects only set the fields they
+// want to deviate on.
+type ResourcesConfig struct {
+	CPUs      int `json:"cpus,omitempty"`
+	MemoryMiB int `json:"memoryMiB,omitempty"`
 }
 
 // FirewallConfig controls the container network firewall.

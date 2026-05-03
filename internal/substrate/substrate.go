@@ -15,6 +15,12 @@ type RunSpec struct {
 	Mounts      []Mount           // host-to-container bind mounts
 	PublishPort []PortMap         // ports to publish on the host
 	DNS         []string          // resolvers to inject; empty = adapter default
+	// Resource caps. Zero means "let the adapter pick a default" — the
+	// adapter is free to apply its own sensible default rather than hand
+	// off to the underlying CLI's default, which on Apple Container is a
+	// too-tight 1024 MiB / 4 CPU.
+	CPUs      int // number of CPUs to allocate; 0 = adapter default
+	MemoryMiB int // memory cap in MiB;            0 = adapter default
 }
 
 // Mount is a host-to-container bind mount.

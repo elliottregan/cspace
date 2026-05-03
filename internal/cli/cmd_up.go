@@ -30,6 +30,8 @@ func newUpCmd() *cobra.Command {
 	var extraEnv []string
 	var baseBranch string
 	var withBrowser bool
+	var cpus int
+	var memoryMiB int
 	cmd := &cobra.Command{
 		Use:   "up <name>",
 		Short: "Launch a sandbox (Apple Container substrate)",
@@ -136,10 +138,27 @@ func newUpCmd() *cobra.Command {
 
 			containerName := fmt.Sprintf("cspace-%s-%s", project, name)
 
+			// Resource caps. Resolution: --cpus / --memory flag wins,
+			// then .cspace.json `resources`, then the substrate adapter's
+			// default (Apple Container: 4 CPU / 4096 MiB). Zero in the
+			// RunSpec means "fall through to adapter default".
+			effCPUs := cpus
+			effMemMiB := memoryMiB
+			if cfg != nil {
+				if effCPUs == 0 {
+					effCPUs = cfg.Resources.CPUs
+				}
+				if effMemMiB == 0 {
+					effMemMiB = cfg.Resources.MemoryMiB
+				}
+			}
+
 			spec := substrate.RunSpec{
-				Name:  containerName,
-				Image: "cspace:latest",
-				Env:   env,
+				Name:      containerName,
+				Image:     "cspace:latest",
+				Env:       env,
+				CPUs:      effCPUs,
+				MemoryMiB: effMemMiB,
 			}
 			// Auto-provision a per-sandbox git clone unless the user supplied
 			// --workspace explicitly (which acts as an override). The clone
@@ -332,6 +351,10 @@ func newUpCmd() *cobra.Command {
 		"base branch for the auto-provisioned cspace/<sandbox> branch (defaults to host project's current HEAD)")
 	cmd.Flags().BoolVar(&withBrowser, "browser", false,
 		"start a Playwright browser sidecar; agent's playwright-mcp connects via CDP")
+	cmd.Flags().IntVar(&cpus, "cpus", 0,
+		"CPU cap for this sandbox (overrides .cspace.json resources.cpus and the default of 4)")
+	cmd.Flags().IntVar(&memoryMiB, "memory", 0,
+		"memory cap in MiB for this sandbox (overrides .cspace.json resources.memoryMiB and the default of 4096)")
 	return cmd
 }
 

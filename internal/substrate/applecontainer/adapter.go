@@ -118,11 +118,33 @@ func (a *Adapter) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
+// Default resource caps for cspace sandboxes when the caller hasn't
+// asked for anything specific. Apple Container's own defaults
+// (4 CPU / 1024 MiB) are too tight for typical JS work — `bun
+// install` + `tsc` on a moderately-sized project peaks above 1 GiB
+// transiently, and a hard cap means OOM in the guest with no host
+// safety net. Bump memory to 4 GiB; CPU stays at 4 since builds are
+// usually I/O-bound past that.
+const (
+	defaultCPUs      = 4
+	defaultMemoryMiB = 4096
+)
+
 // Run starts a sandbox in detached mode. Returns when the CLI exits, which
 // happens after the container is started but is not guaranteed to coincide
 // with the container being ready to accept exec.
 func (a *Adapter) Run(ctx context.Context, spec substrate.RunSpec) error {
 	args := []string{"run", "-d", "--name", spec.Name}
+	cpus := spec.CPUs
+	if cpus == 0 {
+		cpus = defaultCPUs
+	}
+	memMiB := spec.MemoryMiB
+	if memMiB == 0 {
+		memMiB = defaultMemoryMiB
+	}
+	args = append(args, "--cpus", fmt.Sprintf("%d", cpus))
+	args = append(args, "--memory", fmt.Sprintf("%dMiB", memMiB))
 	for k, v := range spec.Env {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
 	}
