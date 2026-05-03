@@ -38,8 +38,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 #  - jq: ubiquitous in shell/MCP tooling
 #  - procps: ps/pgrep/pkill/top for in-sandbox diagnostics (resume-loop,
 #    supervisor health checks, etc.). Adds ~5 MB.
+#  - iproute2: ss for the cspace statusline's port-detection — without
+#    this, the dev/preview/etc. URL row never appears.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl unzip git tini sudo procps \
+    ca-certificates curl unzip git tini sudo procps iproute2 \
     make python3 build-essential ripgrep jq \
  && rm -rf /var/lib/apt/lists/*
 

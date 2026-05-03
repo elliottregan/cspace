@@ -166,10 +166,16 @@ if [ -n "$PR_LINK" ]; then
 fi
 
 # --- Service URLs ---
-# Read .cspace.json container.ports = { "<port>": "<label>", ... }, probe
-# each port for a listening socket inside the sandbox, and emit a clickable
-# URL via the sandbox's daemon-DNS hostname. Skipped if jq or .cspace.json
-# is missing, or no labeled port is listening.
+# Enumerate every TCP port the sandbox is listening on (the supervisor
+# port itself is excluded — that's cspace internals, not user-visible).
+# For each, emit a clickable URL via the sandbox's daemon-DNS hostname.
+# When .cspace.json container.ports has a label for the port, the link
+# text + color reflect it (dev=green, preview=yellow, brainstorm=
+# magenta); unlabeled ports show as ":<port>" in cyan.
+#
+# This is auto-discovery rather than label-driven: no .cspace.json
+# config required to see vite/etc. URLs. Labels are pure cosmetics now
+# that v1 dropped Traefik subdomain routing.
 label_color() {
     case "$1" in
         dev)        printf '%s' "$GRN" ;;
@@ -178,18 +184,38 @@ label_color() {
         *)          printf '%s' "$CYN" ;;
     esac
 }
-CSPACE_JSON="/workspace/.cspace.json"
-if [ -n "$CONTAINER" ] && [ -f "$CSPACE_JSON" ] && command -v jq >/dev/null 2>&1; then
-    while IFS=$'\t' read -r internal_port label; do
-        [ -z "$internal_port" ] && continue
-        # Only show URLs for ports actually listening right now.
-        ss -tlnp 2>/dev/null | grep -q ":${internal_port} " || continue
-        URL="http://${CONTAINER}.cspace2.local:${internal_port}"
+SUPERVISOR_PORT=6201
+if [ -n "$CONTAINER" ] && command -v ss >/dev/null 2>&1; then
+    # Build a port→label map from .cspace.json once (if jq + json present).
+    # Bash 4+ associative array — image is debian-bookworm so we have it.
+    declare -A PORT_LABELS=()
+    CSPACE_JSON="/workspace/.cspace.json"
+    if [ -f "$CSPACE_JSON" ] && command -v jq >/dev/null 2>&1; then
+        while IFS=$'\t' read -r p lbl; do
+            [ -n "$p" ] && PORT_LABELS["$p"]="$lbl"
+        done < <(jq -r '.container.ports // {} | to_entries[] | "\(.key)\t\(.value)"' "$CSPACE_JSON" 2>/dev/null)
+    fi
+    # Enumerate listening TCP ports. ss prints lines like:
+    #   LISTEN 0 511 *:5173 *:*
+    # Strip everything except the local port. dedup + sort numerically.
+    LISTENING_PORTS=$(ss -tln 2>/dev/null \
+        | awk 'NR>1 {n=split($4,a,":"); print a[n]}' \
+        | sort -un)
+    for port in $LISTENING_PORTS; do
+        [ -z "$port" ] && continue
+        [ "$port" = "$SUPERVISOR_PORT" ] && continue
+        URL="http://${CONTAINER}.cspace2.local:${port}"
+        label="${PORT_LABELS[$port]:-}"
         printf "%s" "$DIV"
-        printf "%s● " "$(label_color "$label")"
-        link "$URL" "$label"
+        if [ -n "$label" ]; then
+            printf "%s● " "$(label_color "$label")"
+            link "$URL" "$label"
+        else
+            printf "%s● " "$CYN"
+            link "$URL" ":${port}"
+        fi
         printf "%s" "$RST"
-    done < <(jq -r '.container.ports // {} | to_entries[] | "\(.key)\t\(.value)"' "$CSPACE_JSON" 2>/dev/null)
+    done
 fi
 echo
 
