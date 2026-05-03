@@ -196,11 +196,29 @@ func (a *Adapter) Exec(ctx context.Context, name string, cmdLine []string, opts 
 	}, err
 }
 
-// Stop terminates and removes the named sandbox. Idempotent: stopping or
-// removing a container that does not exist is a no-op.
+// Stop terminates and removes the named sandbox. Idempotent: removing a
+// container that does not exist is a no-op.
+//
+// Implementation note: an earlier version ran `container stop` then
+// `container rm` in sequence and ignored both errors, but the two
+// commands raced — rm sometimes hit a still-running container, failed
+// silently, and left it around to break the next cspace up with
+// "already exists" (cs-finding:2026-05-03-cspace-down-race-stop-rm-
+// sequence-leaves-container-behind-bl). `container rm --force` issues
+// a stop-and-remove atomically, which is what we actually want.
 func (a *Adapter) Stop(ctx context.Context, name string) error {
-	_ = exec.CommandContext(ctx, "container", "stop", name).Run()
-	_ = exec.CommandContext(ctx, "container", "rm", name).Run()
+	cmd := exec.CommandContext(ctx, "container", "rm", "--force", name)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		// "Container not found" is the expected idempotent path —
+		// don't propagate that as an error to the caller.
+		if strings.Contains(stderr.String(), "notFound") {
+			return nil
+		}
+		return fmt.Errorf("container rm --force %s: %w (stderr: %s)",
+			name, err, strings.TrimSpace(stderr.String()))
+	}
 	return nil
 }
 
