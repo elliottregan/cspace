@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -142,6 +143,18 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				"CSPACE_CLAUDE_PATH":   "/usr/local/bin/claude",
 				"CSPACE_REGISTRY_URL":  "http://192.168.64.1:6280",
 				"CSPACE_HOST_GATEWAY":  "192.168.64.1",
+			}
+
+			// Merged plugins config (defaults.json overlaid with project's
+			// .cspace.json) goes into the sandbox as JSON so the in-
+			// container install script can iterate it without re-loading
+			// cspace's config layer. Schema:
+			//   { "enabled": bool, "install": ["plugin", "plugin@market", ...] }
+			// Bare plugin names default to @claude-plugins-official.
+			if cfg != nil {
+				if pluginsJSON, perr := json.Marshal(cfg.Plugins); perr == nil {
+					env["CSPACE_PLUGINS_CONFIG"] = string(pluginsJSON)
+				}
 			}
 
 			// Load cspace-owned secrets from ~/.cspace/secrets.env and
