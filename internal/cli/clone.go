@@ -47,6 +47,11 @@ func provisionClone(projectRoot, projectName, sandboxName, baseBranch string) (s
 				return "", fmt.Errorf("checkout %s in %s: %w / %w", branch, clonePath, err, err2)
 			}
 		}
+		// Migrate existing clones whose origin still points at the host
+		// project's filesystem path — without this, gh inside the
+		// sandbox can't recognize the repo. New clones get this wiring
+		// at creation; this branch handles clones from before that fix.
+		fixupOrigin(clonePath, projectRoot)
 		return clonePath, nil
 	}
 
@@ -65,18 +70,7 @@ func provisionClone(projectRoot, projectName, sandboxName, baseBranch string) (s
 		return "", fmt.Errorf("git clone: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 
-	// Rewrite the clone's "origin" to the host project's upstream when one
-	// exists (typically https://github.com/<owner>/<repo>.git). Without
-	// this, origin points at projectRoot's filesystem path — which means
-	// gh can't recognize the repo, `gh pr list` errors out with "none of
-	// the git remotes ... point to a known GitHub host", and the agent
-	// can't open PRs from inside the sandbox. Keep the local path under
-	// a sibling remote called "host" so users can still `git push host`
-	// or `git fetch host` for round-trips that don't go through GitHub.
-	if upstream, err := readOrigin(projectRoot); err == nil && upstream != "" {
-		_ = runGit(clonePath, "remote", "rename", "origin", "host")
-		_ = runGit(clonePath, "remote", "add", "origin", upstream)
-	}
+	fixupOrigin(clonePath, projectRoot)
 
 	// Create the cspace/<sandbox> branch (off whatever the clone now points at).
 	if err := runGit(clonePath, "checkout", "-b", branch); err != nil {
@@ -98,6 +92,46 @@ func readOrigin(dir string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// fixupOrigin ensures the per-sandbox clone's "origin" points at the
+// host project's upstream remote (typically a github.com URL) rather
+// than the host project's filesystem path. Without this, gh inside the
+// sandbox can't tell what GitHub repo this is and `gh pr list` errors
+// out with "none of the git remotes point to a known GitHub host".
+//
+// Idempotent and best-effort: if the host has no origin, or the clone's
+// origin is already the host's upstream, or any individual git command
+// fails, we leave the clone alone. Callers should not depend on this
+// succeeding — gh failure inside the sandbox is the real signal and
+// the user can fix manually.
+//
+// The pre-fix filesystem-path origin is preserved as a sibling remote
+// called "host" so round-trip workflows (`git push host`, `git fetch
+// host`) still work.
+func fixupOrigin(clonePath, projectRoot string) {
+	hostUpstream, err := readOrigin(projectRoot)
+	if err != nil || hostUpstream == "" {
+		return
+	}
+	cloneOrigin, err := readOrigin(clonePath)
+	if err != nil {
+		return
+	}
+	if cloneOrigin == hostUpstream {
+		// Already migrated; nothing to do.
+		return
+	}
+	if cloneOrigin != projectRoot {
+		// Origin was set to something else (user customization?).
+		// Leave it alone rather than surprise them.
+		return
+	}
+	// Origin still points at the host project's filesystem path —
+	// migrate it. Rename the existing origin to "host" first so the
+	// filesystem path stays reachable as a sibling remote.
+	_ = runGit(clonePath, "remote", "rename", "origin", "host")
+	_ = runGit(clonePath, "remote", "add", "origin", hostUpstream)
 }
 
 // runGit executes `git <args...>` with cwd set to the given directory and
