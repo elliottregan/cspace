@@ -42,11 +42,18 @@ release:
   github:
     owner: elliottregan
     name: cspace
+  # Mark the GitHub release as prerelease whenever the tag has a SemVer
+  # prerelease suffix (e.g. v1.0.0-rc.1). Without this the release is
+  # published as "latest" and shows up at the top of the Releases page —
+  # we don't want rc tags front-and-center.
+  prerelease: auto
 
 changelog:
   sort: asc
 
 brews:
+  # Stable formula. skip_upload: auto = publish stables, skip prereleases.
+  # Users on `brew install elliottregan/cspace/cspace` track stable only.
   - ids: [default]
     name: cspace
     skip_upload: auto
@@ -66,3 +73,27 @@ brews:
     dependencies:
       - name: docker
         type: optional
+
+  # Prerelease formula — published ONLY when the tag is a SemVer prerelease.
+  # Inverts skip_upload: auto so testers can `brew install
+  # elliottregan/cspace/cspace-rc` to track the latest rc without disturbing
+  # stable users on the `cspace` formula. conflicts_with prevents both
+  # being installed simultaneously (their bin/cspace would collide).
+  - ids: [default]
+    name: cspace-rc
+    skip_upload: '{{ if not .Prerelease }}true{{ else }}false{{ end }}'
+    repository:
+      owner: elliottregan
+      name: homebrew-cspace
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/elliottregan/cspace"
+    description: "cspace prerelease channel — for rc / beta testers"
+    license: "LicenseRef-PolyForm-Perimeter-1.0.0"
+    install: |
+      bin.install "cspace"
+    test: |
+      system "#{bin}/cspace", "version"
+    # Both formulas install bin/cspace; let Homebrew refuse the install
+    # rather than silently overwriting one with the other.
+    custom_block: |
+      conflicts_with "cspace", because: "both install `cspace`"
