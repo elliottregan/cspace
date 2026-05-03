@@ -35,6 +35,7 @@ func newUpCmd() *cobra.Command {
 	var cpus int
 	var memoryMiB int
 	var noOverlay bool
+	var noAttach bool
 	cmd := &cobra.Command{
 		Use:   "up [<name>]",
 		Short: "Launch a sandbox (Apple Container substrate)",
@@ -402,6 +403,27 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			} else {
 				maybeNudgeMissingDnsInstall(cmd.OutOrStdout())
 			}
+
+			// Auto-attach: drop the user into an interactive claude
+			// session inside the sandbox. The defer above will fire
+			// during return and tear down the overlay + flush buffered
+			// output to realOut BEFORE attachInteractive replaces the
+			// process with `container exec -it ... claude`. Skipped
+			// when --no-attach, when stdout isn't a TTY (CI / piped),
+			// or after any error path.
+			if !noAttach && isStdoutTTY() {
+				// Tear down overlay + flush captured output now so the
+				// success line lands on the real terminal before we
+				// hand control to the in-sandbox claude.
+				if teaDone != nil {
+					rep.Done()
+					<-teaDone
+					cmd.SetOut(realOut)
+					_, _ = io.Copy(realOut, &pendingOut)
+					teaDone = nil // mark cleanup as done so the defer no-ops
+				}
+				return attachInteractive(containerName)
+			}
 			return nil
 		},
 	}
@@ -419,6 +441,8 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 		"memory cap in MiB for this sandbox (overrides .cspace.json resources.memoryMiB and the default of 4096)")
 	cmd.Flags().BoolVar(&noOverlay, "no-overlay", false,
 		"skip the planet boot animation; phases print as plain '[N/5] phase' lines (auto-disabled when stdout is not a TTY)")
+	cmd.Flags().BoolVar(&noAttach, "no-attach", false,
+		"don't drop into an interactive `claude` session after the sandbox is ready (auto-disabled when stdout is not a TTY)")
 	return cmd
 }
 

@@ -77,6 +77,7 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 		// Instance Management
 		newUpCmd(),
 		newDownCmd(),
+		newAttachCmd(),
 		newPortsCmd(),
 
 		// Supervisor

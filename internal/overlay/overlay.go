@@ -110,7 +110,10 @@ func Start(name string) (Reporter, <-chan struct{}) {
 	reporter := &chanReporter{ch: events}
 
 	model := initialModel(name, events)
-	prog := tea.NewProgram(model)
+	// AltScreen takes over the whole terminal for the boot animation
+	// and restores the prior buffer on quit, so the planet renders as
+	// a centered, full-window dialog rather than scrolling inline.
+	prog := tea.NewProgram(model, tea.WithAltScreen())
 
 	done := make(chan struct{})
 	go func() {
@@ -142,6 +145,8 @@ type model struct {
 	done    bool
 	events  <-chan Event
 	spinner spinner.Model
+	width   int
+	height  int
 }
 
 func initialModel(name string, events <-chan Event) model {
@@ -184,6 +189,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		return m, nil
 	case tea.KeyMsg:
 		// Ctrl-C aborts; everything else is ignored — the overlay is
 		// not interactive, just a status display.
@@ -227,5 +235,10 @@ func (m model) View() string {
 	dim := lipgloss.NewStyle().Faint(true)
 	b.WriteString(m.spinner.View() + dim.Render(" "+m.name+"  "+label))
 	b.WriteString("\n")
-	return b.String()
+	content := b.String()
+	if m.width > 0 && m.height > 0 {
+		return lipgloss.Place(m.width, m.height,
+			lipgloss.Center, lipgloss.Center, content)
+	}
+	return content
 }
