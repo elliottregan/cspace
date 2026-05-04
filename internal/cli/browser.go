@@ -48,16 +48,43 @@ func startBrowserSidecar(ctx context.Context, project, sandbox string) (containe
 	args := []string{
 		"run", "-d",
 		"--name", containerName,
+		// Public resolvers needed for the apt-get install step. Once
+		// dnsmasq is up we repoint resolv.conf at it; until then,
+		// these are how the sidecar fetches packages.
 		"--dns", "1.1.1.1",
 		"--dns", "8.8.8.8",
 		browserImage,
 		"bash", "-c",
 		"set -e; " +
-			"apt-get update -qq && apt-get install -y -qq socat >/dev/null 2>&1; " +
+			// 1) apt-get socat (CDP forwarder) AND dnsmasq (so the
+			//    headless browser resolves *.cspace2.local the same
+			//    way the cspace sandbox does — chrome can navigate
+			//    to friendly URLs from playwright-mcp).
+			"apt-get update -qq && apt-get install -y -qq socat dnsmasq >/dev/null 2>&1; " +
+			// 2) Configure dnsmasq forwarder. Forward .cspace2.local
+			//    to the cspace daemon on the gateway, fall through to
+			//    public resolvers for everything else.
+			"cat > /etc/dnsmasq.d/cspace.conf <<'CFG'\n" +
+			"listen-address=127.0.0.1\n" +
+			"port=53\n" +
+			"no-resolv\n" +
+			"no-hosts\n" +
+			"bind-interfaces\n" +
+			"server=/cspace2.local/192.168.64.1#5354\n" +
+			"server=1.1.1.1\n" +
+			"server=8.8.8.8\n" +
+			"CFG\n" +
+			"dnsmasq --conf-file=/etc/dnsmasq.d/cspace.conf; " +
+			// 3) Repoint glibc resolver at dnsmasq.
+			"echo 'nameserver 127.0.0.1' > /etc/resolv.conf; " +
+			// 4) Start chrome on loopback (chrome ignores
+			//    --remote-debugging-address=0.0.0.0 in modern builds).
 			"/ms-playwright/chromium-*/chrome-linux/chrome " +
 			"--headless=new --no-sandbox --disable-gpu " +
 			"--remote-debugging-port=9223 about:blank & " +
+			// 5) Wait for chrome's CDP to be ready.
 			"until curl -sf http://127.0.0.1:9223/json/version >/dev/null 2>&1; do sleep 0.5; done; " +
+			// 6) Expose CDP on 9222 via socat (loopback → external).
 			"exec socat TCP-LISTEN:9222,fork,reuseaddr TCP:127.0.0.1:9223",
 	}
 	cmd := exec.CommandContext(ctx, "container", args...)
@@ -74,9 +101,12 @@ func startBrowserSidecar(ctx context.Context, project, sandbox string) (containe
 
 	cdpURL = fmt.Sprintf("http://%s:9222", ip)
 
-	// Wait for CDP endpoint to actually respond. The apt-get-install-socat
-	// step takes ~10–15s on a cold image, so 30s is the practical timeout.
-	if err := waitForCDP(ctx, cdpURL, 30*time.Second); err != nil {
+	// Wait for CDP endpoint to actually respond. apt-get update +
+	// install socat against fresh apt indices can run 30–60s in the
+	// playwright image; chrome itself starts in a couple of seconds.
+	// 90s gives generous headroom without making the failure case
+	// (no network / wrong image) wait too long.
+	if err := waitForCDP(ctx, cdpURL, 90*time.Second); err != nil {
 		stopBrowserSidecar(context.Background(), containerName)
 		return "", "", fmt.Errorf("browser sidecar CDP: %w", err)
 	}

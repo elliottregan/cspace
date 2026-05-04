@@ -64,7 +64,12 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			if parent == nil {
 				parent = context.Background()
 			}
-			ctx, cancel := context.WithTimeout(parent, 90*time.Second)
+			// 4 minutes covers the heaviest cold path: --browser sidecar
+			// (apt-get install socat in the playwright image, ~30–60s)
+			// + clone provision + plugin install (~30s for ~12 plugins)
+			// + supervisor /health. Faster paths complete well under
+			// this; this is just the worst-case ceiling.
+			ctx, cancel := context.WithTimeout(parent, 4*time.Minute)
 			defer cancel()
 
 			a := applecontainer.New()
