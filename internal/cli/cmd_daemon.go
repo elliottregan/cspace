@@ -30,8 +30,14 @@ const (
 	// `port 5354` to match. (See dnsDomain in cmd_dns.go for why the domain
 	// keeps the "2" suffix even after the cspace2-* → cspace * cutover.)
 	daemonDNSListenAddr = "127.0.0.1:5354"
-	daemonDNSDomain     = "cspace2.local." // trailing dot is canonical
-	daemonDNSTTL        = 5                // seconds; sandbox IPs change across restarts
+	// daemonDNSGatewayAddr exposes the same DNS handler on the Apple
+	// Container vmnet gateway IP so containers can resolve sibling
+	// hostnames the same way the host does. Bind is best-effort —
+	// failure (e.g. running outside Apple Container) logs a warning
+	// and the host-only loopback path keeps working.
+	daemonDNSGatewayAddr = "192.168.64.1:5354"
+	daemonDNSDomain      = "cspace2.local." // trailing dot is canonical
+	daemonDNSTTL         = 5                // seconds; sandbox IPs change across restarts
 
 	// daemonIdleDefault is the idle-shutdown threshold when
 	// CSPACE_REGISTRY_DAEMON_IDLE is unset.
@@ -181,6 +187,9 @@ func runDaemonServe() error {
 	if i := strings.LastIndex(daemonDNSListenAddr, ":"); i >= 0 {
 		dnsPort = daemonDNSListenAddr[i+1:]
 	}
+	// Loopback bind is fatal — it's how the host's /etc/resolver/
+	// cspace2.local routes name lookups. Without it, friendly URLs
+	// don't work from the host browser at all.
 	go func() {
 		server := &dns.Server{Addr: daemonDNSListenAddr, Net: "udp", Handler: dh}
 		log.Printf("cspace daemon: DNS listening on %s/udp", daemonDNSListenAddr)
@@ -201,6 +210,24 @@ func runDaemonServe() error {
 			log.Printf("       common culprits: another cspace daemon process holding the port")
 			log.Printf("       cspace daemon cannot serve DNS without TCP; exiting")
 			os.Exit(1)
+		}
+	}()
+	// Gateway bind — best-effort. Containers query 192.168.64.1:5354
+	// for cspace2.local lookups (via dnsmasq forwarder inside the
+	// sandbox). Failure here just means in-container hostname
+	// resolution stops working; the host path is unaffected.
+	go func() {
+		server := &dns.Server{Addr: daemonDNSGatewayAddr, Net: "udp", Handler: dh}
+		log.Printf("cspace daemon: DNS listening on %s/udp (containers)", daemonDNSGatewayAddr)
+		if err := server.ListenAndServe(); err != nil {
+			log.Printf("WARN: cspace daemon DNS UDP bind on %s failed: %v", daemonDNSGatewayAddr, err)
+			log.Printf("      in-container *.cspace2.local lookups will NXDOMAIN until this is resolved.")
+		}
+	}()
+	go func() {
+		server := &dns.Server{Addr: daemonDNSGatewayAddr, Net: "tcp", Handler: dh}
+		if err := server.ListenAndServe(); err != nil {
+			log.Printf("WARN: cspace daemon DNS TCP bind on %s failed: %v", daemonDNSGatewayAddr, err)
 		}
 	}()
 
