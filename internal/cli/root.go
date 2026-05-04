@@ -87,6 +87,7 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 		newKeychainCmd(),
 
 		// Other
+		newImageCmd(),
 		newDoctorCmd(),
 		newSelfUpdateCmd(),
 		newVersionCmd(),
