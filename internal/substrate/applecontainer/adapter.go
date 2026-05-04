@@ -166,16 +166,16 @@ func (a *Adapter) Run(ctx context.Context, spec substrate.RunSpec) error {
 		args = append(args, "--publish",
 			fmt.Sprintf("%d:%d", p.HostPort, p.ContainerPort))
 	}
-	// DNS injection: Apple Container's default vmnet gateway (192.168.64.1)
-	// doesn't answer port 53, so containers can't resolve hostnames out of
-	// the box. We inject explicit resolvers via --dns. Default to public
-	// resolvers when the caller hasn't specified any. See finding
-	// 2026-05-01-apple-container-default-dns-is-broken-...
-	dns := spec.DNS
-	if len(dns) == 0 {
-		dns = []string{"1.1.1.1", "8.8.8.8"}
-	}
-	for _, ns := range dns {
+	// DNS: only honor an explicit spec.DNS list. The cspace sandbox
+	// image runs dnsmasq at 127.0.0.1:53 (configured by the
+	// entrypoint) which forwards *.cspace2.local to the daemon on
+	// the gateway and everything else to public resolvers — so the
+	// container picks up name resolution on its own without the
+	// substrate adapter needing to inject anything. Apple Container
+	// only writes the --dns values into /etc/resolv.conf at boot;
+	// dnsmasq overwrites that file moments later with `nameserver
+	// 127.0.0.1`, so any --dns we pass here gets discarded anyway.
+	for _, ns := range spec.DNS {
 		args = append(args, "--dns", ns)
 	}
 	args = append(args, spec.Image)
