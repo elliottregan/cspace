@@ -102,6 +102,42 @@ fi
 # Container microVMs ship with iptables and CAP_NET_ADMIN; if a
 # future runtime stripped them, sandboxes would just lose this
 # convenience and need --host=0.0.0.0 in the dev server.
+# Start dnsmasq forwarder so hostname resolution inside the sandbox
+# matches the host. *.cspace2.local queries → cspace daemon on the
+# gateway (192.168.64.1:5354). Everything else → public resolvers.
+# /etc/resolv.conf points at 127.0.0.1 so glibc's nss-dns sees a
+# standard :53 nameserver and the port-mapping detail stays internal.
+#
+# Best-effort: if dnsmasq fails to start, leave /etc/resolv.conf as
+# the substrate adapter set it (--dns 1.1.1.1 etc.). External name
+# resolution still works; only in-sandbox *.cspace2.local lookups
+# break, which surfaces as NXDOMAIN — caller can investigate via
+# /var/log/dnsmasq.log if it exists.
+DNSMASQ=/usr/sbin/dnsmasq
+if [ -x "$DNSMASQ" ]; then
+    sudo install -m 0644 /dev/stdin /etc/dnsmasq.d/cspace.conf <<'EOF'
+listen-address=127.0.0.1
+port=53
+no-resolv
+no-hosts
+bind-interfaces
+server=/cspace2.local/192.168.64.1#5354
+server=1.1.1.1
+server=8.8.8.8
+EOF
+    # --keep-in-foreground=no to background it; remove default config
+    # path inheritance via --conf-file= so we use ours exclusively.
+    sudo "$DNSMASQ" --conf-file=/etc/dnsmasq.d/cspace.conf 2>/dev/null || true
+    # Repoint glibc's resolver. Apple Container's network init wrote
+    # the original resolv.conf earlier (with the --dns flags from
+    # substrate Run); we replace it with a single localhost entry.
+    sudo install -m 0644 /dev/stdin /etc/resolv.conf <<'EOF'
+nameserver 127.0.0.1
+options edns0 trust-ad
+search .
+EOF
+fi
+
 IPTABLES=/usr/sbin/iptables
 SYSCTL=/usr/sbin/sysctl
 if [ -x "$IPTABLES" ] && [ -x "$SYSCTL" ]; then
