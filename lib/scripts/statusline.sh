@@ -208,9 +208,9 @@ if [ -n "$CONTAINER" ] && command -v ss >/dev/null 2>&1; then
     # the same name without DNS collision. Falls back to sandbox-only
     # form when CSPACE_PROJECT is unset (older sandboxes pre-rc.5).
     if [ -n "$PROJECT" ]; then
-        FQDN="${CONTAINER}.${PROJECT}.cspace.local"
+        FQDN="${CONTAINER}.${PROJECT}.cspace2.local"
     else
-        FQDN="${CONTAINER}.cspace.local"
+        FQDN="${CONTAINER}.cspace2.local"
     fi
     for port in $LISTENING_PORTS; do
         [ -z "$port" ] && continue
