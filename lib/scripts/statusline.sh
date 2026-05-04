@@ -195,25 +195,15 @@ if [ -n "$CONTAINER" ] && command -v ss >/dev/null 2>&1; then
             [ -n "$p" ] && PORT_LABELS["$p"]="$lbl"
         done < <(jq -r '.container.ports // {} | to_entries[] | "\(.key)\t\(.value)"' "$CSPACE_JSON" 2>/dev/null)
     fi
-    # Enumerate listening TCP ports + their bind addresses. ss prints
-    # lines like:
+    # Enumerate listening TCP ports. ss prints lines like:
     #   LISTEN 0 511 *:5173 *:*
     #   LISTEN 0 511 127.0.0.1:5174 0.0.0.0:*
-    # We need the bind to detect loopback-only listeners — those aren't
-    # reachable from outside the microVM and need --host=0.0.0.0 in the
-    # dev server config.
-    LISTENING=$(ss -tln 2>/dev/null \
-        | awk 'NR>1 {print $4}' \
-        | sort -u)
-    declare -A PORT_BIND=()
-    LISTENING_PORTS=""
-    for sock in $LISTENING; do
-        bind="${sock%:*}"
-        port="${sock##*:}"
-        PORT_BIND["$port"]="$bind"
-        LISTENING_PORTS="$LISTENING_PORTS $port"
-    done
-    LISTENING_PORTS=$(echo "$LISTENING_PORTS" | tr ' ' '\n' | sort -un)
+    # We don't care about the bind address — the entrypoint's iptables
+    # PREROUTING DNAT rewrites incoming traffic to 127.0.0.1 so loopback
+    # listeners (vite's default) are reachable from outside the microVM.
+    LISTENING_PORTS=$(ss -tln 2>/dev/null \
+        | awk 'NR>1 {n=split($4,a,":"); print a[n]}' \
+        | sort -un)
     # Project-qualified hostname so two projects can run a sandbox with
     # the same name without DNS collision. Falls back to sandbox-only
     # form when CSPACE_PROJECT is unset (older sandboxes pre-rc.5).
@@ -227,37 +217,13 @@ if [ -n "$CONTAINER" ] && command -v ss >/dev/null 2>&1; then
         [ "$port" = "$SUPERVISOR_PORT" ] && continue
         URL="http://${FQDN}:${port}"
         label="${PORT_LABELS[$port]:-}"
-        # Loopback-only listeners (127.0.0.1, [::1]) are not reachable
-        # from the host browser via the microVM IP. Color the dot red
-        # and append a hint so the user knows to switch to 0.0.0.0.
-        bind="${PORT_BIND[$port]:-}"
-        loopback_only=0
-        if [ "$bind" = "127.0.0.1" ] || [ "$bind" = "[::1]" ]; then
-            loopback_only=1
-        fi
         printf "%s" "$DIV"
-        # Pick the dot/text color: red when loopback-only (currently
-        # broken; user needs to switch the dev server to --host=0.0.0.0)
-        # else label color when labeled, else cyan.
-        if [ "$loopback_only" = "1" ]; then
-            dot_color="$RED"
-        elif [ -n "$label" ]; then
-            dot_color="$(label_color "$label")"
-        else
-            dot_color="$CYN"
-        fi
-        printf "%s● " "$dot_color"
-        # Always emit a clickable hyperlink. For loopback ports the
-        # link won't currently load — but it's still useful as a
-        # copy/paste target, and starts working the moment the dev
-        # server rebinds. The warning suffix tells the user what to do.
         if [ -n "$label" ]; then
+            printf "%s● " "$(label_color "$label")"
             link "$URL" "$label"
         else
+            printf "%s● " "$CYN"
             link "$URL" ":${port}"
-        fi
-        if [ "$loopback_only" = "1" ]; then
-            printf " ${GRY}(loopback — set --host=0.0.0.0)${RST}"
         fi
         printf "%s" "$RST"
     done

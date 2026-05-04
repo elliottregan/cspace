@@ -40,8 +40,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 #    supervisor health checks, etc.). Adds ~5 MB.
 #  - iproute2: ss for the cspace statusline's port-detection — without
 #    this, the dev/preview/etc. URL row never appears.
+#  - iptables: NAT rules redirecting external-IP traffic to 127.0.0.1
+#    so dev servers bound to loopback (vite's default) are reachable
+#    from the host browser. Configured at boot in cspace-entrypoint.sh.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl unzip git tini sudo procps iproute2 \
+    ca-certificates curl unzip git tini sudo procps iproute2 iptables \
     make python3 build-essential ripgrep jq \
  && rm -rf /var/lib/apt/lists/*
 

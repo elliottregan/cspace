@@ -145,6 +145,13 @@ func (a *Adapter) Run(ctx context.Context, spec substrate.RunSpec) error {
 	}
 	args = append(args, "--cpus", fmt.Sprintf("%d", cpus))
 	args = append(args, "--memory", fmt.Sprintf("%dMiB", memMiB))
+	// CAP_NET_ADMIN: required for the entrypoint's PREROUTING DNAT
+	// rule that NATs external-IP traffic onto loopback so dev servers
+	// bound to 127.0.0.1 (vite, next dev, …) are reachable from the
+	// host browser without project-side --host=0.0.0.0 changes.
+	// Apple Container strips this capability by default even for root
+	// inside the microVM.
+	args = append(args, "--cap-add", "NET_ADMIN")
 	for k, v := range spec.Env {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
 	}

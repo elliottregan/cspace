@@ -79,6 +79,45 @@ if [ ! -f "$SETTINGS_JSON" ]; then
 JSON
 fi
 
+# NAT loopback-bound listeners onto the microVM's external IP.
+#
+# Many dev servers default to binding 127.0.0.1 (vite, next dev,
+# create-react-app, …). Inside a microVM, loopback is unreachable
+# from outside — packets to <vmip>:<port> would normally be dropped
+# by the martian-source filter when the destination is rewritten to
+# 127.0.0.1. Two settings make this work without any project-side
+# config change:
+#
+#   1. route_localnet=1  — allow packets routed to 127.0.0.1 from a
+#      non-loopback interface (off by default).
+#   2. PREROUTING DNAT   — rewrite all incoming TCP destinations to
+#      127.0.0.1 (port preserved). 0.0.0.0 listeners still receive
+#      because 0.0.0.0 means "any local address" including 127.0.0.1.
+#
+# The result: a service listening on 127.0.0.1:5174 inside the
+# microVM is reachable from the host browser at <vmip>:5174 with no
+# change to the dev server's bind address.
+#
+# Best-effort: failures here don't block the supervisor. Apple
+# Container microVMs ship with iptables and CAP_NET_ADMIN; if a
+# future runtime stripped them, sandboxes would just lose this
+# convenience and need --host=0.0.0.0 in the dev server.
+IPTABLES=/usr/sbin/iptables
+SYSCTL=/usr/sbin/sysctl
+if [ -x "$IPTABLES" ] && [ -x "$SYSCTL" ]; then
+    # Pick the primary external interface (eth0 on Apple Container).
+    ext_if=$(ip -o route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}')
+    if [ -n "$ext_if" ]; then
+        sudo "$SYSCTL" -w "net.ipv4.conf.${ext_if}.route_localnet=1" >/dev/null 2>&1 || true
+        sudo "$SYSCTL" -w "net.ipv4.conf.all.route_localnet=1" >/dev/null 2>&1 || true
+        # Idempotency: check whether the rule already exists before
+        # appending — useful if the entrypoint is re-run for any reason.
+        if ! sudo "$IPTABLES" -t nat -C PREROUTING -i "$ext_if" -p tcp -j DNAT --to-destination 127.0.0.1 2>/dev/null; then
+            sudo "$IPTABLES" -t nat -A PREROUTING -i "$ext_if" -p tcp -j DNAT --to-destination 127.0.0.1 2>/dev/null || true
+        fi
+    fi
+fi
+
 # Install Claude Code plugins declared in /workspace/.claude/settings.json.
 # Idempotent and best-effort — failures here don't block the supervisor.
 # Marketplaces are pre-baked under /opt/cspace/marketplaces/ so first
