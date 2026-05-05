@@ -5,22 +5,55 @@ import (
 	"fmt"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/cli"
 	"github.com/compose-spec/compose-go/v2/types"
 )
 
+// composeProjectName derives a name acceptable to compose-go from the
+// compose file's parent directory. Compose-go requires lowercase
+// alphanumeric + hyphen/underscore, leading with letter or digit.
+// A bare directory like ".devcontainer" would otherwise reject.
+func composeProjectName(absPath string) string {
+	raw := filepath.Base(filepath.Dir(absPath))
+	raw = strings.ToLower(raw)
+	// Strip any non-conforming leading runes (dots, hyphens, etc.).
+	for len(raw) > 0 {
+		r := raw[0]
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			break
+		}
+		raw = raw[1:]
+	}
+	if raw == "" {
+		return "cspace"
+	}
+	// Replace any remaining illegal characters with '-'.
+	var b strings.Builder
+	for _, r := range raw {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	return b.String()
+}
+
 func Parse(ctx context.Context, path string) (*Project, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
+	projectName := composeProjectName(abs)
 	// First pass: load with all profiles activated to check for profile usage.
 	// This allows validateSubset to see if any service uses profiles.
 	optsPrecheck, err := cli.NewProjectOptions(
 		[]string{abs},
-		cli.WithName(filepath.Base(filepath.Dir(abs))),
+		cli.WithName(projectName),
 		cli.WithResolvedPaths(true),
 		cli.WithProfiles([]string{"*"}), // Activate all profiles for validation check
 	)
@@ -38,7 +71,7 @@ func Parse(ctx context.Context, path string) (*Project, error) {
 	// Second pass: load normally (without forcing all profiles) for actual use
 	opts, err := cli.NewProjectOptions(
 		[]string{abs},
-		cli.WithName(filepath.Base(filepath.Dir(abs))),
+		cli.WithName(projectName),
 		cli.WithResolvedPaths(true),
 	)
 	if err != nil {
