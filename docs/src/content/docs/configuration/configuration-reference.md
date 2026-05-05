@@ -81,6 +81,34 @@ cspace up --workspace ./other-dir    # bind a non-cloned dir as /workspace
 
 See `cspace up --help` for the full list.
 
+## Project init hook
+
+cspace runs `/workspace/.cspace/init.sh` (if present and executable) once per sandbox boot, after the workspace is mounted and before the supervisor starts. Use this for:
+
+- Local-backend provisioning (convex, postgres, redis seed data)
+- Eager `pnpm install` / `bun install` so the agent's first dev-server start is fast
+- Generating env files from templates
+
+The script runs as the `dev` user with `/workspace` as cwd. Make it idempotent — container recreation wipes everything, so the script should self-skip if already done (typically a `[ -f .cspace-init-done ] && exit 0` guard against a marker file inside `/workspace`).
+
+Failures don't abort sandbox boot — output is captured to `~/.claude/cspace-init.log` for inspection. Example:
+
+```bash
+#!/usr/bin/env bash
+# .cspace/init.sh
+set -euo pipefail
+cd /workspace
+[ -f .cspace-init-done ] && exit 0
+
+# Eager install
+corepack pnpm install
+
+# Project-specific bootstrap (convex, db migrations, etc.)
+./scripts/ensure-env.sh
+
+touch .cspace-init-done
+```
+
 ## Credentials
 
 Credential precedence (highest first):

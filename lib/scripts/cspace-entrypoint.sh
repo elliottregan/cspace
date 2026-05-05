@@ -162,5 +162,27 @@ if [ -x /usr/local/bin/cspace-install-plugins.sh ]; then
     /usr/local/bin/cspace-install-plugins.sh || true
 fi
 
+# Project init hook. If the project ships /workspace/.cspace/init.sh,
+# run it once per sandbox after the workspace is mounted but before
+# the supervisor starts. Use cases: bootstrap a local backend (e.g.
+# convex-init), seed local dev databases, run pnpm install eagerly so
+# the agent's first `bun run dev` doesn't pause to install.
+#
+# Idempotency is the script's responsibility — we don't track a
+# marker on cspace's side because container recreation wipes it
+# anyway. The script should self-skip if already done (check for a
+# marker file inside /workspace, etc.).
+#
+# Best-effort: failures don't block the supervisor. Output is
+# captured to ~/.claude/cspace-init.log so the user can inspect.
+INIT_SCRIPT=/workspace/.cspace/init.sh
+if [ -x "$INIT_SCRIPT" ]; then
+    INIT_LOG="$HOME/.claude/cspace-init.log"
+    mkdir -p "$(dirname "$INIT_LOG")"
+    echo "[$(date -Iseconds)] cspace-init: running $INIT_SCRIPT" >> "$INIT_LOG"
+    "$INIT_SCRIPT" >> "$INIT_LOG" 2>&1 || \
+        echo "[$(date -Iseconds)] cspace-init: exit $?" >> "$INIT_LOG"
+fi
+
 # Hand off to the actual command (cspace-supervisor by default).
 exec "$@"

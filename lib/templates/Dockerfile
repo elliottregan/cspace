@@ -93,9 +93,15 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
  && rm -rf /var/lib/apt/lists/* \
  && node --version && npm --version
 
-# pnpm — used by many JS projects in this codebase pattern. Install into the
-# system npm prefix (still root) so it's available to both root and dev.
-RUN npm install -g pnpm@9 && pnpm --version
+# pnpm — used by many JS projects in this codebase pattern. Install
+# pnpm 10 (current major) globally as the default, and enable corepack
+# so projects pinning a specific version via `packageManager:` in
+# package.json transparently get their requested pnpm. Without corepack,
+# projects pinning pnpm 10 against an image with pnpm 9 hit
+# "packages field missing or empty" on bare `pnpm install`.
+# (cs-finding:2026-05-05-sandbox-image-ships-pnpm-9-many-projects-pin-pnpm-10)
+RUN npm install -g pnpm@10 && pnpm --version \
+ && corepack enable
 
 # Bun + Claude as the dev user so the install lands in /home/dev.
 USER dev
@@ -116,10 +122,23 @@ RUN /home/dev/.bun/bin/bun install --global @anthropic-ai/claude-code \
 # Chromium itself runs in a sidecar container launched by cspace up;
 # the supervisor injects $CSPACE_BROWSER_CDP_URL into the sandbox env,
 # and the MCP servers (running here as stdio children of Claude Code)
-# attach to the sidecar's Chrome over CDP. Image stays lean (~300 MB).
+# attach to the sidecar's Chrome over CDP.
 USER root
 RUN npm install -g @playwright/mcp@0.0.72 chrome-devtools-mcp@0.23.0 \
  && playwright-mcp --version
+
+# Bake Playwright browser binaries into the image so projects running
+# `playwright test` from inside a sandbox don't need to download
+# ~120 MB on every fresh sandbox. Cached at /opt/ms-playwright (system-
+# wide) via PLAYWRIGHT_BROWSERS_PATH so projects pinning a specific
+# Playwright version still find the bundled chromium without re-fetching
+# unless the version mismatches. --with-deps installs the OS libs
+# (libnss3, libxkbcommon0, etc.) headless chrome needs.
+# (cs-finding:2026-05-05-sandbox-image-lacks-playwright-browser-binaries-...)
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN mkdir -p "$PLAYWRIGHT_BROWSERS_PATH" \
+ && npx --yes playwright@latest install chromium --with-deps \
+ && chmod -R a+rX "$PLAYWRIGHT_BROWSERS_PATH"
 
 # Make the dev-user-installed bun + claude visible at /usr/local/bin so any
 # script that hardcodes /usr/local/bin/claude (e.g. CSPACE_CLAUDE_PATH) works.
