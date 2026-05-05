@@ -19,6 +19,14 @@ import (
 // image; bump both together when upgrading.
 const browserImage = "mcr.microsoft.com/playwright:v1.58.2-noble"
 
+// browserPlaywrightVersion pins the Playwright run-server version. MUST
+// match browserImage's tag and SHOULD match the project's
+// @playwright/test version, since the run-server protocol is incompatible
+// across minor releases (a v1.59 server returns 428 Precondition Required
+// to a v1.58 client). `npx -y playwright run-server` without a version
+// pin can pick up a different version from cache; the @-pin forces it.
+const browserPlaywrightVersion = "1.58.2"
+
 // browserRunServerPort is where the sidecar's `playwright run-server`
 // listens. Project tests connect via PW_TEST_CONNECT_WS_ENDPOINT.
 const browserRunServerPort = 3000
@@ -111,7 +119,8 @@ func startBrowserSidecar(ctx context.Context, project, sandbox string) (*Browser
 			//    `npx playwright` resolves to the version baked into
 			//    the image, which we keep in lockstep with the agent's
 			//    @playwright/mcp pin (see browserImage).
-			fmt.Sprintf("exec npx -y playwright run-server --port %d --host 0.0.0.0", browserRunServerPort),
+			fmt.Sprintf("exec npx -y playwright@%s run-server --port %d --host 0.0.0.0",
+				browserPlaywrightVersion, browserRunServerPort),
 	}
 	cmd := exec.CommandContext(ctx, "container", args...)
 	if out, runErr := cmd.CombinedOutput(); runErr != nil {
