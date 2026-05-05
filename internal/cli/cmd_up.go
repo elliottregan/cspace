@@ -1169,6 +1169,18 @@ func (s *substrateRunner) Run(ctx context.Context, spec orchestrator.ServiceSpec
 		Image:   spec.Image,
 		Env:     spec.Environment,
 		Command: spec.Command,
+		// Compose-spawned sidecars don't run cspace's entrypoint script,
+		// so they have no in-container DNS forwarder. Apple Container's
+		// vmnet doesn't reliably propagate the host's resolver to every
+		// image (esp. minimal alpine bases), so we explicitly attach
+		// public resolvers. Convex actions calling out to third-party
+		// APIs (Gemini, OpenAI, Resend, Sentry) need this; without it,
+		// the sidecar's libc lookup fails with "Temporary failure in
+		// name resolution" before any HTTP traffic leaves.
+		//
+		// Cluster-internal hostnames are still resolvable via the
+		// orchestrator's /etc/hosts injection (which runs after Run).
+		DNS: []string{"1.1.1.1", "8.8.8.8"},
 	}
 	for _, v := range spec.Volumes {
 		rspec.Mounts = append(rspec.Mounts, substrate.Mount{
