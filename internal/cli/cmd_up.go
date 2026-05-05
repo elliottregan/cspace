@@ -198,8 +198,23 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 					}
 					devcontainerPlan = plan
 					sandboxImage = resolveSandboxImage(ctx, plan, "cspace:latest")
+					// Compose service.environment (including any env_file
+					// content compose-go resolved at parse time) merges
+					// FIRST so devcontainer.json containerEnv can override.
+					// This is how a project's `.env` flows into the
+					// workspace: declare `env_file: ../.env` on the compose
+					// app service, compose-go reads the file into
+					// service.Environment, and we propagate it here.
+					if plan.Compose != nil && plan.Service != "" {
+						if svc, ok := plan.Compose.Services[plan.Service]; ok {
+							for k, v := range svc.Environment {
+								env[k] = v
+							}
+						}
+					}
 					// containerEnv merges into env: devcontainer values override
-					// defaults but lose to secrets file + --env (see below).
+					// compose env (more specific) and lose to secrets file +
+					// --env (see below).
 					for k, v := range dc.ContainerEnv {
 						env[k] = v
 					}
