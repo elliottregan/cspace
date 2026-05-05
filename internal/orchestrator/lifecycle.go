@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 
 	v2 "github.com/elliottregan/cspace/internal/compose/v2"
@@ -31,6 +32,20 @@ func (o *Orchestration) Up(ctx context.Context) error {
 			Command:     svc.Command,
 			WorkingDir:  svc.WorkingDir,
 			User:        svc.User,
+		}
+		composeDir := filepath.Dir(o.Plan.Compose.SourcePath)
+		for _, v := range svc.Volumes {
+			external := false
+			externalName := ""
+			if nv, ok := o.Plan.Compose.NamedVolumes[v.Source]; ok {
+				external = nv.External
+				externalName = nv.Name
+			}
+			vm, err := resolveVolume(v, o.Project, o.Sandbox, composeDir, external, externalName)
+			if err != nil {
+				return fmt.Errorf("resolve volume for service %q: %w", name, err)
+			}
+			spec.Volumes = append(spec.Volumes, vm)
 		}
 		if _, err := o.Substrate.Run(ctx, spec); err != nil {
 			return fmt.Errorf("run sidecar %q: %w", name, err)

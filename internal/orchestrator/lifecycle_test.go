@@ -156,3 +156,43 @@ func TestCycleDetected(t *testing.T) {
 		t.Fatalf("want cycle error, got %v", err)
 	}
 }
+
+func TestUpResolvesNamedVolume(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	stub := newStub()
+	orch := &Orchestration{
+		Sandbox: "m", Project: "p",
+		Plan: &devcontainer.Plan{
+			Devcontainer: &devcontainer.Config{},
+			Compose: &v2.Project{
+				SourcePath: "/tmp/compose.yml",
+				Services: map[string]*v2.Service{
+					"db": {
+						Name:  "db",
+						Image: "postgres",
+						Volumes: []v2.Volume{
+							{Type: "volume", Source: "pgdata", Target: "/var/lib/postgresql"},
+						},
+					},
+				},
+				NamedVolumes: map[string]*v2.NamedVolume{
+					"pgdata": {External: false},
+				},
+			},
+		},
+		Substrate: stub,
+	}
+	if err := orch.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(stub.runs) != 1 {
+		t.Fatalf("runs=%d", len(stub.runs))
+	}
+	if len(stub.runs[0].Volumes) != 1 {
+		t.Fatalf("expected 1 volume, got %d", len(stub.runs[0].Volumes))
+	}
+	if stub.runs[0].Volumes[0].GuestPath != "/var/lib/postgresql" {
+		t.Fatalf("guest=%q", stub.runs[0].Volumes[0].GuestPath)
+	}
+}
