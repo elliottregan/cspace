@@ -436,7 +436,13 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			var browserContainer string
 			var browserSidecar *BrowserSidecar
 			if browserEnabled {
-				bs, berr := startBrowserSidecar(ctx, project, name)
+				// Match the sidecar's Playwright run-server version to the
+				// project's @playwright/test pin. Playwright's strict
+				// cross-version handshake check makes mismatched versions
+				// fail with 428 Precondition Required; tracking the
+				// project pin avoids that without dictating a version.
+				plVersion := detectPlaywrightVersion(cfg.ProjectRoot)
+				bs, berr := startBrowserSidecar(ctx, project, name, plVersion)
 				if berr != nil {
 					return fmt.Errorf("browser sidecar: %w", berr)
 				}

@@ -5,27 +5,32 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
 
 // browserImage pins the Playwright base used as the sidecar image. Microsoft
 // publishes Linux/arm64 builds; the apt-get-install-socat hack inside the
-// run command means we don't need a custom image yet. P2/P3 may build a
-// leaner image; for now this is fine.
+// run command means we don't need a custom image yet.
 //
-// Pinning matches the agent's @playwright/mcp install in the cspace base
-// image; bump both together when upgrading.
-const browserImage = "mcr.microsoft.com/playwright:v1.58.2-noble"
+// The image's tag selects the chromium binary version. The run-server
+// protocol version is selected separately, dynamically from the project's
+// @playwright/test pin (see detectPlaywrightVersion). Chromium is
+// generally backward-compatible across one or two minor Playwright
+// releases; projects that diverge much further can override the image
+// via a custom sidecar.
+//
+// Bumped to v1.59 for the Screencast API, browser.bind() shared-session
+// support, and ariaSnapshot({mode:'ai'}) — all agent-friendly additions.
+const browserImage = "mcr.microsoft.com/playwright:v1.59.0-noble"
 
-// browserPlaywrightVersion pins the Playwright run-server version. MUST
-// match browserImage's tag and SHOULD match the project's
-// @playwright/test version, since the run-server protocol is incompatible
-// across minor releases (a v1.59 server returns 428 Precondition Required
-// to a v1.58 client). `npx -y playwright run-server` without a version
-// pin can pick up a different version from cache; the @-pin forces it.
-const browserPlaywrightVersion = "1.58.2"
+// defaultPlaywrightVersion is the fallback used when the project has no
+// @playwright/test in package.json (or there's no package.json at all).
+// Match browserImage's tag.
+const defaultPlaywrightVersion = "1.59.0"
 
 // browserRunServerPort is where the sidecar's `playwright run-server`
 // listens. Project tests connect via PW_TEST_CONNECT_WS_ENDPOINT.
@@ -66,7 +71,14 @@ type BrowserSidecar struct {
 	RunServerWSURL string // ws://<ip>:3000/ — for $PW_TEST_CONNECT_WS_ENDPOINT
 }
 
-func startBrowserSidecar(ctx context.Context, project, sandbox string) (*BrowserSidecar, error) {
+// startBrowserSidecar runs the Playwright sidecar. plVersion selects the
+// run-server protocol version (must match the project's @playwright/test
+// pin per Playwright's strict cross-version handshake check); empty
+// string falls back to defaultPlaywrightVersion.
+func startBrowserSidecar(ctx context.Context, project, sandbox, plVersion string) (*BrowserSidecar, error) {
+	if plVersion == "" {
+		plVersion = defaultPlaywrightVersion
+	}
 	containerName := browserContainerName(project, sandbox)
 
 	// Idempotency: torch any prior container with the same name.
@@ -120,7 +132,7 @@ func startBrowserSidecar(ctx context.Context, project, sandbox string) (*Browser
 			//    the image, which we keep in lockstep with the agent's
 			//    @playwright/mcp pin (see browserImage).
 			fmt.Sprintf("exec npx -y playwright@%s run-server --port %d --host 0.0.0.0",
-				browserPlaywrightVersion, browserRunServerPort),
+				plVersion, browserRunServerPort),
 	}
 	cmd := exec.CommandContext(ctx, "container", args...)
 	if out, runErr := cmd.CombinedOutput(); runErr != nil {
@@ -245,4 +257,45 @@ func stopBrowserSidecar(ctx context.Context, name string) {
 	}
 	_ = exec.CommandContext(ctx, "container", "stop", name).Run()
 	_ = exec.CommandContext(ctx, "container", "rm", name).Run()
+}
+
+// detectPlaywrightVersion reads the project's @playwright/test pin from
+// <projectRoot>/package.json. Returns the literal version string with
+// any semver-range marker stripped (^1.58.2 → 1.58.2). Returns empty
+// when the file or dependency is absent — caller substitutes
+// defaultPlaywrightVersion. Never blocks; never errors loudly.
+//
+// Background: Playwright's run-server enforces same-version equality
+// between the @playwright/test client and the server (returns 428
+// Precondition Required across a minor version boundary). Letting the
+// project's pin drive the sidecar's version is the only way to support
+// projects on different Playwright releases without a manual override.
+func detectPlaywrightVersion(projectRoot string) string {
+	raw, err := os.ReadFile(filepath.Join(projectRoot, "package.json"))
+	if err != nil {
+		return ""
+	}
+	var pkg struct {
+		Dependencies    map[string]string `json:"dependencies"`
+		DevDependencies map[string]string `json:"devDependencies"`
+	}
+	if err := json.Unmarshal(raw, &pkg); err != nil {
+		return ""
+	}
+	for _, deps := range []map[string]string{pkg.DevDependencies, pkg.Dependencies} {
+		v, ok := deps["@playwright/test"]
+		if !ok {
+			continue
+		}
+		// Strip semver range markers (^, ~, >=, =, v) and surrounding
+		// whitespace. Anything remaining beyond the first space (e.g.
+		// "^1.58.2 || 1.59") gets cut at the first valid version.
+		v = strings.TrimSpace(v)
+		v = strings.TrimLeft(v, "^~>=v ")
+		if i := strings.IndexAny(v, " ,|"); i >= 0 {
+			v = v[:i]
+		}
+		return v
+	}
+	return ""
 }
