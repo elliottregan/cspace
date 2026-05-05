@@ -1126,7 +1126,10 @@ func (s *substrateRunner) Run(ctx context.Context, spec orchestrator.ServiceSpec
 }
 
 func (s *substrateRunner) Exec(ctx context.Context, name string, cmd []string) (string, error) {
-	res, err := s.adapter.Exec(ctx, name, cmd, substrate.ExecOpts{})
+	// Orchestrator-side exec calls (hosts injection, credential extraction)
+	// must run as root: minimal sidecar images (convex-dashboard, etc.) ship
+	// a non-root USER, and /etc/hosts isn't writable from there.
+	res, err := s.adapter.Exec(ctx, name, cmd, substrate.ExecOpts{User: "0"})
 	if err != nil {
 		return res.Stdout, err
 	}

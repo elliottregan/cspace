@@ -206,6 +206,9 @@ func (a *Adapter) Exec(ctx context.Context, name string, cmdLine []string, opts 
 	if opts.WorkDir != "" {
 		args = append(args, "-w", opts.WorkDir)
 	}
+	if opts.User != "" {
+		args = append(args, "--user", opts.User)
+	}
 	args = append(args, name)
 	args = append(args, cmdLine...)
 

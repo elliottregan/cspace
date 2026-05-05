@@ -46,6 +46,11 @@ type PortMap struct {
 type ExecOpts struct {
 	WorkDir string
 	Env     map[string]string
+	// User selects the in-container user. Empty means "inherit the
+	// image's USER". Set "0" or "root" for orchestrator-side execs
+	// that must write privileged files (e.g. /etc/hosts injection)
+	// in sidecar images that ship a non-root USER.
+	User string
 }
 
 // ExecResult captures the outcome of an Exec call. ExitCode is 0 on success,

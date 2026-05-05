@@ -32,17 +32,22 @@ func renderHosts(ips map[string]string) string {
 
 // injectHosts removes any prior cspace-injected block from the target
 // microVM's /etc/hosts and appends the new content. Idempotent.
+//
+// Apple Container's `container exec` runs commands as root by default,
+// so we don't prefix with sudo — many minimal sidecar images (like
+// ghcr.io/get-convex/convex-backend) don't ship sudo at all and a
+// sudo-prefixed command would fail with `sh: sudo: not found`.
 func injectHosts(ctx context.Context, sub Substrate, container, content string) error {
 	clean := []string{
 		"sh", "-c",
-		fmt.Sprintf("sudo sed -i '/^%s$/,/^%s$/d' /etc/hosts", hostsMarkerStart, hostsMarkerEnd),
+		fmt.Sprintf("sed -i '/^%s$/,/^%s$/d' /etc/hosts", hostsMarkerStart, hostsMarkerEnd),
 	}
 	if _, err := sub.Exec(ctx, container, clean); err != nil {
 		return fmt.Errorf("clean hosts in %s: %w", container, err)
 	}
 	add := []string{
 		"sh", "-c",
-		fmt.Sprintf("printf '%%s' %s | sudo tee -a /etc/hosts >/dev/null", shellQuote(content)),
+		fmt.Sprintf("printf '%%s' %s >> /etc/hosts", shellQuote(content)),
 	}
 	if _, err := sub.Exec(ctx, container, add); err != nil {
 		return fmt.Errorf("inject hosts in %s: %w", container, err)
