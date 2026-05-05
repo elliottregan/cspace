@@ -37,9 +37,17 @@ const (
 	PhaseReady                   // MarkReady, terminal success
 )
 
-// TotalPhases is the denominator of the focus-pull. PhaseDaemon
-// through PhaseReady inclusive.
+// TotalPhases counts every phase including PhaseReady. Used by the
+// LineReporter for "[N/total] phase-name" output.
 const TotalPhases = int(PhaseReady)
+
+// focusSaturationPhase is the phase at which the planet visually
+// reaches full focus (focus = 1.0). We saturate at PhaseSupervisor
+// rather than PhaseReady so the user sees the fully-formed planet
+// during the longest "doing real work" wait. PhaseReady comes after,
+// when boot is fully done — its job is the final-hold + quit signal,
+// not a focus-pull step.
+const focusSaturationPhase = int(PhaseSupervisor)
 
 // phaseLabels are shown beside the spinner. PhasePending is unused at
 // runtime — we always start animating from PhaseDaemon at the latest.
@@ -244,9 +252,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case animTickMsg:
 		// Animate focus toward the target at a constant velocity.
 		// The integer phase enum maps to focus as targetPhase /
-		// TotalPhases — events advance the target, the visual chases
-		// it smoothly regardless of how fast or slow they arrive.
-		target := float64(m.targetPhase) / float64(TotalPhases)
+		// focusSaturationPhase — events advance the target, the
+		// visual chases it smoothly regardless of how fast or slow
+		// they arrive. Saturation at PhaseSupervisor (not PhaseReady)
+		// means the planet renders fully-formed during the supervisor
+		// wait, which is the longest "real work" phase.
+		target := float64(m.targetPhase) / float64(focusSaturationPhase)
 		if target > 1 {
 			target = 1
 		}
