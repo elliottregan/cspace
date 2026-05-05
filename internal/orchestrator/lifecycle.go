@@ -35,6 +35,19 @@ func (o *Orchestration) Up(ctx context.Context) error {
 		if _, err := o.Substrate.Run(ctx, spec); err != nil {
 			return fmt.Errorf("run sidecar %q: %w", name, err)
 		}
+		if needsHealthy(o.Plan.Compose, name) && svc.Healthcheck != nil {
+			containerName := o.containerName(name)
+			adapter := func(ctx context.Context, cmd []string) (string, int, error) {
+				out, err := o.Substrate.Exec(ctx, containerName, cmd)
+				if err != nil {
+					return out, 1, err
+				}
+				return out, 0, nil
+			}
+			if err := waitHealthy(ctx, svc.Healthcheck, adapter); err != nil {
+				return fmt.Errorf("healthcheck for %q: %w", name, err)
+			}
+		}
 	}
 	return nil
 }
@@ -90,4 +103,17 @@ func topoSort(services map[string]*v2.Service) ([]string, error) {
 // Format: cspace-<project>-<sandbox>-<service>.
 func (o *Orchestration) containerName(svc string) string {
 	return fmt.Sprintf("cspace-%s-%s-%s", o.Project, o.Sandbox, svc)
+}
+
+// needsHealthy reports whether any other service depends on `name`
+// with the service_healthy condition.
+func needsHealthy(p *v2.Project, name string) bool {
+	for _, s := range p.Services {
+		for _, d := range s.DependsOn {
+			if d.Name == name && d.Condition == "service_healthy" {
+				return true
+			}
+		}
+	}
+	return false
 }
