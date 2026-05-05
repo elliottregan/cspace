@@ -188,13 +188,27 @@ func (o *Orchestration) injectAllHosts(ctx context.Context) error {
 		}
 		ips[name] = ip
 	}
-	content := renderHosts(ips)
+	// Per-target hosts content: every microVM gets the same compose
+	// service map, but the workspace also gets `workspace -> 127.0.0.1`
+	// so scripts inside the workspace can hit http://workspace:<port>
+	// (the same URL the browser sidecar uses to reach the workspace,
+	// where it resolves to the workspace's vmnet IP). Keeps a single
+	// stable hostname across both sides.
+	contentSidecar := renderHosts(ips)
+	workspaceIPs := make(map[string]string, len(ips)+1)
+	for k, v := range ips {
+		workspaceIPs[k] = v
+	}
+	workspaceIPs["workspace"] = "127.0.0.1"
+	contentWorkspace := renderHosts(workspaceIPs)
 	for name := range o.Plan.Compose.Services {
-		var target string
+		var target, content string
 		if name == o.Plan.Service {
 			target = o.sandboxContainerName()
+			content = contentWorkspace
 		} else {
 			target = o.containerName(name)
+			content = contentSidecar
 		}
 		if err := injectHosts(ctx, o.Substrate, target, content); err != nil {
 			return err
