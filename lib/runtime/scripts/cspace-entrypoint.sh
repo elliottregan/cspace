@@ -9,6 +9,27 @@
 #   straight into a usable claude REPL instead of a setup wizard.
 set -euo pipefail
 
+# Auto-install runtime deps that some non-default base images may lack.
+# When the project picks its own image (devcontainer.image), iptables and
+# dnsmasq might be absent. We try to install them on debian/ubuntu lineages
+# transparently. Other distros must install ahead of time (see
+# docs/image-dependencies.md).
+ensure_dep() {
+    local pkg=$1 cmd=$2
+    command -v "$cmd" >/dev/null 2>&1 && return 0
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "[cspace-entrypoint] installing $pkg (missing $cmd)..."
+        apt-get update -qq 2>/dev/null && \
+            apt-get install -y -qq --no-install-recommends "$pkg" >/dev/null 2>&1 || \
+            echo "[cspace-entrypoint] WARN: failed to install $pkg"
+    else
+        echo "[cspace-entrypoint] ERROR: $cmd missing and apt-get unavailable. Install $pkg in your image. See docs/image-dependencies.md"
+    fi
+}
+
+ensure_dep iptables iptables
+ensure_dep dnsmasq dnsmasq
+
 # Source extracted.env if present — written by cspace up after compose sidecars
 # start and credential extraction runs. Contains KEY='value' lines (shell-safe
 # single-quote escaped) so credential strings are imported before any
