@@ -205,6 +205,21 @@ echo supervisor > "$STATUS_FILE" 2>/dev/null || true
 
 # Devcontainer postCreateCommand — once per sandbox lifetime.
 if [ -n "${CSPACE_POSTCREATE_CMD:-}" ] && [ ! -f /workspace/.cspace-postcreate-done ]; then
+    # Wait briefly for cspace up's orchestrator to finish writing
+    # /sessions/extracted.env (compose sidecars must be healthy +
+    # extractCredentials must have run). Re-source it so postCreate
+    # sees the captured admin keys / tokens, even though the early
+    # source at boot may have raced ahead of the file's appearance.
+    if [ -n "${CSPACE_EXTRACT_CREDENTIALS_EXPECTED:-}" ]; then
+        for _ in $(seq 1 60); do
+            [ -f /sessions/extracted.env ] && break
+            sleep 1
+        done
+    fi
+    if [ -f /sessions/extracted.env ]; then
+        # shellcheck source=/dev/null
+        . /sessions/extracted.env
+    fi
     echo "[cspace-entrypoint] running postCreateCommand..."
     if su dev -c "cd /workspace && ${CSPACE_POSTCREATE_CMD}"; then
         touch /workspace/.cspace-postcreate-done

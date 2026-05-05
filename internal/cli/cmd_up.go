@@ -215,6 +215,14 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				if cmd := joinPostCmd(devcontainerPlan.Devcontainer.PostStartCommand); cmd != "" {
 					env["CSPACE_POSTSTART_CMD"] = cmd
 				}
+				// Tell the entrypoint to wait for /sessions/extracted.env
+				// before running postCreate. cspace's orchestrator-side
+				// write of that file races against the entrypoint's early
+				// source line; without this signal, postCreate may run with
+				// captured creds still unset.
+				if len(devcontainerPlan.Devcontainer.Customizations.Cspace.ExtractCredentials) > 0 {
+					env["CSPACE_EXTRACT_CREDENTIALS_EXPECTED"] = "1"
+				}
 			}
 
 			// Devcontainer customizations.cspace overrides. When a devcontainer.json
