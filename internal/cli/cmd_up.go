@@ -17,6 +17,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/elliottregan/cspace/internal/devcontainer"
+	"github.com/elliottregan/cspace/internal/orchestrator"
 	"github.com/elliottregan/cspace/internal/overlay"
 	"github.com/elliottregan/cspace/internal/planets"
 	"github.com/elliottregan/cspace/internal/registry"
@@ -176,6 +178,34 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			for k, v := range loaded {
 				env[k] = v
 			}
+
+			// Devcontainer: load + validate if .devcontainer/devcontainer.json
+			// is present. Resolves sandbox image and merges containerEnv.
+			// devcontainerPlan is nil when no devcontainer.json is present
+			// (existing .cspace.json-only projects work unchanged).
+			var devcontainerPlan *devcontainer.Plan
+			sandboxImage := "cspace:latest"
+			if projectRoot != "" {
+				dcPath := filepath.Join(projectRoot, ".devcontainer", "devcontainer.json")
+				if _, statErr := os.Stat(dcPath); statErr == nil {
+					dc, loadErr := devcontainer.Load(dcPath)
+					if loadErr != nil {
+						return fmt.Errorf("devcontainer.json: %w", loadErr)
+					}
+					plan, mergeErr := devcontainer.Merge(dc, filepath.Dir(dcPath))
+					if mergeErr != nil {
+						return fmt.Errorf("devcontainer.json: %w", mergeErr)
+					}
+					devcontainerPlan = plan
+					sandboxImage = resolveSandboxImage(ctx, plan, "cspace:latest")
+					// containerEnv merges into env: devcontainer values override
+					// defaults but lose to secrets file + --env (see below).
+					for k, v := range dc.ContainerEnv {
+						env[k] = v
+					}
+				}
+			}
+
 			// CLI --env flag wins over secrets file (used for spike-test
 			// injection like CSPACE_BROWSER_CDP_URL).
 			for _, kv := range extraEnv {
@@ -258,7 +288,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 
 			spec := substrate.RunSpec{
 				Name:      containerName,
-				Image:     "cspace:latest",
+				Image:     sandboxImage,
 				Env:       env,
 				CPUs:      effCPUs,
 				MemoryMiB: effMemMiB,
@@ -407,6 +437,45 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				_ = a.Stop(context.Background(), containerName)
 				err = fmt.Errorf("acquire container IP: %w", ipErr)
 				return err
+			}
+
+			// Compose sidecars: spawn and wait for healthchecks, inject
+			// /etc/hosts, extract credentials. Only runs when
+			// devcontainer.json is present with a dockerComposeFile.
+			// Sidecars are torn down on any subsequent error.
+			var orch *orchestrator.Orchestration
+			if devcontainerPlan != nil && devcontainerPlan.Compose != nil {
+				orch = &orchestrator.Orchestration{
+					Sandbox:   name,
+					Project:   project,
+					Plan:      devcontainerPlan,
+					Substrate: &substrateRunner{adapter: a},
+				}
+				if upErr := orch.Up(ctx); upErr != nil {
+					_ = orch.Down(context.Background())
+					_ = a.Stop(context.Background(), containerName)
+					err = fmt.Errorf("orchestrate sidecars: %w", upErr)
+					return err
+				}
+				// Write extracted env vars (e.g. CONVEX_SELF_HOSTED_ADMIN_KEY)
+				// to <sessionsHostDir>/extracted.env on the host. The sandbox's
+				// /sessions/ bind-mount makes this visible as
+				// /sessions/extracted.env; the entrypoint sources it early so
+				// the agent sees the values.
+				if len(orch.ExtractedEnv) > 0 {
+					if writeErr := writeExtractedEnv(sessionsHostDir, orch.ExtractedEnv); writeErr != nil {
+						_ = orch.Down(context.Background())
+						_ = a.Stop(context.Background(), containerName)
+						err = fmt.Errorf("write extracted env: %w", writeErr)
+						return err
+					}
+				}
+				// Ensure sidecars are torn down if any later step fails.
+				defer func() {
+					if err != nil {
+						_ = orch.Down(context.Background())
+					}
+				}()
 			}
 
 			ctlURL := fmt.Sprintf("http://%s:%d", ip, supervisorPort)
@@ -902,4 +971,124 @@ func maybeNudgeMissingDnsInstall(out io.Writer) {
 		return
 	}
 	_ = os.WriteFile(sentinel, []byte("shown\n"), 0o644)
+}
+
+// resolveSandboxImage selects the sandbox image for a cspace up run.
+//
+// Precedence (highest first):
+//  1. plan.Compose.Services[plan.Service].Image — compose-driven image.
+//  2. plan.Devcontainer.Image — bare devcontainer.json image field.
+//  3. BuildProjectImage(ctx, plan) — build result when dockerFile/build: set.
+//  4. defaultImage — caller-supplied fallback (e.g. "cspace:latest").
+//
+// A build error is logged and the function falls back to defaultImage so that
+// a broken Dockerfile does not silently produce a cryptic "image not found"
+// error from the substrate; instead the container boots with the default and
+// the user sees the build error.
+func resolveSandboxImage(ctx context.Context, plan *devcontainer.Plan, defaultImage string) string {
+	if plan == nil {
+		return defaultImage
+	}
+	// 1. Compose service image.
+	if plan.Compose != nil && plan.Service != "" {
+		if svc, ok := plan.Compose.Services[plan.Service]; ok && svc.Image != "" {
+			return svc.Image
+		}
+	}
+	// 2. Devcontainer image field.
+	if plan.Devcontainer != nil && plan.Devcontainer.Image != "" {
+		return plan.Devcontainer.Image
+	}
+	// 3. Build via Apple Container.
+	if plan.Devcontainer != nil && (plan.Devcontainer.DockerFile != "" || plan.Devcontainer.Build != nil) {
+		tag, err := orchestrator.BuildProjectImage(ctx, plan)
+		if err == nil && tag != "" {
+			return tag
+		}
+		// Fall through to default; caller will see a boot failure if the
+		// default image doesn't satisfy the project's needs.
+	}
+	return defaultImage
+}
+
+// writeExtractedEnv writes credential key=value pairs extracted from sidecars
+// to <sessionsHostDir>/extracted.env on the host. The sandbox has this
+// directory bind-mounted as /sessions, so the entrypoint can source
+// /sessions/extracted.env early — before user-visible env consumption.
+//
+// Values are shell-escaped (single-quote wrapping with internal ' replaced by
+// '\'') so arbitrary credential strings don't break the sourced file.
+func writeExtractedEnv(sessionsHostDir string, env map[string]string) error {
+	var b strings.Builder
+	// Deterministic ordering for diffability.
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	// sort keys for determinism
+	for i := 0; i < len(keys); i++ {
+		for j := i + 1; j < len(keys); j++ {
+			if keys[i] > keys[j] {
+				keys[i], keys[j] = keys[j], keys[i]
+			}
+		}
+	}
+	for _, k := range keys {
+		v := env[k]
+		// Shell-escape the value: wrap in single quotes, escape embedded '.
+		escaped := "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(escaped)
+		b.WriteByte('\n')
+	}
+	dst := filepath.Join(sessionsHostDir, "extracted.env")
+	return os.WriteFile(dst, []byte(b.String()), 0o600)
+}
+
+// substrateRunner adapts *applecontainer.Adapter to the orchestrator.Substrate
+// interface. It bridges the orchestrator's ServiceSpec (compose-oriented) to
+// the substrate's RunSpec (sandbox-oriented). Sidecars started via Run are
+// started without a runtime overlay — they use their own image's entrypoint.
+type substrateRunner struct {
+	adapter *applecontainer.Adapter
+}
+
+func (s *substrateRunner) Run(ctx context.Context, spec orchestrator.ServiceSpec) (string, error) {
+	rspec := substrate.RunSpec{
+		Name:    spec.Name,
+		Image:   spec.Image,
+		Env:     spec.Environment,
+		Command: spec.Command,
+	}
+	for _, v := range spec.Volumes {
+		rspec.Mounts = append(rspec.Mounts, substrate.Mount{
+			HostPath:      v.HostPath,
+			ContainerPath: v.GuestPath,
+			ReadOnly:      v.ReadOnly,
+		})
+	}
+	if err := s.adapter.Run(ctx, rspec); err != nil {
+		return "", err
+	}
+	return spec.Name, nil
+}
+
+func (s *substrateRunner) Exec(ctx context.Context, name string, cmd []string) (string, error) {
+	res, err := s.adapter.Exec(ctx, name, cmd, substrate.ExecOpts{})
+	if err != nil {
+		return res.Stdout, err
+	}
+	if res.ExitCode != 0 {
+		return res.Stdout, fmt.Errorf("exec in %s exited %d: %s", name, res.ExitCode, res.Stderr)
+	}
+	return res.Stdout, nil
+}
+
+func (s *substrateRunner) Stop(ctx context.Context, name string) error {
+	return s.adapter.Stop(ctx, name)
+}
+
+func (s *substrateRunner) IP(ctx context.Context, name string) (string, error) {
+	return s.adapter.IP(ctx, name)
 }

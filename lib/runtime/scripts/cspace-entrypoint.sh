@@ -9,6 +9,15 @@
 #   straight into a usable claude REPL instead of a setup wizard.
 set -euo pipefail
 
+# Source extracted.env if present — written by cspace up after compose sidecars
+# start and credential extraction runs. Contains KEY='value' lines (shell-safe
+# single-quote escaped) so credential strings are imported before any
+# user-visible env consumption (git helper, claude.json pre-seed, etc.).
+if [ -f /sessions/extracted.env ]; then
+    # shellcheck source=/dev/null
+    . /sessions/extracted.env
+fi
+
 # Auto-configure git credential helper for github.com when gh is authed.
 # `gh auth setup-git` writes:
 #   credential.helper = !/usr/bin/gh auth git-credential
