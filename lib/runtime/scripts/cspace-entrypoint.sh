@@ -182,6 +182,22 @@ if [ -x /usr/local/bin/cspace-install-plugins.sh ]; then
 fi
 echo supervisor > "$STATUS_FILE" 2>/dev/null || true
 
+# Devcontainer postCreateCommand — once per sandbox lifetime.
+if [ -n "${CSPACE_POSTCREATE_CMD:-}" ] && [ ! -f /workspace/.cspace-postcreate-done ]; then
+    echo "[cspace-entrypoint] running postCreateCommand..."
+    if su dev -c "cd /workspace && ${CSPACE_POSTCREATE_CMD}"; then
+        touch /workspace/.cspace-postcreate-done
+    else
+        echo "[cspace-entrypoint] WARN: postCreateCommand failed (continuing)"
+    fi
+fi
+
+# Devcontainer postStartCommand — every boot, non-fatal.
+if [ -n "${CSPACE_POSTSTART_CMD:-}" ]; then
+    echo "[cspace-entrypoint] running postStartCommand..."
+    su dev -c "cd /workspace && ${CSPACE_POSTSTART_CMD}" || true
+fi
+
 # Project init hook. If the project ships /workspace/.cspace/init.sh,
 # run it once per sandbox after the workspace is mounted but before
 # the supervisor starts. Use cases: bootstrap a local backend (e.g.

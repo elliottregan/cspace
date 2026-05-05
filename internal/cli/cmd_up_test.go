@@ -158,3 +158,26 @@ func TestMaybeNudgeMissingDnsInstallFiresOnce(t *testing.T) {
 		t.Errorf("second call should be silent; got: %q", buf.String())
 	}
 }
+
+// TestJoinPostCmd verifies the rendering of devcontainer postCreateCommand /
+// postStartCommand from StringOrSlice into a shell-safe command line.
+func TestJoinPostCmd(t *testing.T) {
+	cases := []struct {
+		name string
+		in   devcontainer.StringOrSlice
+		want string
+	}{
+		{"empty", nil, ""},
+		{"single", devcontainer.StringOrSlice{"npm install"}, "npm install"},
+		{"multi", devcontainer.StringOrSlice{"npm", "install"}, "'npm' 'install'"},
+		{"single quote in arg", devcontainer.StringOrSlice{"echo", "it's fine"}, `'echo' 'it'"'"'s fine'`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := joinPostCmd(c.in)
+			if got != c.want {
+				t.Fatalf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+}

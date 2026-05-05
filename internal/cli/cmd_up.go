@@ -206,6 +206,17 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				}
 			}
 
+			// Devcontainer postCreateCommand and postStartCommand. These are
+			// set on the env so the entrypoint can invoke them at boot.
+			if devcontainerPlan != nil && devcontainerPlan.Devcontainer != nil {
+				if cmd := joinPostCmd(devcontainerPlan.Devcontainer.PostCreateCommand); cmd != "" {
+					env["CSPACE_POSTCREATE_CMD"] = cmd
+				}
+				if cmd := joinPostCmd(devcontainerPlan.Devcontainer.PostStartCommand); cmd != "" {
+					env["CSPACE_POSTSTART_CMD"] = cmd
+				}
+			}
+
 			// CLI --env flag wins over secrets file (used for spike-test
 			// injection like CSPACE_BROWSER_CDP_URL).
 			for _, kv := range extraEnv {
@@ -1091,4 +1102,27 @@ func (s *substrateRunner) Stop(ctx context.Context, name string) error {
 
 func (s *substrateRunner) IP(ctx context.Context, name string) (string, error) {
 	return s.adapter.IP(ctx, name)
+}
+
+// joinPostCmd renders a devcontainer postCreateCommand / postStartCommand
+// (which may be a string or []string) into a single shell-runnable
+// command line. Empty input returns "".
+func joinPostCmd(cmd devcontainer.StringOrSlice) string {
+	if len(cmd) == 0 {
+		return ""
+	}
+	if len(cmd) == 1 {
+		return cmd[0]
+	}
+	// Multi-element form treats the slice as exec-form: shell-quote each
+	// element so the joined string is safe to pass to `bash -c`.
+	parts := make([]string, len(cmd))
+	for i, p := range cmd {
+		parts[i] = shellSingleQuote(p)
+	}
+	return strings.Join(parts, " ")
+}
+
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
