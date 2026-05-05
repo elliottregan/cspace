@@ -21,6 +21,12 @@ type RunSpec struct {
 	// too-tight 1024 MiB / 4 CPU.
 	CPUs      int // number of CPUs to allocate; 0 = adapter default
 	MemoryMiB int // memory cap in MiB;            0 = adapter default
+
+	// RuntimeOverlayPath is the host-side path to ~/.cspace/runtime/<version>/.
+	// When non-empty, the adapter bind-mounts it read-only at /opt/cspace
+	// inside the microVM. This decouples cspace runtime upgrades (scripts,
+	// supervisor, plugin-install machinery) from project image rebuilds.
+	RuntimeOverlayPath string
 }
 
 // Mount is a host-to-container bind mount.
