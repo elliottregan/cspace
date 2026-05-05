@@ -142,6 +142,26 @@ func needsHealthy(p *v2.Project, name string) bool {
 	return false
 }
 
+// Down stops every compose-defined sidecar service. The workspace
+// service (Plan.Service) is left to the caller (cmd_down) to stop
+// since it owns the sandbox lifecycle. Errors are aggregated — Down
+// returns the first error seen but continues stopping the rest.
+func (o *Orchestration) Down(ctx context.Context) error {
+	if o.Plan.Compose == nil {
+		return nil
+	}
+	var firstErr error
+	for name := range o.Plan.Compose.Services {
+		if name == o.Plan.Service {
+			continue
+		}
+		if err := o.Substrate.Stop(ctx, o.containerName(name)); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 func (o *Orchestration) injectAllHosts(ctx context.Context) error {
 	if o.Plan.Compose == nil {
 		return nil

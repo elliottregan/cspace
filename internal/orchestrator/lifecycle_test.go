@@ -227,3 +227,47 @@ func TestUpInjectsHostsIntoAllMicrovms(t *testing.T) {
 		}
 	}
 }
+
+func TestDownStopsAllSidecars(t *testing.T) {
+	stub := newStub()
+	orch := &Orchestration{
+		Sandbox: "mercury", Project: "rr",
+		Plan: &devcontainer.Plan{
+			Devcontainer: &devcontainer.Config{Service: "app"},
+			Compose: &v2.Project{
+				Services: map[string]*v2.Service{
+					"app":     {Name: "app", Image: "alpine"},
+					"backend": {Name: "backend", Image: "be"},
+					"dash":    {Name: "dash", Image: "dash"},
+				},
+			},
+			Service: "app",
+		},
+		Substrate: stub,
+	}
+	if err := orch.Down(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(stub.stops) != 2 {
+		t.Fatalf("expected 2 stops (no app), got %v", stub.stops)
+	}
+	for _, s := range stub.stops {
+		if s == orch.containerName("app") {
+			t.Fatalf("app should not be stopped by orchestrator: %v", stub.stops)
+		}
+	}
+}
+
+func TestDownNoComposeIsNoOp(t *testing.T) {
+	stub := newStub()
+	orch := &Orchestration{
+		Plan: &devcontainer.Plan{Devcontainer: &devcontainer.Config{}},
+		Substrate: stub,
+	}
+	if err := orch.Down(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(stub.stops) != 0 {
+		t.Fatalf("expected no stops, got %v", stub.stops)
+	}
+}
