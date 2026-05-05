@@ -12,8 +12,7 @@ sync-embedded:
 	@mkdir -p internal/assets/embedded
 	@touch internal/assets/embedded/.gitkeep
 	@cp -r lib/templates internal/assets/embedded/
-	@mkdir -p internal/assets/embedded/runtime
-	@cp -r lib/runtime/scripts internal/assets/embedded/runtime/scripts
+	@cp -r lib/runtime internal/assets/embedded/
 	@cp -r lib/agent-supervisor-bun internal/assets/embedded/
 	@rm -rf internal/assets/embedded/agent-supervisor-bun/node_modules
 	@cp lib/defaults.json internal/assets/embedded/
