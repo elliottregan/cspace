@@ -61,8 +61,8 @@ func TestExtractTo_CreatesFiles(t *testing.T) {
 	keyFiles := []string{
 		"defaults.json",
 		"templates/Dockerfile",
-		"scripts/cspace-entrypoint.sh",
-		"scripts/cspace-supervisor-loop.sh",
+		"runtime/scripts/cspace-entrypoint.sh",
+		"runtime/scripts/cspace-supervisor-loop.sh",
 	}
 
 	for _, f := range keyFiles {
@@ -84,7 +84,7 @@ func TestExtractTo_PreservesStructure(t *testing.T) {
 	// Check directory structure
 	expectedDirs := []string{
 		"templates",
-		"scripts",
+		"runtime/scripts",
 		"agent-supervisor-bun",
 	}
 
@@ -111,8 +111,8 @@ func TestExtractTo_ShellScriptsExecutable(t *testing.T) {
 
 	// Check that .sh files are executable
 	shFiles := []string{
-		"scripts/cspace-entrypoint.sh",
-		"scripts/cspace-supervisor-loop.sh",
+		"runtime/scripts/cspace-entrypoint.sh",
+		"runtime/scripts/cspace-supervisor-loop.sh",
 	}
 
 	for _, f := range shFiles {

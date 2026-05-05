@@ -192,10 +192,10 @@ WORKDIR /workspace
 # events.ndjson lives on a host bind-mount so it persists across restarts
 # and even cspace down + cspace up cycles.
 USER root
-COPY lib/scripts/cspace-entrypoint.sh /usr/local/bin/cspace-entrypoint.sh
-COPY lib/scripts/cspace-supervisor-loop.sh /usr/local/bin/cspace-supervisor-loop.sh
-COPY lib/scripts/cspace-install-plugins.sh /usr/local/bin/cspace-install-plugins.sh
-COPY lib/scripts/statusline.sh /usr/local/bin/cspace-statusline.sh
+COPY lib/runtime/scripts/cspace-entrypoint.sh /usr/local/bin/cspace-entrypoint.sh
+COPY lib/runtime/scripts/cspace-supervisor-loop.sh /usr/local/bin/cspace-supervisor-loop.sh
+COPY lib/runtime/scripts/cspace-install-plugins.sh /usr/local/bin/cspace-install-plugins.sh
+COPY lib/runtime/scripts/statusline.sh /usr/local/bin/cspace-statusline.sh
 RUN chmod +x /usr/local/bin/cspace-entrypoint.sh \
             /usr/local/bin/cspace-supervisor-loop.sh \
             /usr/local/bin/cspace-install-plugins.sh \
