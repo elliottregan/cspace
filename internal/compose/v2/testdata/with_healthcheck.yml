@@ -1,0 +1,12 @@
+services:
+  backend:
+    image: ghcr.io/get-convex/convex-backend:latest
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3210/version"]
+      interval: 5s
+      start_period: 10s
+  dashboard:
+    image: ghcr.io/get-convex/convex-dashboard:latest
+    depends_on:
+      backend:
+        condition: service_healthy
