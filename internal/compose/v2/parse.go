@@ -16,6 +16,26 @@ func Parse(ctx context.Context, path string) (*Project, error) {
 	if err != nil {
 		return nil, err
 	}
+	// First pass: load with all profiles activated to check for profile usage.
+	// This allows validateSubset to see if any service uses profiles.
+	optsPrecheck, err := cli.NewProjectOptions(
+		[]string{abs},
+		cli.WithName(filepath.Base(filepath.Dir(abs))),
+		cli.WithResolvedPaths(true),
+		cli.WithProfiles([]string{"*"}), // Activate all profiles for validation check
+	)
+	if err != nil {
+		return nil, fmt.Errorf("compose options: %w", err)
+	}
+	cgProjPrecheck, err := optsPrecheck.LoadProject(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("compose load: %w", err)
+	}
+	if err := validateSubset(cgProjPrecheck); err != nil {
+		return nil, err
+	}
+
+	// Second pass: load normally (without forcing all profiles) for actual use
 	opts, err := cli.NewProjectOptions(
 		[]string{abs},
 		cli.WithName(filepath.Base(filepath.Dir(abs))),
@@ -28,8 +48,6 @@ func Parse(ctx context.Context, path string) (*Project, error) {
 	if err != nil {
 		return nil, fmt.Errorf("compose load: %w", err)
 	}
-	// Subset validation lives in subset.go (Task 8 will add it).
-	// For now, translate everything we can.
 	return translate(cgProj, abs)
 }
 

@@ -1,0 +1,4 @@
+services:
+  app:
+    image: alpine
+    cap_add: [NET_ADMIN]
