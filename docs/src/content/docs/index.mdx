@@ -1,9 +1,10 @@
 ---
 title: cspace
-description: Autonomous devcontainer workspaces for Claude Code
+description: Isolated development environments for Claude Code, on Apple Container microVMs.
 template: splash
 hero:
-  tagline: Portable CLI for managing isolated Claude Code devcontainer instances. Spin up multiple independent development environments, each with their own workspace, browser sidecars, and network firewall — then run autonomous Claude agents against GitHub issues.
+  tagline: |
+    Spin up per-task microVM dev environments with friendly hostnames, browser sidecars, and a Claude Code agent — clean host, no Docker, no proxy. macOS-only.
   actions:
     - text: Get Started
       link: /getting-started/installation/
@@ -14,4 +15,23 @@ hero:
       icon: external
 ---
 
-Documentation will be rewritten post-cutover.
+## What's in v1
+
+- **Per-sandbox microVMs** with their own routable IP on `192.168.64.0/24`
+- **Friendly hostnames** at `<sandbox>.<project>.cspace2.local`, resolving identically from the host browser and from in-sandbox playwright
+- **Loopback NAT** so dev servers (vite, next dev, etc.) are reachable without `--host=0.0.0.0`
+- **Cattle-not-pets persistence** — host bind-mounts for clones and sessions survive `cspace down`
+- **Bun-based supervisor** that resumes sessions across container restarts
+- **Auto-attach** — `cspace up` drops you into an interactive `claude` session by default
+
+## Reference
+
+- [Installation](/getting-started/installation/) — set up the host (one-time)
+- [Quick start](/getting-started/quick-start/) — boot your first sandbox in 5 minutes
+- [CLI overview](/cli-reference/overview/) — every command, grouped by purpose
+- [Configuration reference](/configuration/configuration-reference/) — `.cspace.json` schema
+- [Architecture](/architecture/architecture-overview/) — how the microVM, supervisor, networking, and daemon fit together
+
+## Status
+
+v1 is in release-candidate. Tap with `brew install elliottregan/cspace/cspace-rc`. Stable v0.x users should stay on `cspace` until v1.0.0 ships.
