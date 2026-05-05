@@ -13,13 +13,13 @@ import (
 type stubSubstrate struct {
 	runs  []ServiceSpec
 	stops []string
-	execs map[string][]string
+	execs map[string][][]string // container → list of cmds
 	ips   map[string]string
 }
 
 func newStub() *stubSubstrate {
 	return &stubSubstrate{
-		execs: map[string][]string{},
+		execs: map[string][][]string{},
 		ips:   map[string]string{},
 	}
 }
@@ -32,7 +32,7 @@ func (s *stubSubstrate) Run(_ context.Context, spec ServiceSpec) (string, error)
 }
 
 func (s *stubSubstrate) Exec(_ context.Context, name string, cmd []string) (string, error) {
-	s.execs[name] = cmd
+	s.execs[name] = append(s.execs[name], cmd)
 	return "", nil
 }
 
@@ -50,6 +50,7 @@ func (s *stubSubstrate) IP(_ context.Context, name string) (string, error) {
 
 func TestUpSpawnsAllNonSandboxServices(t *testing.T) {
 	stub := newStub()
+	stub.ips["mercury"] = "192.168.64.40" // sandbox
 	orch := &Orchestration{
 		Sandbox: "mercury",
 		Project: "rr",
@@ -194,5 +195,35 @@ func TestUpResolvesNamedVolume(t *testing.T) {
 	}
 	if stub.runs[0].Volumes[0].GuestPath != "/var/lib/postgresql" {
 		t.Fatalf("guest=%q", stub.runs[0].Volumes[0].GuestPath)
+	}
+}
+
+func TestUpInjectsHostsIntoAllMicrovms(t *testing.T) {
+	stub := newStub()
+	stub.ips["mercury"] = "192.168.64.40" // sandbox
+	orch := &Orchestration{
+		Sandbox: "mercury", Project: "rr",
+		Plan: &devcontainer.Plan{
+			Devcontainer: &devcontainer.Config{},
+			Compose: &v2.Project{
+				SourcePath: "/tmp/compose.yml",
+				Services: map[string]*v2.Service{
+					"app":     {Name: "app", Image: "alpine"},
+					"backend": {Name: "backend", Image: "be"},
+				},
+			},
+			Service: "app",
+		},
+		Substrate: stub,
+	}
+	if err := orch.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// We should have execs against both the sandbox container "mercury"
+	// and the spawned sidecar "cspace-rr-mercury-backend".
+	for _, name := range []string{"mercury", orch.containerName("backend")} {
+		if _, ok := stub.execs[name]; !ok {
+			t.Errorf("no exec recorded for %s; got %v", name, stub.execs)
+		}
 	}
 }

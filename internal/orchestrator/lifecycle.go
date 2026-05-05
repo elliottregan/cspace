@@ -64,6 +64,12 @@ func (o *Orchestration) Up(ctx context.Context) error {
 			}
 		}
 	}
+	// Build IP map: every compose service (sandbox + sidecars) by its
+	// compose-declared name. The workspace's sandbox IP comes via the
+	// substrate; sidecar IPs were captured by Substrate.Run.
+	if err := o.injectAllHosts(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -131,4 +137,37 @@ func needsHealthy(p *v2.Project, name string) bool {
 		}
 	}
 	return false
+}
+
+func (o *Orchestration) injectAllHosts(ctx context.Context) error {
+	if o.Plan.Compose == nil {
+		return nil
+	}
+	ips := map[string]string{}
+	for name := range o.Plan.Compose.Services {
+		var target string
+		if name == o.Plan.Service {
+			target = o.Sandbox
+		} else {
+			target = o.containerName(name)
+		}
+		ip, err := o.Substrate.IP(ctx, target)
+		if err != nil {
+			return fmt.Errorf("ip lookup for %q: %w", name, err)
+		}
+		ips[name] = ip
+	}
+	content := renderHosts(ips)
+	for name := range o.Plan.Compose.Services {
+		var target string
+		if name == o.Plan.Service {
+			target = o.Sandbox
+		} else {
+			target = o.containerName(name)
+		}
+		if err := injectHosts(ctx, o.Substrate, target, content); err != nil {
+			return err
+		}
+	}
+	return nil
 }
