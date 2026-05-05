@@ -129,6 +129,14 @@ func (o *Orchestration) containerName(svc string) string {
 	return fmt.Sprintf("cspace-%s-%s-%s", o.Project, o.Sandbox, svc)
 }
 
+// sandboxContainerName returns the substrate-level name for the
+// workspace sandbox itself (NOT a sidecar). cmd_up names the sandbox
+// container `cspace-<project>-<sandbox>`; the orchestrator uses this
+// when it needs to talk to the sandbox (IP lookup, /etc/hosts inject).
+func (o *Orchestration) sandboxContainerName() string {
+	return fmt.Sprintf("cspace-%s-%s", o.Project, o.Sandbox)
+}
+
 // needsHealthy reports whether any other service depends on `name`
 // with the service_healthy condition.
 func needsHealthy(p *v2.Project, name string) bool {
@@ -170,7 +178,7 @@ func (o *Orchestration) injectAllHosts(ctx context.Context) error {
 	for name := range o.Plan.Compose.Services {
 		var target string
 		if name == o.Plan.Service {
-			target = o.Sandbox
+			target = o.sandboxContainerName()
 		} else {
 			target = o.containerName(name)
 		}
@@ -184,7 +192,7 @@ func (o *Orchestration) injectAllHosts(ctx context.Context) error {
 	for name := range o.Plan.Compose.Services {
 		var target string
 		if name == o.Plan.Service {
-			target = o.Sandbox
+			target = o.sandboxContainerName()
 		} else {
 			target = o.containerName(name)
 		}

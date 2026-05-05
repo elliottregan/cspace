@@ -50,7 +50,7 @@ func (s *stubSubstrate) IP(_ context.Context, name string) (string, error) {
 
 func TestUpSpawnsAllNonSandboxServices(t *testing.T) {
 	stub := newStub()
-	stub.ips["mercury"] = "192.168.64.40" // sandbox
+	stub.ips["cspace-rr-mercury"] = "192.168.64.40" // sandbox
 	orch := &Orchestration{
 		Sandbox: "mercury",
 		Project: "rr",
@@ -200,7 +200,7 @@ func TestUpResolvesNamedVolume(t *testing.T) {
 
 func TestUpInjectsHostsIntoAllMicrovms(t *testing.T) {
 	stub := newStub()
-	stub.ips["mercury"] = "192.168.64.40" // sandbox
+	stub.ips["cspace-rr-mercury"] = "192.168.64.40" // sandbox
 	orch := &Orchestration{
 		Sandbox: "mercury", Project: "rr",
 		Plan: &devcontainer.Plan{
@@ -219,9 +219,9 @@ func TestUpInjectsHostsIntoAllMicrovms(t *testing.T) {
 	if err := orch.Up(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	// We should have execs against both the sandbox container "mercury"
-	// and the spawned sidecar "cspace-rr-mercury-backend".
-	for _, name := range []string{"mercury", orch.containerName("backend")} {
+	// We should have execs against both the sandbox container
+	// "cspace-rr-mercury" and the sidecar "cspace-rr-mercury-backend".
+	for _, name := range []string{"cspace-rr-mercury", orch.containerName("backend")} {
 		if _, ok := stub.execs[name]; !ok {
 			t.Errorf("no exec recorded for %s; got %v", name, stub.execs)
 		}
