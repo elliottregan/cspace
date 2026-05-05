@@ -66,6 +66,16 @@ type CspaceCustomizations struct {
 	Resources          *Resources          `json:"resources,omitempty"`
 	Plugins            []string            `json:"plugins,omitempty"`
 	FirewallDomains    []string            `json:"firewallDomains,omitempty"`
+	// Browser opts the sandbox into cspace's headless-Chromium sidecar
+	// (the `cspace up --browser` codepath). The sidecar exposes a CDP
+	// endpoint at $CSPACE_BROWSER_CDP_URL for the agent's MCP browser
+	// tools and a Playwright run-server WS endpoint at
+	// $PW_TEST_CONNECT_WS_ENDPOINT for project e2e tests using
+	// @playwright/test. The workspace's hostname is made resolvable
+	// inside the sidecar as `workspace`, so test code can hit
+	// http://workspace:<port> as BASE_URL when the dev server runs in
+	// the workspace itself.
+	Browser bool `json:"browser,omitempty"`
 }
 
 type ExtractCredential struct {

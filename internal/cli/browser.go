@@ -14,7 +14,19 @@ import (
 // publishes Linux/arm64 builds; the apt-get-install-socat hack inside the
 // run command means we don't need a custom image yet. P2/P3 may build a
 // leaner image; for now this is fine.
-const browserImage = "mcr.microsoft.com/playwright:v1.58.0-noble"
+//
+// Pinning matches the agent's @playwright/mcp install in the cspace base
+// image; bump both together when upgrading.
+const browserImage = "mcr.microsoft.com/playwright:v1.58.2-noble"
+
+// browserRunServerPort is where the sidecar's `playwright run-server`
+// listens. Project tests connect via PW_TEST_CONNECT_WS_ENDPOINT.
+const browserRunServerPort = 3000
+
+// browserCDPPort is where the sidecar's headless Chromium exposes
+// DevTools Protocol. The agent's playwright-mcp / chrome-devtools-mcp
+// connect via CSPACE_BROWSER_CDP_URL.
+const browserCDPPort = 9222
 
 // browserContainerName returns the canonical sidecar name for a sandbox,
 // in lockstep with cspace up's containerName template plus a "-browser"
@@ -38,8 +50,16 @@ func browserContainerName(project, sandbox string) string {
 // default DNS is broken, and the sidecar is NOT a cspace container so it
 // doesn't go through our substrate adapter's DNS injection. Without these,
 // `apt-get update` inside the sidecar hangs.
-func startBrowserSidecar(ctx context.Context, project, sandbox string) (containerName, cdpURL string, err error) {
-	containerName = browserContainerName(project, sandbox)
+// BrowserSidecar describes a started browser sidecar's reachable endpoints.
+type BrowserSidecar struct {
+	ContainerName  string // substrate container name
+	IP             string // vmnet IP (used for /etc/hosts inject in workspace)
+	CDPURL         string // http://<ip>:9222 — for $CSPACE_BROWSER_CDP_URL
+	RunServerWSURL string // ws://<ip>:3000/ — for $PW_TEST_CONNECT_WS_ENDPOINT
+}
+
+func startBrowserSidecar(ctx context.Context, project, sandbox string) (*BrowserSidecar, error) {
+	containerName := browserContainerName(project, sandbox)
 
 	// Idempotency: torch any prior container with the same name.
 	_ = exec.CommandContext(ctx, "container", "stop", containerName).Run()
@@ -84,22 +104,29 @@ func startBrowserSidecar(ctx context.Context, project, sandbox string) (containe
 			"--remote-debugging-port=9223 about:blank & " +
 			// 5) Wait for chrome's CDP to be ready.
 			"until curl -sf http://127.0.0.1:9223/json/version >/dev/null 2>&1; do sleep 0.5; done; " +
-			// 6) Expose CDP on 9222 via socat (loopback → external).
-			"exec socat TCP-LISTEN:9222,fork,reuseaddr TCP:127.0.0.1:9223",
+			// 6) Forward CDP loopback → external for siblings.
+			fmt.Sprintf("socat TCP-LISTEN:%d,fork,reuseaddr TCP:127.0.0.1:9223 & ", browserCDPPort) +
+			// 7) Start Playwright run-server in the foreground for
+			//    project tests using PW_TEST_CONNECT_WS_ENDPOINT.
+			//    `npx playwright` resolves to the version baked into
+			//    the image, which we keep in lockstep with the agent's
+			//    @playwright/mcp pin (see browserImage).
+			fmt.Sprintf("exec npx -y playwright run-server --port %d --host 0.0.0.0", browserRunServerPort),
 	}
 	cmd := exec.CommandContext(ctx, "container", args...)
 	if out, runErr := cmd.CombinedOutput(); runErr != nil {
-		return "", "", fmt.Errorf("start browser sidecar: %w (%s)", runErr, strings.TrimSpace(string(out)))
+		return nil, fmt.Errorf("start browser sidecar: %w (%s)", runErr, strings.TrimSpace(string(out)))
 	}
 
 	// Capture sidecar IP.
 	ip, err := waitForBrowserIP(ctx, containerName, 30*time.Second)
 	if err != nil {
 		stopBrowserSidecar(context.Background(), containerName)
-		return "", "", fmt.Errorf("browser sidecar IP: %w", err)
+		return nil, fmt.Errorf("browser sidecar IP: %w", err)
 	}
 
-	cdpURL = fmt.Sprintf("http://%s:9222", ip)
+	cdpURL := fmt.Sprintf("http://%s:%d", ip, browserCDPPort)
+	wsURL := fmt.Sprintf("ws://%s:%d/", ip, browserRunServerPort)
 
 	// Wait for CDP endpoint to actually respond. apt-get update +
 	// install socat against fresh apt indices can run 30–60s in the
@@ -108,10 +135,39 @@ func startBrowserSidecar(ctx context.Context, project, sandbox string) (containe
 	// (no network / wrong image) wait too long.
 	if err := waitForCDP(ctx, cdpURL, 90*time.Second); err != nil {
 		stopBrowserSidecar(context.Background(), containerName)
-		return "", "", fmt.Errorf("browser sidecar CDP: %w", err)
+		return nil, fmt.Errorf("browser sidecar CDP: %w", err)
 	}
 
-	return containerName, cdpURL, nil
+	return &BrowserSidecar{
+		ContainerName:  containerName,
+		IP:             ip,
+		CDPURL:         cdpURL,
+		RunServerWSURL: wsURL,
+	}, nil
+}
+
+// InjectWorkspaceHost writes a /etc/hosts entry inside the browser sidecar
+// mapping `workspace` → workspaceIP. Project test code can then use
+// http://workspace:<port> as BASE_URL when the dev/preview server is in
+// the workspace sandbox itself. Best-effort; failures log and continue.
+func InjectWorkspaceHost(ctx context.Context, sidecarName, workspaceIP string) error {
+	if sidecarName == "" || workspaceIP == "" {
+		return nil
+	}
+	// Strip any prior cspace-injected block, then append. Idempotent.
+	clean := exec.CommandContext(ctx, "container", "exec", "--user", "0", sidecarName,
+		"sh", "-c",
+		"sed -i '/^# BEGIN cspace-injected$/,/^# END cspace-injected$/d' /etc/hosts")
+	if out, err := clean.CombinedOutput(); err != nil {
+		return fmt.Errorf("clean hosts in %s: %w (%s)", sidecarName, err, strings.TrimSpace(string(out)))
+	}
+	add := exec.CommandContext(ctx, "container", "exec", "--user", "0", sidecarName,
+		"sh", "-c",
+		fmt.Sprintf("printf '# BEGIN cspace-injected\\n%s workspace\\n# END cspace-injected\\n' >> /etc/hosts", workspaceIP))
+	if out, err := add.CombinedOutput(); err != nil {
+		return fmt.Errorf("inject hosts in %s: %w (%s)", sidecarName, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // waitForBrowserIP polls `container inspect <name>` until it returns a

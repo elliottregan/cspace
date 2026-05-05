@@ -102,6 +102,17 @@ USER root
 RUN ln -sf /home/dev/.bun/bin/bun /usr/local/bin/bun \
  && ln -sf /home/dev/.bun/bin/claude /usr/local/bin/claude
 
+# Browser MCP servers — clients only (no chromium binary baked).
+# The supervisor's claude-runner.ts always registers these as MCP servers
+# and passes --cdp-endpoint / --browser-url when CSPACE_BROWSER_CDP_URL is
+# set. Without these binaries on PATH, the MCP registration fails at boot
+# even when the project doesn't intend to use them.
+# Chromium itself comes from a project-declared Playwright sidecar (see
+# resume-redux/.devcontainer/docker-compose.yml for the pattern) or
+# `cspace up --browser` (cspace-managed Chromium sidecar).
+RUN npm install -g @playwright/mcp@0.0.72 chrome-devtools-mcp@0.23.0 \
+ && playwright-mcp --version
+
 # Repair home ownership after root-USER global installs landed under HOME=/home/dev.
 RUN chown -R dev:dev /home/dev
 

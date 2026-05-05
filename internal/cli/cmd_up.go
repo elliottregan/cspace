@@ -423,19 +423,38 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// On any subsequent error (substrate run, IP capture, registry
 			// write, …) we tear the sidecar down via the deferred cleanup
 			// below so we don't leak containers.
+			//
+			// devcontainer.json's customizations.cspace.browser=true also
+			// enables the sidecar — same path as the explicit --browser
+			// flag. Project authors opt in once and the agent gets browser
+			// MCP + Playwright run-server without further setup.
+			browserEnabled := withBrowser
+			if devcontainerPlan != nil && devcontainerPlan.Devcontainer != nil &&
+				devcontainerPlan.Devcontainer.Customizations.Cspace.Browser {
+				browserEnabled = true
+			}
 			var browserContainer string
-			if withBrowser {
-				cName, cdpURL, berr := startBrowserSidecar(ctx, project, name)
+			var browserSidecar *BrowserSidecar
+			if browserEnabled {
+				bs, berr := startBrowserSidecar(ctx, project, name)
 				if berr != nil {
 					return fmt.Errorf("browser sidecar: %w", berr)
 				}
-				browserContainer = cName
-				env["CSPACE_BROWSER_CDP_URL"] = cdpURL
+				browserSidecar = bs
+				browserContainer = bs.ContainerName
+				env["CSPACE_BROWSER_CDP_URL"] = bs.CDPURL
+				env["PW_TEST_CONNECT_WS_ENDPOINT"] = bs.RunServerWSURL
+				// Stable hostname agents/scripts use to reach the dev
+				// or preview server running inside the workspace from
+				// the browser sidecar. Hosts entry written below once
+				// the workspace IP is known.
+				env["CSPACE_WORKSPACE_HOST"] = "workspace"
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-					"browser sidecar: %s (cdp %s)\n", cName, cdpURL)
+					"browser sidecar: %s (cdp %s, run-server %s)\n",
+					bs.ContainerName, bs.CDPURL, bs.RunServerWSURL)
 				defer func() {
 					if err != nil {
-						stopBrowserSidecar(context.Background(), cName)
+						stopBrowserSidecar(context.Background(), bs.ContainerName)
 					}
 				}()
 			}
@@ -488,6 +507,24 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				_ = a.Stop(context.Background(), containerName)
 				err = fmt.Errorf("acquire container IP: %w", ipErr)
 				return err
+			}
+
+			// If a browser sidecar is running, inject `workspace` into
+			// /etc/hosts on BOTH sides so http://workspace:<port> is a
+			// universal URL: scripts inside the workspace use 127.0.0.1
+			// (preview server is local), the browser running in the
+			// sidecar uses the workspace's vmnet IP. e2e flows can then
+			// use the same BASE_URL for both the readiness probe and
+			// the URL Playwright opens. Best-effort.
+			if browserSidecar != nil {
+				if hErr := InjectWorkspaceHost(ctx, browserSidecar.ContainerName, ip); hErr != nil {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+						"[cspace] warning: inject workspace host into browser sidecar: %v\n", hErr)
+				}
+				if hErr := InjectWorkspaceHost(ctx, containerName, "127.0.0.1"); hErr != nil {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+						"[cspace] warning: inject workspace host into workspace: %v\n", hErr)
+				}
 			}
 
 			// Compose sidecars: spawn and wait for healthchecks, inject
