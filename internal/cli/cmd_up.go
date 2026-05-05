@@ -20,6 +20,7 @@ import (
 	"github.com/elliottregan/cspace/internal/overlay"
 	"github.com/elliottregan/cspace/internal/planets"
 	"github.com/elliottregan/cspace/internal/registry"
+	"github.com/elliottregan/cspace/internal/runtime"
 	"github.com/elliottregan/cspace/internal/secrets"
 	"github.com/elliottregan/cspace/internal/substrate"
 	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
@@ -357,6 +358,16 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 					}
 				}()
 			}
+
+			// Materialize the runtime overlay tree (scripts, eventually supervisor)
+			// to ~/.cspace/runtime/<Version>/ and bind-mount it at /opt/cspace inside
+			// the microVM. This decouples cspace runtime upgrades from project image
+			// rebuilds — script tweaks ship via the cspace binary, no docker pull.
+			_, overlayPath, err := runtime.Extract(Version)
+			if err != nil {
+				return fmt.Errorf("extract runtime overlay: %w", err)
+			}
+			spec.RuntimeOverlayPath = overlayPath
 
 			// Early registry write — claim the slot BEFORE substrate Run so any
 			// crash between here and MarkReady leaves a state=starting entry
