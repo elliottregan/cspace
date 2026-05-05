@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	v2 "github.com/elliottregan/cspace/internal/compose/v2"
@@ -99,5 +100,59 @@ func TestContainerNameFormat(t *testing.T) {
 	want := "cspace-rr-mercury-convex-backend"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestSpawnOrderHonorsDependsOn(t *testing.T) {
+	stub := newStub()
+	orch := &Orchestration{
+		Sandbox: "m", Project: "p",
+		Plan: &devcontainer.Plan{
+			Devcontainer: &devcontainer.Config{},
+			Compose: &v2.Project{
+				Services: map[string]*v2.Service{
+					"backend": {Name: "backend", Image: "be"},
+					"dashboard": {
+						Name:      "dashboard",
+						Image:     "dash",
+						DependsOn: []v2.Dependency{{Name: "backend", Condition: "service_started"}},
+					},
+				},
+			},
+		},
+		Substrate: stub,
+	}
+	if err := orch.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(stub.runs) != 2 {
+		t.Fatalf("expected 2 spawns, got %d", len(stub.runs))
+	}
+	if stub.runs[0].Name != orch.containerName("backend") {
+		t.Fatalf("backend should spawn first; got runs[0]=%q", stub.runs[0].Name)
+	}
+	if stub.runs[1].Name != orch.containerName("dashboard") {
+		t.Fatalf("dashboard should spawn second; got runs[1]=%q", stub.runs[1].Name)
+	}
+}
+
+func TestCycleDetected(t *testing.T) {
+	stub := newStub()
+	orch := &Orchestration{
+		Sandbox: "m", Project: "p",
+		Plan: &devcontainer.Plan{
+			Devcontainer: &devcontainer.Config{},
+			Compose: &v2.Project{
+				Services: map[string]*v2.Service{
+					"a": {Name: "a", DependsOn: []v2.Dependency{{Name: "b"}}},
+					"b": {Name: "b", DependsOn: []v2.Dependency{{Name: "a"}}},
+				},
+			},
+		},
+		Substrate: stub,
+	}
+	err := orch.Up(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("want cycle error, got %v", err)
 	}
 }
