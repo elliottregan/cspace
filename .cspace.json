@@ -19,6 +19,6 @@
   "agent": {
     "issue_label": "ready"
   },
-  "services": "",
+  "services": {},
   "post_setup": ""
 }

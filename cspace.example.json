@@ -27,6 +27,16 @@
   "agent": {
     "issue_label": "ready"
   },
-  "services": ".cspace/docker-compose.yml",
+  "services": {
+    "convex": {
+      "image": "ghcr.io/get-convex/convex-backend:latest",
+      "publish_port": 3210,
+      "healthcheck": { "path": "/version", "timeout_seconds": 30 },
+      "extract_credentials": {
+        "command": ["/generate_admin_key.sh"],
+        "env_var": "ADMIN_KEY"
+      }
+    }
+  },
   "post_setup": ".cspace/post-setup.sh"
 }
