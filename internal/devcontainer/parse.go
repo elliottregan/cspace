@@ -29,6 +29,10 @@ func Load(path string) (*Config, error) {
 	}
 	cfg.SourcePath = path
 	cfg.Unknown = filterUnknown(unknown)
+	// Resolve devcontainer-spec ${localEnv:VAR} substitutions against the
+	// host environment. Done after JSON parse + before Validate so the
+	// rest of the pipeline (orchestrator, cmd_up) sees concrete values.
+	cfg.resolveLocalEnv()
 	return &cfg, nil
 }
 
