@@ -2,6 +2,8 @@
 // validates them against cspace's supported subset of the spec.
 package devcontainer
 
+import "encoding/json"
+
 type Config struct {
 	Name              string              `json:"name,omitempty"`
 	Image             string              `json:"image,omitempty"`
@@ -96,4 +98,24 @@ func (c Config) ShouldTrim(ec ExtractCredential) bool {
 		return true
 	}
 	return *ec.Trim
+}
+
+func (s *StringOrSlice) UnmarshalJSON(b []byte) error {
+	if len(b) == 0 || string(b) == "null" {
+		return nil
+	}
+	if b[0] == '"' {
+		var single string
+		if err := json.Unmarshal(b, &single); err != nil {
+			return err
+		}
+		*s = StringOrSlice{single}
+		return nil
+	}
+	var slice []string
+	if err := json.Unmarshal(b, &slice); err != nil {
+		return err
+	}
+	*s = slice
+	return nil
 }
