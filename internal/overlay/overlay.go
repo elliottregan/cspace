@@ -32,6 +32,7 @@ const (
 	PhaseDaemon                  // ensureRegistryDaemon
 	PhaseClone                   // provisionClone
 	PhaseBoot                    // substrate.Run + waitForIP
+	PhasePlugins                 // entrypoint installing claude plugins
 	PhaseSupervisor              // waitForHealth
 	PhaseReady                   // MarkReady, terminal success
 )
@@ -47,17 +48,20 @@ var phaseLabels = map[Phase]string{
 	PhaseDaemon:     "starting cspace daemon",
 	PhaseClone:      "preparing workspace",
 	PhaseBoot:       "booting microVM",
+	PhasePlugins:    "installing claude plugins",
 	PhaseSupervisor: "starting supervisor",
 	PhaseReady:      "ready",
 }
 
 // Event is the message a channel-backed reporter sends to the running
-// overlay. Exactly one of Phase / Err / Done should be set per Event;
-// the receiver matches on whichever is non-zero (Done > Err > Phase).
+// overlay. Exactly one of Phase / Err / Done / Status should be set
+// per Event; the receiver matches on whichever is non-zero. Status
+// updates a free-text sub-label without changing focus.
 type Event struct {
-	Phase Phase
-	Err   error
-	Done  bool
+	Phase  Phase
+	Status string
+	Err    error
+	Done   bool
 }
 
 // Reporter is the worker-side handle the boot pipeline calls into to
@@ -70,6 +74,7 @@ type Event struct {
 // The boot pipeline doesn't need to know which one it has.
 type Reporter interface {
 	Phase(p Phase)
+	Status(text string) // free-text sub-label for the current phase
 	Done()
 	Error(err error)
 }
@@ -77,6 +82,7 @@ type Reporter interface {
 type chanReporter struct{ ch chan<- Event }
 
 func (r *chanReporter) Phase(p Phase)     { r.ch <- Event{Phase: p} }
+func (r *chanReporter) Status(text string) { r.ch <- Event{Status: text} }
 func (r *chanReporter) Done()             { r.ch <- Event{Done: true} }
 func (r *chanReporter) Error(err error)   { r.ch <- Event{Err: err} }
 
@@ -94,6 +100,12 @@ func (r *LineReporter) Phase(p Phase) {
 		return
 	}
 	_, _ = fmt.Fprintf(r.Out, "[%d/%d] %s\n", int(p), TotalPhases, label)
+}
+func (r *LineReporter) Status(text string) {
+	if r.Out == nil || text == "" {
+		return
+	}
+	_, _ = fmt.Fprintf(r.Out, "      %s\n", text)
 }
 func (r *LineReporter) Done()           {}
 func (r *LineReporter) Error(err error) {}
@@ -175,6 +187,7 @@ type model struct {
 	name        string
 	planet      planets.Planet
 	targetPhase Phase     // last phase the reporter advanced to
+	status      string    // free-text sub-label below the phase label
 	focus       float64   // animated 0.0..1.0; lerps toward targetPhase/TotalPhases
 	doneAt      time.Time // when reporter signaled Done; zero = still in progress
 	err         error
@@ -214,12 +227,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// pull and then quit after finalHoldDur. Without this,
 			// fast boots flash through the last few frames.
 			m.targetPhase = PhaseReady
+			m.status = ""
 			if m.doneAt.IsZero() {
 				m.doneAt = time.Now()
 			}
+		case msg.Status != "":
+			m.status = msg.Status
 		default:
 			if msg.Phase > m.targetPhase {
 				m.targetPhase = msg.Phase
+				// Phase advance clears stale per-phase status text.
+				m.status = ""
 			}
 		}
 		return m, nextEventCmd(m.events)
@@ -300,6 +318,14 @@ func (m model) View() string {
 	dim := lipgloss.NewStyle().Faint(true)
 	b.WriteString(m.spinner.View() + dim.Render(" "+m.name+"  "+label))
 	b.WriteString("\n")
+	if m.status != "" {
+		// Sub-label, dimmed further. Used for per-step progress within
+		// a phase — e.g. "installing 3/12: github" while plugins phase
+		// is active.
+		moreDim := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
+		b.WriteString("  " + moreDim.Render(m.status))
+		b.WriteString("\n")
+	}
 	content := b.String()
 	if m.width > 0 && m.height > 0 {
 		// Fill the entire alt-screen with the same near-black the

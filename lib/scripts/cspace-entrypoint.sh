@@ -154,13 +154,24 @@ if [ -x "$IPTABLES" ] && [ -x "$SYSCTL" ]; then
     fi
 fi
 
+# Boot status file (read by the host overlay to advance phases). The
+# /sessions mount is bind-mounted from the host's
+# ~/.cspace/sessions/<project>/<sandbox>/, so writes here are visible
+# to the parent cspace up immediately. Single-word state machine:
+# 'plugins' → 'supervisor' → done (file removed by supervisor at
+# /health-ready time).
+STATUS_FILE=/sessions/cspace-init.status
+mkdir -p /sessions 2>/dev/null || true
+
 # Install Claude Code plugins declared in /workspace/.claude/settings.json.
 # Idempotent and best-effort — failures here don't block the supervisor.
 # Marketplaces are pre-baked under /opt/cspace/marketplaces/ so first
 # boot doesn't have to clone anything from GitHub.
 if [ -x /usr/local/bin/cspace-install-plugins.sh ]; then
+    echo plugins > "$STATUS_FILE" 2>/dev/null || true
     /usr/local/bin/cspace-install-plugins.sh || true
 fi
+echo supervisor > "$STATUS_FILE" 2>/dev/null || true
 
 # Project init hook. If the project ships /workspace/.cspace/init.sh,
 # run it once per sandbox after the workspace is mounted but before

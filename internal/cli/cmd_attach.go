@@ -45,6 +45,14 @@ func attachInteractive(containerName string) error {
 	if err != nil {
 		return fmt.Errorf("apple `container` CLI not on PATH: %w", err)
 	}
+	// Clear the terminal before claude takes over so the user gets a
+	// clean screen instead of opening claude on top of their pre-
+	// cspace-up shell history. \033c is the full reset (clear screen +
+	// scrollback + cursor home + reset attributes); claude immediately
+	// repaints over it. Stdout-only — stderr stays usable for diagnostics.
+	if isStdoutTTY() {
+		_, _ = os.Stdout.WriteString("\033c")
+	}
 	// --dangerously-skip-permissions matches the v0 default: sandboxes
 	// are isolated, so the per-tool confirmation prompts that protect
 	// host-shell users just get in the way. The supervisor's

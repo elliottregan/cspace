@@ -102,9 +102,19 @@ done
 
 # Install. claude plugins install is idempotent — already-installed
 # plugins skip with a notice, so we don't pre-filter against the list.
+#
+# Per-plugin progress to /sessions/cspace-init.status as we go, so the
+# host overlay's polling loop can show "installing 3/12: github" type
+# sub-labels under the "installing claude plugins" phase line. Format:
+#   plugins:<i>/<total>:<plugin-name>
+TOTAL=${#WANT[@]}
+i=0
 for entry in "${!WANT[@]}"; do
-    echo "[install-plugins] installing: ${entry}"
+    i=$((i + 1))
+    short="${entry%@*}"  # strip @marketplace for compact display
+    echo "plugins:${i}/${TOTAL}:${short}" > /sessions/cspace-init.status 2>/dev/null || true
+    echo "[install-plugins] installing (${i}/${TOTAL}): ${entry}"
     claude plugins install --scope user "$entry" || true
 done
 
-echo "[$(date -Iseconds)] cspace-install-plugins: done (${#WANT[@]} plugins requested)"
+echo "[$(date -Iseconds)] cspace-install-plugins: done (${TOTAL} plugins requested)"

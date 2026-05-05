@@ -417,6 +417,17 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				return err
 			}
 
+			// Watch the entrypoint's status file (written to
+			// /sessions/cspace-init.status inside the sandbox; bind-mounted
+			// from sessionsHostDir on the host). Translate single-word
+			// states to overlay phases so the user sees "installing claude
+			// plugins" while the entrypoint actually is. Stops when ctx
+			// cancels — i.e. when this RunE returns.
+			statusFile := filepath.Join(sessionsHostDir, "cspace-init.status")
+			statusCtx, statusCancel := context.WithCancel(ctx)
+			defer statusCancel()
+			go pollInitStatus(statusCtx, statusFile, rep)
+
 			// Wait for the supervisor to come up. /health responding 200 is
 			// the load-bearing readiness signal — the Bun process is listening
 			// and able to serve cspace send. Only then do we flip the entry
@@ -534,6 +545,64 @@ func waitForHealth(ctx context.Context, url, token string, max time.Duration) er
 		}
 	}
 	return fmt.Errorf("/health did not respond in %s", max)
+}
+
+// pollInitStatus watches the entrypoint's status file and emits
+// overlay phase advances + per-step status sub-labels. The file is
+// at /sessions/cspace-init.status inside the sandbox, written by
+// cspace-entrypoint.sh and cspace-install-plugins.sh — bind-mounted
+// from sessionsHostDir on the host.
+//
+// Status formats:
+//   plugins                       — entry into the plugins phase
+//   plugins:<i>/<N>:<plugin>      — per-plugin progress within phase
+//   supervisor                    — entry into the supervisor phase
+//
+// Phase advances are one-way (later phases never regress). Returns
+// when ctx cancels.
+func pollInitStatus(ctx context.Context, statusFile string, rep overlay.Reporter) {
+	var currentPhase overlay.Phase
+	var lastStatus string
+	tick := time.NewTicker(250 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		data, err := os.ReadFile(statusFile)
+		if err != nil {
+			continue
+		}
+		raw := strings.TrimSpace(string(data))
+		var phase overlay.Phase
+		var status string
+		switch {
+		case raw == "plugins":
+			phase = overlay.PhasePlugins
+		case strings.HasPrefix(raw, "plugins:"):
+			phase = overlay.PhasePlugins
+			// e.g. "plugins:3/12:github" → "installing 3/12: github"
+			rest := strings.TrimPrefix(raw, "plugins:")
+			parts := strings.SplitN(rest, ":", 2)
+			if len(parts) == 2 {
+				status = fmt.Sprintf("installing %s: %s", parts[0], parts[1])
+			}
+		case raw == "supervisor":
+			phase = overlay.PhaseSupervisor
+		default:
+			continue
+		}
+		if phase > currentPhase {
+			rep.Phase(phase)
+			currentPhase = phase
+		}
+		if status != "" && status != lastStatus {
+			rep.Status(status)
+			lastStatus = status
+		}
+	}
 }
 
 // waitForIP polls a.IP until it returns a non-empty value or the deadline passes.
