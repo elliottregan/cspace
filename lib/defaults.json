@@ -49,6 +49,6 @@
       "baseBranch": "main"
     }
   },
-  "services": {},
+  "services": "",
   "post_setup": ""
 }

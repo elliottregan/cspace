@@ -34,7 +34,7 @@ type Config struct {
 	Agent      AgentConfig              `json:"agent"`
 	Plugins    PluginsConfig            `json:"plugins"`
 	Advisors   map[string]AdvisorConfig `json:"advisors,omitempty"`
-	Services   map[string]ServiceConfig `json:"services,omitempty"`
+	Services   string                   `json:"services"`
 	PostSetup  string                   `json:"post_setup"`
 	Resources  ResourcesConfig          `json:"resources,omitempty"`
 
@@ -110,72 +110,6 @@ type AgentConfig struct {
 type PluginsConfig struct {
 	Enabled bool     `json:"enabled"`
 	Install []string `json:"install"`
-}
-
-// ServiceConfig declares a per-project sidecar microVM that cspace up
-// spawns alongside the main sandbox. Each service is reachable from
-// the main sandbox at <name>.<sandbox>.<project>.cspace.local:<port>
-// (and also at the sandbox's external IP). cspace up injects
-// CSPACE_SERVICE_<UPPER_NAME>_URL into the main sandbox's environment.
-//
-// Use cases: Convex backend, postgres, redis, anything else that has a
-// well-defined container image and listens on a port.
-type ServiceConfig struct {
-	// Image is the OCI image reference. Required.
-	Image string `json:"image"`
-
-	// PublishPort is the port the service listens on inside its
-	// microVM. cspace exposes this on the sidecar's external IP via
-	// the same loopback-NAT trick the main sandbox uses, so the main
-	// sandbox can reach it via the friendly hostname.
-	PublishPort int `json:"publish_port,omitempty"`
-
-	// Env is extra env vars injected into the sidecar at run time.
-	// Values may interpolate ${CSPACE_PROJECT}, ${CSPACE_SANDBOX_NAME},
-	// or any host env var.
-	Env map[string]string `json:"env,omitempty"`
-
-	// Healthcheck describes when the service is considered ready.
-	// cspace up waits for this to pass before spawning the main
-	// sandbox (which depends on the service being reachable).
-	Healthcheck *HealthcheckConfig `json:"healthcheck,omitempty"`
-
-	// ExtractCredentials runs a command inside the sidecar after
-	// healthcheck passes and injects the captured stdout into the
-	// main sandbox as CSPACE_SERVICE_<UPPER_NAME>_<env_var>. Used
-	// for admin-key generation patterns where the service produces
-	// a credential the main sandbox needs to authenticate against
-	// it (e.g. Convex's generate_admin_key.sh).
-	ExtractCredentials *ExtractCredentialsConfig `json:"extract_credentials,omitempty"`
-
-	// Command overrides the sidecar image's entrypoint, like docker's
-	// `command:`. Useful when the published image needs an extra flag
-	// for our use case.
-	Command []string `json:"command,omitempty"`
-}
-
-// HealthcheckConfig describes how cspace verifies a service is ready
-// before continuing with main-sandbox boot.
-type HealthcheckConfig struct {
-	// Path is the HTTP path to GET. If empty, cspace just waits for
-	// a TCP connection on Port.
-	Path string `json:"path,omitempty"`
-	// Port to probe; defaults to ServiceConfig.PublishPort.
-	Port int `json:"port,omitempty"`
-	// TimeoutSeconds is the budget for the entire wait. 60 by default.
-	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
-}
-
-// ExtractCredentialsConfig declares a command to run in the sidecar
-// to capture a credential the main sandbox needs.
-type ExtractCredentialsConfig struct {
-	// Command is the argv to exec inside the sidecar. The last line
-	// of stdout is captured as the credential value.
-	Command []string `json:"command"`
-	// EnvVar is the suffix of the env var the credential is exposed
-	// as: CSPACE_SERVICE_<UPPER_NAME>_<EnvVar>. E.g. EnvVar="ADMIN_KEY"
-	// + service name "convex" → CSPACE_SERVICE_CONVEX_ADMIN_KEY.
-	EnvVar string `json:"env_var"`
 }
 
 // Load reads and merges configuration from all sources.
