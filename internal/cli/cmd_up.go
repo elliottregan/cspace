@@ -217,6 +217,38 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				}
 			}
 
+			// Devcontainer customizations.cspace overrides. When a devcontainer.json
+			// is present, customizations.cspace.{Resources, Plugins, FirewallDomains}
+			// override the corresponding .cspace.json fields.
+			if devcontainerPlan != nil && devcontainerPlan.Devcontainer != nil {
+				cs := devcontainerPlan.Devcontainer.Customizations.Cspace
+				if cs.Resources != nil {
+					if cs.Resources.CPUs > 0 {
+						cfg.Resources.CPUs = cs.Resources.CPUs
+					}
+					if cs.Resources.MemoryMiB > 0 {
+						cfg.Resources.MemoryMiB = cs.Resources.MemoryMiB
+					}
+				}
+				if len(cs.Plugins) > 0 {
+					cfg.Plugins.Install = cs.Plugins
+				}
+				if len(cs.FirewallDomains) > 0 {
+					cfg.Firewall.Domains = append(cfg.Firewall.Domains, cs.FirewallDomains...)
+				}
+			}
+
+			// Deprecation warnings: when devcontainer.json is present AND legacy
+			// .cspace.json fields are non-empty, warn on stderr.
+			if devcontainerPlan != nil {
+				if cfg.Services != "" {
+					fmt.Fprintln(cmd.ErrOrStderr(), "[cspace] warning: .cspace.json 'services' is ignored when .devcontainer/devcontainer.json is present. Migrate compose orchestration into devcontainer.json's dockerComposeFile field. See docs/migration-from-cspace-json.md")
+				}
+				if len(cfg.Container.Environment) > 0 || len(cfg.Container.Ports) > 0 || len(cfg.Container.Packages) > 0 {
+					fmt.Fprintln(cmd.ErrOrStderr(), "[cspace] warning: .cspace.json 'container' block (ports/environment/packages) is ignored when devcontainer.json is present. Move env to containerEnv, ports to forwardPorts, packages to features. See docs/migration-from-cspace-json.md")
+				}
+			}
+
 			// CLI --env flag wins over secrets file (used for spike-test
 			// injection like CSPACE_BROWSER_CDP_URL).
 			for _, kv := range extraEnv {
