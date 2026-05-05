@@ -69,7 +69,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 # Non-root user (Claude Code refuses --dangerously-skip-permissions as root).
-RUN useradd -m -s /bin/bash -u 1000 dev \
+# node:24-bookworm-slim ships a `node` user at UID 1000; remove it first so
+# the cspace-conventional `dev` user can claim that UID (bind mounts assume
+# dev=1000 on the host side).
+RUN userdel -r node 2>/dev/null || true \
+ && useradd -m -s /bin/bash -u 1000 dev \
  && echo 'dev ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/dev \
  && chmod 0440 /etc/sudoers.d/dev
 
