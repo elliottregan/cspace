@@ -1,0 +1,13 @@
+{
+  "name": "with-compose",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "containerEnv": {"FOO": "bar"},
+  "customizations": {
+    "cspace": {
+      "extractCredentials": [
+        {"from": "convex-backend", "exec": ["./gen.sh"], "env": "ADMIN_KEY"}
+      ]
+    }
+  }
+}
