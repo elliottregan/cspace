@@ -5,6 +5,8 @@ package devcontainer
 import (
 	"encoding/json"
 	"fmt"
+
+	v2 "github.com/elliottregan/cspace/internal/compose/v2"
 )
 
 type Config struct {
@@ -146,4 +148,17 @@ func (f *ForwardPort) UnmarshalJSON(b []byte) error {
 		f.Port = n
 		return nil
 	}
+}
+
+// Plan is a fully-resolved devcontainer + (optional) compose
+// configuration ready for the orchestrator to consume.
+type Plan struct {
+	Devcontainer *Config
+	// Compose is non-nil only when the devcontainer.json sets
+	// dockerComposeFile.
+	Compose *v2.Project
+	// Service is the compose service that becomes the workspace sandbox.
+	// Empty when no compose file is configured (then Devcontainer.Image
+	// or Devcontainer.Build is the workspace image).
+	Service string
 }
