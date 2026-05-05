@@ -145,6 +145,14 @@ RUN mkdir -p "$PLAYWRIGHT_BROWSERS_PATH" \
 RUN ln -sf /home/dev/.bun/bin/bun /usr/local/bin/bun \
  && ln -sf /home/dev/.bun/bin/claude /usr/local/bin/claude
 
+# Repair home ownership. The root-USER `npx playwright install` step
+# (and earlier root-USER global npm installs) inherit HOME=/home/dev
+# from the dev-USER ENV above and drop root-owned files into
+# /home/dev/.npm/_npx. The dev user can't read or write those at
+# runtime, which breaks `npx <whatever-mcp>` for Claude Code's MCP
+# servers (context7, etc.). Re-chown the whole tree so dev owns it.
+RUN chown -R dev:dev /home/dev
+
 
 # cspace (linux/arm64 host CLI) for in-sandbox `cspace send`/`cspace exec`.
 COPY bin/cspace-linux-arm64 /usr/local/bin/cspace
