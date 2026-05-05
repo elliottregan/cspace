@@ -70,6 +70,9 @@ func (o *Orchestration) Up(ctx context.Context) error {
 	if err := o.injectAllHosts(ctx); err != nil {
 		return err
 	}
+	if err := o.ExtractAll(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
