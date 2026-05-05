@@ -2,7 +2,10 @@
 // validates them against cspace's supported subset of the spec.
 package devcontainer
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 type Config struct {
 	Name              string              `json:"name,omitempty"`
@@ -118,4 +121,29 @@ func (s *StringOrSlice) UnmarshalJSON(b []byte) error {
 	}
 	*s = slice
 	return nil
+}
+
+func (f *ForwardPort) UnmarshalJSON(b []byte) error {
+	if len(b) == 0 || string(b) == "null" {
+		return nil
+	}
+	switch b[0] {
+	case '"':
+		return fmt.Errorf("forwardPorts: %s uses host-port mapping; cspace reaches services via DNS, not host port binding. Use the bare integer port", string(b))
+	case '{':
+		type alias ForwardPort
+		var a alias
+		if err := json.Unmarshal(b, &a); err != nil {
+			return err
+		}
+		*f = ForwardPort(a)
+		return nil
+	default:
+		var n int
+		if err := json.Unmarshal(b, &n); err != nil {
+			return err
+		}
+		f.Port = n
+		return nil
+	}
 }
