@@ -12,24 +12,22 @@ import (
 	"time"
 )
 
-// browserImage pins the Playwright base used as the sidecar image. Microsoft
-// publishes Linux/arm64 builds; the apt-get-install-socat hack inside the
-// run command means we don't need a custom image yet.
-//
-// The image's tag selects the chromium binary version. The run-server
-// protocol version is selected separately, dynamically from the project's
-// @playwright/test pin (see detectPlaywrightVersion). Chromium is
-// generally backward-compatible across one or two minor Playwright
-// releases; projects that diverge much further can override the image
-// via a custom sidecar.
-//
-// Bumped to v1.59 for the Screencast API, browser.bind() shared-session
-// support, and ariaSnapshot({mode:'ai'}) — all agent-friendly additions.
-const browserImage = "mcr.microsoft.com/playwright:v1.59.0-noble"
+// browserImage returns the Microsoft Playwright Docker image for a given
+// Playwright version. Tag and run-server MUST be the same release because
+// Playwright pins to a specific chromium build ID per release; a v1.58.2
+// run-server inside a v1.59 image looks for chromium-1208 and finds
+// chromium-1213, refusing to launch. Microsoft publishes a major.minor.patch-
+// noble tag for every Playwright npm release.
+func browserImage(version string) string {
+	return fmt.Sprintf("mcr.microsoft.com/playwright:v%s-noble", version)
+}
 
 // defaultPlaywrightVersion is the fallback used when the project has no
 // @playwright/test in package.json (or there's no package.json at all).
-// Match browserImage's tag.
+// Bump in lockstep with the agent's @playwright/mcp install — the
+// supervisor's claude-runner.ts registers playwright-mcp/chrome-devtools-mcp
+// regardless, and a CDP-protocol mismatch between those clients and a
+// far-newer chromium would surface here too.
 const defaultPlaywrightVersion = "1.59.0"
 
 // browserRunServerPort is where the sidecar's `playwright run-server`
@@ -93,7 +91,7 @@ func startBrowserSidecar(ctx context.Context, project, sandbox, plVersion string
 		// these are how the sidecar fetches packages.
 		"--dns", "1.1.1.1",
 		"--dns", "8.8.8.8",
-		browserImage,
+		browserImage(plVersion),
 		"bash", "-c",
 		"set -e; " +
 			// 1) apt-get socat (CDP forwarder) AND dnsmasq (so the
