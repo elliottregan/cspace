@@ -80,6 +80,15 @@ if [ "${#WANT[@]}" -eq 0 ]; then
     exit 0
 fi
 
+# Drop plugins cspace itself provides via the supervisor's --mcp-config.
+# Otherwise the agent ends up with two `playwright` MCP servers — cspace's
+# (correctly pointed at the browser sidecar) and the @claude-plugins-official
+# plugin's (no connect args, tries to launch a local Chromium that isn't
+# installed). The plugin loses every time, so just don't install it.
+if [ -n "${CSPACE_BROWSER_CDP_URL:-}" ]; then
+    unset 'WANT[playwright@claude-plugins-official]'
+fi
+
 # Group by marketplace so each is registered exactly once before
 # installing its plugins. Non-official marketplaces are guessed as
 # anthropics/<name> on GitHub; failures are silent.
@@ -118,3 +127,34 @@ for entry in "${!WANT[@]}"; do
 done
 
 echo "[$(date -Iseconds)] cspace-install-plugins: done (${TOTAL} plugins requested)"
+
+# When cspace's browser sidecar is providing Chrome (CSPACE_BROWSER_CDP_URL
+# set), the official @claude-plugins-official `playwright` plugin is
+# strictly redundant: cspace's supervisor (claude-runner.ts) already
+# registers `playwright` via `--mcp-config` with the right
+# `--cdp-endpoint` argv pointing at the sidecar. The plugin's stock
+# .mcp.json runs `npx @playwright/mcp@latest` with no connect args, so
+# its MCP shows up under a `mcp__plugin_playwright_playwright__*`
+# namespace and tries to launch a local Chromium the lean sandbox image
+# doesn't ship — agents that grab the plugin tools fail with "browser
+# not found". Two `playwright` MCP servers is exactly the surprise we
+# don't want.
+#
+# Uninstall it. cspace's claude-runner registration becomes the single
+# `playwright` namespace the agent sees, which is wired correctly.
+if [ -n "${CSPACE_BROWSER_CDP_URL:-}" ]; then
+    pw_entry="playwright@claude-plugins-official"
+    if [ -f "$HOME/.claude/plugins/installed_plugins.json" ] && \
+       grep -q "\"$pw_entry\"" "$HOME/.claude/plugins/installed_plugins.json"; then
+        echo "[install-plugins] cspace browser sidecar active; uninstalling redundant playwright plugin"
+        # Both scopes can show up: --scope user from a prior cspace install,
+        # --scope project auto-registered by claude when it scans the
+        # marketplace at startup. Run both unconditionally; each is a no-op
+        # when not present.
+        for scope in user project; do
+            ( cd /workspace 2>/dev/null || true
+              claude plugins uninstall "$pw_entry" --scope "$scope" 2>&1 | sed 's/^/  /'
+            ) || true
+        done
+    fi
+fi
