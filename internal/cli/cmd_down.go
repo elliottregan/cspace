@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/elliottregan/cspace/internal/devcontainer"
@@ -81,7 +82,46 @@ Without it, exactly one <name> argument is required.`,
 
 			a := applecontainer.New()
 			for _, name := range names {
-				teardownSandbox(ctx, a, r, project, name, cmd.OutOrStdout(), keepState)
+				// Resolve the sandbox's actual project. The cwd-derived
+				// `project` is the right answer when the user is running
+				// `cspace down` from inside the project they spun the
+				// sandbox up from, but it silently sends teardown at the
+				// wrong project namespace when the user is anywhere else
+				// (or when `cspace down --all` is invoked from a script).
+				// Fall back to a registry-wide lookup by name: if exactly
+				// one sandbox in the registry matches, use that project.
+				targetProject := project
+				if !all && r != nil {
+					if _, err := r.Lookup(project, name); err != nil {
+						entries, _ := r.List()
+						var matches []registry.Entry
+						for _, e := range entries {
+							if e.Name == name {
+								matches = append(matches, e)
+							}
+						}
+						switch len(matches) {
+						case 1:
+							targetProject = matches[0].Project
+							_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+								"resolving %s to project %s (from registry)\n",
+								name, targetProject)
+						case 0:
+							// Nothing in the registry — proceed with
+							// cwd-derived project; teardown is best-effort
+							// against possibly-stale containers anyway.
+						default:
+							names := make([]string, 0, len(matches))
+							for _, m := range matches {
+								names = append(names, m.Project)
+							}
+							return fmt.Errorf(
+								"sandbox %q exists in multiple projects (%s); cd into one or use a unique name",
+								name, strings.Join(names, ", "))
+						}
+					}
+				}
+				teardownSandbox(ctx, a, r, targetProject, name, cmd.OutOrStdout(), keepState)
 			}
 			return nil
 		},
@@ -133,20 +173,39 @@ func teardownSandbox(
 
 	// Tear down devcontainer-defined sidecars (e.g., database, cache) before
 	// stopping the main sandbox. Non-fatal; print a warning but continue.
-	if cfg != nil && cfg.ProjectRoot != "" {
-		dcPath := filepath.Join(cfg.ProjectRoot, ".devcontainer", "devcontainer.json")
-		if _, err := os.Stat(dcPath); err == nil {
-			if c, err := devcontainer.Load(dcPath); err == nil {
-				if plan, err := devcontainer.Merge(c, filepath.Dir(dcPath)); err == nil {
-					orch := &orchestrator.Orchestration{
-						Sandbox:   name,
-						Project:   project,
-						Plan:      plan,
-						Substrate: &substrateDowner{adapter: a},
-					}
-					if err := orch.Down(ctx); err != nil {
-						_, _ = fmt.Fprintf(out, "[cspace] warning: sidecar teardown: %v\n", err)
-					}
+	//
+	// Prefer the per-sandbox clone's devcontainer.json over the cwd's: when
+	// `cspace down` runs from anywhere other than the original project dir
+	// (or from a script with no relevant cwd), cfg.ProjectRoot points at
+	// the wrong tree and the sidecar list is empty — leaking convex /
+	// db / cache containers from the previous run. The clone at
+	// ~/.cspace/clones/<project>/<sandbox>/ is what was bind-mounted as
+	// /workspace and is the authoritative source for what was started.
+	dcPath := ""
+	if home, err := os.UserHomeDir(); err == nil {
+		clonePath := filepath.Join(home, ".cspace", "clones", project, name)
+		candidate := filepath.Join(clonePath, ".devcontainer", "devcontainer.json")
+		if _, err := os.Stat(candidate); err == nil {
+			dcPath = candidate
+		}
+	}
+	if dcPath == "" && cfg != nil && cfg.ProjectRoot != "" {
+		candidate := filepath.Join(cfg.ProjectRoot, ".devcontainer", "devcontainer.json")
+		if _, err := os.Stat(candidate); err == nil {
+			dcPath = candidate
+		}
+	}
+	if dcPath != "" {
+		if c, err := devcontainer.Load(dcPath); err == nil {
+			if plan, err := devcontainer.Merge(c, filepath.Dir(dcPath)); err == nil {
+				orch := &orchestrator.Orchestration{
+					Sandbox:   name,
+					Project:   project,
+					Plan:      plan,
+					Substrate: &substrateDowner{adapter: a},
+				}
+				if err := orch.Down(ctx); err != nil {
+					_, _ = fmt.Fprintf(out, "[cspace] warning: sidecar teardown: %v\n", err)
 				}
 			}
 		}
