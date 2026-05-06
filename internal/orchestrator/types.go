@@ -26,6 +26,7 @@ type ServiceSpec struct {
 	Image       string
 	Environment map[string]string
 	Volumes     []VolumeMount
+	Tmpfs       []TmpfsMount
 	Command     []string
 	WorkingDir  string
 	User        string
@@ -35,6 +36,11 @@ type VolumeMount struct {
 	HostPath  string
 	GuestPath string
 	ReadOnly  bool
+}
+
+type TmpfsMount struct {
+	GuestPath string
+	SizeMiB   int
 }
 
 // Orchestration coordinates one sandbox + its compose-declared sidecars.

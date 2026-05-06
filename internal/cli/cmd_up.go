@@ -490,6 +490,39 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			}
 			spec.RuntimeOverlayPath = overlayPath
 
+			// Apply tmpfs mounts and named volumes declared on the workspace's
+			// own compose service (e.g. node_modules tmpfs, shared pnpm-store
+			// volume) to the workspace sandbox. orchestrator.Up handles these
+			// for sidecars, but the workspace is spawned here.
+			if devcontainerPlan != nil && devcontainerPlan.Compose != nil {
+				if wsSvc, ok := devcontainerPlan.Compose.Services[devcontainerPlan.Service]; ok && wsSvc != nil {
+					for _, t := range wsSvc.Tmpfs {
+						spec.TmpfsMounts = append(spec.TmpfsMounts, substrate.TmpfsMount{
+							ContainerPath: t.Target,
+							SizeMiB:       t.SizeMiB,
+						})
+					}
+					composeDir := filepath.Dir(devcontainerPlan.Compose.SourcePath)
+					for _, v := range wsSvc.Volumes {
+						external := false
+						externalName := ""
+						if nv, ok := devcontainerPlan.Compose.NamedVolumes[v.Source]; ok {
+							external = nv.External
+							externalName = nv.Name
+						}
+						vm, vErr := orchestrator.ResolveVolume(v, project, name, composeDir, external, externalName)
+						if vErr != nil {
+							return fmt.Errorf("resolve workspace volume %q: %w", v.Target, vErr)
+						}
+						spec.Mounts = append(spec.Mounts, substrate.Mount{
+							HostPath:      vm.HostPath,
+							ContainerPath: vm.GuestPath,
+							ReadOnly:      vm.ReadOnly,
+						})
+					}
+				}
+			}
+
 			// Early registry write — claim the slot BEFORE substrate Run so any
 			// crash between here and MarkReady leaves a state=starting entry
 			// that `cspace registry prune` can reap. ControlURL carries the
@@ -1187,6 +1220,12 @@ func (s *substrateRunner) Run(ctx context.Context, spec orchestrator.ServiceSpec
 			HostPath:      v.HostPath,
 			ContainerPath: v.GuestPath,
 			ReadOnly:      v.ReadOnly,
+		})
+	}
+	for _, t := range spec.Tmpfs {
+		rspec.TmpfsMounts = append(rspec.TmpfsMounts, substrate.TmpfsMount{
+			ContainerPath: t.GuestPath,
+			SizeMiB:       t.SizeMiB,
 		})
 	}
 	if err := s.adapter.Run(ctx, rspec); err != nil {

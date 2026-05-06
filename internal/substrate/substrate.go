@@ -27,6 +27,13 @@ type RunSpec struct {
 	// inside the microVM. This decouples cspace runtime upgrades (scripts,
 	// supervisor, plugin-install machinery) from project image rebuilds.
 	RuntimeOverlayPath string
+
+	// TmpfsMounts request RAM-backed in-microVM filesystems. Use cases:
+	// build artifacts (node_modules, .next, target/) that should NOT
+	// pollute the host disk, and that need to bypass virtio-fs's per-mount
+	// fd budget (which a 1700-package pnpm install saturates). Lost on
+	// container restart by design.
+	TmpfsMounts []TmpfsMount
 }
 
 // Mount is a host-to-container bind mount.
@@ -34,6 +41,15 @@ type Mount struct {
 	HostPath      string
 	ContainerPath string
 	ReadOnly      bool
+}
+
+// TmpfsMount is a RAM-backed mount inside the microVM.
+type TmpfsMount struct {
+	// ContainerPath where the tmpfs is mounted (e.g., "/workspace/node_modules").
+	ContainerPath string
+	// SizeMiB caps the tmpfs at this many MiB. 0 = adapter default
+	// (typically half of the microVM's RAM).
+	SizeMiB int
 }
 
 // PortMap publishes a container port on the host.

@@ -132,12 +132,32 @@ func translate(cg *types.Project, srcPath string) (*Project, error) {
 			})
 		}
 		for _, v := range svc.Volumes {
+			// Long-form `type: tmpfs` volumes go through the tmpfs path
+			// rather than the bind/named-volume path. tmpfs option is
+			// captured here when present.
+			if v.Type == "tmpfs" {
+				size := 0
+				if v.Tmpfs != nil {
+					size = int(v.Tmpfs.Size / (1024 * 1024))
+				}
+				s.Tmpfs = append(s.Tmpfs, TmpfsMount{
+					Target:  v.Target,
+					SizeMiB: size,
+				})
+				continue
+			}
 			s.Volumes = append(s.Volumes, Volume{
 				Type:     v.Type,
 				Source:   v.Source,
 				Target:   v.Target,
 				ReadOnly: v.ReadOnly,
 			})
+		}
+		// Short-form `tmpfs:` directive at service level (string or list).
+		// compose-go presents this as svc.Tmpfs StringList; size isn't
+		// settable in short form, so use the adapter's default.
+		for _, t := range svc.Tmpfs {
+			s.Tmpfs = append(s.Tmpfs, TmpfsMount{Target: t})
 		}
 		for depName, dep := range svc.DependsOn {
 			s.DependsOn = append(s.DependsOn, Dependency{

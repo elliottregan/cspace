@@ -18,6 +18,10 @@ import (
 // composeDir is the directory containing the compose file; relative bind
 // sources resolve against it. external indicates the named volume is
 // declared with external:true; externalName is the optional name override.
+func ResolveVolume(v v2.Volume, project, sandbox, composeDir string, external bool, externalName string) (VolumeMount, error) {
+	return resolveVolume(v, project, sandbox, composeDir, external, externalName)
+}
+
 func resolveVolume(v v2.Volume, project, sandbox, composeDir string, external bool, externalName string) (VolumeMount, error) {
 	switch v.Type {
 	case "bind":

@@ -22,6 +22,7 @@ type Service struct {
 	EnvFiles    []string
 	Ports       []Port
 	Volumes     []Volume
+	Tmpfs       []TmpfsMount
 	DependsOn   []Dependency
 	Healthcheck *Healthcheck
 	Restart     string
@@ -30,6 +31,14 @@ type Service struct {
 	TTY         bool
 	StdinOpen   bool
 	Init        bool
+}
+
+// TmpfsMount is a RAM-backed in-microVM mount declared via compose's
+// tmpfs: directive. Use for build artifacts (node_modules, .next, etc.)
+// that should not pollute the host bind mount.
+type TmpfsMount struct {
+	Target  string
+	SizeMiB int // 0 = adapter default
 }
 
 type Build struct {

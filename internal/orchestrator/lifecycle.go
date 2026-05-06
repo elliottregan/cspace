@@ -47,6 +47,12 @@ func (o *Orchestration) Up(ctx context.Context) error {
 			}
 			spec.Volumes = append(spec.Volumes, vm)
 		}
+		for _, t := range svc.Tmpfs {
+			spec.Tmpfs = append(spec.Tmpfs, TmpfsMount{
+				GuestPath: t.Target,
+				SizeMiB:   t.SizeMiB,
+			})
+		}
 		if _, err := o.Substrate.Run(ctx, spec); err != nil {
 			return fmt.Errorf("run sidecar %q: %w", name, err)
 		}

@@ -165,6 +165,17 @@ func (a *Adapter) Run(ctx context.Context, spec substrate.RunSpec) error {
 		}
 		args = append(args, "-v", mount)
 	}
+	for _, t := range spec.TmpfsMounts {
+		// Apple Container's --tmpfs syntax: --tmpfs <path>[:<options>].
+		// We only set size= today; defaults (mode=1777, etc.) match what
+		// every project needs. If size is unset, omit it and let the
+		// adapter pick its default.
+		spec := t.ContainerPath
+		if t.SizeMiB > 0 {
+			spec = fmt.Sprintf("%s:size=%dm", t.ContainerPath, t.SizeMiB)
+		}
+		args = append(args, "--tmpfs", spec)
+	}
 	for _, p := range spec.PublishPort {
 		args = append(args, "--publish",
 			fmt.Sprintf("%d:%d", p.HostPort, p.ContainerPort))
