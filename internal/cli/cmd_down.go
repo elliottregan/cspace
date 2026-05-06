@@ -121,7 +121,7 @@ Without it, exactly one <name> argument is required.`,
 						}
 					}
 				}
-				teardownSandbox(ctx, a, r, targetProject, name, cmd.OutOrStdout(), keepState)
+				teardownSandbox(ctx, a, r, targetProject, name, cmd.OutOrStdout(), !keepState)
 			}
 			return nil
 		},
