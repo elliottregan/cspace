@@ -31,7 +31,7 @@ func TestRenderHostsDeterministicOrder(t *testing.T) {
 	ips := map[string]string{"zebra": "1", "alpha": "2", "mike": "3"}
 	got := renderHosts(ips)
 	idx := func(name string) int { return strings.Index(got, name+"\n") }
-	if !(idx("alpha") < idx("mike") && idx("mike") < idx("zebra")) {
+	if idx("alpha") >= idx("mike") || idx("mike") >= idx("zebra") {
 		t.Fatalf("not sorted:\n%s", got)
 	}
 }

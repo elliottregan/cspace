@@ -84,7 +84,7 @@ func TestUpNoComposeIsNoOp(t *testing.T) {
 	stub := newStub()
 	orch := &Orchestration{
 		Sandbox: "m", Project: "p",
-		Plan: &devcontainer.Plan{Devcontainer: &devcontainer.Config{Image: "alpine"}},
+		Plan:      &devcontainer.Plan{Devcontainer: &devcontainer.Config{Image: "alpine"}},
 		Substrate: stub,
 	}
 	if err := orch.Up(context.Background()); err != nil {
@@ -270,7 +270,7 @@ func TestDownStopsAllSidecars(t *testing.T) {
 func TestDownNoComposeIsNoOp(t *testing.T) {
 	stub := newStub()
 	orch := &Orchestration{
-		Plan: &devcontainer.Plan{Devcontainer: &devcontainer.Config{}},
+		Plan:      &devcontainer.Plan{Devcontainer: &devcontainer.Config{}},
 		Substrate: stub,
 	}
 	if err := orch.Down(context.Background()); err != nil {

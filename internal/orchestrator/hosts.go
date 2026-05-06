@@ -24,7 +24,7 @@ func renderHosts(ips map[string]string) string {
 	var b strings.Builder
 	b.WriteString(hostsMarkerStart + "\n")
 	for _, n := range names {
-		b.WriteString(fmt.Sprintf("%s %s\n", ips[n], n))
+		fmt.Fprintf(&b, "%s %s\n", ips[n], n)
 	}
 	b.WriteString(hostsMarkerEnd + "\n")
 	return b.String()

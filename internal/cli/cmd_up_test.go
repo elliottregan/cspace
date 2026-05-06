@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/elliottregan/cspace/internal/compose/v2"
+	v2 "github.com/elliottregan/cspace/internal/compose/v2"
 	"github.com/elliottregan/cspace/internal/devcontainer"
 )
 
@@ -110,9 +110,9 @@ func TestResolveSandboxImage(t *testing.T) {
 func TestWriteExtractedEnv(t *testing.T) {
 	tmp := t.TempDir()
 	env := map[string]string{
-		"SIMPLE_KEY":   "simple-value",
-		"KEY_WITH_SQ":  "it's a value",
-		"ANOTHER":      "abc",
+		"SIMPLE_KEY":  "simple-value",
+		"KEY_WITH_SQ": "it's a value",
+		"ANOTHER":     "abc",
 	}
 	if err := writeExtractedEnv(tmp, env); err != nil {
 		t.Fatalf("writeExtractedEnv: %v", err)

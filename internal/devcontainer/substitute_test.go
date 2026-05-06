@@ -35,9 +35,9 @@ func TestResolveLocalEnvOnConfig(t *testing.T) {
 	t.Setenv("CSPACE_TEST_KEY", "secret-123")
 	cfg := &Config{
 		ContainerEnv: map[string]string{
-			"DIRECT":     "literal",
-			"FROM_HOST":  "${localEnv:CSPACE_TEST_KEY}",
-			"WITH_DEF":   "${localEnv:CSPACE_TEST_NOPE:fallback}",
+			"DIRECT":    "literal",
+			"FROM_HOST": "${localEnv:CSPACE_TEST_KEY}",
+			"WITH_DEF":  "${localEnv:CSPACE_TEST_NOPE:fallback}",
 		},
 		PostCreateCommand: StringOrSlice{"echo ${localEnv:CSPACE_TEST_KEY}"},
 		PostStartCommand:  StringOrSlice{"true"},

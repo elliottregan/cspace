@@ -18,14 +18,14 @@ type ResolvedVolume struct {
 // ResolveVolume maps a compose volume to either a host bind mount or a
 // substrate-managed named volume.
 //
-//   type:bind             → host bind at the compose-dir-relative path
-//   type:volume, external → host bind at ~/.cspace/volumes/<project>/<name>/
-//                           (cross-sandbox shared; only virtio-fs path that
-//                           supports multi-attach in Apple Container)
-//   type:volume, internal → substrate-managed ext4 volume named
-//                           cspace-<project>-<sandbox>-<source>
-//                           (per-sandbox; no virtio-fs traffic — sidesteps
-//                           macOS kern.maxfilesperproc on cold installs)
+//	type:bind             → host bind at the compose-dir-relative path
+//	type:volume, external → host bind at ~/.cspace/volumes/<project>/<name>/
+//	                        (cross-sandbox shared; only virtio-fs path that
+//	                        supports multi-attach in Apple Container)
+//	type:volume, internal → substrate-managed ext4 volume named
+//	                        cspace-<project>-<sandbox>-<source>
+//	                        (per-sandbox; no virtio-fs traffic — sidesteps
+//	                        macOS kern.maxfilesperproc on cold installs)
 //
 // composeDir is the directory containing the compose file; relative bind
 // sources resolve against it. external indicates external:true; externalName

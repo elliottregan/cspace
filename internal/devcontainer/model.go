@@ -10,23 +10,23 @@ import (
 )
 
 type Config struct {
-	Name              string              `json:"name,omitempty"`
-	Image             string              `json:"image,omitempty"`
-	DockerFile        string              `json:"dockerFile,omitempty"`
-	Build             *BuildConfig        `json:"build,omitempty"`
-	DockerComposeFile StringOrSlice       `json:"dockerComposeFile,omitempty"`
-	Service           string              `json:"service,omitempty"`
-	RunServices       []string            `json:"runServices,omitempty"`
-	WorkspaceFolderRaw string             `json:"workspaceFolder,omitempty"`
-	ContainerEnv      map[string]string   `json:"containerEnv,omitempty"`
-	Mounts            []Mount             `json:"mounts,omitempty"`
-	ForwardPorts      []ForwardPort       `json:"forwardPorts,omitempty"`
-	PortsAttributes   map[string]PortAttr `json:"portsAttributes,omitempty"`
-	PostCreateCommand StringOrSlice       `json:"postCreateCommand,omitempty"`
-	PostStartCommand  StringOrSlice       `json:"postStartCommand,omitempty"`
-	RemoteUserRaw     string              `json:"remoteUser,omitempty"`
-	Features          map[string]any      `json:"features,omitempty"`
-	Customizations    Customizations      `json:"customizations,omitempty"`
+	Name               string              `json:"name,omitempty"`
+	Image              string              `json:"image,omitempty"`
+	DockerFile         string              `json:"dockerFile,omitempty"`
+	Build              *BuildConfig        `json:"build,omitempty"`
+	DockerComposeFile  StringOrSlice       `json:"dockerComposeFile,omitempty"`
+	Service            string              `json:"service,omitempty"`
+	RunServices        []string            `json:"runServices,omitempty"`
+	WorkspaceFolderRaw string              `json:"workspaceFolder,omitempty"`
+	ContainerEnv       map[string]string   `json:"containerEnv,omitempty"`
+	Mounts             []Mount             `json:"mounts,omitempty"`
+	ForwardPorts       []ForwardPort       `json:"forwardPorts,omitempty"`
+	PortsAttributes    map[string]PortAttr `json:"portsAttributes,omitempty"`
+	PostCreateCommand  StringOrSlice       `json:"postCreateCommand,omitempty"`
+	PostStartCommand   StringOrSlice       `json:"postStartCommand,omitempty"`
+	RemoteUserRaw      string              `json:"remoteUser,omitempty"`
+	Features           map[string]any      `json:"features,omitempty"`
+	Customizations     Customizations      `json:"customizations,omitempty"`
 
 	// SourcePath is set by Load to the file path the config was parsed from.
 	SourcePath string `json:"-"`

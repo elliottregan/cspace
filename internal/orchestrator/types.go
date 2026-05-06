@@ -56,8 +56,8 @@ type TmpfsMount struct {
 
 // Orchestration coordinates one sandbox + its compose-declared sidecars.
 type Orchestration struct {
-	Sandbox   string  // sandbox container name, e.g. "mercury"
-	Project   string  // project name, e.g. "resume-redux"
+	Sandbox   string // sandbox container name, e.g. "mercury"
+	Project   string // project name, e.g. "resume-redux"
 	Plan      *devcontainer.Plan
 	Substrate Substrate
 	// ExtractedEnv is populated by Up after credential extraction runs;

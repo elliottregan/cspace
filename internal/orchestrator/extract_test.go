@@ -24,7 +24,7 @@ func newCannedSub() *cannedSub {
 }
 
 func (c *cannedSub) Exec(_ context.Context, name string, cmd []string) (string, error) {
-	c.stubSubstrate.execs[name] = append(c.stubSubstrate.execs[name], cmd)
+	c.execs[name] = append(c.execs[name], cmd)
 	return c.canned[name], nil
 }
 

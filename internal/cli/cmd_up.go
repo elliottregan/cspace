@@ -265,10 +265,10 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// .cspace.json fields are non-empty, warn on stderr.
 			if devcontainerPlan != nil {
 				if cfg.Services != "" {
-					fmt.Fprintln(cmd.ErrOrStderr(), "[cspace] warning: .cspace.json 'services' is ignored when .devcontainer/devcontainer.json is present. Migrate compose orchestration into devcontainer.json's dockerComposeFile field. See docs/migration-from-cspace-json.md")
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "[cspace] warning: .cspace.json 'services' is ignored when .devcontainer/devcontainer.json is present. Migrate compose orchestration into devcontainer.json's dockerComposeFile field. See docs/migration-from-cspace-json.md")
 				}
 				if len(cfg.Container.Environment) > 0 || len(cfg.Container.Ports) > 0 || len(cfg.Container.Packages) > 0 {
-					fmt.Fprintln(cmd.ErrOrStderr(), "[cspace] warning: .cspace.json 'container' block (ports/environment/packages) is ignored when devcontainer.json is present. Move env to containerEnv, ports to forwardPorts, packages to features. See docs/migration-from-cspace-json.md")
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "[cspace] warning: .cspace.json 'container' block (ports/environment/packages) is ignored when devcontainer.json is present. Move env to containerEnv, ports to forwardPorts, packages to features. See docs/migration-from-cspace-json.md")
 				}
 			}
 
@@ -791,9 +791,10 @@ func waitForHealth(ctx context.Context, url, token string, max time.Duration) er
 // from sessionsHostDir on the host.
 //
 // Status formats:
-//   plugins                       — entry into the plugins phase
-//   plugins:<i>/<N>:<plugin>      — per-plugin progress within phase
-//   supervisor                    — entry into the supervisor phase
+//
+//	plugins                       — entry into the plugins phase
+//	plugins:<i>/<N>:<plugin>      — per-plugin progress within phase
+//	supervisor                    — entry into the supervisor phase
 //
 // Phase advances are one-way (later phases never regress). Returns
 // when ctx cancels.
@@ -1174,7 +1175,7 @@ func resolveSandboxImage(ctx context.Context, plan *devcontainer.Plan, defaultIm
 // /sessions/extracted.env early — before user-visible env consumption.
 //
 // Values are shell-escaped (single-quote wrapping with internal ' replaced by
-// '\'') so arbitrary credential strings don't break the sourced file.
+// '\”) so arbitrary credential strings don't break the sourced file.
 func writeExtractedEnv(sessionsHostDir string, env map[string]string) error {
 	var b strings.Builder
 	// Deterministic ordering for diffability.

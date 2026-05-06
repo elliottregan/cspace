@@ -31,7 +31,7 @@ func newRuntimeListCmd() *cobra.Command {
 				if v == Version {
 					marker = "*"
 				}
-				fmt.Fprintf(c.OutOrStdout(), "%s %s\n", marker, v)
+				_, _ = fmt.Fprintf(c.OutOrStdout(), "%s %s\n", marker, v)
 			}
 			return nil
 		},
@@ -47,7 +47,7 @@ func newRuntimePruneCmd() *cobra.Command {
 			if err := runtime.Prune(Version, keep); err != nil {
 				return err
 			}
-			fmt.Fprintf(c.OutOrStdout(), "kept active=%s + %d previous\n", Version, keep)
+			_, _ = fmt.Fprintf(c.OutOrStdout(), "kept active=%s + %d previous\n", Version, keep)
 			return nil
 		},
 	}
