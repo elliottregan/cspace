@@ -121,14 +121,20 @@ func (a *Adapter) HealthCheck(ctx context.Context) error {
 
 // Default resource caps for cspace sandboxes when the caller hasn't
 // asked for anything specific. Apple Container's own defaults
-// (4 CPU / 1024 MiB) are too tight for typical JS work — `bun
-// install` + `tsc` on a moderately-sized project peaks above 1 GiB
-// transiently, and a hard cap means OOM in the guest with no host
-// safety net. Bump memory to 4 GiB; CPU stays at 4 since builds are
-// usually I/O-bound past that.
+// (4 CPU / 1024 MiB) OOM-kill modern JS builds — Nuxt + Vite +
+// Rollup on a moderate project, with claude-code and a dozen plugin
+// MCP servers running alongside, peaks past 4 GiB during chunk
+// generation. 16 GiB leaves the workspace generous headroom on a
+// typical Apple Silicon dev machine (16-32 GiB total), and the
+// host's container-runtime-linux process only physically allocates
+// as the guest dirties pages — so idle sandboxes don't actually
+// consume the cap.
+//
+// CPU stays at 4: builds are I/O-bound past that, and the host
+// scheduler can multiplex 4 vCPUs against its own cores fine.
 const (
 	defaultCPUs      = 4
-	defaultMemoryMiB = 4096
+	defaultMemoryMiB = 16384
 )
 
 // Run starts a sandbox in detached mode. Returns when the CLI exits, which

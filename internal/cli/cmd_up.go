@@ -1260,6 +1260,28 @@ func (s *substrateRunner) Run(ctx context.Context, spec orchestrator.ServiceSpec
 		Image:   spec.Image,
 		Env:     spec.Environment,
 		Command: spec.Command,
+		// Sidecars get full CPU but only 1 GiB RAM by default. The
+		// workspace's substrate default is 4 CPU / 16 GiB, sized for
+		// bun + tsc + vite peak. A typical compose service running
+		// here (Rust convex-backend, Next convex-dashboard) idles
+		// well under 500 MB, so we cap them at 1 GiB to keep host
+		// memory pressure reasonable — each microVM's allocation
+		// reserves a `container-runtime-linux` process of that size,
+		// so multiplying the workspace default across 3 idle sidecars
+		// wastes ~45 GiB per sandbox on a 24 GiB host.
+		//
+		// CPU is left equal to the workspace because some sidecars
+		// (especially Rust services like convex-backend) burn a full
+		// core during indexing or heavy queries; throttling those
+		// would surface as flaky e2e timeouts long before the host
+		// scheduler complains.
+		//
+		// Projects that need more memory (heavy Postgres, search
+		// engine, ML model server) will get override paths via
+		// customizations.cspace.resources in devcontainer.json — see
+		// issue #82.
+		CPUs:      4,
+		MemoryMiB: 1024,
 		// Compose-spawned sidecars don't run cspace's entrypoint script,
 		// so they have no in-container DNS forwarder. Apple Container's
 		// vmnet doesn't reliably propagate the host's resolver to every
