@@ -41,11 +41,36 @@ func newImageBuildCmd() *cobra.Command {
 }
 
 func runImageBuild(cmd *cobra.Command, tag string) error {
-	// Extract the embedded library tree into a temp dir. The extracted
-	// path layout matches the source repo's lib/ directory, so the
-	// COPY paths inside the Dockerfile (lib/templates/Dockerfile,
-	// lib/scripts/cspace-entrypoint.sh, …) resolve relative to the
-	// build context.
+	// Maintainer fast-path: if the cwd looks like the cspace source
+	// repo (has lib/templates/Dockerfile and bin/cspace-linux-arm64),
+	// build directly against it. The Dockerfile's
+	// `COPY bin/cspace-linux-arm64 /usr/local/bin/cspace` step needs
+	// the freshly-cross-compiled linux/arm64 binary, which only exists
+	// in a source checkout — the embedded assets are lib/ only.
+	// Without this fast-path, maintainers hit a confusing "calculate
+	// checksum of ref ... /bin/cspace-linux-arm64: not found" error
+	// and have to fall back to `make cspace-image`.
+	cwd, _ := os.Getwd()
+	if cwd != "" {
+		srcDockerfile := filepath.Join(cwd, "lib", "templates", "Dockerfile")
+		srcBinary := filepath.Join(cwd, "bin", "cspace-linux-arm64")
+		if statOK(srcDockerfile) && statOK(srcBinary) {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+				"building %s from source tree at %s ...\n", tag, cwd)
+			return runContainerBuild(cmd, tag, srcDockerfile, cwd)
+		}
+	}
+
+	// Otherwise extract the embedded library tree into a temp dir and
+	// build there. The extracted path layout matches the source
+	// repo's lib/ directory so COPY paths inside the Dockerfile
+	// (lib/templates/Dockerfile, lib/runtime/scripts/…) resolve
+	// relative to the build context.
+	//
+	// NOTE: the embedded tree carries lib/ only — until issue #68
+	// ships a published image, end users hitting this path will fail
+	// at the COPY bin/cspace-linux-arm64 step. The error surfaces
+	// directly from `container build`.
 	tmp, err := os.MkdirTemp("", "cspace-image-build-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
@@ -61,18 +86,21 @@ func runImageBuild(cmd *cobra.Command, tag string) error {
 		return fmt.Errorf("embedded Dockerfile missing at %s: %w", dockerfile, err)
 	}
 
-	// Build context is the temp root (parent of lib/) so COPY
-	// directives like `COPY lib/scripts/cspace-entrypoint.sh ...`
-	// resolve correctly. The arm64 platform is hard-coded for now —
-	// Apple Container is arm64-only on Apple Silicon, and that's the
-	// only substrate cspace supports today.
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 		"building %s from %s ...\n", tag, dockerfile)
+	return runContainerBuild(cmd, tag, dockerfile, tmp)
+}
+
+// runContainerBuild invokes `container build --platform linux/arm64
+// --tag <tag> --file <dockerfile> <ctxDir>`. The arm64 platform is
+// hard-coded — Apple Container is arm64-only on Apple Silicon, and
+// that's the only substrate cspace supports today.
+func runContainerBuild(cmd *cobra.Command, tag, dockerfile, ctxDir string) error {
 	build := exec.Command("container", "build",
 		"--platform", "linux/arm64",
 		"--tag", tag,
 		"--file", dockerfile,
-		tmp,
+		ctxDir,
 	)
 	build.Stdin, build.Stdout, build.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
@@ -81,4 +109,9 @@ func runImageBuild(cmd *cobra.Command, tag string) error {
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 		"built %s. Run `cspace up` to launch a sandbox.\n", tag)
 	return nil
+}
+
+func statOK(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
