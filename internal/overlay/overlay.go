@@ -89,10 +89,10 @@ type Reporter interface {
 
 type chanReporter struct{ ch chan<- Event }
 
-func (r *chanReporter) Phase(p Phase)     { r.ch <- Event{Phase: p} }
+func (r *chanReporter) Phase(p Phase)      { r.ch <- Event{Phase: p} }
 func (r *chanReporter) Status(text string) { r.ch <- Event{Status: text} }
-func (r *chanReporter) Done()             { r.ch <- Event{Done: true} }
-func (r *chanReporter) Error(err error)   { r.ch <- Event{Err: err} }
+func (r *chanReporter) Done()              { r.ch <- Event{Done: true} }
+func (r *chanReporter) Error(err error)    { r.ch <- Event{Err: err} }
 
 // LineReporter prints one line per phase to the given Writer. Used when
 // the overlay is disabled. Phase labels mirror the overlay's status
@@ -316,7 +316,7 @@ func (m model) View() string {
 	}
 	if !m.doneAt.IsZero() && m.focus >= 1.0 {
 		okStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#5fffaf")).Bold(true)
-		b.WriteString(okStyle.Render("✓ " + m.name) + "  " + label)
+		b.WriteString(okStyle.Render("✓ "+m.name) + "  " + label)
 		b.WriteString("\n")
 		content := b.String()
 		if m.width > 0 && m.height > 0 {

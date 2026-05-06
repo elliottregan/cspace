@@ -1,0 +1,6 @@
+{
+  "name": "bad",
+  "image": "node:24-bookworm-slim",
+  "runArgs": ["--privileged"],
+  "shutdownAction": "stopContainer"
+}

@@ -268,7 +268,7 @@ func daemonDNSHandler(r *registry.Registry, lastActivity *atomic.Int64) dns.Hand
 				continue
 			}
 			parts := strings.Split(labels, ".")
-			var sandbox, project string
+			var sandbox, project, service string
 			switch len(parts) {
 			case 1:
 				sandbox = parts[0]
@@ -276,6 +276,13 @@ func daemonDNSHandler(r *registry.Registry, lastActivity *atomic.Int64) dns.Hand
 				// Labels are emitted closest-first per DNS, so the
 				// sandbox label is the leftmost (parts[0]).
 				sandbox, project = parts[0], parts[1]
+			case 3:
+				// <service>.<sandbox>.<project>.cspace2.local — resolves
+				// to a compose-spawned sidecar microVM. The sandbox/project
+				// existence check below confirms the sidecar is plausibly
+				// part of an active cspace cluster; the actual sidecar IP
+				// is fetched via container inspect.
+				service, sandbox, project = parts[0], parts[1], parts[2]
 			default:
 				reply.Rcode = dns.RcodeNameError
 				continue
@@ -304,6 +311,21 @@ func daemonDNSHandler(r *registry.Registry, lastActivity *atomic.Int64) dns.Hand
 				continue
 			case 1:
 				ip = matches[0].IP
+				if service != "" {
+					// 4-label query: redirect to the sidecar container
+					// `cspace-<project>-<sandbox>-<service>` and resolve
+					// via the substrate. The sandbox match above
+					// confirmed the cluster exists; the sidecar may or
+					// may not be running.
+					sidecar := fmt.Sprintf("cspace-%s-%s-%s",
+						matches[0].Project, matches[0].Name, service)
+					sidecarIP, err := lookupSidecarIP(sidecar)
+					if err != nil || sidecarIP == "" {
+						reply.Rcode = dns.RcodeNameError
+						continue
+					}
+					ip = sidecarIP
+				}
 			default:
 				// Multiple projects have this sandbox name and the user
 				// didn't specify which. Force them to disambiguate via
@@ -389,4 +411,35 @@ func newDaemonStopCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// lookupSidecarIP resolves the vmnet IP of a compose-spawned sidecar by
+// shelling out to `container inspect`. Returns ("", nil) when the
+// sidecar isn't running. The DNS handler treats both empty IP and a
+// non-nil error as NXDOMAIN.
+func lookupSidecarIP(name string) (string, error) {
+	out, err := exec.Command("container", "inspect", name).Output()
+	if err != nil {
+		// Apple Container exits non-zero only on transport-level error;
+		// missing containers come back as exit 0 with body "[]". Treat
+		// any error here as "no answer" rather than DNS server failure.
+		return "", nil
+	}
+	var records []struct {
+		Networks []struct {
+			IPv4Address string `json:"ipv4Address"`
+		} `json:"networks"`
+	}
+	if err := json.Unmarshal(out, &records); err != nil {
+		return "", err
+	}
+	if len(records) == 0 || len(records[0].Networks) == 0 {
+		return "", nil
+	}
+	addr := records[0].Networks[0].IPv4Address
+	// Strip the CIDR suffix (e.g. "192.168.64.245/24" -> "192.168.64.245").
+	if i := strings.IndexByte(addr, '/'); i > 0 {
+		addr = addr[:i]
+	}
+	return addr, nil
 }

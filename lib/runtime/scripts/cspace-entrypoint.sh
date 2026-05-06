@@ -9,6 +9,49 @@
 #   straight into a usable claude REPL instead of a setup wizard.
 set -euo pipefail
 
+# /usr/sbin is where iptables/dnsmasq live on debian-family bases but
+# isn't in dev's PATH by default. Add it so `command -v` lookups work
+# inside ensure_dep.
+case ":$PATH:" in
+    *:/usr/sbin:*) ;;
+    *) PATH="/usr/sbin:/sbin:$PATH" ;;
+esac
+export PATH
+
+# Auto-install runtime deps that some non-default base images may lack.
+# Default cspace:latest already has them, but if the project picks its
+# own image (devcontainer.image), iptables and dnsmasq might be absent.
+# Best-effort: only attempt apt when running as root with apt-get
+# present. cspace:latest entrypoint runs as `dev` (USER dev in the
+# Dockerfile), so the install fallback is mostly relevant for project-
+# image scenarios where the image author wires their own root entry.
+ensure_dep() {
+    local pkg=$1 cmd=$2
+    command -v "$cmd" >/dev/null 2>&1 && return 0
+    if [ "$(id -u)" = "0" ] && command -v apt-get >/dev/null 2>&1; then
+        echo "[cspace-entrypoint] installing $pkg (missing $cmd)..."
+        apt-get update -qq 2>/dev/null && \
+            apt-get install -y -qq --no-install-recommends "$pkg" >/dev/null 2>&1 || \
+            echo "[cspace-entrypoint] WARN: failed to install $pkg"
+    else
+        echo "[cspace-entrypoint] WARN: $cmd missing; install in your image (see docs/image-dependencies.md)"
+    fi
+}
+
+ensure_dep iptables iptables
+ensure_dep dnsmasq dnsmasq
+
+# Source extracted.env if present — written by cspace up after compose sidecars
+# start and credential extraction runs. Contains KEY='value' lines (shell-safe
+# single-quote escaped) so credential strings are imported before any
+# user-visible env consumption (git helper, claude.json pre-seed, etc.).
+if [ -f /sessions/extracted.env ]; then
+    set -a
+    # shellcheck source=/dev/null
+    . /sessions/extracted.env
+    set +a
+fi
+
 # Auto-configure git credential helper for github.com when gh is authed.
 # `gh auth setup-git` writes:
 #   credential.helper = !/usr/bin/gh auth git-credential
@@ -172,6 +215,55 @@ if [ -x /usr/local/bin/cspace-install-plugins.sh ]; then
     /usr/local/bin/cspace-install-plugins.sh || true
 fi
 echo supervisor > "$STATUS_FILE" 2>/dev/null || true
+
+# Devcontainer postCreateCommand — once per sandbox lifetime, run in
+# the BACKGROUND so the supervisor can come up and answer /health
+# while the slow first-boot work (pnpm install, schema push, seeds)
+# finishes. The agent attaching via cspace attach may briefly see a
+# half-prepared workspace; that's the same trade-off VS Code makes.
+# Output streams to /sessions/postcreate.log for `cspace logs`-style
+# inspection.
+if [ -n "${CSPACE_POSTCREATE_CMD:-}" ] && [ ! -f /workspace/.cspace-postcreate-done ]; then
+    (
+        # Wait briefly for cspace up's orchestrator to finish writing
+        # /sessions/extracted.env (compose sidecars must be healthy +
+        # extractCredentials must have run). Re-source it so postCreate
+        # sees the captured admin keys / tokens, even though the early
+        # source at boot may have raced ahead of the file's appearance.
+        if [ -n "${CSPACE_EXTRACT_CREDENTIALS_EXPECTED:-}" ]; then
+            for _ in $(seq 1 60); do
+                [ -f /sessions/extracted.env ] && break
+                sleep 1
+            done
+        fi
+        if [ -f /sessions/extracted.env ]; then
+            set -a
+            # shellcheck source=/dev/null
+            . /sessions/extracted.env
+            set +a
+        fi
+        echo "[postcreate] starting at $(date -Is)"
+        # The entrypoint runs as the remoteUser (dev by default for
+        # cspace:latest); su would prompt for a password. Run directly
+        # via bash -c. If a future image runs the entrypoint as root,
+        # use `runuser -u dev -- bash -c "..."` instead.
+        if (cd /workspace && bash -c "${CSPACE_POSTCREATE_CMD}"); then
+            touch /workspace/.cspace-postcreate-done
+            echo "[postcreate] done at $(date -Is)"
+        else
+            echo "[postcreate] failed (continuing)"
+        fi
+    ) </dev/null >/sessions/postcreate.log 2>&1 &
+fi
+
+# Devcontainer postStartCommand — every boot, non-fatal. Also background.
+if [ -n "${CSPACE_POSTSTART_CMD:-}" ]; then
+    (
+        echo "[poststart] starting at $(date -Is)"
+        (cd /workspace && bash -c "${CSPACE_POSTSTART_CMD}") || true
+        echo "[poststart] done at $(date -Is)"
+    ) </dev/null >/sessions/poststart.log 2>&1 &
+fi
 
 # Project init hook. If the project ships /workspace/.cspace/init.sh,
 # run it once per sandbox after the workspace is mounted but before

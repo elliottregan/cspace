@@ -17,9 +17,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/elliottregan/cspace/internal/devcontainer"
+	"github.com/elliottregan/cspace/internal/orchestrator"
 	"github.com/elliottregan/cspace/internal/overlay"
 	"github.com/elliottregan/cspace/internal/planets"
 	"github.com/elliottregan/cspace/internal/registry"
+	"github.com/elliottregan/cspace/internal/runtime"
 	"github.com/elliottregan/cspace/internal/secrets"
 	"github.com/elliottregan/cspace/internal/substrate"
 	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
@@ -175,6 +178,100 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			for k, v := range loaded {
 				env[k] = v
 			}
+
+			// Devcontainer: load + validate if .devcontainer/devcontainer.json
+			// is present. Resolves sandbox image and merges containerEnv.
+			// devcontainerPlan is nil when no devcontainer.json is present
+			// (existing .cspace.json-only projects work unchanged).
+			var devcontainerPlan *devcontainer.Plan
+			sandboxImage := "cspace:latest"
+			if projectRoot != "" {
+				dcPath := filepath.Join(projectRoot, ".devcontainer", "devcontainer.json")
+				if _, statErr := os.Stat(dcPath); statErr == nil {
+					dc, loadErr := devcontainer.Load(dcPath)
+					if loadErr != nil {
+						return fmt.Errorf("devcontainer.json: %w", loadErr)
+					}
+					plan, mergeErr := devcontainer.Merge(dc, filepath.Dir(dcPath))
+					if mergeErr != nil {
+						return fmt.Errorf("devcontainer.json: %w", mergeErr)
+					}
+					devcontainerPlan = plan
+					sandboxImage = resolveSandboxImage(ctx, plan, "cspace:latest")
+					// Compose service.environment (including any env_file
+					// content compose-go resolved at parse time) merges
+					// FIRST so devcontainer.json containerEnv can override.
+					// This is how a project's `.env` flows into the
+					// workspace: declare `env_file: ../.env` on the compose
+					// app service, compose-go reads the file into
+					// service.Environment, and we propagate it here.
+					if plan.Compose != nil && plan.Service != "" {
+						if svc, ok := plan.Compose.Services[plan.Service]; ok {
+							for k, v := range svc.Environment {
+								env[k] = v
+							}
+						}
+					}
+					// containerEnv merges into env: devcontainer values override
+					// compose env (more specific) and lose to secrets file +
+					// --env (see below).
+					for k, v := range dc.ContainerEnv {
+						env[k] = v
+					}
+				}
+			}
+
+			// Devcontainer postCreateCommand and postStartCommand. These are
+			// set on the env so the entrypoint can invoke them at boot.
+			if devcontainerPlan != nil && devcontainerPlan.Devcontainer != nil {
+				if cmd := joinPostCmd(devcontainerPlan.Devcontainer.PostCreateCommand); cmd != "" {
+					env["CSPACE_POSTCREATE_CMD"] = cmd
+				}
+				if cmd := joinPostCmd(devcontainerPlan.Devcontainer.PostStartCommand); cmd != "" {
+					env["CSPACE_POSTSTART_CMD"] = cmd
+				}
+				// Tell the entrypoint to wait for /sessions/extracted.env
+				// before running postCreate. cspace's orchestrator-side
+				// write of that file races against the entrypoint's early
+				// source line; without this signal, postCreate may run with
+				// captured creds still unset.
+				if len(devcontainerPlan.Devcontainer.Customizations.Cspace.ExtractCredentials) > 0 {
+					env["CSPACE_EXTRACT_CREDENTIALS_EXPECTED"] = "1"
+				}
+			}
+
+			// Devcontainer customizations.cspace overrides. When a devcontainer.json
+			// is present, customizations.cspace.{Resources, Plugins, FirewallDomains}
+			// override the corresponding .cspace.json fields.
+			if devcontainerPlan != nil && devcontainerPlan.Devcontainer != nil {
+				cs := devcontainerPlan.Devcontainer.Customizations.Cspace
+				if cs.Resources != nil {
+					if cs.Resources.CPUs > 0 {
+						cfg.Resources.CPUs = cs.Resources.CPUs
+					}
+					if cs.Resources.MemoryMiB > 0 {
+						cfg.Resources.MemoryMiB = cs.Resources.MemoryMiB
+					}
+				}
+				if len(cs.Plugins) > 0 {
+					cfg.Plugins.Install = cs.Plugins
+				}
+				if len(cs.FirewallDomains) > 0 {
+					cfg.Firewall.Domains = append(cfg.Firewall.Domains, cs.FirewallDomains...)
+				}
+			}
+
+			// Deprecation warnings: when devcontainer.json is present AND legacy
+			// .cspace.json fields are non-empty, warn on stderr.
+			if devcontainerPlan != nil {
+				if cfg.Services != "" {
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "[cspace] warning: .cspace.json 'services' is ignored when .devcontainer/devcontainer.json is present. Migrate compose orchestration into devcontainer.json's dockerComposeFile field. See docs/migration-from-cspace-json.md")
+				}
+				if len(cfg.Container.Environment) > 0 || len(cfg.Container.Ports) > 0 || len(cfg.Container.Packages) > 0 {
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "[cspace] warning: .cspace.json 'container' block (ports/environment/packages) is ignored when devcontainer.json is present. Move env to containerEnv, ports to forwardPorts, packages to features. See docs/migration-from-cspace-json.md")
+				}
+			}
+
 			// CLI --env flag wins over secrets file (used for spike-test
 			// injection like CSPACE_BROWSER_CDP_URL).
 			for _, kv := range extraEnv {
@@ -257,7 +354,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 
 			spec := substrate.RunSpec{
 				Name:      containerName,
-				Image:     "cspace:latest",
+				Image:     sandboxImage,
 				Env:       env,
 				CPUs:      effCPUs,
 				MemoryMiB: effMemMiB,
@@ -341,21 +438,104 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// On any subsequent error (substrate run, IP capture, registry
 			// write, …) we tear the sidecar down via the deferred cleanup
 			// below so we don't leak containers.
+			//
+			// devcontainer.json's customizations.cspace.browser=true also
+			// enables the sidecar — same path as the explicit --browser
+			// flag. Project authors opt in once and the agent gets browser
+			// MCP + Playwright run-server without further setup.
+			browserEnabled := withBrowser
+			if devcontainerPlan != nil && devcontainerPlan.Devcontainer != nil &&
+				devcontainerPlan.Devcontainer.Customizations.Cspace.Browser {
+				browserEnabled = true
+			}
 			var browserContainer string
-			if withBrowser {
-				cName, cdpURL, berr := startBrowserSidecar(ctx, project, name)
+			var browserSidecar *BrowserSidecar
+			if browserEnabled {
+				// Match the sidecar's Playwright run-server version to the
+				// project's @playwright/test pin. Playwright's strict
+				// cross-version handshake check makes mismatched versions
+				// fail with 428 Precondition Required; tracking the
+				// project pin avoids that without dictating a version.
+				plVersion := detectPlaywrightVersion(cfg.ProjectRoot)
+				bs, berr := startBrowserSidecar(ctx, project, name, plVersion)
 				if berr != nil {
 					return fmt.Errorf("browser sidecar: %w", berr)
 				}
-				browserContainer = cName
-				env["CSPACE_BROWSER_CDP_URL"] = cdpURL
+				browserSidecar = bs
+				browserContainer = bs.ContainerName
+				env["CSPACE_BROWSER_CDP_URL"] = bs.CDPURL
+				env["PW_TEST_CONNECT_WS_ENDPOINT"] = bs.RunServerWSURL
+				// Stable hostname agents/scripts use to reach the dev
+				// or preview server running inside the workspace from
+				// the browser sidecar. Hosts entry written below once
+				// the workspace IP is known.
+				env["CSPACE_WORKSPACE_HOST"] = "workspace"
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-					"browser sidecar: %s (cdp %s)\n", cName, cdpURL)
+					"browser sidecar: %s (cdp %s, run-server %s)\n",
+					bs.ContainerName, bs.CDPURL, bs.RunServerWSURL)
 				defer func() {
 					if err != nil {
-						stopBrowserSidecar(context.Background(), cName)
+						stopBrowserSidecar(context.Background(), bs.ContainerName)
 					}
 				}()
+			}
+
+			// Materialize the runtime overlay tree (scripts, eventually supervisor)
+			// to ~/.cspace/runtime/<Version>/ and bind-mount it at /opt/cspace inside
+			// the microVM. This decouples cspace runtime upgrades from project image
+			// rebuilds — script tweaks ship via the cspace binary, no docker pull.
+			_, overlayPath, err := runtime.Extract(Version)
+			if err != nil {
+				return fmt.Errorf("extract runtime overlay: %w", err)
+			}
+			spec.RuntimeOverlayPath = overlayPath
+
+			// Apply tmpfs mounts and named volumes declared on the workspace's
+			// own compose service (e.g. node_modules tmpfs, shared pnpm-store
+			// volume) to the workspace sandbox. orchestrator.Up handles these
+			// for sidecars, but the workspace is spawned here.
+			if devcontainerPlan != nil && devcontainerPlan.Compose != nil {
+				if wsSvc, ok := devcontainerPlan.Compose.Services[devcontainerPlan.Service]; ok && wsSvc != nil {
+					for _, t := range wsSvc.Tmpfs {
+						spec.TmpfsMounts = append(spec.TmpfsMounts, substrate.TmpfsMount{
+							ContainerPath: t.Target,
+							SizeMiB:       t.SizeMiB,
+						})
+					}
+					composeDir := filepath.Dir(devcontainerPlan.Compose.SourcePath)
+					for _, v := range wsSvc.Volumes {
+						external := false
+						externalName := ""
+						if nv, ok := devcontainerPlan.Compose.NamedVolumes[v.Source]; ok {
+							external = nv.External
+							externalName = nv.Name
+						}
+						rv, vErr := orchestrator.ResolveVolume(v, project, name, composeDir, external, externalName)
+						if vErr != nil {
+							return fmt.Errorf("resolve workspace volume %q: %w", v.Target, vErr)
+						}
+						if rv.Bind != nil {
+							spec.Mounts = append(spec.Mounts, substrate.Mount{
+								HostPath:      rv.Bind.HostPath,
+								ContainerPath: rv.Bind.GuestPath,
+								ReadOnly:      rv.Bind.ReadOnly,
+							})
+						}
+						if rv.Named != nil {
+							spec.Volumes = append(spec.Volumes, substrate.NamedVolume{
+								Name:          rv.Named.Name,
+								ContainerPath: rv.Named.GuestPath,
+								ReadOnly:      rv.Named.ReadOnly,
+								// Workspace tooling (pnpm, vite, etc.) runs as
+								// `dev` (UID 1000 — see lib/templates/Dockerfile).
+								// Adapter chowns + removes lost+found at first
+								// boot so non-root tools can write a fresh
+								// ext4 mount.
+								OwnerUID: 1000,
+							})
+						}
+					}
+				}
 			}
 
 			// Early registry write — claim the slot BEFORE substrate Run so any
@@ -396,6 +576,63 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				_ = a.Stop(context.Background(), containerName)
 				err = fmt.Errorf("acquire container IP: %w", ipErr)
 				return err
+			}
+
+			// If a browser sidecar is running, inject `workspace` into
+			// /etc/hosts on BOTH sides so http://workspace:<port> is a
+			// universal URL: scripts inside the workspace use 127.0.0.1
+			// (preview server is local), the browser running in the
+			// sidecar uses the workspace's vmnet IP. e2e flows can then
+			// use the same BASE_URL for both the readiness probe and
+			// the URL Playwright opens. Best-effort.
+			if browserSidecar != nil {
+				if hErr := InjectWorkspaceHost(ctx, browserSidecar.ContainerName, ip); hErr != nil {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+						"[cspace] warning: inject workspace host into browser sidecar: %v\n", hErr)
+				}
+				if hErr := InjectWorkspaceHost(ctx, containerName, "127.0.0.1"); hErr != nil {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+						"[cspace] warning: inject workspace host into workspace: %v\n", hErr)
+				}
+			}
+
+			// Compose sidecars: spawn and wait for healthchecks, inject
+			// /etc/hosts, extract credentials. Only runs when
+			// devcontainer.json is present with a dockerComposeFile.
+			// Sidecars are torn down on any subsequent error.
+			var orch *orchestrator.Orchestration
+			if devcontainerPlan != nil && devcontainerPlan.Compose != nil {
+				orch = &orchestrator.Orchestration{
+					Sandbox:   name,
+					Project:   project,
+					Plan:      devcontainerPlan,
+					Substrate: &substrateRunner{adapter: a},
+				}
+				if upErr := orch.Up(ctx); upErr != nil {
+					_ = orch.Down(context.Background())
+					_ = a.Stop(context.Background(), containerName)
+					err = fmt.Errorf("orchestrate sidecars: %w", upErr)
+					return err
+				}
+				// Write extracted env vars (e.g. CONVEX_SELF_HOSTED_ADMIN_KEY)
+				// to <sessionsHostDir>/extracted.env on the host. The sandbox's
+				// /sessions/ bind-mount makes this visible as
+				// /sessions/extracted.env; the entrypoint sources it early so
+				// the agent sees the values.
+				if len(orch.ExtractedEnv) > 0 {
+					if writeErr := writeExtractedEnv(sessionsHostDir, orch.ExtractedEnv); writeErr != nil {
+						_ = orch.Down(context.Background())
+						_ = a.Stop(context.Background(), containerName)
+						err = fmt.Errorf("write extracted env: %w", writeErr)
+						return err
+					}
+				}
+				// Ensure sidecars are torn down if any later step fails.
+				defer func() {
+					if err != nil {
+						_ = orch.Down(context.Background())
+					}
+				}()
 			}
 
 			ctlURL := fmt.Sprintf("http://%s:%d", ip, supervisorPort)
@@ -554,9 +791,10 @@ func waitForHealth(ctx context.Context, url, token string, max time.Duration) er
 // from sessionsHostDir on the host.
 //
 // Status formats:
-//   plugins                       — entry into the plugins phase
-//   plugins:<i>/<N>:<plugin>      — per-plugin progress within phase
-//   supervisor                    — entry into the supervisor phase
+//
+//	plugins                       — entry into the plugins phase
+//	plugins:<i>/<N>:<plugin>      — per-plugin progress within phase
+//	supervisor                    — entry into the supervisor phase
 //
 // Phase advances are one-way (later phases never regress). Returns
 // when ctx cancels.
@@ -891,4 +1129,175 @@ func maybeNudgeMissingDnsInstall(out io.Writer) {
 		return
 	}
 	_ = os.WriteFile(sentinel, []byte("shown\n"), 0o644)
+}
+
+// resolveSandboxImage selects the sandbox image for a cspace up run.
+//
+// Precedence (highest first):
+//  1. plan.Compose.Services[plan.Service].Image — compose-driven image.
+//  2. plan.Devcontainer.Image — bare devcontainer.json image field.
+//  3. BuildProjectImage(ctx, plan) — build result when dockerFile/build: set.
+//  4. defaultImage — caller-supplied fallback (e.g. "cspace:latest").
+//
+// A build error is logged and the function falls back to defaultImage so that
+// a broken Dockerfile does not silently produce a cryptic "image not found"
+// error from the substrate; instead the container boots with the default and
+// the user sees the build error.
+func resolveSandboxImage(ctx context.Context, plan *devcontainer.Plan, defaultImage string) string {
+	if plan == nil {
+		return defaultImage
+	}
+	// 1. Compose service image.
+	if plan.Compose != nil && plan.Service != "" {
+		if svc, ok := plan.Compose.Services[plan.Service]; ok && svc.Image != "" {
+			return svc.Image
+		}
+	}
+	// 2. Devcontainer image field.
+	if plan.Devcontainer != nil && plan.Devcontainer.Image != "" {
+		return plan.Devcontainer.Image
+	}
+	// 3. Build via Apple Container.
+	if plan.Devcontainer != nil && (plan.Devcontainer.DockerFile != "" || plan.Devcontainer.Build != nil) {
+		tag, err := orchestrator.BuildProjectImage(ctx, plan)
+		if err == nil && tag != "" {
+			return tag
+		}
+		// Fall through to default; caller will see a boot failure if the
+		// default image doesn't satisfy the project's needs.
+	}
+	return defaultImage
+}
+
+// writeExtractedEnv writes credential key=value pairs extracted from sidecars
+// to <sessionsHostDir>/extracted.env on the host. The sandbox has this
+// directory bind-mounted as /sessions, so the entrypoint can source
+// /sessions/extracted.env early — before user-visible env consumption.
+//
+// Values are shell-escaped (single-quote wrapping with internal ' replaced by
+// '\”) so arbitrary credential strings don't break the sourced file.
+func writeExtractedEnv(sessionsHostDir string, env map[string]string) error {
+	var b strings.Builder
+	// Deterministic ordering for diffability.
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	// sort keys for determinism
+	for i := 0; i < len(keys); i++ {
+		for j := i + 1; j < len(keys); j++ {
+			if keys[i] > keys[j] {
+				keys[i], keys[j] = keys[j], keys[i]
+			}
+		}
+	}
+	for _, k := range keys {
+		v := env[k]
+		// Shell-escape the value: wrap in single quotes, escape embedded '.
+		escaped := "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(escaped)
+		b.WriteByte('\n')
+	}
+	dst := filepath.Join(sessionsHostDir, "extracted.env")
+	return os.WriteFile(dst, []byte(b.String()), 0o600)
+}
+
+// substrateRunner adapts *applecontainer.Adapter to the orchestrator.Substrate
+// interface. It bridges the orchestrator's ServiceSpec (compose-oriented) to
+// the substrate's RunSpec (sandbox-oriented). Sidecars started via Run are
+// started without a runtime overlay — they use their own image's entrypoint.
+type substrateRunner struct {
+	adapter *applecontainer.Adapter
+}
+
+func (s *substrateRunner) Run(ctx context.Context, spec orchestrator.ServiceSpec) (string, error) {
+	rspec := substrate.RunSpec{
+		Name:    spec.Name,
+		Image:   spec.Image,
+		Env:     spec.Environment,
+		Command: spec.Command,
+		// Compose-spawned sidecars don't run cspace's entrypoint script,
+		// so they have no in-container DNS forwarder. Apple Container's
+		// vmnet doesn't reliably propagate the host's resolver to every
+		// image (esp. minimal alpine bases), so we explicitly attach
+		// public resolvers. Convex actions calling out to third-party
+		// APIs (Gemini, OpenAI, Resend, Sentry) need this; without it,
+		// the sidecar's libc lookup fails with "Temporary failure in
+		// name resolution" before any HTTP traffic leaves.
+		//
+		// Cluster-internal hostnames are still resolvable via the
+		// orchestrator's /etc/hosts injection (which runs after Run).
+		DNS: []string{"1.1.1.1", "8.8.8.8"},
+	}
+	for _, v := range spec.Volumes {
+		rspec.Mounts = append(rspec.Mounts, substrate.Mount{
+			HostPath:      v.HostPath,
+			ContainerPath: v.GuestPath,
+			ReadOnly:      v.ReadOnly,
+		})
+	}
+	for _, n := range spec.NamedVolumes {
+		rspec.Volumes = append(rspec.Volumes, substrate.NamedVolume{
+			Name:          n.Name,
+			ContainerPath: n.GuestPath,
+			ReadOnly:      n.ReadOnly,
+		})
+	}
+	for _, t := range spec.Tmpfs {
+		rspec.TmpfsMounts = append(rspec.TmpfsMounts, substrate.TmpfsMount{
+			ContainerPath: t.GuestPath,
+			SizeMiB:       t.SizeMiB,
+		})
+	}
+	if err := s.adapter.Run(ctx, rspec); err != nil {
+		return "", err
+	}
+	return spec.Name, nil
+}
+
+func (s *substrateRunner) Exec(ctx context.Context, name string, cmd []string) (string, error) {
+	// Orchestrator-side exec calls (hosts injection, credential extraction)
+	// must run as root: minimal sidecar images (convex-dashboard, etc.) ship
+	// a non-root USER, and /etc/hosts isn't writable from there.
+	res, err := s.adapter.Exec(ctx, name, cmd, substrate.ExecOpts{User: "0"})
+	if err != nil {
+		return res.Stdout, err
+	}
+	if res.ExitCode != 0 {
+		return res.Stdout, fmt.Errorf("exec in %s exited %d: %s", name, res.ExitCode, res.Stderr)
+	}
+	return res.Stdout, nil
+}
+
+func (s *substrateRunner) Stop(ctx context.Context, name string) error {
+	return s.adapter.Stop(ctx, name)
+}
+
+func (s *substrateRunner) IP(ctx context.Context, name string) (string, error) {
+	return s.adapter.IP(ctx, name)
+}
+
+// joinPostCmd renders a devcontainer postCreateCommand / postStartCommand
+// (which may be a string or []string) into a single shell-runnable
+// command line. Empty input returns "".
+func joinPostCmd(cmd devcontainer.StringOrSlice) string {
+	if len(cmd) == 0 {
+		return ""
+	}
+	if len(cmd) == 1 {
+		return cmd[0]
+	}
+	// Multi-element form treats the slice as exec-form: shell-quote each
+	// element so the joined string is safe to pass to `bash -c`.
+	parts := make([]string, len(cmd))
+	for i, p := range cmd {
+		parts[i] = shellSingleQuote(p)
+	}
+	return strings.Join(parts, " ")
+}
+
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }

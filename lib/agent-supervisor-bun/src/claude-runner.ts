@@ -39,15 +39,15 @@ export async function runClaude(
       // actually USE its tools (Bash, Read, Write, Edit, etc.).
       permissionMode: "bypassPermissions",
       // Resume a prior session when main.ts found one in events.ndjson.
-      // Restart-loop respawn, fresh cspace2-up, and cspace2-down +
-      // cspace2-up cycles all hit this path uniformly — the supervisor
+      // Restart-loop respawn, fresh cspace up, and cspace down +
+      // cspace up cycles all hit this path uniformly — the supervisor
       // is the single source of truth for "is there a session to resume".
       // The session JSONL itself is reachable because the host bind-mounts
       // ~/.claude/projects/-workspace/ into this sandbox at the same path
       // the SDK reads from.
       ...(resumeSessionID ? { resume: resumeSessionID } : {}),
       // Browser MCP servers — clients only. Chrome itself runs in a sidecar
-      // container launched by cspace2-up. The MCP servers attach over CDP at
+      // container launched by cspace up. The MCP servers attach over CDP at
       // $CSPACE_BROWSER_CDP_URL. If the env var is unset, the MCP servers
       // are still registered but their tool calls will fail at runtime —
       // declined gracefully, doesn't crash the supervisor.

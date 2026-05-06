@@ -5,16 +5,39 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
 
-// browserImage pins the Playwright base used as the sidecar image. Microsoft
-// publishes Linux/arm64 builds; the apt-get-install-socat hack inside the
-// run command means we don't need a custom image yet. P2/P3 may build a
-// leaner image; for now this is fine.
-const browserImage = "mcr.microsoft.com/playwright:v1.58.0-noble"
+// browserImage returns the Microsoft Playwright Docker image for a given
+// Playwright version. Tag and run-server MUST be the same release because
+// Playwright pins to a specific chromium build ID per release; a v1.58.2
+// run-server inside a v1.59 image looks for chromium-1208 and finds
+// chromium-1213, refusing to launch. Microsoft publishes a major.minor.patch-
+// noble tag for every Playwright npm release.
+func browserImage(version string) string {
+	return fmt.Sprintf("mcr.microsoft.com/playwright:v%s-noble", version)
+}
+
+// defaultPlaywrightVersion is the fallback used when the project has no
+// @playwright/test in package.json (or there's no package.json at all).
+// Bump in lockstep with the agent's @playwright/mcp install — the
+// supervisor's claude-runner.ts registers playwright-mcp/chrome-devtools-mcp
+// regardless, and a CDP-protocol mismatch between those clients and a
+// far-newer chromium would surface here too.
+const defaultPlaywrightVersion = "1.59.0"
+
+// browserRunServerPort is where the sidecar's `playwright run-server`
+// listens. Project tests connect via PW_TEST_CONNECT_WS_ENDPOINT.
+const browserRunServerPort = 3000
+
+// browserCDPPort is where the sidecar's headless Chromium exposes
+// DevTools Protocol. The agent's playwright-mcp / chrome-devtools-mcp
+// connect via CSPACE_BROWSER_CDP_URL.
+const browserCDPPort = 9222
 
 // browserContainerName returns the canonical sidecar name for a sandbox,
 // in lockstep with cspace up's containerName template plus a "-browser"
@@ -38,8 +61,23 @@ func browserContainerName(project, sandbox string) string {
 // default DNS is broken, and the sidecar is NOT a cspace container so it
 // doesn't go through our substrate adapter's DNS injection. Without these,
 // `apt-get update` inside the sidecar hangs.
-func startBrowserSidecar(ctx context.Context, project, sandbox string) (containerName, cdpURL string, err error) {
-	containerName = browserContainerName(project, sandbox)
+// BrowserSidecar describes a started browser sidecar's reachable endpoints.
+type BrowserSidecar struct {
+	ContainerName  string // substrate container name
+	IP             string // vmnet IP (used for /etc/hosts inject in workspace)
+	CDPURL         string // http://<ip>:9222 — for $CSPACE_BROWSER_CDP_URL
+	RunServerWSURL string // ws://<ip>:3000/ — for $PW_TEST_CONNECT_WS_ENDPOINT
+}
+
+// startBrowserSidecar runs the Playwright sidecar. plVersion selects the
+// run-server protocol version (must match the project's @playwright/test
+// pin per Playwright's strict cross-version handshake check); empty
+// string falls back to defaultPlaywrightVersion.
+func startBrowserSidecar(ctx context.Context, project, sandbox, plVersion string) (*BrowserSidecar, error) {
+	if plVersion == "" {
+		plVersion = defaultPlaywrightVersion
+	}
+	containerName := browserContainerName(project, sandbox)
 
 	// Idempotency: torch any prior container with the same name.
 	_ = exec.CommandContext(ctx, "container", "stop", containerName).Run()
@@ -53,7 +91,7 @@ func startBrowserSidecar(ctx context.Context, project, sandbox string) (containe
 		// these are how the sidecar fetches packages.
 		"--dns", "1.1.1.1",
 		"--dns", "8.8.8.8",
-		browserImage,
+		browserImage(plVersion),
 		"bash", "-c",
 		"set -e; " +
 			// 1) apt-get socat (CDP forwarder) AND dnsmasq (so the
@@ -84,22 +122,30 @@ func startBrowserSidecar(ctx context.Context, project, sandbox string) (containe
 			"--remote-debugging-port=9223 about:blank & " +
 			// 5) Wait for chrome's CDP to be ready.
 			"until curl -sf http://127.0.0.1:9223/json/version >/dev/null 2>&1; do sleep 0.5; done; " +
-			// 6) Expose CDP on 9222 via socat (loopback → external).
-			"exec socat TCP-LISTEN:9222,fork,reuseaddr TCP:127.0.0.1:9223",
+			// 6) Forward CDP loopback → external for siblings.
+			fmt.Sprintf("socat TCP-LISTEN:%d,fork,reuseaddr TCP:127.0.0.1:9223 & ", browserCDPPort) +
+			// 7) Start Playwright run-server in the foreground for
+			//    project tests using PW_TEST_CONNECT_WS_ENDPOINT.
+			//    `npx playwright` resolves to the version baked into
+			//    the image, which we keep in lockstep with the agent's
+			//    @playwright/mcp pin (see browserImage).
+			fmt.Sprintf("exec npx -y playwright@%s run-server --port %d --host 0.0.0.0",
+				plVersion, browserRunServerPort),
 	}
 	cmd := exec.CommandContext(ctx, "container", args...)
 	if out, runErr := cmd.CombinedOutput(); runErr != nil {
-		return "", "", fmt.Errorf("start browser sidecar: %w (%s)", runErr, strings.TrimSpace(string(out)))
+		return nil, fmt.Errorf("start browser sidecar: %w (%s)", runErr, strings.TrimSpace(string(out)))
 	}
 
 	// Capture sidecar IP.
 	ip, err := waitForBrowserIP(ctx, containerName, 30*time.Second)
 	if err != nil {
 		stopBrowserSidecar(context.Background(), containerName)
-		return "", "", fmt.Errorf("browser sidecar IP: %w", err)
+		return nil, fmt.Errorf("browser sidecar IP: %w", err)
 	}
 
-	cdpURL = fmt.Sprintf("http://%s:9222", ip)
+	cdpURL := fmt.Sprintf("http://%s:%d", ip, browserCDPPort)
+	wsURL := fmt.Sprintf("ws://%s:%d/", ip, browserRunServerPort)
 
 	// Wait for CDP endpoint to actually respond. apt-get update +
 	// install socat against fresh apt indices can run 30–60s in the
@@ -108,10 +154,39 @@ func startBrowserSidecar(ctx context.Context, project, sandbox string) (containe
 	// (no network / wrong image) wait too long.
 	if err := waitForCDP(ctx, cdpURL, 90*time.Second); err != nil {
 		stopBrowserSidecar(context.Background(), containerName)
-		return "", "", fmt.Errorf("browser sidecar CDP: %w", err)
+		return nil, fmt.Errorf("browser sidecar CDP: %w", err)
 	}
 
-	return containerName, cdpURL, nil
+	return &BrowserSidecar{
+		ContainerName:  containerName,
+		IP:             ip,
+		CDPURL:         cdpURL,
+		RunServerWSURL: wsURL,
+	}, nil
+}
+
+// InjectWorkspaceHost writes a /etc/hosts entry inside the browser sidecar
+// mapping `workspace` → workspaceIP. Project test code can then use
+// http://workspace:<port> as BASE_URL when the dev/preview server is in
+// the workspace sandbox itself. Best-effort; failures log and continue.
+func InjectWorkspaceHost(ctx context.Context, sidecarName, workspaceIP string) error {
+	if sidecarName == "" || workspaceIP == "" {
+		return nil
+	}
+	// Strip any prior cspace-injected block, then append. Idempotent.
+	clean := exec.CommandContext(ctx, "container", "exec", "--user", "0", sidecarName,
+		"sh", "-c",
+		"sed -i '/^# BEGIN cspace-injected$/,/^# END cspace-injected$/d' /etc/hosts")
+	if out, err := clean.CombinedOutput(); err != nil {
+		return fmt.Errorf("clean hosts in %s: %w (%s)", sidecarName, err, strings.TrimSpace(string(out)))
+	}
+	add := exec.CommandContext(ctx, "container", "exec", "--user", "0", sidecarName,
+		"sh", "-c",
+		fmt.Sprintf("printf '# BEGIN cspace-injected\\n%s workspace\\n# END cspace-injected\\n' >> /etc/hosts", workspaceIP))
+	if out, err := add.CombinedOutput(); err != nil {
+		return fmt.Errorf("inject hosts in %s: %w (%s)", sidecarName, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // waitForBrowserIP polls `container inspect <name>` until it returns a
@@ -180,4 +255,45 @@ func stopBrowserSidecar(ctx context.Context, name string) {
 	}
 	_ = exec.CommandContext(ctx, "container", "stop", name).Run()
 	_ = exec.CommandContext(ctx, "container", "rm", name).Run()
+}
+
+// detectPlaywrightVersion reads the project's @playwright/test pin from
+// <projectRoot>/package.json. Returns the literal version string with
+// any semver-range marker stripped (^1.58.2 → 1.58.2). Returns empty
+// when the file or dependency is absent — caller substitutes
+// defaultPlaywrightVersion. Never blocks; never errors loudly.
+//
+// Background: Playwright's run-server enforces same-version equality
+// between the @playwright/test client and the server (returns 428
+// Precondition Required across a minor version boundary). Letting the
+// project's pin drive the sidecar's version is the only way to support
+// projects on different Playwright releases without a manual override.
+func detectPlaywrightVersion(projectRoot string) string {
+	raw, err := os.ReadFile(filepath.Join(projectRoot, "package.json"))
+	if err != nil {
+		return ""
+	}
+	var pkg struct {
+		Dependencies    map[string]string `json:"dependencies"`
+		DevDependencies map[string]string `json:"devDependencies"`
+	}
+	if err := json.Unmarshal(raw, &pkg); err != nil {
+		return ""
+	}
+	for _, deps := range []map[string]string{pkg.DevDependencies, pkg.Dependencies} {
+		v, ok := deps["@playwright/test"]
+		if !ok {
+			continue
+		}
+		// Strip semver range markers (^, ~, >=, =, v) and surrounding
+		// whitespace. Anything remaining beyond the first space (e.g.
+		// "^1.58.2 || 1.59") gets cut at the first valid version.
+		v = strings.TrimSpace(v)
+		v = strings.TrimLeft(v, "^~>=v ")
+		if i := strings.IndexAny(v, " ,|"); i >= 0 {
+			v = v[:i]
+		}
+		return v
+	}
+	return ""
 }

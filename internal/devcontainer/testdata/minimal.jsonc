@@ -1,0 +1,6 @@
+{
+  // a comment
+  "name": "minimal",
+  "image": "node:24-bookworm-slim",
+  "postCreateCommand": "echo hello"
+}

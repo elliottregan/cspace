@@ -12,7 +12,7 @@ sync-embedded:
 	@mkdir -p internal/assets/embedded
 	@touch internal/assets/embedded/.gitkeep
 	@cp -r lib/templates internal/assets/embedded/
-	@cp -r lib/scripts internal/assets/embedded/
+	@cp -r lib/runtime internal/assets/embedded/
 	@cp -r lib/agent-supervisor-bun internal/assets/embedded/
 	@rm -rf internal/assets/embedded/agent-supervisor-bun/node_modules
 	@cp lib/defaults.json internal/assets/embedded/
@@ -51,7 +51,7 @@ fmt-check:
 
 lint: sync-embedded
 	golangci-lint run ./...
-	shellcheck lib/scripts/*.sh
+	shellcheck lib/runtime/scripts/*.sh
 
 check: fmt-check vet lint test
 

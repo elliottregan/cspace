@@ -215,7 +215,8 @@ func DeepMerge(base, overlay map[string]interface{}) map[string]interface{} {
 	return result
 }
 
-// FindProjectRoot walks up from dir looking for a .git/ directory.
+// FindProjectRoot walks up from dir looking for a .git directory or
+// a .git file (the gitdir reference used by `git worktree` checkouts).
 func FindProjectRoot(dir string) (string, error) {
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
@@ -225,7 +226,7 @@ func FindProjectRoot(dir string) (string, error) {
 	current := absDir
 	for {
 		gitPath := filepath.Join(current, ".git")
-		if info, err := os.Stat(gitPath); err == nil && info.IsDir() {
+		if _, err := os.Stat(gitPath); err == nil {
 			return current, nil
 		}
 

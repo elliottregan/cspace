@@ -4,8 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"time"
 
+	"github.com/elliottregan/cspace/internal/devcontainer"
+	"github.com/elliottregan/cspace/internal/orchestrator"
 	"github.com/elliottregan/cspace/internal/registry"
 	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
 	"github.com/spf13/cobra"
@@ -73,6 +77,27 @@ Without it, exactly one <name> argument is required.`,
 	return cmd
 }
 
+// substrateDowner is a minimal substrate adapter for orchestrator.Down that only stops containers.
+type substrateDowner struct {
+	adapter *applecontainer.Adapter
+}
+
+func (s *substrateDowner) Run(ctx context.Context, spec orchestrator.ServiceSpec) (string, error) {
+	return "", fmt.Errorf("not implemented")
+}
+
+func (s *substrateDowner) Exec(ctx context.Context, name string, cmd []string) (string, error) {
+	return "", fmt.Errorf("not implemented")
+}
+
+func (s *substrateDowner) Stop(ctx context.Context, name string) error {
+	return s.adapter.Stop(ctx, name)
+}
+
+func (s *substrateDowner) IP(ctx context.Context, name string) (string, error) {
+	return "", fmt.Errorf("not implemented")
+}
+
 // teardownSandbox stops the canonical container, stops a browser sidecar
 // if registered, and unregisters the entry. Permissive on missing entries
 // — a stale container could still be running, so we always issue Stop by
@@ -85,6 +110,27 @@ func teardownSandbox(
 	out io.Writer,
 ) {
 	entry, _ := r.Lookup(project, name)
+
+	// Tear down devcontainer-defined sidecars (e.g., database, cache) before
+	// stopping the main sandbox. Non-fatal; print a warning but continue.
+	if cfg != nil && cfg.ProjectRoot != "" {
+		dcPath := filepath.Join(cfg.ProjectRoot, ".devcontainer", "devcontainer.json")
+		if _, err := os.Stat(dcPath); err == nil {
+			if c, err := devcontainer.Load(dcPath); err == nil {
+				if plan, err := devcontainer.Merge(c, filepath.Dir(dcPath)); err == nil {
+					orch := &orchestrator.Orchestration{
+						Sandbox:   name,
+						Project:   project,
+						Plan:      plan,
+						Substrate: &substrateDowner{adapter: a},
+					}
+					if err := orch.Down(ctx); err != nil {
+						_, _ = fmt.Fprintf(out, "[cspace] warning: sidecar teardown: %v\n", err)
+					}
+				}
+			}
+		}
+	}
 
 	_ = a.Stop(ctx, fmt.Sprintf("cspace-%s-%s", project, name))
 

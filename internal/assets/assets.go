@@ -23,6 +23,14 @@ func DefaultsJSON() ([]byte, error) {
 	return EmbeddedFS.ReadFile("embedded/defaults.json")
 }
 
+// RuntimeFS returns the embedded runtime overlay tree (scripts and other
+// files bind-mounted into every microVM at /opt/cspace/). The returned FS
+// is rooted at "embedded/runtime/", so callers see entries like
+// "scripts/cspace-entrypoint.sh".
+func RuntimeFS() (fs.FS, error) {
+	return fs.Sub(EmbeddedFS, "embedded/runtime")
+}
+
 // ExtractTo extracts all embedded assets to the given directory,
 // preserving the directory structure under embedded/.
 // It returns the path to the extraction root directory.

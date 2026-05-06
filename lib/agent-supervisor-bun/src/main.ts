@@ -31,7 +31,7 @@ function logEvent(kind: string, data: unknown): void {
 // Called at supervisor startup; lets us resume the conversation after a
 // crash (the restart-loop wrapper respawns this binary; events.ndjson is
 // on a host-bind-mount so it persists across restarts and even across
-// cspace2-down + cspace2-up cycles).
+// cspace down + cspace up cycles).
 //
 // Permissive parser: malformed JSON lines are skipped rather than fatal,
 // since events.ndjson is appended live and a partially-flushed final
