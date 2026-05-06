@@ -199,6 +199,10 @@ func (o *Orchestration) injectAllHosts(ctx context.Context) error {
 		}
 		ips[name] = ip
 	}
+	// Cache for callers (cmd_up) that need to extend hosts injection
+	// beyond compose-managed microVMs — e.g. into the browser sidecar,
+	// which is cspace-private and not part of the compose plan.
+	o.serviceIPs = ips
 	// Per-target hosts content: every microVM gets the same compose
 	// service map, but the workspace also gets `workspace -> 127.0.0.1`
 	// so scripts inside the workspace can hit http://workspace:<port>

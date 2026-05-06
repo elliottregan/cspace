@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -180,14 +181,44 @@ func startBrowserSidecar(ctx context.Context, project, sandbox, plVersion string
 }
 
 // InjectWorkspaceHost writes a /etc/hosts entry inside the browser sidecar
-// mapping `workspace` → workspaceIP. Project test code can then use
-// http://workspace:<port> as BASE_URL when the dev/preview server is in
-// the workspace sandbox itself. Best-effort; failures log and continue.
+// mapping `workspace` → workspaceIP. Convenience wrapper around InjectHosts
+// for the early-injection case where only the workspace IP is known.
 func InjectWorkspaceHost(ctx context.Context, sidecarName, workspaceIP string) error {
 	if sidecarName == "" || workspaceIP == "" {
 		return nil
 	}
-	// Strip any prior cspace-injected block, then append. Idempotent.
+	return InjectHosts(ctx, sidecarName, map[string]string{"workspace": workspaceIP})
+}
+
+// InjectHosts writes a cspace-managed block to a sidecar microVM's
+// /etc/hosts mapping each hostname → IP. Replaces any prior cspace-injected
+// block (idempotent), so callers can re-issue with a wider map after more
+// IPs become known — for example, the browser sidecar gets just `workspace`
+// when the workspace boots, then the full set including convex-backend,
+// convex-dashboard, etc. once compose sidecars are up. Without this second
+// pass, headless Chromium fails fetches to direct sidecar URLs (e.g. Convex
+// storage upload's `http://convex-backend:3210/...` redirects) with
+// ERR_NAME_NOT_RESOLVED, since the sidecar's dnsmasq only forwards to public
+// resolvers and nothing knows the sandbox-internal hostnames.
+//
+// Best-effort: a single bash invocation, errors return up so callers can
+// log a warning and continue.
+func InjectHosts(ctx context.Context, sidecarName string, hosts map[string]string) error {
+	if sidecarName == "" || len(hosts) == 0 {
+		return nil
+	}
+	// Sort by hostname for deterministic output (eases diffing across runs).
+	names := make([]string, 0, len(hosts))
+	for name := range hosts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var block strings.Builder
+	block.WriteString("# BEGIN cspace-injected\\n")
+	for _, name := range names {
+		block.WriteString(fmt.Sprintf("%s %s\\n", hosts[name], name))
+	}
+	block.WriteString("# END cspace-injected\\n")
 	clean := exec.CommandContext(ctx, "container", "exec", "--user", "0", sidecarName,
 		"sh", "-c",
 		"sed -i '/^# BEGIN cspace-injected$/,/^# END cspace-injected$/d' /etc/hosts")
@@ -196,7 +227,7 @@ func InjectWorkspaceHost(ctx context.Context, sidecarName, workspaceIP string) e
 	}
 	add := exec.CommandContext(ctx, "container", "exec", "--user", "0", sidecarName,
 		"sh", "-c",
-		fmt.Sprintf("printf '# BEGIN cspace-injected\\n%s workspace\\n# END cspace-injected\\n' >> /etc/hosts", workspaceIP))
+		fmt.Sprintf("printf '%s' >> /etc/hosts", block.String()))
 	if out, err := add.CombinedOutput(); err != nil {
 		return fmt.Errorf("inject hosts in %s: %w (%s)", sidecarName, err, strings.TrimSpace(string(out)))
 	}

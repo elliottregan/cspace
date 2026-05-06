@@ -63,4 +63,22 @@ type Orchestration struct {
 	// ExtractedEnv is populated by Up after credential extraction runs;
 	// cmd_up consumes this to inject env vars into the sandbox.
 	ExtractedEnv map[string]string
+	// serviceIPs is populated by injectAllHosts; keyed by compose service
+	// name → vmnet IP. Exposed via ServiceIPs() so cmd_up can extend hosts
+	// injection into cspace-private microVMs (e.g. the browser sidecar).
+	serviceIPs map[string]string
+}
+
+// ServiceIPs returns a copy of the service-name → IP map captured during
+// Up's hosts injection. Empty before Up has run, or when the project has
+// no compose sidecars.
+func (o *Orchestration) ServiceIPs() map[string]string {
+	if o.serviceIPs == nil {
+		return nil
+	}
+	out := make(map[string]string, len(o.serviceIPs))
+	for k, v := range o.serviceIPs {
+		out[k] = v
+	}
+	return out
 }

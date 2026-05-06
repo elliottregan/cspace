@@ -638,6 +638,22 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 					err = fmt.Errorf("orchestrate sidecars: %w", upErr)
 					return err
 				}
+				// Extend the browser sidecar's /etc/hosts with the compose
+				// sidecar IPs the orchestrator just resolved. Without this,
+				// headless Chromium can't reach `convex-backend:3210` (the
+				// direct URL Convex returns for storage uploads, etc.) and
+				// fails the fetch with ERR_NAME_NOT_RESOLVED — even though
+				// the WebSocket proxy in the workspace handles every other
+				// Convex call. The workspace and other compose microVMs
+				// already get this map via the orchestrator's own injection.
+				if browserSidecar != nil {
+					hosts := orch.ServiceIPs()
+					hosts["workspace"] = ip
+					if hErr := InjectHosts(ctx, browserSidecar.ContainerName, hosts); hErr != nil {
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+							"[cspace] warning: extend browser sidecar hosts: %v\n", hErr)
+					}
+				}
 				// Write extracted env vars (e.g. CONVEX_SELF_HOSTED_ADMIN_KEY)
 				// to <sessionsHostDir>/extracted.env on the host. The sandbox's
 				// /sessions/ bind-mount makes this visible as
