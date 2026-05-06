@@ -46,8 +46,8 @@ ensure_dep dnsmasq dnsmasq
 # single-quote escaped) so credential strings are imported before any
 # user-visible env consumption (git helper, claude.json pre-seed, etc.).
 if [ -f /sessions/extracted.env ]; then
-    # shellcheck source=/dev/null
     set -a
+    # shellcheck source=/dev/null
     . /sessions/extracted.env
     set +a
 fi
@@ -237,8 +237,8 @@ if [ -n "${CSPACE_POSTCREATE_CMD:-}" ] && [ ! -f /workspace/.cspace-postcreate-d
             done
         fi
         if [ -f /sessions/extracted.env ]; then
-            # shellcheck source=/dev/null
             set -a
+            # shellcheck source=/dev/null
             . /sessions/extracted.env
             set +a
         fi
