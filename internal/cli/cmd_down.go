@@ -17,10 +17,24 @@ import (
 
 func newDownCmd() *cobra.Command {
 	var all bool
+	var keepState bool
 	cmd := &cobra.Command{
 		Use:   "down [<name>]",
 		Short: "Stop and remove a sandbox (or all sandboxes with --all)",
 		Long: `Stop and remove a sandbox.
+
+By default, ` + "`cspace down`" + ` is destructive: it stops the container,
+wipes the per-sandbox clone at ~/.cspace/clones/<project>/<name>/,
+wipes sessions at ~/.cspace/sessions/<project>/<name>/, and removes
+every substrate-managed volume named cspace-<project>-<name>-*. The
+next ` + "`cspace up <name>`" + ` therefore starts from a fresh clone of host
+HEAD with empty volumes.
+
+Pass --keep-state to preserve clone, sessions, and volumes — useful
+when you want to suspend a sandbox and resume the same name later
+without losing in-progress state. Note that an existing clone is NOT
+auto-pulled on the next ` + "`up`" + `; if you keep state, you keep that
+exact tree.
 
 With --all (or -a), tear down every sandbox in the current project.
 Without it, exactly one <name> argument is required.`,
@@ -67,13 +81,15 @@ Without it, exactly one <name> argument is required.`,
 
 			a := applecontainer.New()
 			for _, name := range names {
-				teardownSandbox(ctx, a, r, project, name, cmd.OutOrStdout())
+				teardownSandbox(ctx, a, r, project, name, cmd.OutOrStdout(), keepState)
 			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVarP(&all, "all", "a", false,
 		"tear down every sandbox in the current project")
+	cmd.Flags().BoolVar(&keepState, "keep-state", false,
+		"preserve the workspace clone, sessions, and per-sandbox volumes (default: wipe)")
 	return cmd
 }
 
@@ -99,15 +115,19 @@ func (s *substrateDowner) IP(ctx context.Context, name string) (string, error) {
 }
 
 // teardownSandbox stops the canonical container, stops a browser sidecar
-// if registered, and unregisters the entry. Permissive on missing entries
-// — a stale container could still be running, so we always issue Stop by
-// name regardless of registry state.
+// if registered, and unregisters the entry. When wipeState is true (the
+// `cspace down` default), it also reclaims the per-sandbox clone,
+// sessions, and substrate-managed volumes so the next `cspace up <same
+// name>` starts fresh. Permissive on missing entries — a stale container
+// could still be running, so we always issue Stop by name regardless of
+// registry state.
 func teardownSandbox(
 	ctx context.Context,
 	a *applecontainer.Adapter,
 	r *registry.Registry,
 	project, name string,
 	out io.Writer,
+	wipeState bool,
 ) {
 	entry, _ := r.Lookup(project, name)
 
@@ -141,5 +161,53 @@ func teardownSandbox(
 	}
 
 	_ = r.Unregister(project, name)
+
+	if wipeState {
+		wipeSandboxState(ctx, a, project, name, out)
+	}
+
 	_, _ = fmt.Fprintf(out, "sandbox %s down\n", name)
+}
+
+// wipeSandboxState reclaims everything `cspace up` materialized for a
+// sandbox: substrate-managed volumes, the workspace clone, and the
+// host-side sessions tree. Each step is best-effort; the caller already
+// reported `down` and we don't want a leaked session dir to mask the
+// successful container stop.
+func wipeSandboxState(
+	ctx context.Context,
+	a *applecontainer.Adapter,
+	project, name string,
+	out io.Writer,
+) {
+	// Substrate-managed volumes: cspace-<project>-<name>-<compose-volume>.
+	// Listing first (instead of trying every compose-declared name) means
+	// we also catch volumes from a previous cspace up that referenced a
+	// compose service we no longer have, and orphans from interrupted runs.
+	prefix := fmt.Sprintf("cspace-%s-%s-", project, name)
+	if vols, err := a.ListVolumes(ctx, prefix); err == nil {
+		for _, v := range vols {
+			if err := a.RemoveVolume(ctx, v); err != nil {
+				_, _ = fmt.Fprintf(out, "[cspace] warning: remove volume %s: %v\n", v, err)
+			}
+		}
+	} else {
+		_, _ = fmt.Fprintf(out, "[cspace] warning: list volumes: %v\n", err)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		_, _ = fmt.Fprintf(out, "[cspace] warning: resolve home dir for state wipe: %v\n", err)
+		return
+	}
+
+	clonePath := filepath.Join(home, ".cspace", "clones", project, name)
+	if err := os.RemoveAll(clonePath); err != nil {
+		_, _ = fmt.Fprintf(out, "[cspace] warning: remove clone %s: %v\n", clonePath, err)
+	}
+
+	sessionsPath := filepath.Join(home, ".cspace", "sessions", project, name)
+	if err := os.RemoveAll(sessionsPath); err != nil {
+		_, _ = fmt.Fprintf(out, "[cspace] warning: remove sessions %s: %v\n", sessionsPath, err)
+	}
 }

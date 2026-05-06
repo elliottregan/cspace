@@ -326,6 +326,33 @@ func (a *Adapter) ensureVolume(ctx context.Context, v substrate.NamedVolume) err
 	return nil
 }
 
+// ListVolumes returns the names of substrate-managed volumes whose
+// names start with prefix. Used by cspace down to find every volume
+// owned by a sandbox (naming convention:
+// cspace-<project>-<sandbox>-<compose-volume>) without keeping a
+// separate registry of allocations.
+func (a *Adapter) ListVolumes(ctx context.Context, prefix string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "container", "volume", "list", "-q")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("container volume list: %w (stderr: %s)",
+			err, strings.TrimSpace(stderr.String()))
+	}
+	var matches []string
+	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, prefix) {
+			matches = append(matches, line)
+		}
+	}
+	return matches, nil
+}
+
 // RemoveVolume deletes a substrate-managed volume. Idempotent (missing
 // volumes return nil). Used by cspace down to reclaim per-sandbox
 // node_modules / build-artifact volumes — the workspace clone gets
