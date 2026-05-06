@@ -34,6 +34,14 @@ type RunSpec struct {
 	// fd budget (which a 1700-package pnpm install saturates). Lost on
 	// container restart by design.
 	TmpfsMounts []TmpfsMount
+
+	// Volumes attach substrate-managed (NOT bind-mounted) volumes. The
+	// adapter creates them on demand, mounts them as in-VM block devices
+	// (e.g. /dev/vdc ext4) — no host virtio-fs traffic on read/write
+	// paths. This is the v0-Docker-Desktop equivalent: host's
+	// kern.maxfilesperproc never sees a 1700-pkg pnpm install. Compose
+	// non-external named volumes resolve here.
+	Volumes []NamedVolume
 }
 
 // Mount is a host-to-container bind mount.
@@ -41,6 +49,27 @@ type Mount struct {
 	HostPath      string
 	ContainerPath string
 	ReadOnly      bool
+}
+
+// NamedVolume is a substrate-managed block-device volume attached to the
+// microVM. Apple Container backs these with an ext4-formatted disk image
+// at ~/Library/Application Support/com.apple.container/volumes/<name>/
+// volume.img. Reads/writes never traverse virtio-fs, so cold pnpm install
+// extracts don't saturate the host's kern.maxfilesperproc.
+//
+// Volumes are exclusive: a single volume can only attach to one running
+// container at a time, so this is the right shape for per-sandbox
+// node_modules but NOT for cross-sandbox shared caches.
+type NamedVolume struct {
+	// Name is the substrate-level volume name. Caller is responsible for
+	// scoping (e.g. cspace-<project>-<sandbox>-<compose-vol>).
+	Name string
+	// ContainerPath where the volume mounts inside the microVM.
+	ContainerPath string
+	// SizeBytes is the ext4 image size; 0 = adapter default.
+	SizeBytes int64
+	// ReadOnly mounts the volume read-only.
+	ReadOnly bool
 }
 
 // TmpfsMount is a RAM-backed mount inside the microVM.

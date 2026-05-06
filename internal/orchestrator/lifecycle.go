@@ -41,11 +41,16 @@ func (o *Orchestration) Up(ctx context.Context) error {
 				external = nv.External
 				externalName = nv.Name
 			}
-			vm, err := resolveVolume(v, o.Project, o.Sandbox, composeDir, external, externalName)
+			rv, err := ResolveVolume(v, o.Project, o.Sandbox, composeDir, external, externalName)
 			if err != nil {
 				return fmt.Errorf("resolve volume for service %q: %w", name, err)
 			}
-			spec.Volumes = append(spec.Volumes, vm)
+			if rv.Bind != nil {
+				spec.Volumes = append(spec.Volumes, *rv.Bind)
+			}
+			if rv.Named != nil {
+				spec.NamedVolumes = append(spec.NamedVolumes, *rv.Named)
+			}
 		}
 		for _, t := range svc.Tmpfs {
 			spec.Tmpfs = append(spec.Tmpfs, TmpfsMount{

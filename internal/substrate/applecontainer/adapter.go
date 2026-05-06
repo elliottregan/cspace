@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/elliottregan/cspace/internal/substrate"
@@ -134,6 +135,14 @@ const (
 // happens after the container is started but is not guaranteed to coincide
 // with the container being ready to accept exec.
 func (a *Adapter) Run(ctx context.Context, spec substrate.RunSpec) error {
+	// Materialize substrate-managed volumes before the run so the CLI
+	// can attach them. Idempotent: pre-existing volumes are reused
+	// (Apple Container errors on duplicate create — we swallow that).
+	for _, v := range spec.Volumes {
+		if err := a.ensureVolume(ctx, v); err != nil {
+			return fmt.Errorf("ensure volume %q: %w", v.Name, err)
+		}
+	}
 	args := []string{"run", "-d", "--name", spec.Name}
 	cpus := spec.CPUs
 	if cpus == 0 {
@@ -161,6 +170,13 @@ func (a *Adapter) Run(ctx context.Context, spec substrate.RunSpec) error {
 	for _, m := range spec.Mounts {
 		mount := fmt.Sprintf("%s:%s", m.HostPath, m.ContainerPath)
 		if m.ReadOnly {
+			mount += ":ro"
+		}
+		args = append(args, "-v", mount)
+	}
+	for _, v := range spec.Volumes {
+		mount := fmt.Sprintf("%s:%s", v.Name, v.ContainerPath)
+		if v.ReadOnly {
 			mount += ":ro"
 		}
 		args = append(args, "-v", mount)
@@ -263,6 +279,49 @@ func (a *Adapter) Stop(ctx context.Context, name string) error {
 			return nil
 		}
 		return fmt.Errorf("container rm --force %s: %w (stderr: %s)",
+			name, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// ensureVolume creates an Apple Container volume if it doesn't exist,
+// formatted as ext4 inside a disk image. Idempotent: pre-existing
+// volumes are reused as-is — we don't resize them on subsequent runs
+// (treat the first create as authoritative). Cspace's per-sandbox
+// volume naming makes accidental name collisions impossible.
+func (a *Adapter) ensureVolume(ctx context.Context, v substrate.NamedVolume) error {
+	args := []string{"volume", "create"}
+	if v.SizeBytes > 0 {
+		args = append(args, "-s", strconv.FormatInt(v.SizeBytes, 10))
+	}
+	args = append(args, v.Name)
+	cmd := exec.CommandContext(ctx, "container", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if strings.Contains(stderr.String(), "already exists") {
+			return nil
+		}
+		return fmt.Errorf("container volume create %s: %w (stderr: %s)",
+			v.Name, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// RemoveVolume deletes a substrate-managed volume. Idempotent (missing
+// volumes return nil). Used by cspace down to reclaim per-sandbox
+// node_modules / build-artifact volumes — the workspace clone gets
+// wiped, the volumes have to go too or they leak.
+func (a *Adapter) RemoveVolume(ctx context.Context, name string) error {
+	cmd := exec.CommandContext(ctx, "container", "volume", "rm", name)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if strings.Contains(stderr.String(), "not found") ||
+			strings.Contains(stderr.String(), "notFound") {
+			return nil
+		}
+		return fmt.Errorf("container volume rm %s: %w (stderr: %s)",
 			name, err, strings.TrimSpace(stderr.String()))
 	}
 	return nil

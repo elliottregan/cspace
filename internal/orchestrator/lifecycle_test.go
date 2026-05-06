@@ -190,11 +190,20 @@ func TestUpResolvesNamedVolume(t *testing.T) {
 	if len(stub.runs) != 1 {
 		t.Fatalf("runs=%d", len(stub.runs))
 	}
-	if len(stub.runs[0].Volumes) != 1 {
-		t.Fatalf("expected 1 volume, got %d", len(stub.runs[0].Volumes))
+	// Non-external named volumes resolve to substrate-managed ext4
+	// volumes (NamedVolumes), not host bind mounts (Volumes). This is
+	// the v0-Docker-Desktop equivalent: in-VM filesystem, no virtio-fs.
+	if len(stub.runs[0].NamedVolumes) != 1 {
+		t.Fatalf("expected 1 named volume, got %d", len(stub.runs[0].NamedVolumes))
 	}
-	if stub.runs[0].Volumes[0].GuestPath != "/var/lib/postgresql" {
-		t.Fatalf("guest=%q", stub.runs[0].Volumes[0].GuestPath)
+	if stub.runs[0].NamedVolumes[0].GuestPath != "/var/lib/postgresql" {
+		t.Fatalf("guest=%q", stub.runs[0].NamedVolumes[0].GuestPath)
+	}
+	if stub.runs[0].NamedVolumes[0].Name != "cspace-p-m-pgdata" {
+		t.Fatalf("name=%q", stub.runs[0].NamedVolumes[0].Name)
+	}
+	if len(stub.runs[0].Volumes) != 0 {
+		t.Fatalf("expected no bind mounts, got %d", len(stub.runs[0].Volumes))
 	}
 }
 

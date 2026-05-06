@@ -510,15 +510,24 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 							external = nv.External
 							externalName = nv.Name
 						}
-						vm, vErr := orchestrator.ResolveVolume(v, project, name, composeDir, external, externalName)
+						rv, vErr := orchestrator.ResolveVolume(v, project, name, composeDir, external, externalName)
 						if vErr != nil {
 							return fmt.Errorf("resolve workspace volume %q: %w", v.Target, vErr)
 						}
-						spec.Mounts = append(spec.Mounts, substrate.Mount{
-							HostPath:      vm.HostPath,
-							ContainerPath: vm.GuestPath,
-							ReadOnly:      vm.ReadOnly,
-						})
+						if rv.Bind != nil {
+							spec.Mounts = append(spec.Mounts, substrate.Mount{
+								HostPath:      rv.Bind.HostPath,
+								ContainerPath: rv.Bind.GuestPath,
+								ReadOnly:      rv.Bind.ReadOnly,
+							})
+						}
+						if rv.Named != nil {
+							spec.Volumes = append(spec.Volumes, substrate.NamedVolume{
+								Name:          rv.Named.Name,
+								ContainerPath: rv.Named.GuestPath,
+								ReadOnly:      rv.Named.ReadOnly,
+							})
+						}
 					}
 				}
 			}
@@ -1220,6 +1229,13 @@ func (s *substrateRunner) Run(ctx context.Context, spec orchestrator.ServiceSpec
 			HostPath:      v.HostPath,
 			ContainerPath: v.GuestPath,
 			ReadOnly:      v.ReadOnly,
+		})
+	}
+	for _, n := range spec.NamedVolumes {
+		rspec.Volumes = append(rspec.Volumes, substrate.NamedVolume{
+			Name:          n.Name,
+			ContainerPath: n.GuestPath,
+			ReadOnly:      n.ReadOnly,
 		})
 	}
 	for _, t := range spec.Tmpfs {

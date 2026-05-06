@@ -22,18 +22,29 @@ type Substrate interface {
 }
 
 type ServiceSpec struct {
-	Name        string
-	Image       string
-	Environment map[string]string
-	Volumes     []VolumeMount
-	Tmpfs       []TmpfsMount
-	Command     []string
-	WorkingDir  string
-	User        string
+	Name         string
+	Image        string
+	Environment  map[string]string
+	Volumes      []VolumeMount      // host bind mounts (compose type:bind, external named volumes)
+	NamedVolumes []NamedVolumeMount // substrate-managed ext4 volumes (compose non-external named volumes)
+	Tmpfs        []TmpfsMount
+	Command      []string
+	WorkingDir   string
+	User         string
 }
 
 type VolumeMount struct {
 	HostPath  string
+	GuestPath string
+	ReadOnly  bool
+}
+
+// NamedVolumeMount is a substrate-managed (ext4 disk image, not virtio-fs)
+// volume. Used for per-sandbox node_modules, build artifacts, anything
+// where the host shouldn't see the I/O. Cspace names these
+// cspace-<project>-<sandbox>-<compose-volume>.
+type NamedVolumeMount struct {
+	Name      string // substrate-level volume name
 	GuestPath string
 	ReadOnly  bool
 }
