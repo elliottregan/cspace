@@ -117,8 +117,22 @@ func startBrowserSidecar(ctx context.Context, project, sandbox, plVersion string
 			"echo 'nameserver 127.0.0.1' > /etc/resolv.conf; " +
 			// 4) Start chrome on loopback (chrome ignores
 			//    --remote-debugging-address=0.0.0.0 in modern builds).
+			//
+			//    --disable-dev-shm-usage routes Chrome's shared-memory
+			//    backing for URLLoader buffers to /tmp instead of /dev/shm.
+			//    Apple Container's default tmpfs caps /dev/shm at 64 MiB,
+			//    which Chrome's network service exhausts on the very first
+			//    paint of a moderately complex page (multiple JS chunks,
+			//    CSS chunks, Sentry envelope POSTs). The renderer then
+			//    rejects subresource requests with net::ERR_INSUFFICIENT_
+			//    RESOURCES even though the server is healthy and curl from
+			//    the same network returns 200. Documented Playwright/
+			//    Puppeteer recommendation for containerized Chrome — see
+			//    cs-finding 2026-05-06-browser-sidecar-chromium-hits-err-
+			//    insufficient-resources-on for the diagnostic trail.
 			"/ms-playwright/chromium-*/chrome-linux/chrome " +
 			"--headless=new --no-sandbox --disable-gpu " +
+			"--disable-dev-shm-usage " +
 			"--remote-debugging-port=9223 about:blank & " +
 			// 5) Wait for chrome's CDP to be ready.
 			"until curl -sf http://127.0.0.1:9223/json/version >/dev/null 2>&1; do sleep 0.5; done; " +
