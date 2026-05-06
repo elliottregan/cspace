@@ -70,6 +70,14 @@ type NamedVolume struct {
 	SizeBytes int64
 	// ReadOnly mounts the volume read-only.
 	ReadOnly bool
+	// OwnerUID, when non-zero, makes the adapter chown the mount point
+	// to <uid>:<uid> and remove the mkfs.ext4-default `lost+found`
+	// directory once the container is running. Use this when the in-
+	// container process that writes to the volume runs as a non-root
+	// user (UID 1000 / `dev` for cspace's default sandbox image).
+	// Idempotent: warm volumes already have the right ownership and a
+	// missing lost+found, so subsequent boots are cheap.
+	OwnerUID int
 }
 
 // TmpfsMount is a RAM-backed mount inside the microVM.

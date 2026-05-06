@@ -526,6 +526,12 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 								Name:          rv.Named.Name,
 								ContainerPath: rv.Named.GuestPath,
 								ReadOnly:      rv.Named.ReadOnly,
+								// Workspace tooling (pnpm, vite, etc.) runs as
+								// `dev` (UID 1000 — see lib/templates/Dockerfile).
+								// Adapter chowns + removes lost+found at first
+								// boot so non-root tools can write a fresh
+								// ext4 mount.
+								OwnerUID: 1000,
 							})
 						}
 					}

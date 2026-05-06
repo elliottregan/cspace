@@ -218,6 +218,24 @@ func (a *Adapter) Run(ctx context.Context, spec substrate.RunSpec) error {
 		return fmt.Errorf("container run %s: %w (stderr: %s)",
 			spec.Name, err, stderr.String())
 	}
+	// Init substrate-managed volumes that need a non-root owner. mkfs.ext4
+	// hands us a root-owned mount root and a `lost+found` directory at
+	// mode 700 — both trip non-root tools (pnpm walks lost+found and
+	// hits EACCES). Idempotent: chown is a no-op on a warm volume,
+	// `rm -rf lost+found` is a no-op when it's already gone.
+	for _, v := range spec.Volumes {
+		if v.OwnerUID == 0 {
+			continue
+		}
+		init := fmt.Sprintf("chown %d:%d %q && rm -rf %q/lost+found",
+			v.OwnerUID, v.OwnerUID, v.ContainerPath, v.ContainerPath)
+		if _, err := a.Exec(ctx, spec.Name,
+			[]string{"sh", "-c", init},
+			substrate.ExecOpts{User: "0"}); err != nil {
+			_ = a.Stop(context.Background(), spec.Name)
+			return fmt.Errorf("init volume %s: %w", v.ContainerPath, err)
+		}
+	}
 	return nil
 }
 
