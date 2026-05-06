@@ -28,13 +28,15 @@ import (
 type Phase int
 
 const (
-	PhasePending    Phase = iota // pre-roll, planet entirely out of focus
-	PhaseDaemon                  // ensureRegistryDaemon
-	PhaseClone                   // provisionClone
-	PhaseBoot                    // substrate.Run + waitForIP
-	PhasePlugins                 // entrypoint installing claude plugins
-	PhaseSupervisor              // waitForHealth
-	PhaseReady                   // MarkReady, terminal success
+	PhasePending        Phase = iota // pre-roll, planet entirely out of focus
+	PhaseDaemon                      // ensureRegistryDaemon
+	PhaseClone                       // provisionClone
+	PhaseBrowserSidecar              // startBrowserSidecar (only with --browser / customizations.cspace.browser)
+	PhaseSidecars                    // orchestrator.Up — compose sidecars (convex-backend, etc.)
+	PhaseBoot                        // substrate.Run + waitForIP for the workspace
+	PhasePlugins                     // entrypoint installing claude plugins
+	PhaseSupervisor                  // waitForHealth
+	PhaseReady                       // MarkReady, terminal success
 )
 
 // TotalPhases counts every phase including PhaseReady. Used by the
@@ -52,13 +54,15 @@ const focusSaturationPhase = int(PhaseSupervisor)
 // phaseLabels are shown beside the spinner. PhasePending is unused at
 // runtime — we always start animating from PhaseDaemon at the latest.
 var phaseLabels = map[Phase]string{
-	PhasePending:    "preparing",
-	PhaseDaemon:     "starting cspace daemon",
-	PhaseClone:      "preparing workspace",
-	PhaseBoot:       "booting microVM",
-	PhasePlugins:    "installing claude plugins",
-	PhaseSupervisor: "starting supervisor",
-	PhaseReady:      "ready",
+	PhasePending:        "preparing",
+	PhaseDaemon:         "starting cspace daemon",
+	PhaseClone:          "preparing workspace",
+	PhaseBrowserSidecar: "starting browser sidecar",
+	PhaseSidecars:       "starting compose sidecars",
+	PhaseBoot:           "booting microVM",
+	PhasePlugins:        "installing claude plugins",
+	PhaseSupervisor:     "starting supervisor",
+	PhaseReady:          "ready",
 }
 
 // Event is the message a channel-backed reporter sends to the running

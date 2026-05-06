@@ -451,6 +451,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			var browserContainer string
 			var browserSidecar *BrowserSidecar
 			if browserEnabled {
+				rep.Phase(overlay.PhaseBrowserSidecar)
 				// Match the sidecar's Playwright run-server version to the
 				// project's @playwright/test pin. Playwright's strict
 				// cross-version handshake check makes mismatched versions
@@ -602,6 +603,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// Sidecars are torn down on any subsequent error.
 			var orch *orchestrator.Orchestration
 			if devcontainerPlan != nil && devcontainerPlan.Compose != nil {
+				rep.Phase(overlay.PhaseSidecars)
 				orch = &orchestrator.Orchestration{
 					Sandbox:   name,
 					Project:   project,
