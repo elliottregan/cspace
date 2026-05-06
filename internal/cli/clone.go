@@ -12,17 +12,24 @@ import (
 //
 //	~/.cspace/clones/<project>/<sandbox>/
 //
-// branched as cspace/<sandbox> off baseBranch (or current HEAD of projectRoot
-// when baseBranch is ""). Returns the absolute path to the clone, suitable for
-// bind-mounting as /workspace.
+// off baseBranch (or current HEAD of projectRoot when baseBranch is "").
+// Returns the absolute path to the clone, suitable for bind-mounting as
+// /workspace.
 //
-// If the sandbox's clone already exists, this function is idempotent: it does
-// not re-clone; it just ensures the cspace/<sandbox> branch is checked out and
-// returns the path. If projectRoot is empty or not a git repo, returns
-// ("", nil) — the caller should treat that as "no workspace mount" with a
-// warning. See finding 2026-05-01-per-sandbox-git-clone-bind-mounted-as-
-// workspace-works-as-des for the locked design.
-func provisionClone(projectRoot, projectName, sandboxName, baseBranch string) (string, error) {
+// When branch is non-empty, the clone is checked out on a fresh branch of
+// that name created off the cloned tip — used by autonomous flows that
+// want each sandbox's work isolated under a meaningful branch (e.g.
+// "issue/538-fix"). When branch is empty (the default for interactive
+// `cspace up`), the clone stays on whatever baseBranch landed on, which
+// matches the muscle memory of agents and tutorials that assume `main`.
+//
+// If the sandbox's clone already exists, this function is idempotent: it
+// does not re-clone or touch the checked-out branch. The caller's
+// `--keep-state` semantics own that lifecycle.
+//
+// If projectRoot is empty or not a git repo, returns ("", nil) — the
+// caller should treat that as "no workspace mount" with a warning.
+func provisionClone(projectRoot, projectName, sandboxName, baseBranch, branch string) (string, error) {
 	if projectRoot == "" {
 		return "", nil
 	}
@@ -36,17 +43,12 @@ func provisionClone(projectRoot, projectName, sandboxName, baseBranch string) (s
 		return "", err
 	}
 	clonePath := filepath.Join(home, ".cspace", "clones", projectName, sandboxName)
-	branch := "cspace/" + sandboxName
 
 	if _, err := os.Stat(clonePath); err == nil {
-		// Clone already exists; ensure the cspace/<sandbox> branch is checked out.
-		if err := runGit(clonePath, "checkout", branch); err != nil {
-			// Branch may not exist yet (e.g. clone was created by a different
-			// workflow). Try to create it from current HEAD as a fallback.
-			if err2 := runGit(clonePath, "checkout", "-b", branch); err2 != nil {
-				return "", fmt.Errorf("checkout %s in %s: %w / %w", branch, clonePath, err, err2)
-			}
-		}
+		// Clone already exists; honor whatever branch is checked out.
+		// `cspace down --keep-state` exists for callers who want the
+		// previous session's branch and uncommitted state preserved;
+		// don't surprise them by force-switching here.
 		return clonePath, nil
 	}
 
@@ -78,9 +80,15 @@ func provisionClone(projectRoot, projectName, sandboxName, baseBranch string) (s
 		_ = runGit(clonePath, "remote", "add", "origin", upstream)
 	}
 
-	// Create the cspace/<sandbox> branch (off whatever the clone now points at).
-	if err := runGit(clonePath, "checkout", "-b", branch); err != nil {
-		return "", fmt.Errorf("create branch %s: %w", branch, err)
+	// Optional named branch — autonomous flows pass `--branch issue/N-foo`
+	// (or `--branch auto` which the caller resolves to cspace/<sandbox>)
+	// when they want each sandbox's work isolated under a meaningful name
+	// ready to push as a PR. Interactive callers leave this empty so the
+	// clone stays on baseBranch.
+	if branch != "" {
+		if err := runGit(clonePath, "checkout", "-b", branch); err != nil {
+			return "", fmt.Errorf("create branch %s: %w", branch, err)
+		}
 	}
 
 	return clonePath, nil

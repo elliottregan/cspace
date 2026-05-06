@@ -35,6 +35,7 @@ func newUpCmd() *cobra.Command {
 	var workspaceMount string
 	var extraEnv []string
 	var baseBranch string
+	var workBranch string
 	var withBrowser bool
 	var cpus int
 	var memoryMiB int
@@ -361,20 +362,33 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			}
 			// Auto-provision a per-sandbox git clone unless the user supplied
 			// --workspace explicitly (which acts as an override). The clone
-			// lives at ~/.cspace/clones/<project>/<sandbox>/ and is checked
-			// out as branch cspace/<sandbox>. See finding
+			// lives at ~/.cspace/clones/<project>/<sandbox>/ and stays on
+			// baseBranch (typically main) unless --branch <name|auto> asks
+			// for a fresh per-sandbox branch off that tip. See finding
 			// 2026-05-01-per-sandbox-git-clone-bind-mounted-as-workspace-works-as-des
-			// for the locked design.
+			// for the original clone-based design.
 			rep.Phase(overlay.PhaseClone)
 			if workspaceMount == "" {
-				auto, err := provisionClone(projectRoot, project, name, baseBranch)
+				// Resolve `--branch auto` to the historical cspace/<sandbox>
+				// shape so autonomous flows that spawn many sandboxes don't
+				// have to invent unique names. An explicit value passes through.
+				resolvedBranch := workBranch
+				if resolvedBranch == "auto" {
+					resolvedBranch = "cspace/" + name
+				}
+				auto, err := provisionClone(projectRoot, project, name, baseBranch, resolvedBranch)
 				if err != nil {
 					return fmt.Errorf("provision workspace clone: %w", err)
 				}
 				if auto != "" {
 					workspaceMount = auto
-					_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-						"workspace clone: %s (branch cspace/%s)\n", auto, name)
+					if resolvedBranch != "" {
+						_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+							"workspace clone: %s (branch %s)\n", auto, resolvedBranch)
+					} else {
+						_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+							"workspace clone: %s\n", auto)
+					}
 				} else if projectRoot != "" {
 					_, _ = fmt.Fprintln(cmd.OutOrStdout(),
 						"warning: project root is not a git repo; sandbox /workspace will be empty")
@@ -735,7 +749,9 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 	cmd.Flags().StringArrayVar(&extraEnv, "env", nil,
 		"extra KEY=VALUE env vars to inject into the sandbox (repeatable)")
 	cmd.Flags().StringVar(&baseBranch, "base", "",
-		"base branch for the auto-provisioned cspace/<sandbox> branch (defaults to host project's current HEAD)")
+		"base branch the workspace clone is checked out on (defaults to host project's current HEAD)")
+	cmd.Flags().StringVar(&workBranch, "branch", "",
+		"create a fresh branch off baseBranch for the sandbox's work (use `auto` for the historical cspace/<sandbox> shape, or pass an explicit name like `issue/538-fix`); empty = stay on baseBranch")
 	cmd.Flags().BoolVar(&withBrowser, "browser", false,
 		"start a Playwright browser sidecar; agent's playwright-mcp connects via CDP")
 	cmd.Flags().IntVar(&cpus, "cpus", 0,
