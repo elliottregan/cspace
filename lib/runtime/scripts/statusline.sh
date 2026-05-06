@@ -166,16 +166,16 @@ if [ -n "$PR_LINK" ]; then
 fi
 
 # --- Service URLs ---
-# Enumerate every TCP port the sandbox is listening on (the supervisor
-# port itself is excluded — that's cspace internals, not user-visible).
-# For each, emit a clickable URL via the sandbox's daemon-DNS hostname.
-# When .cspace.json container.ports has a label for the port, the link
-# text + color reflect it (dev=green, preview=yellow, brainstorm=
-# magenta); unlabeled ports show as ":<port>" in cyan.
+# Project ownership model: .cspace.json's container.ports drives what
+# shows up here. When the project declares ports, ONLY those are shown
+# (with their labels). Without that section, we fall back to auto-
+# discovery so a fresh project still sees its dev server URL — but the
+# tradeoff is noise: dnsmasq's :53, Vite's :24678 HMR socket, etc. all
+# leak through. Add the section to .cspace.json the first time a noisy
+# port shows up.
 #
-# This is auto-discovery rather than label-driven: no .cspace.json
-# config required to see vite/etc. URLs. Labels are pure cosmetics now
-# that v1 dropped Traefik subdomain routing.
+# Colors: dev=green, preview=yellow, brainstorm=magenta; anything else
+# is cyan. Labels are clickable terminal hyperlinks via OSC 8.
 label_color() {
     case "$1" in
         dev)        printf '%s' "$GRN" ;;
@@ -189,8 +189,16 @@ if [ -n "$CONTAINER" ] && command -v ss >/dev/null 2>&1; then
     # Build a port→label map from .cspace.json once (if jq + json present).
     # Bash 4+ associative array — image is debian-bookworm so we have it.
     declare -A PORT_LABELS=()
+    HAS_PORT_CONFIG=0
     CSPACE_JSON="/workspace/.cspace.json"
     if [ -f "$CSPACE_JSON" ] && command -v jq >/dev/null 2>&1; then
+        # `has("ports")` distinguishes "user opted into curation" (empty
+        # object {} hides everything) from "no config at all" (auto-
+        # discover). Without this distinction we couldn't tell apart
+        # "show nothing" from the default.
+        if jq -e '.container | has("ports")' "$CSPACE_JSON" >/dev/null 2>&1; then
+            HAS_PORT_CONFIG=1
+        fi
         while IFS=$'\t' read -r p lbl; do
             [ -n "$p" ] && PORT_LABELS["$p"]="$lbl"
         done < <(jq -r '.container.ports // {} | to_entries[] | "\(.key)\t\(.value)"' "$CSPACE_JSON" 2>/dev/null)
@@ -215,8 +223,14 @@ if [ -n "$CONTAINER" ] && command -v ss >/dev/null 2>&1; then
     for port in $LISTENING_PORTS; do
         [ -z "$port" ] && continue
         [ "$port" = "$SUPERVISOR_PORT" ] && continue
-        URL="http://${FQDN}:${port}"
         label="${PORT_LABELS[$port]:-}"
+        # Curation gate: when .container.ports is configured, hide any
+        # listening port that's not labeled. This is the user's
+        # explicit "I know what URLs I care about" signal.
+        if [ "$HAS_PORT_CONFIG" -eq 1 ] && [ -z "$label" ]; then
+            continue
+        fi
+        URL="http://${FQDN}:${port}"
         printf "%s" "$DIV"
         if [ -n "$label" ]; then
             printf "%s● " "$(label_color "$label")"
