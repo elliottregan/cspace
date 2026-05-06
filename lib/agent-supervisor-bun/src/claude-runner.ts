@@ -47,18 +47,16 @@ export async function runClaude(
       // the SDK reads from.
       ...(resumeSessionID ? { resume: resumeSessionID } : {}),
       // Browser MCP servers — clients only. Chrome itself runs in a sidecar
-      // container launched by cspace up. The MCP servers attach over CDP at
-      // $CSPACE_BROWSER_CDP_URL. If the env var is unset, the MCP servers
-      // are still registered but their tool calls will fail at runtime —
-      // declined gracefully, doesn't crash the supervisor.
+      // container launched by cspace up; the MCP servers attach over CDP at
+      // $CSPACE_BROWSER_CDP_URL. If the env var is unset, tool calls fail at
+      // runtime — declined gracefully, doesn't crash the supervisor.
+      //
+      // `playwright` is intentionally omitted: the @claude-plugins-official
+      // plugin already provides it via Claude Code's plugin loader, and we
+      // redirect its `npx @playwright/mcp` invocation at our sidecar through
+      // PLAYWRIGHT_MCP_CDP_ENDPOINT (set in cmd_up.go). Registering a second
+      // `playwright` here would double up the namespace.
       mcpServers: {
-        playwright: {
-          type: "stdio",
-          command: "playwright-mcp",
-          args: process.env.CSPACE_BROWSER_CDP_URL
-            ? ["--cdp-endpoint", process.env.CSPACE_BROWSER_CDP_URL]
-            : [],
-        },
         "chrome-devtools": {
           type: "stdio",
           command: "chrome-devtools-mcp",

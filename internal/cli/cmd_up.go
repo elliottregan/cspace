@@ -479,6 +479,14 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				browserSidecar = bs
 				browserContainer = bs.ContainerName
 				env["CSPACE_BROWSER_CDP_URL"] = bs.CDPURL
+				// @playwright/mcp respects PLAYWRIGHT_MCP_CDP_ENDPOINT
+				// to connect to an existing CDP browser instead of
+				// launching its own Chromium. Setting this redirects
+				// the @claude-plugins-official `playwright` plugin
+				// (which runs `npx @playwright/mcp@latest` with no
+				// connect args) at our sidecar so the lean sandbox
+				// image doesn't need a local browser.
+				env["PLAYWRIGHT_MCP_CDP_ENDPOINT"] = bs.CDPURL
 				env["PW_TEST_CONNECT_WS_ENDPOINT"] = bs.RunServerWSURL
 				// Stable hostname agents/scripts use to reach the dev
 				// or preview server running inside the workspace from
