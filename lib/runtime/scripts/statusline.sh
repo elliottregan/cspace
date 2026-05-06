@@ -186,16 +186,33 @@ label_color() {
 }
 SUPERVISOR_PORT=6201
 if [ -n "$CONTAINER" ] && command -v ss >/dev/null 2>&1; then
-    # Build a port→label map from .cspace.json once (if jq + json present).
-    # Bash 4+ associative array — image is debian-bookworm so we have it.
+    # Build a port→label map. Devcontainer.json's portsAttributes is the
+    # preferred source: it's the standard format and survives a future
+    # deprecation of .cspace.json's container block. Fall back to
+    # .cspace.json container.ports for older projects (still supported,
+    # but cspace itself prints a warning when both .cspace.json container
+    # and devcontainer.json are present).
+    #
+    # Bash 4+ associative array — sandbox image is debian-bookworm.
     declare -A PORT_LABELS=()
     HAS_PORT_CONFIG=0
+    DEVCONTAINER_JSON="/workspace/.devcontainer/devcontainer.json"
     CSPACE_JSON="/workspace/.cspace.json"
-    if [ -f "$CSPACE_JSON" ] && command -v jq >/dev/null 2>&1; then
-        # `has("ports")` distinguishes "user opted into curation" (empty
-        # object {} hides everything) from "no config at all" (auto-
-        # discover). Without this distinction we couldn't tell apart
-        # "show nothing" from the default.
+    if [ -f "$DEVCONTAINER_JSON" ] && command -v jq >/dev/null 2>&1; then
+        # devcontainer.json is JSONC: strip // and /* ... */ comments before
+        # piping to jq. portsAttributes uses { "<port>": { "label": "<x>" } };
+        # we keep only entries that actually have a label string.
+        DEVC=$(sed -E 's://[^"]*$::; s:/\*[^*]*\*+([^/*][^*]*\*+)*/::g' "$DEVCONTAINER_JSON" 2>/dev/null)
+        if echo "$DEVC" | jq -e '.portsAttributes // {} | length > 0' >/dev/null 2>&1; then
+            HAS_PORT_CONFIG=1
+            while IFS=$'\t' read -r p lbl; do
+                [ -n "$p" ] && [ -n "$lbl" ] && PORT_LABELS["$p"]="$lbl"
+            done < <(echo "$DEVC" | jq -r '.portsAttributes // {} | to_entries[] | select(.value.label) | "\(.key)\t\(.value.label)"' 2>/dev/null)
+        fi
+    fi
+    # Backwards-compat fallback: .cspace.json container.ports (legacy).
+    # Only consulted when devcontainer.json didn't supply portsAttributes.
+    if [ "$HAS_PORT_CONFIG" -eq 0 ] && [ -f "$CSPACE_JSON" ] && command -v jq >/dev/null 2>&1; then
         if jq -e '.container | has("ports")' "$CSPACE_JSON" >/dev/null 2>&1; then
             HAS_PORT_CONFIG=1
         fi
@@ -224,21 +241,27 @@ if [ -n "$CONTAINER" ] && command -v ss >/dev/null 2>&1; then
         [ -z "$port" ] && continue
         [ "$port" = "$SUPERVISOR_PORT" ] && continue
         label="${PORT_LABELS[$port]:-}"
-        # Curation gate: when .container.ports is configured, hide any
-        # listening port that's not labeled. This is the user's
-        # explicit "I know what URLs I care about" signal.
+        # Curation gate: when port config is present, hide any listening
+        # port that's not labeled. This is the user's explicit "I know
+        # what URLs I care about" signal.
         if [ "$HAS_PORT_CONFIG" -eq 1 ] && [ -z "$label" ]; then
             continue
         fi
         URL="http://${FQDN}:${port}"
+        # Visible link text is the host:port form. Restoring v0 UX —
+        # rendering only the label as link text made the click target so
+        # short ("dev" = three chars) that users couldn't reliably hit
+        # it, and didn't show the URL they were navigating to. Print
+        # the color-coded label as a leading tag, then the clickable
+        # host:port.
         printf "%s" "$DIV"
         if [ -n "$label" ]; then
-            printf "%s● " "$(label_color "$label")"
-            link "$URL" "$label"
+            printf "%s● %s%s " "$(label_color "$label")" "$label" "$RST"
         else
-            printf "%s● " "$CYN"
-            link "$URL" ":${port}"
+            printf "%s● %s" "$CYN" "$RST"
         fi
+        printf "%s" "$CYN"
+        link "$URL" "${FQDN}:${port}"
         printf "%s" "$RST"
     done
 fi
