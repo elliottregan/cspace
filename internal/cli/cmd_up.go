@@ -1246,16 +1246,28 @@ func hostGitConfig(key string) string {
 // recommendation is always `cspace image build`. Silent on missing image
 // (the substrate will fail more specifically on boot) and on missing label
 // (older images pre-dating the label — same fix).
+//
+// Version comparison normalizes the leading "v": goreleaser strips it from
+// {{ .Version }} so brew-installed binaries report "1.0.0-rc.X", while the
+// maintainer Makefile's `git describe` keeps it ("v1.0.0-rc.X"). Both refer
+// to the same release; the comparison treats them as equal.
 func warnIfImageStale(stderr io.Writer, image, cliVersion string) {
 	imgVersion, ok := readImageCspaceVersion(image)
 	if !ok {
 		_, _ = fmt.Fprintf(stderr, "[cspace] note: %s has no cspace.version label — build with the current CLI to get drift detection: `cspace image build`\n", image)
 		return
 	}
-	if imgVersion == cliVersion {
+	if normalizeVersion(imgVersion) == normalizeVersion(cliVersion) {
 		return
 	}
 	_, _ = fmt.Fprintf(stderr, "[cspace] warning: %s was built against cspace %s, but you're running %s. Rebuild to pick up the matching scripts and tooling: `cspace image build`\n", image, imgVersion, cliVersion)
+}
+
+// normalizeVersion strips a leading "v" so versions produced by goreleaser
+// ("1.0.0-rc.X") compare equal to versions produced by `git describe`
+// ("v1.0.0-rc.X"). Both refer to the same release tag.
+func normalizeVersion(v string) string {
+	return strings.TrimPrefix(v, "v")
 }
 
 // readImageCspaceVersion returns the `cspace.version` label from the named
