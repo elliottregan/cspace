@@ -96,11 +96,11 @@ func startBrowserSidecar(ctx context.Context, project, sandbox, plVersion string
 		"bash", "-c",
 		"set -e; " +
 			// 1) apt-get socat (CDP forwarder) AND dnsmasq (so the
-			//    headless browser resolves *.cspace2.local the same
+			//    headless browser resolves *.cspace.local the same
 			//    way the cspace sandbox does — chrome can navigate
 			//    to friendly URLs from playwright-mcp).
 			"apt-get update -qq && apt-get install -y -qq socat dnsmasq >/dev/null 2>&1; " +
-			// 2) Configure dnsmasq forwarder. Forward .cspace2.local
+			// 2) Configure dnsmasq forwarder. Forward .cspace.local
 			//    to the cspace daemon on the gateway, fall through to
 			//    public resolvers for everything else.
 			"cat > /etc/dnsmasq.d/cspace.conf <<'CFG'\n" +
@@ -109,7 +109,7 @@ func startBrowserSidecar(ctx context.Context, project, sandbox, plVersion string
 			"no-resolv\n" +
 			"no-hosts\n" +
 			"bind-interfaces\n" +
-			"server=/cspace2.local/192.168.64.1#5354\n" +
+			"server=/cspace.local/192.168.64.1#5354\n" +
 			"server=1.1.1.1\n" +
 			"server=8.8.8.8\n" +
 			"CFG\n" +

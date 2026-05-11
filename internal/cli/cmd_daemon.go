@@ -26,9 +26,8 @@ const (
 	// daemonDNSListenAddr: 127.0.0.1:5354 rather than the mDNS-conventional
 	// :5353, because macOS mDNSResponder owns UDP/5353 wildcard and we can't
 	// share it. 5354 is the well-known "alt-mdns" port and is unclaimed on
-	// macOS. `cspace dns install` writes /etc/resolver/cspace2.local with
-	// `port 5354` to match. (See dnsDomain in cmd_dns.go for why the domain
-	// keeps the "2" suffix even after the cspace2-* → cspace * cutover.)
+	// macOS. `cspace dns install` writes /etc/resolver/cspace.local with
+	// `port 5354` to match.
 	daemonDNSListenAddr = "127.0.0.1:5354"
 	// daemonDNSGatewayAddr exposes the same DNS handler on the Apple
 	// Container vmnet gateway IP so containers can resolve sibling
@@ -36,7 +35,7 @@ const (
 	// failure (e.g. running outside Apple Container) logs a warning
 	// and the host-only loopback path keeps working.
 	daemonDNSGatewayAddr = "192.168.64.1:5354"
-	daemonDNSDomain      = "cspace2.local." // trailing dot is canonical
+	daemonDNSDomain      = "cspace.local." // trailing dot is canonical
 	daemonDNSTTL         = 5                // seconds; sandbox IPs change across restarts
 
 	// daemonIdleDefault is the idle-shutdown threshold when
@@ -49,7 +48,7 @@ func newDaemonCmd() *cobra.Command {
 		Use:   "daemon",
 		Short: "Manage the cspace background daemon (registry HTTP + DNS)",
 		Long: `cspace up auto-spawns the cspace daemon (HTTP registry lookup on
-:6280, DNS for *.cspace2.local on :5354). The daemon idle-exits after 30
+:6280, DNS for *.cspace.local on :5354). The daemon idle-exits after 30
 minutes of no requests AND no active sandboxes. Most users never run
 these subcommands; they're for debugging and manual cleanup.`,
 	}
@@ -170,14 +169,14 @@ func runDaemonServe() error {
 		}
 	}()
 
-	// DNS listener for *.cspace2.local. Bound to 127.0.0.1 so it's host-only;
+	// DNS listener for *.cspace.local. Bound to 127.0.0.1 so it's host-only;
 	// sandboxes use their own resolver via the substrate adapter's --dns
 	// flag. macOS resolver(5) `port` directive (installed by `cspace dns
 	// install`) routes per-domain queries here. Both UDP and TCP are served —
 	// standard practice and macOS may use either.
 	//
 	// Either listener failing to bind is fatal: with no DNS, sandboxes can't
-	// resolve <name>.cspace2.local even though HTTP /lookup still works, and
+	// resolve <name>.cspace.local even though HTTP /lookup still works, and
 	// `cspace dns status` would (today) report "running" via the HTTP probe
 	// while users see broken name resolution. Exit non-zero so the parent
 	// (cspace up's ensureRegistryDaemon, which captures stderr) can surface
@@ -188,7 +187,7 @@ func runDaemonServe() error {
 		dnsPort = daemonDNSListenAddr[i+1:]
 	}
 	// Loopback bind is fatal — it's how the host's /etc/resolver/
-	// cspace2.local routes name lookups. Without it, friendly URLs
+	// cspace.local routes name lookups. Without it, friendly URLs
 	// don't work from the host browser at all.
 	go func() {
 		server := &dns.Server{Addr: daemonDNSListenAddr, Net: "udp", Handler: dh}
@@ -213,7 +212,7 @@ func runDaemonServe() error {
 		}
 	}()
 	// Gateway bind — best-effort. Containers query 192.168.64.1:5354
-	// for cspace2.local lookups (via dnsmasq forwarder inside the
+	// for cspace.local lookups (via dnsmasq forwarder inside the
 	// sandbox). Failure here just means in-container hostname
 	// resolution stops working; the host path is unaffected.
 	go func() {
@@ -221,7 +220,7 @@ func runDaemonServe() error {
 		log.Printf("cspace daemon: DNS listening on %s/udp (containers)", daemonDNSGatewayAddr)
 		if err := server.ListenAndServe(); err != nil {
 			log.Printf("WARN: cspace daemon DNS UDP bind on %s failed: %v", daemonDNSGatewayAddr, err)
-			log.Printf("      in-container *.cspace2.local lookups will NXDOMAIN until this is resolved.")
+			log.Printf("      in-container *.cspace.local lookups will NXDOMAIN until this is resolved.")
 		}
 	}()
 	go func() {
@@ -239,7 +238,7 @@ func runDaemonServe() error {
 	return nil
 }
 
-// daemonDNSHandler answers A queries for <sandbox>.cspace2.local from the
+// daemonDNSHandler answers A queries for <sandbox>.cspace.local from the
 // live registry. Unknown names and the wrong domain return NXDOMAIN; AAAA
 // and other qtypes return NOERROR with no answer so IPv6-aware clients fall
 // back to A instead of caching a "no such name".
@@ -258,8 +257,8 @@ func daemonDNSHandler(r *registry.Registry, lastActivity *atomic.Int64) dns.Hand
 				continue
 			}
 			// Strip the suffix and split remaining labels. We accept:
-			//   <sandbox>.cspace2.local             — single project shortcut
-			//   <sandbox>.<project>.cspace2.local   — fully qualified
+			//   <sandbox>.cspace.local             — single project shortcut
+			//   <sandbox>.<project>.cspace.local   — fully qualified
 			// Multi-label names beyond two parts are not sandbox lookups.
 			labels := strings.TrimSuffix(name, "."+daemonDNSDomain)
 			labels = strings.TrimSuffix(labels, ".")
@@ -277,7 +276,7 @@ func daemonDNSHandler(r *registry.Registry, lastActivity *atomic.Int64) dns.Hand
 				// sandbox label is the leftmost (parts[0]).
 				sandbox, project = parts[0], parts[1]
 			case 3:
-				// <service>.<sandbox>.<project>.cspace2.local — resolves
+				// <service>.<sandbox>.<project>.cspace.local — resolves
 				// to a compose-spawned sidecar microVM. The sandbox/project
 				// existence check below confirms the sidecar is plausibly
 				// part of an active cspace cluster; the actual sidecar IP
@@ -329,14 +328,14 @@ func daemonDNSHandler(r *registry.Registry, lastActivity *atomic.Int64) dns.Hand
 			default:
 				// Multiple projects have this sandbox name and the user
 				// didn't specify which. Force them to disambiguate via
-				// <sandbox>.<project>.cspace2.local. Logging the
+				// <sandbox>.<project>.cspace.local. Logging the
 				// ambiguity helps diagnose "why doesn't this resolve?"
 				// when two projects collide.
 				projects := make([]string, 0, len(matches))
 				for _, e := range matches {
 					projects = append(projects, e.Project)
 				}
-				log.Printf("dns: ambiguous %s — sandbox %q exists in %v; use <sandbox>.<project>.cspace2.local",
+				log.Printf("dns: ambiguous %s — sandbox %q exists in %v; use <sandbox>.<project>.cspace.local",
 					name, sandbox, projects)
 				reply.Rcode = dns.RcodeNameError
 				continue

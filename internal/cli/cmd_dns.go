@@ -16,15 +16,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// dnsDomain stays "cspace2.local" even after the cspace2-* → cspace * cutover.
-// The legacy cspace project (and OrbStack) used cspace.local with conflicting
-// configurations on many users' machines. The "2" suffix here is a vestigial
-// staging-phase marker that's intentionally kept for collision avoidance.
+// dnsDomain is the suffix cspace's daemon answers DNS queries for. Each
+// sandbox is reachable from the host browser at
+// http://<sandbox>.<project>.cspace.local:<port>/ — see
+// https://github.com/elliottregan/cspace for the routing model.
 const (
-	dnsResolverFile = "/etc/resolver/cspace2.local"
+	dnsResolverFile = "/etc/resolver/cspace.local"
 	dnsLocalPort    = "5354"
-	dnsDomain       = "cspace2.local"
-	dnsResolverBody = `# Written by ` + "`cspace dns install`" + `. Routes *.cspace2.local lookups to the
+	dnsDomain       = "cspace.local"
+	dnsResolverBody = `# Written by ` + "`cspace dns install`" + `. Routes *.cspace.local lookups to the
 # cspace daemon's local DNS server on 127.0.0.1. Safe to delete; uninstall
 # via ` + "`cspace dns uninstall`" + `.
 nameserver 127.0.0.1
@@ -35,14 +35,14 @@ port 5354
 func newDnsCmd() *cobra.Command {
 	parent := &cobra.Command{
 		Use:   "dns",
-		Short: "Manage local DNS routing for *.cspace2.local",
+		Short: "Manage local DNS routing for *.cspace.local",
 		Long: `cspace up registers each sandbox in ~/.cspace/sandbox-registry.json. The
 cspace daemon serves that registry over DNS at 127.0.0.1:5354, answering
-A queries for <sandbox>.cspace2.local with the sandbox's IP.
+A queries for <sandbox>.cspace.local with the sandbox's IP.
 
-` + "`cspace dns install`" + ` writes /etc/resolver/cspace2.local so macOS routes
+` + "`cspace dns install`" + ` writes /etc/resolver/cspace.local so macOS routes
 those queries through the daemon. After install, sandboxes are reachable
-at http://<sandbox>.cspace2.local:<port>/ from any browser on the host.`,
+at http://<sandbox>.cspace.local:<port>/ from any browser on the host.`,
 	}
 	parent.AddCommand(newDnsInstallCmd())
 	parent.AddCommand(newDnsUninstallCmd())
@@ -53,7 +53,7 @@ at http://<sandbox>.cspace2.local:<port>/ from any browser on the host.`,
 func newDnsInstallCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "install",
-		Short: "Install /etc/resolver/cspace2.local (requires sudo)",
+		Short: "Install /etc/resolver/cspace.local (requires sudo)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if runtime.GOOS != "darwin" {
 				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "cspace dns install is macOS-only.")
@@ -64,14 +64,34 @@ func newDnsInstallCmd() *cobra.Command {
 	}
 }
 
+// legacyResolverFile is the pre-rename path for the cspace DNS resolver.
+// Existed during the cspace2 staging phase to avoid colliding with the
+// v0 cspace project's installer. The rename to cspace.local happened in
+// v1.0.0-rc.21; this constant exists only so `cspace dns install` can
+// detect and clean up the old file on first run after upgrade.
+const legacyResolverFile = "/etc/resolver/cspace2.local"
+
 func runDnsInstall(out io.Writer) error {
+	// One-time legacy cleanup: prior versions installed at /etc/resolver/
+	// cspace2.local. If that file is present, remove it so the system stops
+	// routing the old suffix (otherwise stale sandbox URLs keep "working"
+	// against a no-longer-running domain).
+	if _, err := os.Stat(legacyResolverFile); err == nil {
+		_, _ = fmt.Fprintf(out, "removing legacy %s ...\n", legacyResolverFile)
+		rm := exec.Command("sudo", "rm", "-f", legacyResolverFile)
+		rm.Stdin, rm.Stdout, rm.Stderr = os.Stdin, os.Stdout, os.Stderr
+		if err := rm.Run(); err != nil {
+			return fmt.Errorf("sudo rm %s: %w", legacyResolverFile, err)
+		}
+	}
+
 	// Idempotency check.
 	if existing, err := os.ReadFile(dnsResolverFile); err == nil {
 		if string(existing) == dnsResolverBody {
 			_, _ = fmt.Fprintln(out, "already installed; resolver file content matches.")
 			return nil
 		}
-		_, _ = fmt.Fprintln(out, "warning: existing /etc/resolver/cspace2.local has DIFFERENT content:")
+		_, _ = fmt.Fprintln(out, "warning: existing /etc/resolver/cspace.local has DIFFERENT content:")
 		_, _ = fmt.Fprintln(out, "----")
 		_, _ = fmt.Fprint(out, string(existing))
 		_, _ = fmt.Fprintln(out, "----")
@@ -115,7 +135,7 @@ func runDnsInstall(out io.Writer) error {
 func newDnsUninstallCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "uninstall",
-		Short: "Remove /etc/resolver/cspace2.local (requires sudo)",
+		Short: "Remove /etc/resolver/cspace.local (requires sudo)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if runtime.GOOS != "darwin" {
 				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "cspace dns uninstall is macOS-only.")
@@ -143,7 +163,7 @@ func runDnsUninstall(out io.Writer) error {
 func newDnsStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
-		Short: "Report DNS routing for *.cspace2.local",
+		Short: "Report DNS routing for *.cspace.local",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if runtime.GOOS != "darwin" {
 				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "cspace dns status is macOS-only.")
@@ -172,7 +192,7 @@ func runDnsStatus(out io.Writer) error {
 		daemonAnswering = probeDnsDaemon(1 * time.Second)
 	}
 
-	// Check 3: scutil reports a routing for cspace2.local?
+	// Check 3: scutil reports a routing for cspace.local?
 	scutilHasRouting := false
 	scutilLine := ""
 	{
@@ -183,7 +203,7 @@ func runDnsStatus(out io.Writer) error {
 			text := buf.String()
 			all := strings.Split(text, "\n")
 			for i, line := range all {
-				// scutil --dns prints lines like "  domain   : cspace2.local"
+				// scutil --dns prints lines like "  domain   : cspace.local"
 				trimmed := strings.TrimSpace(line)
 				if strings.HasPrefix(trimmed, "domain") &&
 					strings.Contains(trimmed, ":") &&
@@ -209,7 +229,7 @@ func runDnsStatus(out io.Writer) error {
 
 	_, _ = fmt.Fprintln(out, "cspace dns status:")
 	_, _ = fmt.Fprintln(out)
-	_, _ = fmt.Fprintf(out, "  %s /etc/resolver/cspace2.local present\n", mark(resolverInstalled))
+	_, _ = fmt.Fprintf(out, "  %s /etc/resolver/cspace.local present\n", mark(resolverInstalled))
 	if resolverInstalled {
 		if resolverContentsMatch {
 			_, _ = fmt.Fprintln(out, "      content: matches expected (nameserver 127.0.0.1, port 5354)")
@@ -227,7 +247,7 @@ func runDnsStatus(out io.Writer) error {
 		_, _ = fmt.Fprintf(out, "      if the daemon HTTP is up but DNS isn't answering, another process may have UDP/%s; check `lsof -nP -iUDP:%s`\n", dnsLocalPort, dnsLocalPort)
 	}
 	_, _ = fmt.Fprintln(out)
-	_, _ = fmt.Fprintf(out, "  %s macOS resolver routes *.cspace2.local through 127.0.0.1\n", mark(scutilHasRouting))
+	_, _ = fmt.Fprintf(out, "  %s macOS resolver routes *.cspace.local through 127.0.0.1\n", mark(scutilHasRouting))
 	if scutilHasRouting {
 		for _, line := range strings.Split(scutilLine, "\n") {
 			_, _ = fmt.Fprintf(out, "      %s\n", line)
@@ -237,15 +257,15 @@ func runDnsStatus(out io.Writer) error {
 
 	switch {
 	case resolverInstalled && resolverContentsMatch && daemonAnswering && scutilHasRouting:
-		_, _ = fmt.Fprintln(out, "DNS routing for *.cspace2.local: WORKING")
+		_, _ = fmt.Fprintln(out, "DNS routing for *.cspace.local: WORKING")
 	case !resolverInstalled:
-		_, _ = fmt.Fprintln(out, "DNS routing for *.cspace2.local: NOT INSTALLED — run `cspace dns install`")
+		_, _ = fmt.Fprintln(out, "DNS routing for *.cspace.local: NOT INSTALLED — run `cspace dns install`")
 	case resolverInstalled && !resolverContentsMatch:
-		_, _ = fmt.Fprintln(out, "DNS routing for *.cspace2.local: WRONG CONTENT — run `cspace dns install` to overwrite")
+		_, _ = fmt.Fprintln(out, "DNS routing for *.cspace.local: WRONG CONTENT — run `cspace dns install` to overwrite")
 	case resolverInstalled && !daemonAnswering:
-		_, _ = fmt.Fprintln(out, "DNS routing for *.cspace2.local: INSTALLED BUT DAEMON DOWN")
+		_, _ = fmt.Fprintln(out, "DNS routing for *.cspace.local: INSTALLED BUT DAEMON DOWN")
 	default:
-		_, _ = fmt.Fprintln(out, "DNS routing for *.cspace2.local: PARTIAL")
+		_, _ = fmt.Fprintln(out, "DNS routing for *.cspace.local: PARTIAL")
 	}
 	return nil
 }
@@ -255,7 +275,7 @@ func runDnsStatus(out io.Writer) error {
 // reply on the wire, which proves the daemon is bound and listening).
 func probeDnsDaemon(timeout time.Duration) bool {
 	msg := new(dns.Msg)
-	msg.SetQuestion("status-probe.cspace2.local.", dns.TypeA)
+	msg.SetQuestion("status-probe.cspace.local.", dns.TypeA)
 	c := &dns.Client{Net: "udp", Timeout: timeout}
 	resp, _, err := c.Exchange(msg, "127.0.0.1:"+dnsLocalPort)
 	return err == nil && resp != nil

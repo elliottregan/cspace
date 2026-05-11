@@ -45,7 +45,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Runtime-only system deps:
 #   - iptables / iproute2: loopback NAT for ports bound to 127.0.0.1
-#   - dnsmasq: DNS forwarder for *.cspace2.local + bare-name service DNS
+#   - dnsmasq: DNS forwarder for *.cspace.local + bare-name service DNS
 #   - bash / tini / sudo / procps: entrypoint + PID 1 + privilege drop + ps tools
 #   - ca-certificates / curl / unzip / git: plugin install + marketplace clone
 #   - jq / ripgrep: agent essentials (Claude Code uses rg heavily; jq in shell tooling)
