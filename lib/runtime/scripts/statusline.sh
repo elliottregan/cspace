@@ -248,12 +248,15 @@ if [ -n "$CONTAINER" ] && command -v ss >/dev/null 2>&1; then
             continue
         fi
         URL="http://${FQDN}:${port}"
-        # Visible link text is the host:port form. Restoring v0 UX —
-        # rendering only the label as link text made the click target so
-        # short ("dev" = three chars) that users couldn't reliably hit
-        # it, and didn't show the URL they were navigating to. Print
-        # the color-coded label as a leading tag, then the clickable
-        # host:port.
+        # Visible text is the full URL (with http:// prefix) so terminals
+        # that don't honor OSC 8 still auto-linkify via URL pattern
+        # matching (cmd-click on URLs). When OSC 8 IS honored, the
+        # surrounding hyperlink wrapper makes the same text clickable
+        # directly. Either way the user can click. Earlier iterations
+        # used short text ("dev", then host:port without scheme); both
+        # failed to auto-link in renderers that strip OSC 8 (some
+        # Claude-Code statusline contexts), forcing users to type the
+        # URL by hand.
         printf "%s" "$DIV"
         if [ -n "$label" ]; then
             printf "%s● %s%s " "$(label_color "$label")" "$label" "$RST"
@@ -261,7 +264,7 @@ if [ -n "$CONTAINER" ] && command -v ss >/dev/null 2>&1; then
             printf "%s● %s" "$CYN" "$RST"
         fi
         printf "%s" "$CYN"
-        link "$URL" "${FQDN}:${port}"
+        link "$URL" "$URL"
         printf "%s" "$RST"
     done
 fi
