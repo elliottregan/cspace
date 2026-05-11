@@ -123,6 +123,21 @@ cat > "$SETTINGS_JSON" <<JSON
 }
 JSON
 
+# Inherit the host's git identity (user.name / user.email) so the agent's
+# commits/rebases attribute correctly. cspace injects these as env vars at
+# `cspace up` time (read via `git config --global --get` on the host).
+# Signing is explicitly disabled — the microVM has no GPG or SSH agent, so
+# a host `commit.gpgsign = true` would make every commit fail. Rewritten
+# every boot to pick up host config changes.
+if [ -n "${CSPACE_GIT_USER_NAME:-}" ]; then
+    git config --global user.name "$CSPACE_GIT_USER_NAME"
+fi
+if [ -n "${CSPACE_GIT_USER_EMAIL:-}" ]; then
+    git config --global user.email "$CSPACE_GIT_USER_EMAIL"
+fi
+git config --global commit.gpgsign false
+git config --global tag.gpgsign false
+
 # NAT loopback-bound listeners onto the microVM's external IP.
 #
 # Many dev servers default to binding 127.0.0.1 (vite, next dev,

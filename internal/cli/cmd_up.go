@@ -234,6 +234,23 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				warnIfImageStale(cmd.ErrOrStderr(), sandboxImage, Version)
 			}
 
+			// Inherit the host's global git identity so agent commits/rebases
+			// attribute correctly. Without this, in-sandbox git fails with
+			// "Committer identity unknown" the first time the agent tries to
+			// commit. Only user.name / user.email flow — signing keys and
+			// includes are intentionally NOT carried over (no GPG/SSH agent
+			// in the microVM, and includes point at host paths that don't
+			// exist inside).
+			if name := hostGitConfig("user.name"); name != "" {
+				env["CSPACE_GIT_USER_NAME"] = name
+			}
+			if email := hostGitConfig("user.email"); email != "" {
+				env["CSPACE_GIT_USER_EMAIL"] = email
+			}
+			if env["CSPACE_GIT_USER_NAME"] == "" || env["CSPACE_GIT_USER_EMAIL"] == "" {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "[cspace] note: host git config missing user.name and/or user.email — agent will hit 'Committer identity unknown' on first commit. Fix on host: `git config --global user.name \"Your Name\" && git config --global user.email you@example.com`")
+			}
+
 			// Devcontainer postCreateCommand and postStartCommand. These are
 			// set on the env so the entrypoint can invoke them at boot.
 			if devcontainerPlan != nil && devcontainerPlan.Devcontainer != nil {
@@ -1211,6 +1228,17 @@ func resolveSandboxImage(ctx context.Context, plan *devcontainer.Plan, defaultIm
 		// default image doesn't satisfy the project's needs.
 	}
 	return defaultImage
+}
+
+// hostGitConfig returns the trimmed value of `git config --global --get <key>`
+// run on the host, or "" if the key is unset or git is unavailable. Used to
+// inherit the host's git identity into sandboxes.
+func hostGitConfig(key string) string {
+	out, err := exec.Command("git", "config", "--global", "--get", key).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // warnIfImageStale prints a stderr warning when the resolved sandbox image's
