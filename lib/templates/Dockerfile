@@ -21,7 +21,13 @@ FROM docker.io/oven/bun:1.3-debian AS supervisor-builder
 WORKDIR /build
 COPY lib/agent-supervisor-bun/package.json lib/agent-supervisor-bun/bun.lock ./
 RUN bun install --frozen-lockfile
-COPY lib/agent-supervisor-bun/src ./src
+# Glob form ('src/*.ts') rather than directory form ('src') because Apple
+# Container's builder silently produces an empty target directory for
+# COPY <dir> ./<dir> when the build context is a fresh temp tree (e.g.
+# `cspace image build` from a brew install — assets extracted to a tmp
+# dir). The source-tree path happens to work, the temp-extract path
+# doesn't. Globbing files explicitly side-steps the inconsistency.
+COPY lib/agent-supervisor-bun/src/*.ts ./src/
 COPY lib/agent-supervisor-bun/build.ts ./
 RUN bun run build
 # At this point /build/dist/cspace-supervisor exists.
@@ -152,7 +158,8 @@ RUN chmod +x /usr/local/bin/cspace-entrypoint.sh \
 # runner.go can invoke them by path. Not yet wired into the boot flow; the
 # scripts ship so the wiring lands as a pure additive change in a later
 # release.
-COPY lib/runtime/features /opt/cspace/features
+RUN mkdir -p /opt/cspace/features
+COPY lib/runtime/features/*.sh /opt/cspace/features/
 RUN chmod +x /opt/cspace/features/*.sh
 USER dev
 

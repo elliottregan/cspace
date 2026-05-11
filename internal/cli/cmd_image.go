@@ -2,9 +2,12 @@ package cli
 
 import (
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/elliottregan/cspace/internal/assets"
 	"github.com/spf13/cobra"
@@ -65,12 +68,10 @@ func runImageBuild(cmd *cobra.Command, tag string) error {
 	// build there. The extracted path layout matches the source
 	// repo's lib/ directory so COPY paths inside the Dockerfile
 	// (lib/templates/Dockerfile, lib/runtime/scripts/…) resolve
-	// relative to the build context.
-	//
-	// NOTE: the embedded tree carries lib/ only — until issue #68
-	// ships a published image, end users hitting this path will fail
-	// at the COPY bin/cspace-linux-arm64 step. The error surfaces
-	// directly from `container build`.
+	// relative to the build context. The Dockerfile also needs
+	// bin/cspace-linux-arm64; for brew installs that file isn't in
+	// the embedded tree, so we fetch the matching release tarball
+	// from GitHub and stage it into the build context.
 	tmp, err := os.MkdirTemp("", "cspace-image-build-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
@@ -86,9 +87,67 @@ func runImageBuild(cmd *cobra.Command, tag string) error {
 		return fmt.Errorf("embedded Dockerfile missing at %s: %w", dockerfile, err)
 	}
 
+	// Stage the linux/arm64 host binary into <ctx>/bin/cspace-linux-arm64
+	// so the Dockerfile's COPY step resolves. The maintainer fast-path
+	// above already had this from the source tree; this path fetches
+	// from the matching GitHub release.
+	binDst := filepath.Join(tmp, "bin", "cspace-linux-arm64")
+	if err := fetchReleaseBinary(cmd, Version, binDst); err != nil {
+		return fmt.Errorf("fetch linux binary: %w", err)
+	}
+
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 		"building %s from %s ...\n", tag, dockerfile)
 	return runContainerBuild(cmd, tag, dockerfile, tmp, Version)
+}
+
+// fetchReleaseBinary downloads cspace_linux_arm64.tar.gz from the GitHub
+// release matching `version` and extracts the inner `cspace` binary to
+// `dst` (mode 0755). Returns a clear error for dev/dirty versions where
+// no release exists — those builds belong in the maintainer fast-path.
+func fetchReleaseBinary(cmd *cobra.Command, version, dst string) error {
+	if version == "dev" || version == "" || strings.Contains(version, "-dirty") {
+		return fmt.Errorf("no published release for version %q. Build from the cspace source tree (cd into the cspace repo, run `make build`, then `cspace image build` from there) or tag and push a release first", version)
+	}
+	url := fmt.Sprintf("https://github.com/elliottregan/cspace/releases/download/%s/cspace_linux_arm64.tar.gz", version)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "fetching %s ...\n", url)
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	resp, err := http.Get(url)
+	if err != nil {
+		return fmt.Errorf("GET %s: %w", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET %s: %s (release tarball not published yet?)", url, resp.Status)
+	}
+
+	tarPath := dst + ".tar.gz"
+	defer func() { _ = os.Remove(tarPath) }()
+	tarFile, err := os.Create(tarPath)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(tarFile, resp.Body); err != nil {
+		_ = tarFile.Close()
+		return fmt.Errorf("write tarball: %w", err)
+	}
+	_ = tarFile.Close()
+
+	// Extract just the `cspace` member into the same directory, then
+	// rename to the Dockerfile-expected filename.
+	tarExtract := exec.Command("tar", "-xzf", tarPath, "-C", filepath.Dir(dst), "cspace")
+	tarExtract.Stderr = os.Stderr
+	if err := tarExtract.Run(); err != nil {
+		return fmt.Errorf("extract tarball: %w", err)
+	}
+	tmpExtracted := filepath.Join(filepath.Dir(dst), "cspace")
+	if err := os.Rename(tmpExtracted, dst); err != nil {
+		return fmt.Errorf("rename extracted binary: %w", err)
+	}
+	return os.Chmod(dst, 0o755)
 }
 
 // runContainerBuild invokes `container build --platform linux/arm64
