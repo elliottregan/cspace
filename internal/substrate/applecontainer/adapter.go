@@ -170,9 +170,6 @@ func (a *Adapter) Run(ctx context.Context, spec substrate.RunSpec) error {
 	for k, v := range spec.Env {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
 	}
-	if spec.RuntimeOverlayPath != "" {
-		args = append(args, "-v", fmt.Sprintf("%s:/opt/cspace:ro", spec.RuntimeOverlayPath))
-	}
 	for _, m := range spec.Mounts {
 		mount := fmt.Sprintf("%s:%s", m.HostPath, m.ContainerPath)
 		if m.ReadOnly {

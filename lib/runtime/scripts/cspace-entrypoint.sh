@@ -102,17 +102,19 @@ if [ ! -f "$CLAUDE_JSON" ]; then
 JSON
 fi
 
-# Pre-create ~/.claude/settings.json so the cspace statusline shows up
-# in interactive `claude`. The shipped script is at
-# /usr/local/bin/cspace-statusline.sh; project overrides at
-# /workspace/.cspace/scripts/statusline.sh take precedence so projects
-# can ship their own. Idempotent.
+# Write ~/.claude/settings.json so the cspace statusline shows up in
+# interactive `claude`. The statusline is baked into the image at
+# /usr/local/bin/cspace-statusline.sh (its version is tied to the image,
+# which `cspace up` keeps aligned with the running CLI). Projects can
+# override with their own at /workspace/.cspace/scripts/statusline.sh.
+#
+# Rewritten every boot so changes to the resolution propagate without
+# requiring the user to delete the file.
 SETTINGS_JSON="$HOME/.claude/settings.json"
-if [ ! -f "$SETTINGS_JSON" ]; then
-    mkdir -p "$HOME/.claude"
-    statusline_cmd="/usr/local/bin/cspace-statusline.sh"
-    [ -x "/workspace/.cspace/scripts/statusline.sh" ] && statusline_cmd="/workspace/.cspace/scripts/statusline.sh"
-    cat > "$SETTINGS_JSON" <<JSON
+mkdir -p "$HOME/.claude"
+statusline_cmd="/usr/local/bin/cspace-statusline.sh"
+[ -x "/workspace/.cspace/scripts/statusline.sh" ] && statusline_cmd="/workspace/.cspace/scripts/statusline.sh"
+cat > "$SETTINGS_JSON" <<JSON
 {
   "statusLine": {
     "type": "command",
@@ -120,7 +122,6 @@ if [ ! -f "$SETTINGS_JSON" ]; then
   }
 }
 JSON
-fi
 
 # NAT loopback-bound listeners onto the microVM's external IP.
 #
@@ -208,8 +209,9 @@ mkdir -p /sessions 2>/dev/null || true
 
 # Install Claude Code plugins declared in /workspace/.claude/settings.json.
 # Idempotent and best-effort — failures here don't block the supervisor.
-# Marketplaces are pre-baked under /opt/cspace/marketplaces/ so first
-# boot doesn't have to clone anything from GitHub.
+# Marketplaces are added on first install via `claude plugins marketplace
+# add <owner/repo>`, which clones from GitHub at runtime; pre-baking the
+# marketplace trees into the image is a future optimization.
 if [ -x /usr/local/bin/cspace-install-plugins.sh ]; then
     echo plugins > "$STATUS_FILE" 2>/dev/null || true
     /usr/local/bin/cspace-install-plugins.sh || true

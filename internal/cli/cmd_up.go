@@ -22,7 +22,6 @@ import (
 	"github.com/elliottregan/cspace/internal/overlay"
 	"github.com/elliottregan/cspace/internal/planets"
 	"github.com/elliottregan/cspace/internal/registry"
-	"github.com/elliottregan/cspace/internal/runtime"
 	"github.com/elliottregan/cspace/internal/secrets"
 	"github.com/elliottregan/cspace/internal/substrate"
 	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
@@ -198,6 +197,11 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 						return fmt.Errorf("devcontainer.json: %w", mergeErr)
 					}
 					devcontainerPlan = plan
+					if plan.Compose != nil {
+						for _, w := range plan.Compose.Warnings {
+							_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "[cspace] warning: compose: %s\n", w)
+						}
+					}
 					sandboxImage = resolveSandboxImage(ctx, plan, "cspace:latest")
 					// Compose service.environment (including any env_file
 					// content compose-go resolved at parse time) merges
@@ -220,6 +224,14 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 						env[k] = v
 					}
 				}
+			}
+
+			// Warn if the resolved sandbox image is cspace:latest and its baked
+			// cspace.version label drifts from the running CLI. Skipped for
+			// project-supplied images (compose image:, devcontainer image:,
+			// build:) — those are the user's responsibility, not cspace's.
+			if sandboxImage == "cspace:latest" {
+				warnIfImageStale(cmd.ErrOrStderr(), sandboxImage, Version)
 			}
 
 			// Devcontainer postCreateCommand and postStartCommand. These are
@@ -502,16 +514,6 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 					}
 				}()
 			}
-
-			// Materialize the runtime overlay tree (scripts, eventually supervisor)
-			// to ~/.cspace/runtime/<Version>/ and bind-mount it at /opt/cspace inside
-			// the microVM. This decouples cspace runtime upgrades from project image
-			// rebuilds — script tweaks ship via the cspace binary, no docker pull.
-			_, overlayPath, err := runtime.Extract(Version)
-			if err != nil {
-				return fmt.Errorf("extract runtime overlay: %w", err)
-			}
-			spec.RuntimeOverlayPath = overlayPath
 
 			// Apply tmpfs mounts and named volumes declared on the workspace's
 			// own compose service (e.g. node_modules tmpfs, shared pnpm-store
@@ -1211,6 +1213,58 @@ func resolveSandboxImage(ctx context.Context, plan *devcontainer.Plan, defaultIm
 	return defaultImage
 }
 
+// warnIfImageStale prints a stderr warning when the resolved sandbox image's
+// baked `cspace.version` label doesn't match the running CLI version. The
+// recommendation is always `cspace image build`. Silent on missing image
+// (the substrate will fail more specifically on boot) and on missing label
+// (older images pre-dating the label — same fix).
+func warnIfImageStale(stderr io.Writer, image, cliVersion string) {
+	imgVersion, ok := readImageCspaceVersion(image)
+	if !ok {
+		_, _ = fmt.Fprintf(stderr, "[cspace] note: %s has no cspace.version label — build with the current CLI to get drift detection: `cspace image build`\n", image)
+		return
+	}
+	if imgVersion == cliVersion {
+		return
+	}
+	_, _ = fmt.Fprintf(stderr, "[cspace] warning: %s was built against cspace %s, but you're running %s. Rebuild to pick up the matching scripts and tooling: `cspace image build`\n", image, imgVersion, cliVersion)
+}
+
+// readImageCspaceVersion returns the `cspace.version` label from the named
+// image's config, plus a found bool. Returns (""/false) on any error (missing
+// image, malformed JSON, no labels).
+func readImageCspaceVersion(image string) (string, bool) {
+	out, err := exec.Command("container", "image", "inspect", image).Output()
+	if err != nil {
+		return "", false
+	}
+	// Apple Container's `image inspect` returns a JSON array of image
+	// descriptors. Each has variants[].config.config.Labels (the outer
+	// `config` is the OCI image config; the inner is the runtime config
+	// holding Env / Cmd / Labels / …). Walk that path defensively; any
+	// missing key is treated as "no label".
+	var parsed []struct {
+		Variants []struct {
+			Config struct {
+				Config struct {
+					Labels map[string]string `json:"Labels"`
+				} `json:"config"`
+			} `json:"config"`
+		} `json:"variants"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		return "", false
+	}
+	for _, img := range parsed {
+		for _, v := range img.Variants {
+			if val, ok := v.Config.Config.Labels["cspace.version"]; ok && val != "" {
+				return val, true
+			}
+		}
+	}
+	return "", false
+}
+
 // writeExtractedEnv writes credential key=value pairs extracted from sidecars
 // to <sessionsHostDir>/extracted.env on the host. The sandbox has this
 // directory bind-mounted as /sessions, so the entrypoint can source
@@ -1248,8 +1302,8 @@ func writeExtractedEnv(sessionsHostDir string, env map[string]string) error {
 
 // substrateRunner adapts *applecontainer.Adapter to the orchestrator.Substrate
 // interface. It bridges the orchestrator's ServiceSpec (compose-oriented) to
-// the substrate's RunSpec (sandbox-oriented). Sidecars started via Run are
-// started without a runtime overlay — they use their own image's entrypoint.
+// the substrate's RunSpec (sandbox-oriented). Sidecars use their own image's
+// entrypoint.
 type substrateRunner struct {
 	adapter *applecontainer.Adapter
 }

@@ -131,9 +131,12 @@ RUN mkdir -p /workspace /sessions /home/dev/.claude/projects/-workspace \
  && chown -R dev:dev /workspace /sessions /home/dev/.claude \
  && chmod +x /usr/local/bin/cspace /usr/local/bin/cspace-supervisor
 
-# cspace runtime overlay scripts. The /opt/cspace bind-mount (set by cspace up)
-# also exposes these — these COPYs are belt-and-suspenders for cases where the
-# overlay isn't yet wired (older cspace versions, image used outside cspace).
+# cspace runtime scripts and feature installers. All baked into the image so
+# the image is self-contained and tied to the cspace CLI version it was built
+# from — `cspace up` compares this image's cspace.version label against the
+# running CLI and warns if they drift, recommending `cspace image build`.
+# Editing files on the host does NOT change behavior inside the sandbox; the
+# only way to update is to rebuild the image.
 USER root
 COPY lib/runtime/scripts/cspace-entrypoint.sh /usr/local/bin/cspace-entrypoint.sh
 COPY lib/runtime/scripts/cspace-supervisor-loop.sh /usr/local/bin/cspace-supervisor-loop.sh
@@ -143,7 +146,21 @@ RUN chmod +x /usr/local/bin/cspace-entrypoint.sh \
             /usr/local/bin/cspace-supervisor-loop.sh \
             /usr/local/bin/cspace-install-plugins.sh \
             /usr/local/bin/cspace-statusline.sh
+
+# Devcontainer feature scripts (node, python, common-utils, git, github-cli,
+# docker-in-docker). Lives at /opt/cspace/features/ so internal/features/
+# runner.go can invoke them by path. Not yet wired into the boot flow; the
+# scripts ship so the wiring lands as a pure additive change in a later
+# release.
+COPY lib/runtime/features /opt/cspace/features
+RUN chmod +x /opt/cspace/features/*.sh
 USER dev
+
+# Version label set at build time via `--build-arg CSPACE_VERSION=...`.
+# `cspace up` reads this label and warns when it doesn't match the running
+# CLI, prompting `cspace image build`. Defaults to "dev" for ad-hoc builds.
+ARG CSPACE_VERSION=dev
+LABEL cspace.version="${CSPACE_VERSION}"
 
 WORKDIR /workspace
 

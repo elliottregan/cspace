@@ -57,7 +57,7 @@ func runImageBuild(cmd *cobra.Command, tag string) error {
 		if statOK(srcDockerfile) && statOK(srcBinary) {
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 				"building %s from source tree at %s ...\n", tag, cwd)
-			return runContainerBuild(cmd, tag, srcDockerfile, cwd)
+			return runContainerBuild(cmd, tag, srcDockerfile, cwd, Version)
 		}
 	}
 
@@ -88,18 +88,21 @@ func runImageBuild(cmd *cobra.Command, tag string) error {
 
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 		"building %s from %s ...\n", tag, dockerfile)
-	return runContainerBuild(cmd, tag, dockerfile, tmp)
+	return runContainerBuild(cmd, tag, dockerfile, tmp, Version)
 }
 
 // runContainerBuild invokes `container build --platform linux/arm64
-// --tag <tag> --file <dockerfile> <ctxDir>`. The arm64 platform is
-// hard-coded — Apple Container is arm64-only on Apple Silicon, and
-// that's the only substrate cspace supports today.
-func runContainerBuild(cmd *cobra.Command, tag, dockerfile, ctxDir string) error {
+// --tag <tag> --file <dockerfile> --build-arg CSPACE_VERSION=<ver> <ctxDir>`.
+// The arm64 platform is hard-coded — Apple Container is arm64-only on Apple
+// Silicon, and that's the only substrate cspace supports today. CSPACE_VERSION
+// bakes into the image as the `cspace.version` label so `cspace up` can detect
+// CLI/image drift.
+func runContainerBuild(cmd *cobra.Command, tag, dockerfile, ctxDir, version string) error {
 	build := exec.Command("container", "build",
 		"--platform", "linux/arm64",
 		"--tag", tag,
 		"--file", dockerfile,
+		"--build-arg", "CSPACE_VERSION="+version,
 		ctxDir,
 	)
 	build.Stdin, build.Stdout, build.Stderr = os.Stdin, os.Stdout, os.Stderr

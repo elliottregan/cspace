@@ -22,12 +22,6 @@ type RunSpec struct {
 	CPUs      int // number of CPUs to allocate; 0 = adapter default
 	MemoryMiB int // memory cap in MiB;            0 = adapter default
 
-	// RuntimeOverlayPath is the host-side path to ~/.cspace/runtime/<version>/.
-	// When non-empty, the adapter bind-mounts it read-only at /opt/cspace
-	// inside the microVM. This decouples cspace runtime upgrades (scripts,
-	// supervisor, plugin-install machinery) from project image rebuilds.
-	RuntimeOverlayPath string
-
 	// TmpfsMounts request RAM-backed in-microVM filesystems. Use cases:
 	// build artifacts (node_modules, .next, target/) that should NOT
 	// pollute the host disk, and that need to bypass virtio-fs's per-mount

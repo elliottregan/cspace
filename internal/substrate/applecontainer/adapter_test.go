@@ -114,34 +114,3 @@ func TestIP(t *testing.T) {
 	}
 }
 
-func TestRunSpecRuntimeOverlayMount(t *testing.T) {
-	// This test verifies that when RuntimeOverlayPath is set, the adapter
-	// generates the correct -v flags. We can't easily extract buildRunArgs
-	// since it's embedded in Run(), so we test the behavior by mocking exec.
-	// For now, we test the field presence and read-only logic through integration
-	// if available, or skip if the CLI isn't present.
-	a := New()
-	if !a.Available() {
-		t.Skip("Apple Container CLI not installed; skipping")
-	}
-
-	// We construct a RunSpec with RuntimeOverlayPath and verify no panic/error
-	// during argument construction. Full validation would require parsing the
-	// exec.Command args, which requires refactoring Run() to expose buildRunArgs.
-	spec := RunSpec{
-		Name:               "test-overlay",
-		Image:              "alpine",
-		RuntimeOverlayPath: "/Users/me/.cspace/runtime/1.0.0",
-	}
-
-	// Verify the spec struct accepts the field without error.
-	_ = spec
-}
-
-func TestRunSpecNoOverlay(t *testing.T) {
-	// Verify that specs without RuntimeOverlayPath don't break.
-	spec := RunSpec{Name: "test", Image: "alpine"}
-	if spec.RuntimeOverlayPath != "" {
-		t.Fatalf("expected empty RuntimeOverlayPath, got %q", spec.RuntimeOverlayPath)
-	}
-}
