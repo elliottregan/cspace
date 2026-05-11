@@ -162,14 +162,14 @@ git config --global tag.gpgsign false
 # future runtime stripped them, sandboxes would just lose this
 # convenience and need --host=0.0.0.0 in the dev server.
 # Start dnsmasq forwarder so hostname resolution inside the sandbox
-# matches the host. *.cspace.local queries → cspace daemon on the
+# matches the host. *.cspace.test queries → cspace daemon on the
 # gateway (192.168.64.1:5354). Everything else → public resolvers.
 # /etc/resolv.conf points at 127.0.0.1 so glibc's nss-dns sees a
 # standard :53 nameserver and the port-mapping detail stays internal.
 #
 # Best-effort: if dnsmasq fails to start, leave /etc/resolv.conf as
 # the substrate adapter set it (--dns 1.1.1.1 etc.). External name
-# resolution still works; only in-sandbox *.cspace.local lookups
+# resolution still works; only in-sandbox *.cspace.test lookups
 # break, which surfaces as NXDOMAIN — caller can investigate via
 # /var/log/dnsmasq.log if it exists.
 DNSMASQ=/usr/sbin/dnsmasq
@@ -180,7 +180,7 @@ port=53
 no-resolv
 no-hosts
 bind-interfaces
-server=/cspace.local/192.168.64.1#5354
+server=/cspace.test/192.168.64.1#5354
 server=1.1.1.1
 server=8.8.8.8
 EOF

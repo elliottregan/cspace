@@ -186,7 +186,7 @@ label_color() {
 }
 # Ports cspace owns internally that should never show in the statusline.
 # 6201: cspace-supervisor's control socket. 53: dnsmasq forwarder for
-# *.cspace.local DNS routing. Both are cspace-managed plumbing, not the
+# *.cspace.test DNS routing. Both are cspace-managed plumbing, not the
 # user's dev servers.
 SUPERVISOR_PORT=6201
 INTERNAL_PORTS="6201 53"
@@ -238,9 +238,9 @@ if [ -n "$CONTAINER" ] && command -v ss >/dev/null 2>&1; then
     # the same name without DNS collision. Falls back to sandbox-only
     # form when CSPACE_PROJECT is unset (older sandboxes pre-rc.5).
     if [ -n "$PROJECT" ]; then
-        FQDN="${CONTAINER}.${PROJECT}.cspace.local"
+        FQDN="${CONTAINER}.${PROJECT}.cspace.test"
     else
-        FQDN="${CONTAINER}.cspace.local"
+        FQDN="${CONTAINER}.cspace.test"
     fi
     for port in $LISTENING_PORTS; do
         [ -z "$port" ] && continue

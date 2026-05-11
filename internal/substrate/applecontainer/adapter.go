@@ -201,7 +201,7 @@ func (a *Adapter) Run(ctx context.Context, spec substrate.RunSpec) error {
 	}
 	// DNS: only honor an explicit spec.DNS list. The cspace sandbox
 	// image runs dnsmasq at 127.0.0.1:53 (configured by the
-	// entrypoint) which forwards *.cspace.local to the daemon on
+	// entrypoint) which forwards *.cspace.test to the daemon on
 	// the gateway and everything else to public resolvers — so the
 	// container picks up name resolution on its own without the
 	// substrate adapter needing to inject anything. Apple Container
