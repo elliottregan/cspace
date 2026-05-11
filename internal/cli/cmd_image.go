@@ -109,7 +109,16 @@ func fetchReleaseBinary(cmd *cobra.Command, version, dst string) error {
 	if version == "dev" || version == "" || strings.Contains(version, "-dirty") {
 		return fmt.Errorf("no published release for version %q. Build from the cspace source tree (cd into the cspace repo, run `make build`, then `cspace image build` from there) or tag and push a release first", version)
 	}
-	url := fmt.Sprintf("https://github.com/elliottregan/cspace/releases/download/%s/cspace_linux_arm64.tar.gz", version)
+	// goreleaser strips the leading "v" from {{ .Version }} when embedding the
+	// version into the binary (-X .Version=1.0.0-rc.X), but the GitHub release
+	// tag is `v1.0.0-rc.X`. The maintainer fast-path's `git describe` keeps
+	// the `v`. Normalize so the URL matches the tag regardless of which build
+	// path produced the running binary.
+	tag := version
+	if !strings.HasPrefix(tag, "v") {
+		tag = "v" + tag
+	}
+	url := fmt.Sprintf("https://github.com/elliottregan/cspace/releases/download/%s/cspace_linux_arm64.tar.gz", tag)
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "fetching %s ...\n", url)
 
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
