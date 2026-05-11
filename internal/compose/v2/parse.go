@@ -62,9 +62,10 @@ func Parse(ctx context.Context, path string) (*Project, error) {
 	}
 	cgProjPrecheck, err := optsPrecheck.LoadProject(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("compose load: %w", err)
+		return nil, wrapLoadError(err)
 	}
-	if err := validateSubset(cgProjPrecheck); err != nil {
+	warnings, err := validateSubset(cgProjPrecheck)
+	if err != nil {
 		return nil, err
 	}
 
@@ -79,9 +80,26 @@ func Parse(ctx context.Context, path string) (*Project, error) {
 	}
 	cgProj, err := opts.LoadProject(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("compose load: %w", err)
+		return nil, wrapLoadError(err)
 	}
-	return translate(cgProj, abs)
+	proj, err := translate(cgProj, abs)
+	if err != nil {
+		return nil, err
+	}
+	proj.Warnings = warnings
+	return proj, nil
+}
+
+// wrapLoadError attaches a clearer remediation hint for missing env_file
+// references. compose-go errors with "env file <path> not found:" when the
+// short-form `env_file: - <path>` points to a path that doesn't exist;
+// rather than relax compose-spec strictness, surface a one-line fix.
+func wrapLoadError(err error) error {
+	msg := err.Error()
+	if strings.Contains(msg, "env file ") && strings.Contains(msg, " not found") {
+		return fmt.Errorf("compose load: %w\n\nhint: your compose declares an env_file: pointing at a path that doesn't exist. Create the file (an empty file is fine: `touch <path>`), or remove the env_file: entry from the compose service", err)
+	}
+	return fmt.Errorf("compose load: %w", err)
 }
 
 func translate(cg *types.Project, srcPath string) (*Project, error) {

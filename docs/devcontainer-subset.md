@@ -67,14 +67,21 @@ Top-level:
   vmnet bridge only; bare-name DNS via `/etc/hosts` injection replaces
   Docker's per-network DNS.
 - `network_mode` — Apple Container microVMs are isolated.
-- `cap_add`, `cap_drop`, `privileged`, `devices`, `security_opt` — Apple
-  Container does not expose Linux capability tuning.
+- `privileged`, `devices`, `security_opt` — Apple Container does not
+  expose these.
 - `pid`, `ipc`, `userns_mode`, `cgroup_parent` — same reason.
 - `extends`, `profiles` — flatten before authoring.
 - `links` — bare service-name DNS replaces it (it's deprecated upstream too).
 
 The error names the offending field, the service it appears under, and
 links back here.
+
+### Warn-and-strip compose fields
+
+- `cap_add`, `cap_drop` — Apple Container has no notion of Linux
+  capabilities, so cspace logs a warning and continues. The common case
+  (`NET_ADMIN` / `NET_RAW` for an in-container iptables firewall) is
+  already redundant under cspace — substrate-level firewalling handles it.
 
 ## Inter-service DNS
 

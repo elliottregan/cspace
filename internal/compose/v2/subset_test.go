@@ -13,10 +13,23 @@ func TestSubsetRejectsNetworks(t *testing.T) {
 	}
 }
 
-func TestSubsetRejectsCapAdd(t *testing.T) {
-	_, err := Parse(context.Background(), "testdata/with_capadd.yml")
-	if err == nil || !strings.Contains(err.Error(), "cap_add") {
-		t.Fatalf("want cap_add-rejection error, got %v", err)
+func TestSubsetWarnsOnCapAdd(t *testing.T) {
+	p, err := Parse(context.Background(), "testdata/with_capadd.yml")
+	if err != nil {
+		t.Fatalf("cap_add should parse with a warning, got error: %v", err)
+	}
+	if len(p.Warnings) == 0 {
+		t.Fatal("expected a warning about cap_add, got none")
+	}
+	found := false
+	for _, w := range p.Warnings {
+		if strings.Contains(w, "cap_add") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("warnings did not mention cap_add: %v", p.Warnings)
 	}
 }
 

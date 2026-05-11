@@ -10,6 +10,10 @@ type Project struct {
 	Services     map[string]*Service
 	NamedVolumes map[string]*NamedVolume
 	SourcePath   string
+	// Warnings collected during parse/validate (e.g. compose fields stripped
+	// because Apple Container can't honor them). Callers should surface
+	// these on stderr.
+	Warnings []string
 }
 
 type Service struct {

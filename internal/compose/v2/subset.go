@@ -11,9 +11,12 @@ import (
 const docsLink = "docs/devcontainer-subset.md"
 
 // validateSubset returns a named error for the first unsupported field
-// it finds. cspace hard-rejects rather than silently mistranslating —
+// it finds, plus a slice of warnings for fields that were silently
+// stripped because Apple Container can't honor them (cap_add, cap_drop).
+// cspace hard-rejects fields that would silently mistranslate; it
+// warn-strips fields that are simply no-ops on Apple Container —
 // see docs/superpowers/specs/2026-05-05-devcontainer-adoption-design.md.
-func validateSubset(p *types.Project) error {
+func validateSubset(p *types.Project) ([]string, error) {
 	if len(p.Networks) > 0 {
 		var named []string
 		for n := range p.Networks {
@@ -23,64 +26,80 @@ func validateSubset(p *types.Project) error {
 		}
 		if len(named) > 0 {
 			sort.Strings(named)
-			return fmt.Errorf("compose: top-level 'networks' block has %s — cspace runs all services on the vmnet bridge with bare-name DNS; remove the block (see %s)", strings.Join(named, ", "), docsLink)
+			return nil, fmt.Errorf("compose: top-level 'networks' block has %s — cspace runs all services on the vmnet bridge with bare-name DNS; remove the block (see %s)", strings.Join(named, ", "), docsLink)
 		}
 	}
-	for name, svc := range p.Services {
-		if err := validateService(name, svc); err != nil {
-			return err
-		}
+	var warnings []string
+	// Sort service names so warning ordering is deterministic.
+	names := make([]string, 0, len(p.Services))
+	for name := range p.Services {
+		names = append(names, name)
 	}
-	return nil
+	sort.Strings(names)
+	for _, name := range names {
+		svc := p.Services[name]
+		w, err := validateService(name, svc)
+		if err != nil {
+			return nil, err
+		}
+		warnings = append(warnings, w...)
+	}
+	return warnings, nil
 }
 
-func validateService(name string, svc types.ServiceConfig) error {
+func validateService(name string, svc types.ServiceConfig) ([]string, error) {
 	// Allow only the default network; anything beyond default is rejected
 	if len(svc.Networks) > 0 {
 		for netName := range svc.Networks {
 			if netName != "default" {
-				return fmt.Errorf("compose: service %q sets 'networks' — single default network only (see %s)", name, docsLink)
+				return nil, fmt.Errorf("compose: service %q sets 'networks' — single default network only (see %s)", name, docsLink)
 			}
 		}
 	}
 	if svc.NetworkMode != "" {
-		return fmt.Errorf("compose: service %q sets 'network_mode' — not supported (see %s)", name, docsLink)
+		return nil, fmt.Errorf("compose: service %q sets 'network_mode' — not supported (see %s)", name, docsLink)
 	}
+	var warnings []string
+	// cap_add / cap_drop: Apple Container has no concept of Linux
+	// capabilities, so we can't honor these directives. The common case
+	// (NET_ADMIN / NET_RAW for an in-container iptables firewall) is
+	// already redundant under cspace — the substrate provides isolation
+	// and firewalling. Warn and continue rather than blocking the user.
 	if len(svc.CapAdd) > 0 {
-		return fmt.Errorf("compose: service %q sets 'cap_add' — Apple Container does not expose Linux capability tuning (see %s)", name, docsLink)
+		warnings = append(warnings, fmt.Sprintf("service %q: 'cap_add: %v' ignored — Apple Container can't honor Linux capabilities; cspace's substrate-level firewall replaces in-container NET_ADMIN/NET_RAW use", name, []string(svc.CapAdd)))
 	}
 	if len(svc.CapDrop) > 0 {
-		return fmt.Errorf("compose: service %q sets 'cap_drop' — not supported (see %s)", name, docsLink)
+		warnings = append(warnings, fmt.Sprintf("service %q: 'cap_drop: %v' ignored — Apple Container can't honor Linux capabilities", name, []string(svc.CapDrop)))
 	}
 	if svc.Privileged {
-		return fmt.Errorf("compose: service %q sets 'privileged' — not supported (see %s)", name, docsLink)
+		return nil, fmt.Errorf("compose: service %q sets 'privileged' — not supported (see %s)", name, docsLink)
 	}
 	if len(svc.Devices) > 0 {
-		return fmt.Errorf("compose: service %q sets 'devices' — not supported (see %s)", name, docsLink)
+		return nil, fmt.Errorf("compose: service %q sets 'devices' — not supported (see %s)", name, docsLink)
 	}
 	if len(svc.SecurityOpt) > 0 {
-		return fmt.Errorf("compose: service %q sets 'security_opt' — not supported (see %s)", name, docsLink)
+		return nil, fmt.Errorf("compose: service %q sets 'security_opt' — not supported (see %s)", name, docsLink)
 	}
 	if svc.Pid != "" {
-		return fmt.Errorf("compose: service %q sets 'pid' — not supported (see %s)", name, docsLink)
+		return nil, fmt.Errorf("compose: service %q sets 'pid' — not supported (see %s)", name, docsLink)
 	}
 	if svc.Ipc != "" {
-		return fmt.Errorf("compose: service %q sets 'ipc' — not supported (see %s)", name, docsLink)
+		return nil, fmt.Errorf("compose: service %q sets 'ipc' — not supported (see %s)", name, docsLink)
 	}
 	if svc.UserNSMode != "" {
-		return fmt.Errorf("compose: service %q sets 'userns_mode' — not supported (see %s)", name, docsLink)
+		return nil, fmt.Errorf("compose: service %q sets 'userns_mode' — not supported (see %s)", name, docsLink)
 	}
 	if svc.CgroupParent != "" {
-		return fmt.Errorf("compose: service %q sets 'cgroup_parent' — not supported (see %s)", name, docsLink)
+		return nil, fmt.Errorf("compose: service %q sets 'cgroup_parent' — not supported (see %s)", name, docsLink)
 	}
 	if len(svc.Profiles) > 0 {
-		return fmt.Errorf("compose: service %q sets 'profiles' — flatten before authoring (see %s)", name, docsLink)
+		return nil, fmt.Errorf("compose: service %q sets 'profiles' — flatten before authoring (see %s)", name, docsLink)
 	}
 	if svc.Extends != nil && svc.Extends.Service != "" {
-		return fmt.Errorf("compose: service %q uses 'extends' — flatten before authoring (see %s)", name, docsLink)
+		return nil, fmt.Errorf("compose: service %q uses 'extends' — flatten before authoring (see %s)", name, docsLink)
 	}
 	if len(svc.Links) > 0 {
-		return fmt.Errorf("compose: service %q uses 'links' — bare service-name DNS replaces it (see %s)", name, docsLink)
+		return nil, fmt.Errorf("compose: service %q uses 'links' — bare service-name DNS replaces it (see %s)", name, docsLink)
 	}
-	return nil
+	return warnings, nil
 }
