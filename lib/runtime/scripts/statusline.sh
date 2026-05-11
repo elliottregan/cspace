@@ -184,7 +184,12 @@ label_color() {
         *)          printf '%s' "$CYN" ;;
     esac
 }
+# Ports cspace owns internally that should never show in the statusline.
+# 6201: cspace-supervisor's control socket. 53: dnsmasq forwarder for
+# *.cspace.local DNS routing. Both are cspace-managed plumbing, not the
+# user's dev servers.
 SUPERVISOR_PORT=6201
+INTERNAL_PORTS="6201 53"
 if [ -n "$CONTAINER" ] && command -v ss >/dev/null 2>&1; then
     # Build a port→label map. Devcontainer.json's portsAttributes is the
     # preferred source: it's the standard format and survives a future
@@ -195,7 +200,6 @@ if [ -n "$CONTAINER" ] && command -v ss >/dev/null 2>&1; then
     #
     # Bash 4+ associative array — sandbox image is debian-bookworm.
     declare -A PORT_LABELS=()
-    HAS_PORT_CONFIG=0
     DEVCONTAINER_JSON="/workspace/.devcontainer/devcontainer.json"
     CSPACE_JSON="/workspace/.cspace.json"
     if [ -f "$DEVCONTAINER_JSON" ] && command -v jq >/dev/null 2>&1; then
@@ -203,23 +207,24 @@ if [ -n "$CONTAINER" ] && command -v ss >/dev/null 2>&1; then
         # piping to jq. portsAttributes uses { "<port>": { "label": "<x>" } };
         # we keep only entries that actually have a label string.
         DEVC=$(sed -E 's://[^"]*$::; s:/\*[^*]*\*+([^/*][^*]*\*+)*/::g' "$DEVCONTAINER_JSON" 2>/dev/null)
-        if echo "$DEVC" | jq -e '.portsAttributes // {} | length > 0' >/dev/null 2>&1; then
-            HAS_PORT_CONFIG=1
-            while IFS=$'\t' read -r p lbl; do
-                [ -n "$p" ] && [ -n "$lbl" ] && PORT_LABELS["$p"]="$lbl"
-            done < <(echo "$DEVC" | jq -r '.portsAttributes // {} | to_entries[] | select(.value.label) | "\(.key)\t\(.value.label)"' 2>/dev/null)
-        fi
+        while IFS=$'\t' read -r p lbl; do
+            [ -n "$p" ] && [ -n "$lbl" ] && PORT_LABELS["$p"]="$lbl"
+        done < <(echo "$DEVC" | jq -r '.portsAttributes // {} | to_entries[] | select(.value.label) | "\(.key)\t\(.value.label)"' 2>/dev/null)
     fi
     # Backwards-compat fallback: .cspace.json container.ports (legacy).
-    # Only consulted when devcontainer.json didn't supply portsAttributes.
-    if [ "$HAS_PORT_CONFIG" -eq 0 ] && [ -f "$CSPACE_JSON" ] && command -v jq >/dev/null 2>&1; then
-        if jq -e '.container | has("ports")' "$CSPACE_JSON" >/dev/null 2>&1; then
-            HAS_PORT_CONFIG=1
-        fi
+    # Only consulted when devcontainer.json didn't supply labels.
+    if [ "${#PORT_LABELS[@]}" -eq 0 ] && [ -f "$CSPACE_JSON" ] && command -v jq >/dev/null 2>&1; then
         while IFS=$'\t' read -r p lbl; do
-            [ -n "$p" ] && PORT_LABELS["$p"]="$lbl"
+            [ -n "$p" ] && [ -n "$lbl" ] && PORT_LABELS["$p"]="$lbl"
         done < <(jq -r '.container.ports // {} | to_entries[] | "\(.key)\t\(.value)"' "$CSPACE_JSON" 2>/dev/null)
     fi
+    # Curation: hide unlabeled ports only when the project actually
+    # provided labels. An empty config object (e.g. legacy .cspace.json
+    # with `"container": { "ports": {} }`) should NOT trigger the gate —
+    # it provides no signal of what the user cares about, so we fall
+    # back to "show all listening ports".
+    HAS_PORT_CONFIG=0
+    [ "${#PORT_LABELS[@]}" -gt 0 ] && HAS_PORT_CONFIG=1
     # Enumerate listening TCP ports. ss prints lines like:
     #   LISTEN 0 511 *:5173 *:*
     #   LISTEN 0 511 127.0.0.1:5174 0.0.0.0:*
@@ -239,7 +244,12 @@ if [ -n "$CONTAINER" ] && command -v ss >/dev/null 2>&1; then
     fi
     for port in $LISTENING_PORTS; do
         [ -z "$port" ] && continue
-        [ "$port" = "$SUPERVISOR_PORT" ] && continue
+        # Skip cspace-internal ports (supervisor, dnsmasq, …).
+        skip=0
+        for ip in $INTERNAL_PORTS; do
+            [ "$port" = "$ip" ] && skip=1 && break
+        done
+        [ "$skip" -eq 1 ] && continue
         label="${PORT_LABELS[$port]:-}"
         # Curation gate: when port config is present, hide any listening
         # port that's not labeled. This is the user's explicit "I know
