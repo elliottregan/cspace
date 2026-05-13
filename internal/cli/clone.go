@@ -12,23 +12,33 @@ import (
 //
 //	~/.cspace/clones/<project>/<sandbox>/
 //
-// off baseBranch (or current HEAD of projectRoot when baseBranch is "").
+// off baseBranch (defaulting to the upstream's default when empty).
 // Returns the absolute path to the clone, suitable for bind-mounting as
 // /workspace.
 //
-// When branch is non-empty, the clone is checked out on a fresh branch of
-// that name created off the cloned tip — used by autonomous flows that
-// want each sandbox's work isolated under a meaningful branch (e.g.
-// "issue/538-fix"). When branch is empty (the default for interactive
-// `cspace up`), the clone stays on whatever baseBranch landed on, which
-// matches the muscle memory of agents and tutorials that assume `main`.
+// The clone is sourced from `origin`'s URL on projectRoot, not from
+// projectRoot itself. Effect: every sandbox starts from a reproducible
+// upstream tip rather than from whatever the host's working tree happens
+// to have committed locally. Round-tripping WIP from host to sandbox
+// goes through `git push` to the upstream, which is the predictable
+// path users already expect.
 //
-// If the sandbox's clone already exists, this function is idempotent: it
-// does not re-clone or touch the checked-out branch. The caller's
+// When branch is non-empty, the clone is checked out on a fresh branch
+// of that name created off the cloned tip — used by autonomous flows
+// that want each sandbox's work isolated under a meaningful branch
+// (e.g. "issue/538-fix"). When branch is empty (the default for
+// interactive `cspace up`), the clone stays on whatever baseBranch
+// landed on, which matches the muscle memory of agents and tutorials
+// that assume `main`.
+//
+// If the sandbox's clone already exists, this function is idempotent:
+// it does not re-clone or touch the checked-out branch. The caller's
 // `--keep-state` semantics own that lifecycle.
 //
 // If projectRoot is empty or not a git repo, returns ("", nil) — the
-// caller should treat that as "no workspace mount" with a warning.
+// caller treats that as "no workspace mount" with a warning. If the
+// project is a git repo but has no `origin` remote, returns an error;
+// see the inline comment for the deliberate no-fallback choice.
 func provisionClone(projectRoot, projectName, sandboxName, baseBranch, branch string) (string, error) {
 	if projectRoot == "" {
 		return "", nil
@@ -52,7 +62,21 @@ func provisionClone(projectRoot, projectName, sandboxName, baseBranch, branch st
 		return clonePath, nil
 	}
 
-	// Need to clone. Make parent dir.
+	// Cloning from the upstream URL (origin), not from projectRoot. This
+	// keeps the sandbox starting state reproducible across hosts and
+	// avoids a class of confusing failures (`gh pr list` not finding the
+	// repo, split-brain `host`/`origin` remotes, etc.). See issue #80.
+	//
+	// Deliberately no fallback to cloning from projectRoot for repos
+	// without an `origin` — that path is what got us into the
+	// split-brain remote mess. If a pure-local-repo workflow ever
+	// becomes a real need, this is where the fallback would go.
+	upstream, _ := readOrigin(projectRoot)
+	if upstream == "" {
+		return "", fmt.Errorf("project has no `origin` git remote; cspace clones from the upstream URL. " +
+			"Add one with `git remote add origin <url>` and push at least the base branch")
+	}
+
 	if err := os.MkdirAll(filepath.Dir(clonePath), 0o755); err != nil {
 		return "", err
 	}
@@ -61,23 +85,10 @@ func provisionClone(projectRoot, projectName, sandboxName, baseBranch, branch st
 	if baseBranch != "" {
 		cloneArgs = append(cloneArgs, "--branch", baseBranch)
 	}
-	cloneArgs = append(cloneArgs, projectRoot, clonePath)
+	cloneArgs = append(cloneArgs, upstream, clonePath)
 	out, err := exec.Command("git", cloneArgs...).CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("git clone: %w (%s)", err, strings.TrimSpace(string(out)))
-	}
-
-	// Rewrite the clone's "origin" to the host project's upstream when one
-	// exists (typically https://github.com/<owner>/<repo>.git). Without
-	// this, origin points at projectRoot's filesystem path — which means
-	// gh can't recognize the repo, `gh pr list` errors out with "none of
-	// the git remotes ... point to a known GitHub host", and the agent
-	// can't open PRs from inside the sandbox. Keep the local path under
-	// a sibling remote called "host" so users can still `git push host`
-	// or `git fetch host` for round-trips that don't go through GitHub.
-	if upstream, err := readOrigin(projectRoot); err == nil && upstream != "" {
-		_ = runGit(clonePath, "remote", "rename", "origin", "host")
-		_ = runGit(clonePath, "remote", "add", "origin", upstream)
+		return "", fmt.Errorf("git clone %s: %w (%s)", upstream, err, strings.TrimSpace(string(out)))
 	}
 
 	// Optional named branch — autonomous flows pass `--branch issue/N-foo`

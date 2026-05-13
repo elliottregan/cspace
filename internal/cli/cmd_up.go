@@ -792,7 +792,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 	cmd.Flags().StringArrayVar(&extraEnv, "env", nil,
 		"extra KEY=VALUE env vars to inject into the sandbox (repeatable)")
 	cmd.Flags().StringVar(&baseBranch, "base", "",
-		"base branch the workspace clone is checked out on (defaults to host project's current HEAD)")
+		"base branch the workspace clone is checked out on (defaults to the upstream repo's default branch)")
 	cmd.Flags().StringVar(&workBranch, "branch", "",
 		"create a fresh branch off baseBranch for the sandbox's work (use `auto` for the historical cspace/<sandbox> shape, or pass an explicit name like `issue/538-fix`); empty = stay on baseBranch")
 	cmd.Flags().BoolVar(&withBrowser, "browser", false,
