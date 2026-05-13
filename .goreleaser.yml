@@ -22,17 +22,17 @@ builds:
 archives:
   # Standard archives for install.sh and Homebrew
   - id: default
-    builds: [cspace]
+    ids: [cspace]
     name_template: "cspace_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: darwin
-        format: zip
+        formats: [zip]
 
   # Raw binaries for self-update and rebuild download
   - id: binaries
-    builds: [cspace]
+    ids: [cspace]
     name_template: "cspace-{{ .Os }}-{{ .Arch }}"
-    format: binary
+    formats: [binary]
 
 checksum:
   name_template: checksums.txt
