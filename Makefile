@@ -6,17 +6,29 @@ GOBIN           := ./bin/cspace-go
 .PHONY: build build-linux clean test vet sync-embedded fmt fmt-check lint check install-tools setup-hooks check-hooks cspace-linux cspace-image
 # (registry-daemon target removed; daemon is embedded as `cspace daemon serve`.)
 
-# Sync lib/ contents into internal/assets/embedded/ for go:embed
+# Sync lib/ contents into internal/assets/embedded/ for go:embed.
+# Explicit allowlist of files actually consumed at runtime — by the Go
+# binary (defaults.json, planets.json) or by `cspace image build`'s
+# `container build` context (Dockerfile + runtime scripts/features +
+# agent-supervisor source). Prevents stray local build artifacts (e.g.
+# lib/agent-supervisor-bun/dist/cspace-supervisor at ~100MB) from
+# inflating the embedded payload silently.
 sync-embedded:
 	@rm -rf internal/assets/embedded
-	@mkdir -p internal/assets/embedded
+	@mkdir -p internal/assets/embedded/templates
+	@mkdir -p internal/assets/embedded/runtime/scripts
+	@mkdir -p internal/assets/embedded/runtime/features
+	@mkdir -p internal/assets/embedded/agent-supervisor-bun/src
 	@touch internal/assets/embedded/.gitkeep
-	@cp -r lib/templates internal/assets/embedded/
-	@cp -r lib/runtime internal/assets/embedded/
-	@cp -r lib/agent-supervisor-bun internal/assets/embedded/
-	@rm -rf internal/assets/embedded/agent-supervisor-bun/node_modules
-	@cp lib/defaults.json internal/assets/embedded/
-	@cp lib/planets.json internal/assets/embedded/
+	@cp lib/defaults.json lib/planets.json internal/assets/embedded/
+	@cp lib/templates/Dockerfile internal/assets/embedded/templates/
+	@cp lib/runtime/scripts/*.sh internal/assets/embedded/runtime/scripts/
+	@cp lib/runtime/features/*.sh internal/assets/embedded/runtime/features/
+	@cp lib/agent-supervisor-bun/package.json \
+	    lib/agent-supervisor-bun/bun.lock \
+	    lib/agent-supervisor-bun/build.ts \
+	    internal/assets/embedded/agent-supervisor-bun/
+	@cp lib/agent-supervisor-bun/src/*.ts internal/assets/embedded/agent-supervisor-bun/src/
 
 build: check-hooks sync-embedded bin/cspace-go
 
