@@ -68,6 +68,20 @@ homebrew_casks:
     license: "LicenseRef-PolyForm-Perimeter-1.0.0"
     binaries:
       - cspace
+    # Strip macOS Gatekeeper's quarantine attribute on the installed
+    # binary. Casks preserve the attribute by default (their original
+    # job was to deliver notarized .app/.pkg bundles); for an
+    # unnotarized CLI binary that means Gatekeeper blocks the first
+    # `cspace` invocation with "Apple could not verify... is free of
+    # malware". Until we set up Developer ID signing + notarization,
+    # this postflight removes the attribute so the binary just runs.
+    # Standard pattern for CLI-as-cask projects (bun, gitleaks, etc.).
+    hooks:
+      post:
+        install: |
+          system_command "/usr/bin/xattr",
+                         args: ["-d", "com.apple.quarantine", "#{staged_path}/cspace"],
+                         must_succeed: false
 
   # Prerelease cask — published ONLY when the tag is a SemVer prerelease.
   # Inverts skip_upload: auto so testers can `brew install
@@ -88,3 +102,9 @@ homebrew_casks:
       - cspace
     conflicts:
       - cask: cspace
+    hooks:
+      post:
+        install: |
+          system_command "/usr/bin/xattr",
+                         args: ["-d", "com.apple.quarantine", "#{staged_path}/cspace"],
+                         must_succeed: false
