@@ -198,7 +198,7 @@ func setupTestProject(t *testing.T, projectConfig, localConfig string) string {
 func TestLoad_DefaultsOnly(t *testing.T) {
 	dir := setupTestProject(t, "", "")
 
-	cfg, err := Load(dir, "")
+	cfg, err := Load(dir)
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestLoad_WithProjectConfig(t *testing.T) {
 
 	dir := setupTestProject(t, projectJSON, "")
 
-	cfg, err := Load(dir, "")
+	cfg, err := Load(dir)
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestLoad_ThreeLayer(t *testing.T) {
 
 	dir := setupTestProject(t, projectJSON, localJSON)
 
-	cfg, err := Load(dir, "")
+	cfg, err := Load(dir)
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestLoad_ThreeLayer(t *testing.T) {
 func TestLoad_AutoDetectName(t *testing.T) {
 	dir := setupTestProject(t, "", "")
 
-	cfg, err := Load(dir, "")
+	cfg, err := Load(dir)
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestLoad_AutoDetectPrefix(t *testing.T) {
 	projectJSON := `{"project": {"name": "myapp"}}`
 	dir := setupTestProject(t, projectJSON, "")
 
-	cfg, err := Load(dir, "")
+	cfg, err := Load(dir)
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestLoad_EnvVarOverrides(t *testing.T) {
 	t.Setenv("CSPACE_PROJECT_NAME", "env-name")
 	t.Setenv("CSPACE_PROJECT_REPO", "env/repo")
 
-	cfg, err := Load(dir, "")
+	cfg, err := Load(dir)
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestLoad_EnvVarOverrides(t *testing.T) {
 func TestLoad_ProjectRoot(t *testing.T) {
 	dir := setupTestProject(t, "", "")
 
-	cfg, err := Load(dir, "")
+	cfg, err := Load(dir)
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestLoad_FirewallDisabledByProject(t *testing.T) {
 	projectJSON := `{"firewall": {"enabled": false}}`
 	dir := setupTestProject(t, projectJSON, "")
 
-	cfg, err := Load(dir, "")
+	cfg, err := Load(dir)
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
@@ -375,7 +375,7 @@ func TestLoad_MCPServersPassthrough(t *testing.T) {
 	}`
 	dir := setupTestProject(t, projectJSON, "")
 
-	cfg, err := Load(dir, "")
+	cfg, err := Load(dir)
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
@@ -406,7 +406,7 @@ func TestLoad_ContainerPortsAndEnv(t *testing.T) {
 	}`
 	dir := setupTestProject(t, projectJSON, "")
 
-	cfg, err := Load(dir, "")
+	cfg, err := Load(dir)
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
@@ -487,7 +487,7 @@ func TestLoad_RealProjectConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindProjectRoot() error: %v", err)
 	}
-	cfg, err := Load(repoRoot, "")
+	cfg, err := Load(repoRoot)
 	if err != nil {
 		t.Fatalf("Load() with real project config error: %v", err)
 	}
@@ -531,7 +531,7 @@ func loadConfigFromJSON(t *testing.T, overlay string) (*Config, error) {
 	if err := os.WriteFile(filepath.Join(dir, ".cspace.json"), []byte(overlay), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return Load(dir, "")
+	return Load(dir)
 }
 
 func TestConfigAdvisorsBlock(t *testing.T) {

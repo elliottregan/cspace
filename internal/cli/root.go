@@ -4,9 +4,7 @@ package cli
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
-	"github.com/elliottregan/cspace/internal/assets"
 	"github.com/elliottregan/cspace/internal/config"
 	"github.com/elliottregan/cspace/internal/sandboxmode"
 	"github.com/spf13/cobra"
@@ -18,9 +16,6 @@ var (
 
 	// cfg holds the loaded configuration, available to all commands.
 	cfg *config.Config
-
-	// assetsDir holds the path to extracted embedded assets.
-	assetsDir string
 )
 
 // NewRootCmd creates the root cspace command with all subcommands registered.
@@ -105,24 +100,16 @@ func Execute() error {
 	return NewRootCmd().Execute()
 }
 
-// loadConfig extracts embedded assets and loads the project configuration.
+// loadConfig loads the project configuration. Library assets (Dockerfile,
+// runtime scripts, defaults.json, planets.json) are read from the binary's
+// embedded FS on demand — nothing is extracted to disk at startup.
 func loadConfig() error {
-	cspaceHome, err := defaultCspaceHome()
-	if err != nil {
-		return fmt.Errorf("determining cspace home: %w", err)
-	}
-
-	assetsDir, err = assets.ExtractTo(cspaceHome, Version)
-	if err != nil {
-		return fmt.Errorf("extracting assets: %w", err)
-	}
-
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting working directory: %w", err)
 	}
 
-	cfg, err = config.Load(cwd, assetsDir)
+	cfg, err = config.Load(cwd)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
@@ -130,17 +117,3 @@ func loadConfig() error {
 	return nil
 }
 
-// defaultCspaceHome returns the default path for cspace data.
-// Uses $CSPACE_HOME if set, otherwise ~/.cspace.
-func defaultCspaceHome() (string, error) {
-	if home := os.Getenv("CSPACE_HOME"); home != "" {
-		return home, nil
-	}
-
-	userHome, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-
-	return filepath.Join(userHome, ".cspace"), nil
-}

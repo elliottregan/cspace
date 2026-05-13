@@ -47,7 +47,6 @@ type Config struct {
 
 	// Runtime fields (not from JSON)
 	ProjectRoot string `json:"-"`
-	AssetsDir   string `json:"-"`
 }
 
 // AdvisorConfig configures a single long-running advisor agent.
@@ -114,9 +113,7 @@ type PluginsConfig struct {
 
 // Load reads and merges configuration from all sources.
 // The dir parameter is the starting directory for project root detection.
-// If assetsDir is non-empty, it is stored on the returned Config for use
-// by resolve functions.
-func Load(dir string, assetsDir string) (*Config, error) {
+func Load(dir string) (*Config, error) {
 	projectRoot, err := FindProjectRoot(dir)
 	if err != nil {
 		return nil, fmt.Errorf("finding project root: %w", err)
@@ -161,7 +158,6 @@ func Load(dir string, assetsDir string) (*Config, error) {
 	}
 
 	cfg.ProjectRoot = projectRoot
-	cfg.AssetsDir = assetsDir
 
 	cfg.autoDetect()
 
