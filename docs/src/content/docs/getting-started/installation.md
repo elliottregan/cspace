@@ -21,7 +21,7 @@ brew install elliottregan/cspace/cspace
 brew install elliottregan/cspace/cspace-rc
 ```
 
-The two formulas are mutually exclusive — pick one. Verify:
+The two casks are mutually exclusive — pick one. Verify:
 
 ```bash
 cspace version

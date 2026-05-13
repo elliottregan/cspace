@@ -51,8 +51,8 @@ release:
 changelog:
   sort: asc
 
-brews:
-  # Stable formula. skip_upload: auto = publish stables, skip prereleases.
+homebrew_casks:
+  # Stable cask. skip_upload: auto = publish stables, skip prereleases.
   # Users on `brew install elliottregan/cspace/cspace` track stable only.
   - ids: [default]
     name: cspace
@@ -66,19 +66,14 @@ brews:
     # PolyForm Perimeter 1.0.0 has no SPDX identifier; use an SPDX
     # LicenseRef pointing at the LICENSE file at the repo root.
     license: "LicenseRef-PolyForm-Perimeter-1.0.0"
-    install: |
-      bin.install "cspace"
-    test: |
-      system "#{bin}/cspace", "version"
-    dependencies:
-      - name: docker
-        type: optional
+    binaries:
+      - cspace
 
-  # Prerelease formula — published ONLY when the tag is a SemVer prerelease.
+  # Prerelease cask — published ONLY when the tag is a SemVer prerelease.
   # Inverts skip_upload: auto so testers can `brew install
   # elliottregan/cspace/cspace-rc` to track the latest rc without disturbing
-  # stable users on the `cspace` formula. conflicts_with prevents both
-  # being installed simultaneously (their bin/cspace would collide).
+  # stable users on the `cspace` cask. conflicts prevents both being
+  # installed simultaneously (their bin/cspace would collide).
   - ids: [default]
     name: cspace-rc
     skip_upload: '{{ if not .Prerelease }}true{{ else }}false{{ end }}'
@@ -89,11 +84,7 @@ brews:
     homepage: "https://github.com/elliottregan/cspace"
     description: "cspace prerelease channel — for rc / beta testers"
     license: "LicenseRef-PolyForm-Perimeter-1.0.0"
-    install: |
-      bin.install "cspace"
-    test: |
-      system "#{bin}/cspace", "version"
-    # Both formulas install bin/cspace; let Homebrew refuse the install
-    # rather than silently overwriting one with the other.
-    custom_block: |
-      conflicts_with "cspace", because: "both install `cspace`"
+    binaries:
+      - cspace
+    conflicts:
+      - cask: cspace
