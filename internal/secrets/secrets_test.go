@@ -113,6 +113,61 @@ func TestAutoDiscoverFillsMissingKeys(t *testing.T) {
 	}
 }
 
+func TestAutoDiscoverRefusesExpiredClaudeToken(t *testing.T) {
+	out := map[string]string{}
+	prev1, prev2, prevNow := discoverClaudeOauthToken, discoverGhAuthToken, timeNow
+	t.Cleanup(func() {
+		discoverClaudeOauthToken = prev1
+		discoverGhAuthToken = prev2
+		timeNow = prevNow
+	})
+	now := time.Unix(1_700_000_000, 0)
+	timeNow = func() time.Time { return now }
+	// Token whose access-token expiry lapsed an hour ago.
+	discoverClaudeOauthToken = func() (string, time.Time, error) {
+		return "sk-ant-oat-expired", now.Add(-time.Hour), nil
+	}
+	discoverGhAuthToken = func() (string, error) { return "", nil }
+
+	if err := autoDiscover(out); err != nil {
+		t.Fatalf("autoDiscover: %v", err)
+	}
+	if v, present := out["CLAUDE_CODE_OAUTH_TOKEN"]; present {
+		t.Errorf("expired auto-discovered OAuth token must NOT be injected; got %q", v)
+	}
+}
+
+func TestAutoDiscoverInjectsUnexpiredClaudeToken(t *testing.T) {
+	prev1, prev2, prevNow := discoverClaudeOauthToken, discoverGhAuthToken, timeNow
+	t.Cleanup(func() {
+		discoverClaudeOauthToken = prev1
+		discoverGhAuthToken = prev2
+		timeNow = prevNow
+	})
+	now := time.Unix(1_700_000_000, 0)
+	timeNow = func() time.Time { return now }
+	discoverGhAuthToken = func() (string, error) { return "", nil }
+
+	cases := map[string]time.Time{
+		"future-expiry": now.Add(time.Hour), // still valid
+		"zero-expiry":   {},                 // older Claude Code build: unknown expiry -> inject
+	}
+	for name, exp := range cases {
+		t.Run(name, func(t *testing.T) {
+			out := map[string]string{}
+			discoverClaudeOauthToken = func() (string, time.Time, error) {
+				return "sk-ant-oat-live", exp, nil
+			}
+			if err := autoDiscover(out); err != nil {
+				t.Fatalf("autoDiscover: %v", err)
+			}
+			if out["CLAUDE_CODE_OAUTH_TOKEN"] != "sk-ant-oat-live" {
+				t.Errorf("unexpired token should be injected; got %q", out["CLAUDE_CODE_OAUTH_TOKEN"])
+			}
+		})
+	}
+}
+
 func TestAutoDiscoverDoesNotOverwriteExisting(t *testing.T) {
 	out := map[string]string{
 		"CLAUDE_CODE_OAUTH_TOKEN": "from-file",

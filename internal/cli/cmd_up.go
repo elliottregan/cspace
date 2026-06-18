@@ -373,10 +373,15 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			}
 			propagateFamily(env, []string{"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN"})
 
-			// First-run nudge if no Anthropic credential is reachable from any
-			// source (secrets file, shell env, alias propagation). Prints once
-			// per user via a sentinel in ~/.cspace/. Sandbox still boots.
-			maybeNudgeMissingAnthropicAuth(cmd.OutOrStdout(), env)
+			// Surface the Anthropic auth state. If auto-discovery found a
+			// token but secrets.Load refused it for being expired (leaving no
+			// carrier in env), show a specific, always-printed "how to fix"
+			// hint. Otherwise fall back to the generic one-time onboarding
+			// nudge, which fires once per user when no credential is reachable.
+			// Sandbox still boots either way.
+			if !warnExpiredAutoDiscoveredAuth(cmd.OutOrStdout(), env) {
+				maybeNudgeMissingAnthropicAuth(cmd.OutOrStdout(), env)
+			}
 
 			containerName := fmt.Sprintf("cspace-%s-%s", project, name)
 
@@ -1152,6 +1157,39 @@ func (b *limitedBuffer) String() string {
 // nudge has already been shown". Lives in ~/.cspace/. Once it exists the
 // nudge stays silent forever — the message has done its job.
 const nudgeSentinelName = ".no-claude-auth-nudge-shown"
+
+// discoverClaudeOauth is a seam so tests can stub host OAuth discovery without
+// touching the real macOS Keychain (mirrors the secrets package's pattern).
+var discoverClaudeOauth = secrets.DiscoverClaudeOauthToken
+
+// warnExpiredAutoDiscoveredAuth prints an actionable warning when the only
+// Anthropic credential cspace could find was an auto-discovered Claude Code
+// OAuth token that had already expired — so secrets.Load refused to inject it
+// (see secrets.OAuthExpired) and env carries no Anthropic credential. Returns
+// true if it printed. Unlike the generic onboarding nudge this is shown on
+// every run, because it is an active misconfiguration the user must act on,
+// not a one-time hint. A carrier already present in env short-circuits it,
+// preserving the generic-nudge behavior for the truly-absent case.
+func warnExpiredAutoDiscoveredAuth(out io.Writer, env map[string]string) bool {
+	if env["ANTHROPIC_API_KEY"] != "" || env["CLAUDE_CODE_OAUTH_TOKEN"] != "" {
+		return false
+	}
+	oauth, expires, err := discoverClaudeOauth()
+	if err != nil || oauth == "" || !secrets.OAuthExpired(expires) {
+		return false
+	}
+	agoStr := time.Since(expires).Round(time.Minute).String()
+	if time.Since(expires) < time.Minute {
+		agoStr = "less than a minute"
+	}
+	_, _ = fmt.Fprintf(out, "warning: auto-discovered Claude Code OAuth token expired %s ago (at %s); not injecting it.\n",
+		agoStr, expires.Local().Format("2006-01-02 15:04 MST"))
+	_, _ = fmt.Fprintln(out, "  cspace refuses to inject an expired credential. To fix, do one of:")
+	_, _ = fmt.Fprintln(out, "    - run `cspace keychain init` and paste a long-lived key (sk-ant-api-… or sk-ant-oat-…)  [recommended]")
+	_, _ = fmt.Fprintln(out, "    - or run `claude` on the host to refresh the short-lived token, then `cspace up` again")
+	_, _ = fmt.Fprintln(out, "  The sandbox will still boot, but Claude SDK calls will fail until auth is configured.")
+	return true
+}
 
 // maybeNudgeMissingAnthropicAuth prints a one-time hint when no Anthropic
 // credential is reachable in env. Gated by a sentinel file in ~/.cspace/ so

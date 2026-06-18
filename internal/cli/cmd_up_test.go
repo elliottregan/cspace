@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	v2 "github.com/elliottregan/cspace/internal/compose/v2"
 	"github.com/elliottregan/cspace/internal/devcontainer"
@@ -114,6 +115,61 @@ func TestMaybeNudgeSilentWhenAuthPresent(t *testing.T) {
 	if _, err := os.Stat(sentinel); err == nil {
 		t.Errorf("sentinel should not be created when nudge silent")
 	}
+}
+
+func TestWarnExpiredAutoDiscoveredAuth(t *testing.T) {
+	prev := discoverClaudeOauth
+	t.Cleanup(func() { discoverClaudeOauth = prev })
+
+	t.Run("prints fix hint when only credential is an expired auto-discovered token", func(t *testing.T) {
+		discoverClaudeOauth = func() (string, time.Time, error) {
+			return "sk-ant-oat-expired", time.Now().Add(-time.Hour), nil
+		}
+		var buf bytes.Buffer
+		if !warnExpiredAutoDiscoveredAuth(&buf, map[string]string{}) {
+			t.Fatal("expected warn to fire and return true")
+		}
+		out := buf.String()
+		for _, want := range []string{"expired", "cspace keychain init", "will still boot"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("message missing %q; got:\n%s", want, out)
+			}
+		}
+	})
+
+	t.Run("silent and does not consult keychain when a carrier is present", func(t *testing.T) {
+		discoverClaudeOauth = func() (string, time.Time, error) {
+			t.Fatal("discovery must not be consulted when a carrier is already present")
+			return "", time.Time{}, nil
+		}
+		for _, carrier := range []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"} {
+			var buf bytes.Buffer
+			if warnExpiredAutoDiscoveredAuth(&buf, map[string]string{carrier: "present"}) {
+				t.Errorf("%s present: expected no warning", carrier)
+			}
+			if buf.Len() != 0 {
+				t.Errorf("%s present: expected no output; got %q", carrier, buf.String())
+			}
+		}
+	})
+
+	t.Run("silent for a still-valid token", func(t *testing.T) {
+		discoverClaudeOauth = func() (string, time.Time, error) {
+			return "sk-ant-oat-live", time.Now().Add(time.Hour), nil
+		}
+		var buf bytes.Buffer
+		if warnExpiredAutoDiscoveredAuth(&buf, map[string]string{}) {
+			t.Error("expected no warning for a still-valid token")
+		}
+	})
+
+	t.Run("silent when no token is discoverable at all", func(t *testing.T) {
+		discoverClaudeOauth = func() (string, time.Time, error) { return "", time.Time{}, nil }
+		var buf bytes.Buffer
+		if warnExpiredAutoDiscoveredAuth(&buf, map[string]string{}) {
+			t.Error("expected no warning when nothing is discoverable")
+		}
+	})
 }
 
 // TestResolveSandboxImage verifies the four-level precedence for sandbox image selection.

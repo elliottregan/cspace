@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // cspaceKeys is the built-in list of secret keys whose values are looked up
@@ -40,6 +41,22 @@ var (
 	discoverClaudeOauthToken = DiscoverClaudeOauthToken
 	discoverGhAuthToken      = DiscoverGhAuthToken
 )
+
+// timeNow is a package-level seam so tests can pin "now" when exercising
+// OAuth-token expiry handling.
+var timeNow = time.Now
+
+// OAuthExpired reports whether a discovered Claude Code OAuth access token's
+// expiry is known and already in the past. A zero expiresAt — older Claude
+// Code builds that don't record one — is treated as NOT expired, to preserve
+// historical behavior rather than guess. cspace refuses to inject an
+// auto-discovered token for which this returns true: a short-lived access
+// token (sk-ant-oat-…) that has lapsed yields a sandbox that boots but fails
+// every SDK call with a confusing auth error, so it is better to surface the
+// missing credential up front.
+func OAuthExpired(expiresAt time.Time) bool {
+	return !expiresAt.IsZero() && !expiresAt.After(timeNow())
+}
 
 // Load returns the merged cspace secrets for a project. Resolution order
 // (later layers override earlier ones; first reachable value wins):
@@ -118,11 +135,17 @@ func autoDiscover(out map[string]string) error {
 	// Anthropic credential: Claude Code-credentials JSON envelope on macOS.
 	if _, present := out["ANTHROPIC_API_KEY"]; !present {
 		if _, present := out["CLAUDE_CODE_OAUTH_TOKEN"]; !present {
-			tok, _, err := discoverClaudeOauthToken()
+			tok, expiresAt, err := discoverClaudeOauthToken()
 			if err != nil {
 				return err
 			}
-			if tok != "" {
+			// Refuse to inject an already-expired auto-discovered token.
+			// The host's Claude Code-credentials access token is short-lived
+			// (~hours) and only refreshes when `claude` runs on the host;
+			// injecting a lapsed one yields a sandbox that boots but fails
+			// every SDK call with a confusing auth error. Leaving the key
+			// unset instead lets cmd_up surface a clear "how to fix" hint.
+			if tok != "" && !OAuthExpired(expiresAt) {
 				// Single source, single fill — the cmd_up alias logic
 				// takes care of mapping CLAUDE_CODE_OAUTH_TOKEN onto
 				// ANTHROPIC_API_KEY. Fill CLAUDE_CODE_OAUTH_TOKEN here and
