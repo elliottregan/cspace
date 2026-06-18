@@ -31,19 +31,22 @@ existing extraction.`,
 
 func newImageBuildCmd() *cobra.Command {
 	var tag string
+	var noCache bool
 	cmd := &cobra.Command{
 		Use:   "build",
 		Short: "Build cspace:latest from the embedded Dockerfile + library",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runImageBuild(cmd, tag)
+			return runImageBuild(cmd, tag, noCache)
 		},
 	}
 	cmd.Flags().StringVar(&tag, "tag", "cspace:latest",
 		"image tag to build (default cspace:latest, which cspace up reads)")
+	cmd.Flags().BoolVar(&noCache, "no-cache", false,
+		"build with no layer cache — re-fetches apt packages and the latest Claude Code CLI for a fully fresh image")
 	return cmd
 }
 
-func runImageBuild(cmd *cobra.Command, tag string) error {
+func runImageBuild(cmd *cobra.Command, tag string, noCache bool) error {
 	// Maintainer fast-path: if the cwd looks like the cspace source
 	// repo (has lib/templates/Dockerfile and bin/cspace-linux-arm64),
 	// build directly against it. The Dockerfile's
@@ -60,7 +63,7 @@ func runImageBuild(cmd *cobra.Command, tag string) error {
 		if statOK(srcDockerfile) && statOK(srcBinary) {
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 				"building %s from source tree at %s ...\n", tag, cwd)
-			return runContainerBuild(cmd, tag, srcDockerfile, cwd, Version)
+			return runContainerBuild(cmd, tag, srcDockerfile, cwd, Version, noCache)
 		}
 	}
 
@@ -98,7 +101,7 @@ func runImageBuild(cmd *cobra.Command, tag string) error {
 
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 		"building %s from %s ...\n", tag, dockerfile)
-	return runContainerBuild(cmd, tag, dockerfile, tmp, Version)
+	return runContainerBuild(cmd, tag, dockerfile, tmp, Version, noCache)
 }
 
 // fetchReleaseBinary downloads cspace_linux_arm64.tar.gz from the GitHub
@@ -165,14 +168,18 @@ func fetchReleaseBinary(cmd *cobra.Command, version, dst string) error {
 // Silicon, and that's the only substrate cspace supports today. CSPACE_VERSION
 // bakes into the image as the `cspace.version` label so `cspace up` can detect
 // CLI/image drift.
-func runContainerBuild(cmd *cobra.Command, tag, dockerfile, ctxDir, version string) error {
-	build := exec.Command("container", "build",
+func runContainerBuild(cmd *cobra.Command, tag, dockerfile, ctxDir, version string, noCache bool) error {
+	buildArgs := []string{"build",
 		"--platform", "linux/arm64",
 		"--tag", tag,
 		"--file", dockerfile,
-		"--build-arg", "CSPACE_VERSION="+version,
-		ctxDir,
-	)
+		"--build-arg", "CSPACE_VERSION=" + version,
+	}
+	if noCache {
+		buildArgs = append(buildArgs, "--no-cache")
+	}
+	buildArgs = append(buildArgs, ctxDir) // context dir must stay last (positional)
+	build := exec.Command("container", buildArgs...)
 	build.Stdin, build.Stdout, build.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
 		return fmt.Errorf("container build: %w", err)

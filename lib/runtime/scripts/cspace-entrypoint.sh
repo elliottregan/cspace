@@ -268,6 +268,23 @@ fi
 STATUS_FILE=/sessions/cspace-init.status
 mkdir -p /sessions 2>/dev/null || true
 
+# Keep Claude Code current. cspace drives Claude through the Agent SDK in
+# headless mode, which never triggers the CLI's built-in auto-updater, and the
+# binary baked into the image is frozen at build time. Self-update on every
+# boot so a fresh `cspace up` always starts on the latest release regardless of
+# image age. Runs before plugin install so plugins resolve against the updated
+# CLI. Best-effort and time-boxed: offline boots, a hung network, or an update
+# failure must not block the supervisor — we fall back to the baked binary.
+# Set CSPACE_SKIP_CLAUDE_UPDATE=1 to skip (air-gapped hosts / faster boots).
+if [ -z "${CSPACE_SKIP_CLAUDE_UPDATE:-}" ] && command -v claude >/dev/null 2>&1; then
+    echo "[cspace-entrypoint] updating Claude Code (best-effort)..."
+    if timeout 120 claude update >/dev/null 2>&1; then
+        echo "[cspace-entrypoint] Claude Code now at $(claude --version 2>/dev/null || echo '?')"
+    else
+        echo "[cspace-entrypoint] claude update skipped (offline, timed out, or failed); using baked version"
+    fi
+fi
+
 # Install Claude Code plugins declared in /workspace/.claude/settings.json.
 # Idempotent and best-effort — failures here don't block the supervisor.
 # Marketplaces are added on first install via `claude plugins marketplace

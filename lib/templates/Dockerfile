@@ -96,17 +96,24 @@ ENV PATH=/home/dev/.bun/bin:/home/dev/.local/bin:/usr/local/bin:/usr/bin:/bin
 RUN curl -fsSL https://bun.sh/install | bash \
  && /home/dev/.bun/bin/bun --version
 
-# Claude Code CLI. The npm package is a thin wrapper around a
-# platform-specific subpackage (e.g. @anthropic-ai/claude-code-linux-arm64),
-# and `bun install --global` already creates /home/dev/.bun/bin/claude as a
-# symlink to that platform binary.
-RUN /home/dev/.bun/bin/bun install --global @anthropic-ai/claude-code \
- && /home/dev/.bun/bin/claude --version
+# Claude Code CLI via the native installer (the current recommended method;
+# the old `bun/npm install --global @anthropic-ai/claude-code` route is
+# legacy). Drops a self-managing standalone binary at /home/dev/.local/bin/claude
+# (already on PATH above) with no Node dependency.
+#
+# This only bakes a baseline version. cspace drives Claude through the Agent
+# SDK in headless mode, which never triggers the CLI's auto-updater, so the
+# entrypoint runs `claude update` on every boot to pull the latest release
+# (see cspace-entrypoint.sh) — a stale image self-heals on first `cspace up`.
+# For a fully fresh image that re-fetches this layer too, build with
+# `cspace image build --no-cache`.
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+ && /home/dev/.local/bin/claude --version
 
 # Symlink so scripts that hardcode /usr/local/bin/claude or /usr/local/bin/bun work.
 USER root
 RUN ln -sf /home/dev/.bun/bin/bun /usr/local/bin/bun \
- && ln -sf /home/dev/.bun/bin/claude /usr/local/bin/claude
+ && ln -sf /home/dev/.local/bin/claude /usr/local/bin/claude
 
 # Browser MCP servers — clients only (no chromium binary baked).
 # The supervisor's claude-runner.ts always registers these as MCP servers
