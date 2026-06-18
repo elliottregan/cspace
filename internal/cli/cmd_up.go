@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -40,6 +41,7 @@ func newUpCmd() *cobra.Command {
 	var memoryMiB int
 	var noOverlay bool
 	var noAttach bool
+	var rebuildImage bool
 	cmd := &cobra.Command{
 		Use:   "up [<name>]",
 		Short: "Launch a sandbox (Apple Container substrate)",
@@ -231,7 +233,18 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// project-supplied images (compose image:, devcontainer image:,
 			// build:) — those are the user's responsibility, not cspace's.
 			if sandboxImage == "cspace:latest" {
-				warnIfImageStale(cmd.ErrOrStderr(), sandboxImage, Version)
+				rebuilt, rbErr := maybeRebuildStaleImage(cmd, sandboxImage, Version, rebuildImage)
+				if rbErr != nil {
+					return rbErr
+				}
+				if rebuilt {
+					// The rebuild can take minutes and isn't bound by ctx;
+					// refresh the boot deadline so the 4-minute budget covers
+					// container launch, not the preceding build.
+					cancel()
+					ctx, cancel = context.WithTimeout(parent, 4*time.Minute)
+					defer cancel()
+				}
 			}
 
 			// Inherit the host's global git identity so agent commits/rebases
@@ -805,6 +818,8 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 		"skip the planet boot animation; phases print as plain '[N/5] phase' lines (auto-disabled when stdout is not a TTY)")
 	cmd.Flags().BoolVar(&noAttach, "no-attach", false,
 		"don't drop into an interactive `claude` session after the sandbox is ready (auto-disabled when stdout is not a TTY)")
+	cmd.Flags().BoolVar(&rebuildImage, "rebuild", false,
+		"rebuild cspace:latest before launching if it was built by a different cspace version (otherwise you're prompted when the image is stale)")
 	return cmd
 }
 
@@ -1241,26 +1256,95 @@ func hostGitConfig(key string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// warnIfImageStale prints a stderr warning when the resolved sandbox image's
-// baked `cspace.version` label doesn't match the running CLI version. The
-// recommendation is always `cspace image build`. Silent on missing image
-// (the substrate will fail more specifically on boot) and on missing label
-// (older images pre-dating the label — same fix).
+// maybeRebuildStaleImage detects when the resolved cspace:latest image was
+// built against a different cspace version than the running CLI. Rather than
+// warning and booting a stale image anyway, it offers to rebuild first so the
+// sandbox picks up matching scripts and tooling. Returns whether a rebuild
+// actually ran so the caller can refresh its boot deadline.
+//
+// Behavior:
+//   - label matches the CLI version: no-op, proceed.
+//   - drift + forceRebuild (--rebuild): rebuild, then proceed.
+//   - drift + interactive stdin: prompt (default yes); rebuild on yes,
+//     otherwise warn and proceed (the escape hatch is preserved).
+//   - drift + non-interactive (CI / piped): warn and proceed so automation
+//     isn't blocked; hint that --rebuild forces it.
 //
 // Version comparison normalizes the leading "v": goreleaser strips it from
 // {{ .Version }} so brew-installed binaries report "1.0.0-rc.X", while the
 // maintainer Makefile's `git describe` keeps it ("v1.0.0-rc.X"). Both refer
-// to the same release; the comparison treats them as equal.
-func warnIfImageStale(stderr io.Writer, image, cliVersion string) {
-	imgVersion, ok := readImageCspaceVersion(image)
-	if !ok {
-		_, _ = fmt.Fprintf(stderr, "[cspace] note: %s has no cspace.version label — build with the current CLI to get drift detection: `cspace image build`\n", image)
-		return
+// to the same release; the comparison treats them as equal. A missing label
+// (older image predating the label) is treated as stale — same fix.
+func maybeRebuildStaleImage(cmd *cobra.Command, image, cliVersion string, forceRebuild bool) (bool, error) {
+	stderr := cmd.ErrOrStderr()
+	imgVersion, hasLabel := readImageCspaceVersion(image)
+	if !imageIsStale(imgVersion, hasLabel, cliVersion) {
+		return false, nil // already current
 	}
-	if normalizeVersion(imgVersion) == normalizeVersion(cliVersion) {
-		return
+
+	reason := fmt.Sprintf("%s has no cspace.version label (built by an older cspace)", image)
+	if hasLabel {
+		reason = fmt.Sprintf("%s was built against cspace %s, but you're running %s", image, imgVersion, cliVersion)
 	}
-	_, _ = fmt.Fprintf(stderr, "[cspace] warning: %s was built against cspace %s, but you're running %s. Rebuild to pick up the matching scripts and tooling: `cspace image build`\n", image, imgVersion, cliVersion)
+
+	doRebuild := forceRebuild
+	if !forceRebuild {
+		if !isStdinTTY() {
+			_, _ = fmt.Fprintf(stderr, "[cspace] warning: %s. Rebuild to pick up matching scripts and tooling: `cspace image build` (or re-run with --rebuild).\n", reason)
+			return false, nil
+		}
+		_, _ = fmt.Fprintf(stderr, "[cspace] %s.\n", reason)
+		doRebuild = promptYesNo(cmd, fmt.Sprintf("Rebuild %s now before launching?", image), true)
+	}
+	if !doRebuild {
+		_, _ = fmt.Fprintf(stderr, "[cspace] continuing with the existing image; rebuild later with `cspace image build`.\n")
+		return false, nil
+	}
+
+	_, _ = fmt.Fprintf(stderr, "[cspace] rebuilding %s before launch ...\n", image)
+	if err := runImageBuild(cmd, image, false); err != nil {
+		return false, fmt.Errorf("rebuild stale image: %w", err)
+	}
+	return true, nil
+}
+
+// imageIsStale reports whether an image's baked cspace.version drifts from the
+// running CLI. hasLabel=false (no label at all — an image predating the label)
+// counts as stale, since it can't be proven current and the fix is the same.
+func imageIsStale(imgVersion string, hasLabel bool, cliVersion string) bool {
+	if !hasLabel {
+		return true
+	}
+	return normalizeVersion(imgVersion) != normalizeVersion(cliVersion)
+}
+
+// isStdinTTY reports whether os.Stdin is a terminal, so an interactive prompt
+// can actually read a reply. False in CI / piped contexts.
+func isStdinTTY() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+// promptYesNo writes a yes/no question to stderr and reads a reply from stdin,
+// returning def on an empty line or read error (EOF).
+func promptYesNo(cmd *cobra.Command, question string, def bool) bool {
+	suffix := "[y/N]"
+	if def {
+		suffix = "[Y/n]"
+	}
+	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s %s ", question, suffix)
+	line, _ := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true
+	case "n", "no":
+		return false
+	default:
+		return def
+	}
 }
 
 // normalizeVersion strips a leading "v" so versions produced by goreleaser

@@ -10,7 +10,64 @@ import (
 
 	v2 "github.com/elliottregan/cspace/internal/compose/v2"
 	"github.com/elliottregan/cspace/internal/devcontainer"
+	"github.com/spf13/cobra"
 )
+
+// TestImageIsStale covers the drift decision behind cspace up's rebuild offer:
+// version match (with/without the goreleaser-stripped "v") is current; any
+// drift or a missing label is stale.
+func TestImageIsStale(t *testing.T) {
+	cases := []struct {
+		name       string
+		imgVersion string
+		hasLabel   bool
+		cliVersion string
+		want       bool
+	}{
+		{"exact match", "1.0.0-rc.29", true, "1.0.0-rc.29", false},
+		{"match across v prefix", "v1.0.0-rc.29", true, "1.0.0-rc.29", false},
+		{"drift", "1.0.0-rc.28", true, "1.0.0-rc.29", true},
+		{"no label is stale", "", false, "1.0.0-rc.29", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := imageIsStale(tc.imgVersion, tc.hasLabel, tc.cliVersion); got != tc.want {
+				t.Errorf("imageIsStale(%q, %v, %q) = %v, want %v",
+					tc.imgVersion, tc.hasLabel, tc.cliVersion, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPromptYesNo verifies the rebuild prompt parses replies and falls back to
+// the default on an empty line, EOF, or unrecognized input.
+func TestPromptYesNo(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		def   bool
+		want  bool
+	}{
+		{"explicit y", "y\n", false, true},
+		{"explicit yes", "yes\n", false, true},
+		{"explicit n", "n\n", true, false},
+		{"empty keeps default true", "\n", true, true},
+		{"empty keeps default false", "\n", false, false},
+		{"eof keeps default", "", true, true},
+		{"unrecognized keeps default", "maybe\n", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := &cobra.Command{}
+			cmd.SetIn(strings.NewReader(tc.input))
+			cmd.SetErr(&bytes.Buffer{})
+			if got := promptYesNo(cmd, "Rebuild?", tc.def); got != tc.want {
+				t.Errorf("promptYesNo(input=%q, def=%v) = %v, want %v",
+					tc.input, tc.def, got, tc.want)
+			}
+		})
+	}
+}
 
 // TestMaybeNudgeMissingAnthropicAuthFiresOnce verifies the nudge prints on
 // the first call when no auth is reachable, then stays silent on subsequent
