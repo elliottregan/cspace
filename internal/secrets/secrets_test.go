@@ -242,6 +242,60 @@ func TestAutoDiscoverSkipsGhWhenAnyGhAliasSet(t *testing.T) {
 	}
 }
 
+func TestNormalizeAnthropicCarrier(t *testing.T) {
+	// (a) oat token misfiled in ANTHROPIC_API_KEY → moved to CLAUDE_CODE_OAUTH_TOKEN
+	t.Run("oat-in-api-key-moved", func(t *testing.T) {
+		m := map[string]string{"ANTHROPIC_API_KEY": "sk-ant-oat01-x"}
+		normalizeAnthropicCarrier(m)
+		if m["CLAUDE_CODE_OAUTH_TOKEN"] != "sk-ant-oat01-x" {
+			t.Errorf("CLAUDE_CODE_OAUTH_TOKEN: got %q, want %q", m["CLAUDE_CODE_OAUTH_TOKEN"], "sk-ant-oat01-x")
+		}
+		if _, present := m["ANTHROPIC_API_KEY"]; present {
+			t.Errorf("ANTHROPIC_API_KEY should be removed; got %q", m["ANTHROPIC_API_KEY"])
+		}
+	})
+
+	// (b) api key misfiled in CLAUDE_CODE_OAUTH_TOKEN → moved to ANTHROPIC_API_KEY
+	t.Run("api-key-in-oauth-token-moved", func(t *testing.T) {
+		m := map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-api03-x"}
+		normalizeAnthropicCarrier(m)
+		if m["ANTHROPIC_API_KEY"] != "sk-ant-api03-x" {
+			t.Errorf("ANTHROPIC_API_KEY: got %q, want %q", m["ANTHROPIC_API_KEY"], "sk-ant-api03-x")
+		}
+		if _, present := m["CLAUDE_CODE_OAUTH_TOKEN"]; present {
+			t.Errorf("CLAUDE_CODE_OAUTH_TOKEN should be removed; got %q", m["CLAUDE_CODE_OAUTH_TOKEN"])
+		}
+	})
+
+	// (c) correctly-placed api key in ANTHROPIC_API_KEY is left untouched
+	t.Run("api-key-correct-unchanged", func(t *testing.T) {
+		m := map[string]string{"ANTHROPIC_API_KEY": "sk-ant-api03-y"}
+		normalizeAnthropicCarrier(m)
+		if m["ANTHROPIC_API_KEY"] != "sk-ant-api03-y" {
+			t.Errorf("ANTHROPIC_API_KEY: got %q, want %q", m["ANTHROPIC_API_KEY"], "sk-ant-api03-y")
+		}
+		if _, present := m["CLAUDE_CODE_OAUTH_TOKEN"]; present {
+			t.Errorf("CLAUDE_CODE_OAUTH_TOKEN should not be set; got %q", m["CLAUDE_CODE_OAUTH_TOKEN"])
+		}
+	})
+
+	// (d) when destination is already set, source is dropped without clobbering
+	t.Run("no-clobber-when-destination-set", func(t *testing.T) {
+		m := map[string]string{
+			"ANTHROPIC_API_KEY":       "sk-ant-oat01-wrong",
+			"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-correct",
+		}
+		normalizeAnthropicCarrier(m)
+		// The oat value in ANTHROPIC_API_KEY should be dropped (not overwrite the real one).
+		if m["CLAUDE_CODE_OAUTH_TOKEN"] != "sk-ant-oat01-correct" {
+			t.Errorf("CLAUDE_CODE_OAUTH_TOKEN clobbered; got %q, want %q", m["CLAUDE_CODE_OAUTH_TOKEN"], "sk-ant-oat01-correct")
+		}
+		if _, present := m["ANTHROPIC_API_KEY"]; present {
+			t.Errorf("ANTHROPIC_API_KEY should be removed; got %q", m["ANTHROPIC_API_KEY"])
+		}
+	})
+}
+
 func equal(a, b map[string]string) bool {
 	if len(a) != len(b) {
 		return false

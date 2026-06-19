@@ -18,10 +18,10 @@ Agents call `read_context` at the start of non-trivial work. `.cspace/context/` 
 
 ## Anthropic credentials
 
-cspace sandboxes need an Anthropic credential to drive Claude Code. Three forms work via `ANTHROPIC_API_KEY` (the SDK auto-detects format):
+cspace sandboxes need an Anthropic credential to drive Claude Code. Two token formats are supported, but they **must ride different env vars** — the wrong carrier causes "Invalid API key" errors and a spurious "custom API key" prompt in interactive Claude:
 
-- **Long-lived API key** (`sk-ant-api-...`) from <https://console.anthropic.com/settings/keys>. Stable across sessions, no expiry. **Recommended for daily use** — paste once into Keychain via `cspace keychain init` and forget about it. This is the right choice for any multi-day or autonomous run.
-- **Long-lived OAuth token** (`sk-ant-oat-...`) from `claude setup-token`. Functionally similar to an API key — also fine to paste into `cspace keychain init`.
+- **Long-lived API key** (`sk-ant-api-...`) from <https://console.anthropic.com/settings/keys> → delivered via `ANTHROPIC_API_KEY`. Stable across sessions, no expiry. **Recommended for daily use** — paste once into Keychain via `cspace keychain init` and forget about it.
+- **Long-lived OAuth token** (`sk-ant-oat-...`) from `claude setup-token` → delivered via `CLAUDE_CODE_OAUTH_TOKEN`. `cspace keychain init` detects the `oat` prefix and stores it under the correct service (`cspace-CLAUDE_CODE_OAUTH_TOKEN`) automatically. Fine for short/casual sessions; for multi-day or autonomous runs prefer an API key.
 - **Short-lived OAuth token** auto-discovered from `claude /login`'s macOS Keychain entry (the `Claude Code-credentials` envelope). Refreshes when the host's `claude` CLI runs; otherwise expires within ~hours. Convenient for first-run / demo, but **don't rely on it for sessions over a day** — the agent will lose auth mid-task.
 
 `cspace keychain status` shows where each credential is sourced from. If you see `auto-discovered (Claude Code OAuth)` with an expiry date approaching, run `cspace keychain init` and paste a long-lived token.
@@ -30,7 +30,7 @@ Resolution order (highest precedence first; first reachable wins):
 
 1. `<project>/.cspace/secrets.env` — project-scoped lock-in
 2. `~/.cspace/secrets.env` — user-global manual entry
-3. macOS Keychain `cspace-ANTHROPIC_API_KEY` — set via `cspace keychain init`
+3. macOS Keychain `cspace-ANTHROPIC_API_KEY` or `cspace-CLAUDE_CODE_OAUTH_TOKEN` — set via `cspace keychain init` (prefix-routed automatically)
 4. Auto-discovery from host's `claude /login` state — convenience layer (short-lived OAuth)
 
 GitHub credentials (`GH_TOKEN` / `GITHUB_TOKEN` / `GITHUB_PERSONAL_ACCESS_TOKEN`) follow the same precedence; auto-discovery uses `gh auth token`.

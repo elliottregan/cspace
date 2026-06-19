@@ -67,8 +67,8 @@ func runKeychainInit(out io.Writer, in io.Reader) error {
 		_, _ = fmt.Fprintln(out, "  Recommended: paste a long-lived API key (sk-ant-api-...) from")
 		_, _ = fmt.Fprintln(out, "  https://console.anthropic.com/settings/keys. Stable across sessions,")
 		_, _ = fmt.Fprintln(out, "  no refresh dance. Use this for any multi-day or autonomous run.")
-		_, _ = fmt.Fprintln(out, "  An OAuth token (sk-ant-oat-...) works too but is short-lived;")
-		_, _ = fmt.Fprintln(out, "  reserve it for short / casual sessions.")
+		_, _ = fmt.Fprintln(out, "  An OAuth token (sk-ant-oat-...) from `claude setup-token` is also accepted;")
+		_, _ = fmt.Fprintln(out, "  it will be stored under cspace-CLAUDE_CODE_OAUTH_TOKEN automatically.")
 		switch {
 		case existing != "":
 			_, _ = fmt.Fprintln(out, "  Status: already set in Keychain (cspace-ANTHROPIC_API_KEY).")
@@ -95,6 +95,11 @@ func runKeychainInit(out io.Writer, in io.Reader) error {
 			_, _ = fmt.Fprintln(out, "  (skipped)")
 		case !strings.HasPrefix(val, "sk-ant-"):
 			_, _ = fmt.Fprintln(out, "  (input does not start with `sk-ant-`; skipping to avoid storing a typo)")
+		case strings.HasPrefix(val, "sk-ant-oat"):
+			if err := secrets.WriteKeychain("cspace-CLAUDE_CODE_OAUTH_TOKEN", val); err != nil {
+				return fmt.Errorf("write keychain cspace-CLAUDE_CODE_OAUTH_TOKEN: %w", err)
+			}
+			_, _ = fmt.Fprintln(out, "  stored as OAuth token at Keychain service \"cspace-CLAUDE_CODE_OAUTH_TOKEN\".")
 		default:
 			if err := secrets.WriteKeychain("cspace-ANTHROPIC_API_KEY", val); err != nil {
 				return fmt.Errorf("write keychain cspace-ANTHROPIC_API_KEY: %w", err)

@@ -124,7 +124,32 @@ func Load(projectRoot string) (map[string]string, error) {
 		}
 	}
 
+	normalizeAnthropicCarrier(out)
+
 	return out, nil
+}
+
+// normalizeAnthropicCarrier routes an Anthropic credential to the env var
+// Claude Code expects based on the token's own format, regardless of which
+// slot it was filed under. An OAuth token (sk-ant-oat…, e.g. sk-ant-oat01-…)
+// MUST ride CLAUDE_CODE_OAUTH_TOKEN; a raw API key (sk-ant-api…) MUST ride
+// ANTHROPIC_API_KEY. A token on the wrong carrier is rejected by Claude
+// ("Invalid API key") and trips the interactive CLI's "custom API key" prompt.
+// This makes resolution correct even when a value was misfiled (historically
+// `cspace keychain init` stored everything under cspace-ANTHROPIC_API_KEY).
+func normalizeAnthropicCarrier(out map[string]string) {
+	if ak := out["ANTHROPIC_API_KEY"]; strings.HasPrefix(ak, "sk-ant-oat") {
+		if out["CLAUDE_CODE_OAUTH_TOKEN"] == "" {
+			out["CLAUDE_CODE_OAUTH_TOKEN"] = ak
+		}
+		delete(out, "ANTHROPIC_API_KEY")
+	}
+	if ot := out["CLAUDE_CODE_OAUTH_TOKEN"]; strings.HasPrefix(ot, "sk-ant-api") {
+		if out["ANTHROPIC_API_KEY"] == "" {
+			out["ANTHROPIC_API_KEY"] = ot
+		}
+		delete(out, "CLAUDE_CODE_OAUTH_TOKEN")
+	}
 }
 
 // autoDiscover fills in Anthropic + GitHub credentials from host state when
