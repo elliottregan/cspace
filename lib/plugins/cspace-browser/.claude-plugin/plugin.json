@@ -1,0 +1,5 @@
+{
+  "name": "cspace-browser",
+  "version": "0.1.0",
+  "description": "cspace browser MCP servers (Playwright CDP-attached/isolated + Chrome DevTools), wired to the container's Chromium CDP sidecar via CSPACE_BROWSER_CDP_URL."
+}

@@ -1,0 +1,11 @@
+{
+  "name": "cspace",
+  "owner": { "name": "cspace" },
+  "plugins": [
+    {
+      "name": "cspace-browser",
+      "source": "./cspace-browser",
+      "description": "Browser automation MCP servers (Playwright + Chrome DevTools) wired to the cspace Chromium CDP sidecar."
+    }
+  ]
+}

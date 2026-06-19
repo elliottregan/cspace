@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "cspace-playwright": {
+      "command": "playwright-mcp",
+      "args": ["--cdp-endpoint", "${CSPACE_BROWSER_CDP_URL}", "--isolated"]
+    },
+    "cspace-chrome-devtools": {
+      "command": "chrome-devtools-mcp",
+      "args": ["--browserUrl", "${CSPACE_BROWSER_CDP_URL}"]
+    }
+  }
+}
