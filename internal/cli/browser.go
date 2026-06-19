@@ -216,7 +216,7 @@ func InjectHosts(ctx context.Context, sidecarName string, hosts map[string]strin
 	var block strings.Builder
 	block.WriteString("# BEGIN cspace-injected\\n")
 	for _, name := range names {
-		block.WriteString(fmt.Sprintf("%s %s\\n", hosts[name], name))
+		fmt.Fprintf(&block, "%s %s\\n", hosts[name], name)
 	}
 	block.WriteString("# END cspace-injected\\n")
 	clean := exec.CommandContext(ctx, "container", "exec", "--user", "0", sidecarName,

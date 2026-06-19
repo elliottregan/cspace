@@ -116,4 +116,3 @@ func loadConfig() error {
 
 	return nil
 }
-

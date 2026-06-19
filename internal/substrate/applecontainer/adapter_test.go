@@ -113,4 +113,3 @@ func TestIP(t *testing.T) {
 		t.Fatalf("unexpected IP: %q", ip)
 	}
 }
-

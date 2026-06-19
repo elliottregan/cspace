@@ -124,6 +124,7 @@ fi
 # cannot work.
 if command -v jq >/dev/null 2>&1; then
     if [ -n "${CSPACE_BROWSER_CDP_URL:-}" ]; then
+        # shellcheck disable=SC2016  # ${CSPACE_BROWSER_CDP_URL} must stay literal: Claude Code expands it at MCP-load time, not the shell.
         BROWSER_MCP_FILTER='.mcpServers = (.mcpServers // {}) + {
           "playwright": {
             "type": "stdio",

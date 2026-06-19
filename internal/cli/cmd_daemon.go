@@ -36,7 +36,7 @@ const (
 	// and the host-only loopback path keeps working.
 	daemonDNSGatewayAddr = "192.168.64.1:5354"
 	daemonDNSDomain      = "cspace.test." // trailing dot is canonical
-	daemonDNSTTL         = 5                // seconds; sandbox IPs change across restarts
+	daemonDNSTTL         = 5              // seconds; sandbox IPs change across restarts
 
 	// daemonIdleDefault is the idle-shutdown threshold when
 	// CSPACE_REGISTRY_DAEMON_IDLE is unset.
