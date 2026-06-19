@@ -100,6 +100,54 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				return fmt.Errorf("apple container: %w. Run `container system start` and try again", err)
 			}
 
+			// Load secrets and resolve the Anthropic credential carriers
+			// BEFORE the overlay starts so we can surface auth warnings
+			// to the real terminal. The overlay redirects stdout into a
+			// pending buffer (flushed only after boot completes), so any
+			// warnings emitted after overlay.Start would be invisible
+			// until the session had already started.
+			projectRoot := ""
+			if cfg != nil {
+				projectRoot = cfg.ProjectRoot
+			}
+			loaded, err := secrets.Load(projectRoot)
+			if err != nil {
+				return fmt.Errorf("load secrets: %w", err)
+			}
+
+			// Build a minimal pre-flight env that mirrors the Anthropic
+			// carrier resolution the main env map performs below, so the
+			// auth warnings see the same credential state the sandbox will.
+			preflightEnv := map[string]string{}
+			for k, v := range loaded {
+				preflightEnv[k] = v
+			}
+			if k := os.Getenv("ANTHROPIC_API_KEY"); k != "" {
+				preflightEnv["ANTHROPIC_API_KEY"] = k
+			}
+			if k := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"); k != "" {
+				preflightEnv["CLAUDE_CODE_OAUTH_TOKEN"] = k
+			}
+			if preflightEnv["ANTHROPIC_API_KEY"] != "" && preflightEnv["CLAUDE_CODE_OAUTH_TOKEN"] != "" {
+				if loaded["CLAUDE_CODE_OAUTH_TOKEN"] != "" && loaded["ANTHROPIC_API_KEY"] == "" {
+					delete(preflightEnv, "ANTHROPIC_API_KEY")
+				} else if loaded["ANTHROPIC_API_KEY"] != "" && loaded["CLAUDE_CODE_OAUTH_TOKEN"] == "" {
+					delete(preflightEnv, "CLAUDE_CODE_OAUTH_TOKEN")
+				} else {
+					delete(preflightEnv, "CLAUDE_CODE_OAUTH_TOKEN")
+				}
+			}
+			// Surface the Anthropic auth state to the real terminal BEFORE
+			// the overlay starts. If auto-discovery found a token but
+			// secrets.Load refused it for being expired (leaving no carrier
+			// in env), show a specific, always-printed "how to fix" hint.
+			// Otherwise fall back to the generic one-time onboarding nudge,
+			// which fires once per user when no credential is reachable.
+			// Sandbox still boots either way.
+			if !warnExpiredAutoDiscoveredAuth(cmd.ErrOrStderr(), preflightEnv) {
+				maybeNudgeMissingAnthropicAuth(cmd.ErrOrStderr(), preflightEnv)
+			}
+
 			// Boot from here on: route in-flight chatter to a buffer if
 			// the planet overlay is going to run, so bubbletea isn't
 			// fighting other writes for the terminal. Buffer is flushed
@@ -169,16 +217,8 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				}
 			}
 
-			// Load cspace-owned secrets from ~/.cspace/secrets.env and
-			// <project>/.cspace/secrets.env. Project-local overrides global.
-			projectRoot := ""
-			if cfg != nil {
-				projectRoot = cfg.ProjectRoot
-			}
-			loaded, err := secrets.Load(projectRoot)
-			if err != nil {
-				return fmt.Errorf("load secrets: %w", err)
-			}
+			// Merge loaded secrets into the main env map (secrets.Load was
+			// already called above before the overlay).
 			for k, v := range loaded {
 				env[k] = v
 			}
@@ -379,16 +419,6 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				env["GH_TOKEN"] = k
 			}
 			propagateFamily(env, []string{"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN"})
-
-			// Surface the Anthropic auth state. If auto-discovery found a
-			// token but secrets.Load refused it for being expired (leaving no
-			// carrier in env), show a specific, always-printed "how to fix"
-			// hint. Otherwise fall back to the generic one-time onboarding
-			// nudge, which fires once per user when no credential is reachable.
-			// Sandbox still boots either way.
-			if !warnExpiredAutoDiscoveredAuth(cmd.OutOrStdout(), env) {
-				maybeNudgeMissingAnthropicAuth(cmd.OutOrStdout(), env)
-			}
 
 			containerName := fmt.Sprintf("cspace-%s-%s", project, name)
 
