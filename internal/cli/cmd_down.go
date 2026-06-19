@@ -169,8 +169,6 @@ func teardownSandbox(
 	out io.Writer,
 	wipeState bool,
 ) {
-	entry, _ := r.Lookup(project, name)
-
 	// Tear down devcontainer-defined sidecars (e.g., database, cache) before
 	// stopping the main sandbox. Non-fatal; print a warning but continue.
 	//
@@ -213,13 +211,21 @@ func teardownSandbox(
 
 	_ = a.Stop(ctx, fmt.Sprintf("cspace-%s-%s", project, name))
 
-	// Stop the sidecar AFTER the sandbox so the agent's outstanding
-	// CDP connections drain naturally. stopBrowserSidecar is idempotent.
-	if entry.BrowserContainer != "" {
-		stopBrowserSidecar(ctx, entry.BrowserContainer)
-	}
+	// Per-instance (opt-out / --no-shared-browser) sidecar: stop this sandbox's
+	// own browser. Idempotent and a no-op in the shared case (no such container).
+	stopBrowserSidecar(ctx, browserContainerName(project, name))
 
+	// Remove this instance from the registry BEFORE counting so it is not
+	// included in the remaining-sandboxes tally.
 	_ = r.Unregister(project, name)
+
+	// Shared browser sidecar: ref-counted — stop it only when this was the last
+	// sandbox in the project. Idempotent and a no-op when no singleton exists.
+	if remaining, err := r.CountForProject(project); err != nil {
+		_, _ = fmt.Fprintf(out, "[cspace] warning: registry count during browser teardown: %v\n", err)
+	} else if remaining == 0 {
+		stopBrowserSidecar(ctx, browserSingletonName(project))
+	}
 
 	if wipeState {
 		wipeSandboxState(ctx, a, project, name, out)
