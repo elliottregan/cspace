@@ -185,6 +185,25 @@ func (r *Registry) List() ([]Entry, error) {
 	return out, nil
 }
 
+// CountForProject returns how many registered sandboxes belong to project.
+// Counts all states (a "starting" sibling still needs the shared browser).
+// Snapshot semantics: built on List(), so it can race a concurrent
+// Register/Unregister — callers that need a teardown decision should
+// Unregister first, then count.
+func (r *Registry) CountForProject(project string) (int, error) {
+	entries, err := r.List()
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, e := range entries {
+		if e.Project == project {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // FreePort asks the kernel for an unused TCP port on 127.0.0.1.
 func FreePort() (int, error) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
