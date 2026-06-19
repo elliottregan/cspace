@@ -102,52 +102,6 @@ if [ ! -f "$CLAUDE_JSON" ]; then
 JSON
 fi
 
-# Register the browser MCP servers at user scope so EVERY Claude session
-# in the sandbox — supervisor-driven, interactive `cspace ssh`/`attach`,
-# headless `claude -p` — gets playwright/chrome-devtools tools wired to
-# the browser sidecar. Registration via the supervisor's --mcp-config
-# alone (lib/agent-supervisor-bun/src/claude-runner.ts) leaves
-# interactive sessions with no browser tools; this closes that gap. The
-# supervisor still passes the same server names via --mcp-config, which
-# takes precedence — no duplicate toolsets.
-#
-# ${CSPACE_BROWSER_CDP_URL} is written as a LITERAL placeholder (single
-# quotes below are deliberate): Claude Code expands env vars in MCP
-# config at server spawn, so the registration tracks the live env
-# instead of freezing boot-time state.
-#
-# Projects override per-name: a `playwright` entry in the project's
-# .mcp.json shadows this user-scope one (and a bare `npx @playwright/mcp`
-# registration still reaches the sidecar via the exported
-# PLAYWRIGHT_MCP_CDP_ENDPOINT env alias). Rewritten every boot; removed
-# when the sidecar is disabled so agents don't see browser tools that
-# cannot work.
-if command -v jq >/dev/null 2>&1; then
-    if [ -n "${CSPACE_BROWSER_CDP_URL:-}" ]; then
-        BROWSER_MCP_FILTER='.mcpServers = (.mcpServers // {}) + {
-          "playwright": {
-            "type": "stdio",
-            "command": "playwright-mcp",
-            "args": ["--cdp-endpoint", "${CSPACE_BROWSER_CDP_URL}"]
-          },
-          "chrome-devtools": {
-            "type": "stdio",
-            "command": "chrome-devtools-mcp",
-            "args": ["--browser-url", "${CSPACE_BROWSER_CDP_URL}"]
-          }
-        }'
-    else
-        BROWSER_MCP_FILTER='del(.mcpServers.playwright, .mcpServers."chrome-devtools")'
-    fi
-    CLAUDE_JSON_TMP=$(mktemp)
-    if jq "$BROWSER_MCP_FILTER" "$CLAUDE_JSON" > "$CLAUDE_JSON_TMP" 2>/dev/null; then
-        mv "$CLAUDE_JSON_TMP" "$CLAUDE_JSON"
-    else
-        echo "[cspace-entrypoint] WARN: failed to update mcpServers in $CLAUDE_JSON"
-        rm -f "$CLAUDE_JSON_TMP"
-    fi
-fi
-
 # Write ~/.claude/settings.json so the cspace statusline shows up in
 # interactive `claude`. The statusline is baked into the image at
 # /usr/local/bin/cspace-statusline.sh (its version is tied to the image,
