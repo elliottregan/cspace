@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/elliottregan/cspace/internal/config"
 	"github.com/elliottregan/cspace/internal/devcontainer"
 	"github.com/elliottregan/cspace/internal/orchestrator"
 	"github.com/elliottregan/cspace/internal/overlay"
@@ -37,6 +38,7 @@ func newUpCmd() *cobra.Command {
 	var baseBranch string
 	var workBranch string
 	var noBrowser bool
+	var noSharedBrowser bool
 	var cpus int
 	var memoryMiB int
 	var noOverlay bool
@@ -829,6 +831,8 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 		"create a fresh branch off baseBranch for the sandbox's work (use `auto` for the historical cspace/<sandbox> shape, or pass an explicit name like `issue/538-fix`); empty = stay on baseBranch")
 	cmd.Flags().BoolVar(&noBrowser, "no-browser", false,
 		"skip the default Playwright browser sidecar (the agent's playwright-mcp / chrome-devtools-mcp will fall back to launching their own browser, which fails on ARM64)")
+	cmd.Flags().BoolVar(&noSharedBrowser, "no-shared-browser", false,
+		"use a per-sandbox browser sidecar instead of the shared project browser (default: shared)")
 	cmd.Flags().IntVar(&cpus, "cpus", 0,
 		"CPU cap for this sandbox (overrides .cspace.json resources.cpus and the default of 4)")
 	cmd.Flags().IntVar(&memoryMiB, "memory", 0,
@@ -1215,6 +1219,20 @@ func resolveBrowserEnabled(dcBrowser *bool, noBrowser bool, projectCDPURL string
 	default:
 		return browserDecision{skipReason: "customizations.cspace.browser=false"}
 	}
+}
+
+// resolveSharedBrowser decides whether a project's sandboxes share one
+// browser sidecar. Default true; .cspace.json browser.shared overrides the
+// default; --no-shared-browser overrides config (applied last = flag wins).
+func resolveSharedBrowser(cfgBrowser config.BrowserConfig, noSharedBrowser bool) bool {
+	shared := true
+	if cfgBrowser.Shared != nil {
+		shared = *cfgBrowser.Shared
+	}
+	if noSharedBrowser {
+		shared = false
+	}
+	return shared
 }
 
 // discoverClaudeOauth is a seam so tests can stub host OAuth discovery without
