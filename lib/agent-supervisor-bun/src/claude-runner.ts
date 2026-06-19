@@ -51,26 +51,26 @@ export async function runClaude(
       // $CSPACE_BROWSER_CDP_URL. If the env var is unset, tool calls fail at
       // runtime — declined gracefully, doesn't crash the supervisor.
       //
-      // The @claude-plugins-official `playwright` plugin's plugin.json is
-      // missing the `mcpServers` field upstream, so installing the plugin
-      // does NOT actually register a `playwright` MCP server in Claude Code.
-      // We register it ourselves here. cmd_up.go also sets
-      // PLAYWRIGHT_MCP_CDP_ENDPOINT — harmless today (it duplicates the
-      // --cdp-endpoint argv) and future-proofs us if/when upstream fixes
-      // the plugin manifest and that registration starts taking effect.
+      // Server names ("cspace-playwright", "cspace-chrome-devtools") and
+      // flags match the cspace-browser Claude Code plugin
+      // (lib/plugins/cspace-browser) so the headless and interactive paths
+      // expose identical tool names to the agent. The Agent SDK's query()
+      // does NOT auto-load CLI plugin MCP servers, so we register them here
+      // explicitly — the plugin registration only takes effect when Claude
+      // Code itself is driving the session interactively.
       mcpServers: {
-        playwright: {
+        "cspace-playwright": {
           type: "stdio",
           command: "playwright-mcp",
           args: process.env.CSPACE_BROWSER_CDP_URL
-            ? ["--cdp-endpoint", process.env.CSPACE_BROWSER_CDP_URL]
-            : [],
+            ? ["--isolated", "--cdp-endpoint", process.env.CSPACE_BROWSER_CDP_URL]
+            : ["--isolated"],
         },
-        "chrome-devtools": {
+        "cspace-chrome-devtools": {
           type: "stdio",
           command: "chrome-devtools-mcp",
           args: process.env.CSPACE_BROWSER_CDP_URL
-            ? ["--browser-url", process.env.CSPACE_BROWSER_CDP_URL]
+            ? ["--browserUrl", process.env.CSPACE_BROWSER_CDP_URL]
             : [],
         },
       },

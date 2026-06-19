@@ -168,6 +168,16 @@ RUN chmod +x /usr/local/bin/cspace-entrypoint.sh \
 RUN mkdir -p /opt/cspace/features
 COPY lib/runtime/features/*.sh /opt/cspace/features/
 RUN chmod +x /opt/cspace/features/*.sh
+
+# cspace-shipped Claude Code plugins (local marketplace source). Baked
+# read-only; cspace-install-plugins.sh registers /opt/cspace/plugins as a
+# filesystem marketplace (no network). The `RUN test` guard turns the known
+# Apple Container "COPY <dir> yields empty dir" quirk into a loud build failure
+# instead of a silent missing-plugin at runtime.
+RUN mkdir -p /opt/cspace/plugins
+COPY lib/plugins /opt/cspace/plugins
+RUN test -f /opt/cspace/plugins/.claude-plugin/marketplace.json \
+ && test -f /opt/cspace/plugins/cspace-browser/.mcp.json
 USER dev
 
 # Version label set at build time via `--build-arg CSPACE_VERSION=...`.
