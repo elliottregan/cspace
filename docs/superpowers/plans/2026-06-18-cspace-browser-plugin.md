@@ -503,8 +503,9 @@ git commit --allow-empty -m "test: verify cspace-browser plugin registration, is
 
 ## Spike result
 
-_(Filled in during Task 5.)_
+Resolved 2026-06-18 by authoritative SDK-docs consult rather than a container boot (faster + definitive; the question is a fixed SDK-capability fact).
 
-- **Branch chosen:** TBD (A = SDK loads plugin servers / B = SDK needs manual registration)
-- **Observed headless tool names:** TBD
-- **Notes:** TBD
+- **Branch chosen:** **B** — keep the explicit registration in `claude-runner.ts`, renamed to `cspace-playwright`/`cspace-chrome-devtools` with `--isolated` on playwright.
+- **Why:** `@anthropic-ai/claude-agent-sdk`'s `query()` does NOT auto-load MCP servers from CLI-installed/enabled plugins. By default it loads MCP servers only from `options.mcpServers` and from `.mcp.json` reachable via `settingSources` (user/project/local) — NOT from `~/.claude/plugins/…` or `/opt/cspace/plugins/…`. So the headless supervisor cannot rely on the installed `cspace-browser` plugin; it must register the servers itself. The plugin still covers all interactive sessions (`cspace ssh`/`attach` via the `claude` CLI). No collision: the SDK session has only the manual servers; interactive sessions have only the plugin's — same names, disjoint sessions.
+- **Follow-up (cleaner single-source, not done in Phase 1):** the SDK also accepts `options.plugins: [{ type: "local", path: "/opt/cspace/plugins/cspace-browser" }]`, which WOULD load the plugin's `.mcp.json` into the headless session — making the plugin the single definition for both paths and removing the duplicate `mcpServers` block. Adopt later after confirming the baked SDK version supports `options.plugins`. Tracked for a Phase-1.5/Phase-2 cleanup.
+- **Sources:** docs.claude.com Agent SDK — MCP, Plugins, and Settings Sources pages.
