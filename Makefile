@@ -29,6 +29,8 @@ sync-embedded:
 	    lib/agent-supervisor-bun/build.ts \
 	    internal/assets/embedded/agent-supervisor-bun/
 	@cp lib/agent-supervisor-bun/src/*.ts internal/assets/embedded/agent-supervisor-bun/src/
+	@mkdir -p internal/assets/embedded/plugins
+	@cp -R lib/plugins/. internal/assets/embedded/plugins/
 
 build: check-hooks sync-embedded bin/cspace-go
 
