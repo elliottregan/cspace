@@ -47,6 +47,20 @@ func browserContainerName(project, sandbox string) string {
 	return fmt.Sprintf("cspace-%s-%s-browser", project, sandbox)
 }
 
+// browserSingletonName is the per-PROJECT shared browser sidecar container
+// name (Phase 2). One per project, shared by all that project's sandboxes.
+func browserSingletonName(project string) string {
+	return fmt.Sprintf("cspace-%s-browser", project)
+}
+
+// workspaceFriendlyHost is the per-instance hostname the shared browser uses
+// to reach a sandbox's workspace: <sandbox>.<project>.cspace.test, resolved by
+// the cspace DNS daemon to the instance's vmnet IP. Both labels are lowercased
+// to match the daemon's lowercased, case-sensitive registry comparison.
+func workspaceFriendlyHost(name, project string) string {
+	return strings.ToLower(name) + "." + strings.ToLower(project) + ".cspace.test"
+}
+
 // startBrowserSidecar runs the Playwright sidecar container, waits for its
 // IP and CDP endpoint to come up, and returns the container name and CDP
 // URL. Idempotent: if a container of the same name already exists, it is
