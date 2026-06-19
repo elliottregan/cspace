@@ -233,7 +233,12 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// project-supplied images (compose image:, devcontainer image:,
 			// build:) — those are the user's responsibility, not cspace's.
 			if sandboxImage == "cspace:latest" {
-				rebuilt, rbErr := maybeRebuildStaleImage(cmd, sandboxImage, Version, rebuildImage)
+				// canPrompt is false while the overlay TUI is up: bubbletea owns
+				// stdin in raw mode, so a blocking prompt here would never receive
+				// the user's keystrokes and would hang the boot. Only prompt when
+				// the overlay is off (--no-overlay / piped stdout) AND stdin is a
+				// real terminal.
+				rebuilt, rbErr := maybeRebuildStaleImage(cmd, sandboxImage, Version, rebuildImage, !useOverlay && isStdinTTY())
 				if rbErr != nil {
 					return rbErr
 				}
@@ -1362,17 +1367,19 @@ func hostGitConfig(key string) string {
 // Behavior:
 //   - label matches the CLI version: no-op, proceed.
 //   - drift + forceRebuild (--rebuild): rebuild, then proceed.
-//   - drift + interactive stdin: prompt (default yes); rebuild on yes,
-//     otherwise warn and proceed (the escape hatch is preserved).
-//   - drift + non-interactive (CI / piped): warn and proceed so automation
-//     isn't blocked; hint that --rebuild forces it.
+//   - drift + canPrompt: prompt (default yes); rebuild on yes, otherwise warn
+//     and proceed (the escape hatch is preserved).
+//   - drift + !canPrompt: warn and proceed so the boot isn't blocked; hint that
+//     --rebuild forces it. canPrompt is false in CI / piped contexts AND
+//     whenever the overlay TUI is running — bubbletea holds stdin in raw mode,
+//     so a prompt's stdin read would never return and would hang `cspace up`.
 //
 // Version comparison normalizes the leading "v": goreleaser strips it from
 // {{ .Version }} so brew-installed binaries report "1.0.0-rc.X", while the
 // maintainer Makefile's `git describe` keeps it ("v1.0.0-rc.X"). Both refer
 // to the same release; the comparison treats them as equal. A missing label
 // (older image predating the label) is treated as stale — same fix.
-func maybeRebuildStaleImage(cmd *cobra.Command, image, cliVersion string, forceRebuild bool) (bool, error) {
+func maybeRebuildStaleImage(cmd *cobra.Command, image, cliVersion string, forceRebuild, canPrompt bool) (bool, error) {
 	stderr := cmd.ErrOrStderr()
 	imgVersion, hasLabel := readImageCspaceVersion(image)
 	if !imageIsStale(imgVersion, hasLabel, cliVersion) {
@@ -1386,7 +1393,7 @@ func maybeRebuildStaleImage(cmd *cobra.Command, image, cliVersion string, forceR
 
 	doRebuild := forceRebuild
 	if !forceRebuild {
-		if !isStdinTTY() {
+		if !canPrompt {
 			_, _ = fmt.Fprintf(stderr, "[cspace] warning: %s. Rebuild to pick up matching scripts and tooling: `cspace image build` (or re-run with --rebuild).\n", reason)
 			return false, nil
 		}
