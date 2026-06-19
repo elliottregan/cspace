@@ -60,56 +60,37 @@ if [ -n "${GH_TOKEN:-}" ] && command -v gh >/dev/null 2>&1; then
     gh auth setup-git 2>/dev/null || true
 fi
 
-# Pre-create ~/.claude.json with the first-run prompts already accepted.
-# Without this, interactive `claude` walks the user through theme
-# selection, trust-this-folder, "Detected a custom API key…" approval,
-# and a stack of tips before becoming usable. We approve all of them up
-# front. Idempotent: skip if the file already exists (so user-made
-# changes inside the sandbox persist across restarts).
-#
-# IMPORTANT: hasTrustDialogAccepted is a PER-DIRECTORY flag stored under
-# projects[<cwd>] — the global key alone doesn't suppress the prompt.
-# Pre-seed projects["/workspace"] (where claude is launched from) so the
-# trust dialog never fires.
-CLAUDE_JSON="$HOME/.claude.json"
-if [ ! -f "$CLAUDE_JSON" ]; then
-    mkdir -p "$HOME/.claude"
-    # The "approved" array carries the env-var value claude was offered
-    # at first run; populate it with whichever carrier is set so the
-    # custom-API-key prompt is pre-answered.
-    APPROVED='[]'
-    if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-        APPROVED="[\"${ANTHROPIC_API_KEY}\"]"
-    elif [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-        APPROVED="[\"${CLAUDE_CODE_OAUTH_TOKEN}\"]"
-    fi
-    cat > "$CLAUDE_JSON" <<JSON
-{
-  "hasCompletedOnboarding": true,
-  "hasTrustDialogAccepted": true,
-  "bypassPermissionsModeAccepted": true,
-  "theme": "dark",
-  "customApiKeyResponses": { "approved": ${APPROVED}, "rejected": [] },
-  "projects": {
-    "/workspace": {
-      "hasTrustDialogAccepted": true,
-      "projectOnboardingSeenCount": 1,
-      "hasClaudeMdExternalIncludesApproved": true,
-      "hasClaudeMdExternalIncludesWarningShown": true
-    }
-  }
-}
-JSON
-fi
+# First-run gate suppression for interactive `claude` lives in two places now
+# (Claude Code v2.1.119+ migrated config out of ~/.claude.json):
+#   - durable config keys → ~/.claude/settings.json (written just below)
+#   - onboarding/trust state → ~/.claude.json (merged AFTER `claude update`
+#     further down, so the one-time schema migration doesn't strip it)
+# The old ~/.claude.json pre-seed here was written in the pre-2.1.x schema and
+# is silently ignored by current Claude Code, so it has been removed. See the
+# "seed interactive onboarding state" block after the claude-update step.
 
 # Write ~/.claude/settings.json so the cspace statusline shows up in
-# interactive `claude`. The statusline is baked into the image at
+# interactive `claude`, and pre-accept the first-run gates that live in this
+# (post-2.1.119) settings file. The statusline is baked into the image at
 # /usr/local/bin/cspace-statusline.sh (its version is tied to the image,
 # which `cspace up` keeps aligned with the running CLI). Projects can
 # override with their own at /workspace/.cspace/scripts/statusline.sh.
 #
+# Gate-suppression keys (verified against Claude Code v2.1.183):
+#   - theme: skips the "choose a text style" picker (paired with
+#     hasCompletedOnboarding in ~/.claude.json, merged after claude update).
+#   - permissions.defaultMode=bypassPermissions: cspace sandboxes are
+#     disposable microVMs with a firewall, so the agent runs without
+#     per-command approval prompts.
+#   - skipDangerousModePermissionPrompt: pre-accepts the one-time
+#     "running in Bypass Permissions mode" warning (the v2.1.x replacement
+#     for the old bypassPermissionsModeAccepted key).
+#   - enableAllProjectMcpServers: auto-trusts the project's own .mcp.json
+#     servers (e.g. a convex sidecar) so no "New MCP server found" prompt.
+#
 # Rewritten every boot so changes to the resolution propagate without
-# requiring the user to delete the file.
+# requiring the user to delete the file. enabledPlugins is re-added by
+# cspace-install-plugins.sh after this, and claude merges its own keys.
 SETTINGS_JSON="$HOME/.claude/settings.json"
 mkdir -p "$HOME/.claude"
 statusline_cmd="/usr/local/bin/cspace-statusline.sh"
@@ -119,7 +100,11 @@ cat > "$SETTINGS_JSON" <<JSON
   "statusLine": {
     "type": "command",
     "command": "${statusline_cmd}"
-  }
+  },
+  "theme": "dark",
+  "permissions": { "defaultMode": "bypassPermissions" },
+  "skipDangerousModePermissionPrompt": true,
+  "enableAllProjectMcpServers": true
 }
 JSON
 
@@ -248,6 +233,36 @@ if [ -x /usr/local/bin/cspace-install-plugins.sh ]; then
     echo plugins > "$STATUS_FILE" 2>/dev/null || true
     /usr/local/bin/cspace-install-plugins.sh || true
 fi
+
+# Seed interactive onboarding/trust state into ~/.claude.json. This runs LATE
+# — after `claude update` and the plugin install, both of which invoke claude
+# and trigger its one-time v2.1.x config migration. Seeding earlier (as cspace
+# did historically) gets stripped by that migration, which is exactly why the
+# first-run screens came back. We merge (not overwrite) so claude's own runtime
+# keys are preserved, and re-merge every boot (idempotent). hasCompletedOnboarding
+# skips the theme/welcome flow; the per-project keys skip the "trust this folder"
+# dialog for /workspace. Auth rides CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY
+# from the env and is applied silently once onboarding is marked complete. The
+# bypass-mode + project-MCP gates are handled in ~/.claude/settings.json above.
+CLAUDE_JSON="$HOME/.claude.json"
+if command -v jq >/dev/null 2>&1; then
+    [ -f "$CLAUDE_JSON" ] || echo '{}' > "$CLAUDE_JSON"
+    _cj_tmp=$(mktemp)
+    if jq '. + {hasCompletedOnboarding: true, theme: "dark"}
+            | .projects = (.projects // {})
+            | .projects["/workspace"] = ((.projects["/workspace"] // {}) + {
+                hasTrustDialogAccepted: true,
+                projectOnboardingSeenCount: 1,
+                hasClaudeMdExternalIncludesApproved: true,
+                hasClaudeMdExternalIncludesWarningShown: true
+              })' "$CLAUDE_JSON" > "$_cj_tmp" 2>/dev/null; then
+        mv "$_cj_tmp" "$CLAUDE_JSON"
+    else
+        rm -f "$_cj_tmp"
+        echo "[cspace-entrypoint] WARN: failed to seed onboarding state in $CLAUDE_JSON"
+    fi
+fi
+
 echo supervisor > "$STATUS_FILE" 2>/dev/null || true
 
 # Devcontainer postCreateCommand — once per sandbox lifetime, run in
