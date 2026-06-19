@@ -62,6 +62,6 @@ cspace <command> --help
 For example:
 
 ```bash
-cspace up --help        # all flags including --cpus, --memory, --browser, --no-attach
+cspace up --help        # all flags including --cpus, --memory, --no-browser, --no-attach
 cspace registry --help  # list / prune
 ```

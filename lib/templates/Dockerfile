@@ -54,7 +54,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 #
 # DROPPED from previous fat image (now project's job via devcontainer features
 # or their own image): Go toolchain, pnpm 10 global, build-essential,
-# Playwright Chromium browsers (the --browser sidecar provides chromium),
+# Playwright Chromium browsers (the default-on browser sidecar provides chromium),
 # playwright-mcp and chrome-devtools-mcp npm packages.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
@@ -121,8 +121,8 @@ RUN ln -sf /home/dev/.bun/bin/bun /usr/local/bin/bun \
 # set. Without these binaries on PATH, the MCP registration fails at boot
 # even when the project doesn't intend to use them.
 # Chromium itself comes from a project-declared Playwright sidecar (see
-# resume-redux/.devcontainer/docker-compose.yml for the pattern) or
-# `cspace up --browser` (cspace-managed Chromium sidecar).
+# resume-redux/.devcontainer/docker-compose.yml for the pattern) or the
+# default-on cspace-managed Chromium sidecar (disable with `cspace up --no-browser`).
 RUN npm install -g @playwright/mcp@0.0.72 chrome-devtools-mcp@0.23.0 \
  && playwright-mcp --version
 

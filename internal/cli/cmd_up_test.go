@@ -172,6 +172,43 @@ func TestWarnExpiredAutoDiscoveredAuth(t *testing.T) {
 	})
 }
 
+// TestResolveBrowserEnabled covers the browser-sidecar precedence ladder:
+// project CSPACE_BROWSER_CDP_URL > --no-browser > devcontainer tristate > default ON.
+func TestResolveBrowserEnabled(t *testing.T) {
+	bptr := func(b bool) *bool { return &b }
+	cases := []struct {
+		name        string
+		dcBrowser   *bool
+		noBrowser   bool
+		projectCDP  string
+		wantEnabled bool
+		reasonHas   string // substring expected in skipReason when disabled
+	}{
+		{"default on", nil, false, "", true, ""},
+		{"devcontainer explicit false", bptr(false), false, "", false, "customizations.cspace.browser=false"},
+		{"devcontainer explicit true", bptr(true), false, "", true, ""},
+		{"--no-browser opt-out", nil, true, "", false, "--no-browser"},
+		{"--no-browser overrides devcontainer true", bptr(true), true, "", false, "--no-browser"},
+		{"project CDP url skips sidecar", nil, false, "ws://host:1234", false, "project-supplied"},
+		{"project CDP url overrides devcontainer true", bptr(true), false, "ws://host:1234", false, "project-supplied"},
+		{"project CDP url and --no-browser both", nil, true, "ws://host:1234", false, "--no-browser also set"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveBrowserEnabled(tc.dcBrowser, tc.noBrowser, tc.projectCDP)
+			if got.enabled != tc.wantEnabled {
+				t.Fatalf("enabled: got %v want %v", got.enabled, tc.wantEnabled)
+			}
+			if tc.wantEnabled && got.skipReason != "" {
+				t.Errorf("enabled case must have empty skipReason, got %q", got.skipReason)
+			}
+			if !tc.wantEnabled && tc.reasonHas != "" && !strings.Contains(got.skipReason, tc.reasonHas) {
+				t.Errorf("skipReason %q missing %q", got.skipReason, tc.reasonHas)
+			}
+		})
+	}
+}
+
 // TestResolveSandboxImage verifies the four-level precedence for sandbox image selection.
 func TestResolveSandboxImage(t *testing.T) {
 	ctx := context.Background()

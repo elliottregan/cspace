@@ -36,7 +36,7 @@ func newUpCmd() *cobra.Command {
 	var extraEnv []string
 	var baseBranch string
 	var workBranch string
-	var withBrowser bool
+	var noBrowser bool
 	var cpus int
 	var memoryMiB int
 	var noOverlay bool
@@ -69,7 +69,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			if parent == nil {
 				parent = context.Background()
 			}
-			// 4 minutes covers the heaviest cold path: --browser sidecar
+			// 4 minutes covers the heaviest cold path: browser sidecar
 			// (apt-get install socat in the playwright image, ~30–60s)
 			// + clone provision + plugin install (~30s for ~12 plugins)
 			// + supervisor /health. Faster paths complete well under
@@ -490,8 +490,8 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// cspace up cycles — no host-side env injection required.
 			// See lib/agent-supervisor-bun/src/main.ts:resumeSessionId.
 
-			// --browser: start a Playwright sidecar before launching the sandbox
-			// so we can inject CSPACE_BROWSER_CDP_URL into spec.Env. The
+			// Browser sidecar: start a Playwright sidecar before launching the
+			// sandbox so we can inject CSPACE_BROWSER_CDP_URL into spec.Env. The
 			// supervisor's claude-runner.ts reads this and registers
 			// playwright-mcp via --cdp-endpoint, giving the agent browser
 			// tools without bundling a browser into the cspace image.
@@ -500,14 +500,28 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// write, …) we tear the sidecar down via the deferred cleanup
 			// below so we don't leak containers.
 			//
-			// devcontainer.json's customizations.cspace.browser=true also
-			// enables the sidecar — same path as the explicit --browser
-			// flag. Project authors opt in once and the agent gets browser
-			// MCP + Playwright run-server without further setup.
-			browserEnabled := withBrowser
-			if devcontainerPlan != nil && devcontainerPlan.Devcontainer != nil &&
-				devcontainerPlan.Devcontainer.Customizations.Cspace.Browser {
-				browserEnabled = true
+			// Default ON: every sandbox gets a sidecar so the agent's
+			// playwright-mcp / chrome-devtools-mcp work out of the box,
+			// regardless of whether the project itself uses Playwright.
+			//
+			// Precedence (highest first):
+			//   1. Project-supplied CSPACE_BROWSER_CDP_URL in env (from
+			//      --env, ~/.cspace/secrets.env, .cspace/secrets.env, or
+			//      .cspace.json env). The project is pointing at its own
+			//      browser — skip our sidecar entirely; the value already
+			//      in env flows through to the MCP servers.
+			//   2. CLI --no-browser flag (hard opt-out).
+			//   3. devcontainer.json customizations.cspace.browser explicit
+			//      true/false.
+			//   4. Default ON.
+			var dcBrowser *bool
+			if devcontainerPlan != nil && devcontainerPlan.Devcontainer != nil {
+				dcBrowser = devcontainerPlan.Devcontainer.Customizations.Cspace.Browser
+			}
+			browserDec := resolveBrowserEnabled(dcBrowser, noBrowser, env["CSPACE_BROWSER_CDP_URL"])
+			browserEnabled := browserDec.enabled
+			if !browserEnabled && browserDec.skipReason != "" {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "browser sidecar: skipped (%s)\n", browserDec.skipReason)
 			}
 			var browserContainer string
 			var browserSidecar *BrowserSidecar
@@ -813,8 +827,8 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 		"base branch the workspace clone is checked out on (defaults to the upstream repo's default branch)")
 	cmd.Flags().StringVar(&workBranch, "branch", "",
 		"create a fresh branch off baseBranch for the sandbox's work (use `auto` for the historical cspace/<sandbox> shape, or pass an explicit name like `issue/538-fix`); empty = stay on baseBranch")
-	cmd.Flags().BoolVar(&withBrowser, "browser", false,
-		"start a Playwright browser sidecar; agent's playwright-mcp connects via CDP")
+	cmd.Flags().BoolVar(&noBrowser, "no-browser", false,
+		"skip the default Playwright browser sidecar (the agent's playwright-mcp / chrome-devtools-mcp will fall back to launching their own browser, which fails on ARM64)")
 	cmd.Flags().IntVar(&cpus, "cpus", 0,
 		"CPU cap for this sandbox (overrides .cspace.json resources.cpus and the default of 4)")
 	cmd.Flags().IntVar(&memoryMiB, "memory", 0,
@@ -1157,6 +1171,51 @@ func (b *limitedBuffer) String() string {
 // nudge has already been shown". Lives in ~/.cspace/. Once it exists the
 // nudge stays silent forever — the message has done its job.
 const nudgeSentinelName = ".no-claude-auth-nudge-shown"
+
+// browserDecision is the outcome of resolveBrowserEnabled: whether to start
+// the cspace browser sidecar and, when not, a human-readable reason for the
+// "skipped" log line.
+type browserDecision struct {
+	enabled    bool
+	skipReason string // non-empty only when enabled is false
+}
+
+// resolveBrowserEnabled implements the browser-sidecar precedence (highest
+// first): a project-supplied CSPACE_BROWSER_CDP_URL (the project points at its
+// own browser) > the --no-browser opt-out flag > devcontainer
+// customizations.cspace.browser (tristate *bool; nil = unset) > default ON.
+// projectCDPURL is the CSPACE_BROWSER_CDP_URL already present in env. The
+// returned skipReason names the deciding factor(s) accurately so the printed
+// line never misattributes the skip (e.g. crediting the project browser when
+// the user explicitly passed --no-browser).
+func resolveBrowserEnabled(dcBrowser *bool, noBrowser bool, projectCDPURL string) browserDecision {
+	enabled := true // default ON
+	if dcBrowser != nil {
+		enabled = *dcBrowser // devcontainer explicit true/false
+	}
+	if noBrowser {
+		enabled = false // hard opt-out
+	}
+	if projectCDPURL != "" {
+		enabled = false // project's own browser wins
+	}
+	if enabled {
+		return browserDecision{enabled: true}
+	}
+	// A project-supplied CDP URL means a browser endpoint still exists (the
+	// project's own), so it leads the reason; an explicit --no-browser is
+	// appended so the user's choice is acknowledged when both apply.
+	switch {
+	case projectCDPURL != "" && noBrowser:
+		return browserDecision{skipReason: fmt.Sprintf("using project-supplied CSPACE_BROWSER_CDP_URL=%s; --no-browser also set", projectCDPURL)}
+	case projectCDPURL != "":
+		return browserDecision{skipReason: fmt.Sprintf("using project-supplied CSPACE_BROWSER_CDP_URL=%s", projectCDPURL)}
+	case noBrowser:
+		return browserDecision{skipReason: "--no-browser"}
+	default:
+		return browserDecision{skipReason: "customizations.cspace.browser=false"}
+	}
+}
 
 // discoverClaudeOauth is a seam so tests can stub host OAuth discovery without
 // touching the real macOS Keychain (mirrors the secrets package's pattern).

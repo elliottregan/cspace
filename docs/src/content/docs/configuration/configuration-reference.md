@@ -75,7 +75,7 @@ Per-launch overrides bypass `.cspace.json`:
 cspace up --cpus 2 --memory 8192     # heavier sandbox
 cspace up --no-attach                # don't auto-launch claude
 cspace up --no-overlay               # skip the boot animation
-cspace up --browser                  # spawn the playwright sidecar
+cspace up --no-browser               # skip the default-on playwright sidecar
 cspace up --workspace ./other-dir    # bind a non-cloned dir as /workspace
 ```
 

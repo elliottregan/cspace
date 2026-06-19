@@ -31,7 +31,7 @@ const (
 	PhasePending        Phase = iota // pre-roll, planet entirely out of focus
 	PhaseDaemon                      // ensureRegistryDaemon
 	PhaseClone                       // provisionClone
-	PhaseBrowserSidecar              // startBrowserSidecar (only with --browser / customizations.cspace.browser)
+	PhaseBrowserSidecar              // startBrowserSidecar (default ON; skipped with --no-browser, customizations.cspace.browser=false, or project-supplied CSPACE_BROWSER_CDP_URL)
 	PhaseSidecars                    // orchestrator.Up — compose sidecars (convex-backend, etc.)
 	PhaseBoot                        // substrate.Run + waitForIP for the workspace
 	PhasePlugins                     // entrypoint installing claude plugins

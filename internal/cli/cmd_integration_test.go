@@ -28,8 +28,9 @@ import (
 //
 // Does NOT require ANTHROPIC_API_KEY: the user-turn lands in events.ndjson
 // regardless of whether Claude actually responds, which is the load-bearing
-// signal here. The browser sidecar path (--browser) is intentionally out
-// of scope for this test (slow, separate concern from lifecycle parity).
+// signal here. The browser sidecar is default-ON, so this test passes
+// --no-browser to keep it out of scope (the sidecar is slow and a separate
+// concern from lifecycle parity).
 func TestCspaceLifecycle(t *testing.T) {
 	a := applecontainer.New()
 	if !a.Available() {
@@ -58,8 +59,9 @@ func TestCspaceLifecycle(t *testing.T) {
 		_ = os.RemoveAll(filepath.Join(home, ".cspace", "clones", "cspace", sandbox))
 	})
 
-	// 1. cspace up.
-	upOut := runCspaceCmd(t, cspaceBin, "up", sandbox)
+	// 1. cspace up. --no-browser keeps the default-ON Playwright sidecar
+	// (a slow, separate concern) out of this lifecycle-parity test.
+	upOut := runCspaceCmd(t, cspaceBin, "up", sandbox, "--no-browser")
 	if !strings.Contains(upOut, "sandbox "+sandbox+" up:") {
 		t.Fatalf("cspace up output missing expected prefix:\n%s", upOut)
 	}
