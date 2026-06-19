@@ -535,7 +535,20 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				// fail with 428 Precondition Required; tracking the
 				// project pin avoids that without dictating a version.
 				plVersion := detectPlaywrightVersion(cfg.ProjectRoot)
-				bs, berr := startBrowserSidecar(ctx, project, name, plVersion)
+				var b config.BrowserConfig
+				if cfg != nil {
+					b = cfg.Browser
+				}
+				shared := resolveSharedBrowser(b, noSharedBrowser)
+				var bs *BrowserSidecar
+				var startedNew bool
+				var berr error
+				if shared {
+					bs, startedNew, berr = ensureSharedBrowserSidecar(ctx, project, plVersion)
+				} else {
+					bs, berr = startBrowserSidecar(ctx, project, name, plVersion)
+					startedNew = true
+				}
 				if berr != nil {
 					return fmt.Errorf("browser sidecar: %w", berr)
 				}
@@ -555,12 +568,14 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				// or preview server running inside the workspace from
 				// the browser sidecar. Hosts entry written below once
 				// the workspace IP is known.
-				env["CSPACE_WORKSPACE_HOST"] = "workspace"
+				env["CSPACE_WORKSPACE_HOST"] = workspaceFriendlyHost(name, project)
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 					"browser sidecar: %s (cdp %s, run-server %s)\n",
 					bs.ContainerName, bs.CDPURL, bs.RunServerWSURL)
 				defer func() {
-					if err != nil {
+					// Only tear down a sidecar THIS up created. A reused
+					// shared singleton is left for the instances still using it.
+					if err != nil && startedNew {
 						stopBrowserSidecar(context.Background(), bs.ContainerName)
 					}
 				}()
@@ -662,10 +677,6 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// use the same BASE_URL for both the readiness probe and
 			// the URL Playwright opens. Best-effort.
 			if browserSidecar != nil {
-				if hErr := InjectWorkspaceHost(ctx, browserSidecar.ContainerName, ip); hErr != nil {
-					_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
-						"[cspace] warning: inject workspace host into browser sidecar: %v\n", hErr)
-				}
 				if hErr := InjectWorkspaceHost(ctx, containerName, "127.0.0.1"); hErr != nil {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
 						"[cspace] warning: inject workspace host into workspace: %v\n", hErr)
@@ -690,22 +701,6 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 					_ = a.Stop(context.Background(), containerName)
 					err = fmt.Errorf("orchestrate sidecars: %w", upErr)
 					return err
-				}
-				// Extend the browser sidecar's /etc/hosts with the compose
-				// sidecar IPs the orchestrator just resolved. Without this,
-				// headless Chromium can't reach `convex-backend:3210` (the
-				// direct URL Convex returns for storage uploads, etc.) and
-				// fails the fetch with ERR_NAME_NOT_RESOLVED — even though
-				// the WebSocket proxy in the workspace handles every other
-				// Convex call. The workspace and other compose microVMs
-				// already get this map via the orchestrator's own injection.
-				if browserSidecar != nil {
-					hosts := orch.ServiceIPs()
-					hosts["workspace"] = ip
-					if hErr := InjectHosts(ctx, browserSidecar.ContainerName, hosts); hErr != nil {
-						_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
-							"[cspace] warning: extend browser sidecar hosts: %v\n", hErr)
-					}
 				}
 				// Write extracted env vars (e.g. CONVEX_SELF_HOSTED_ADMIN_KEY)
 				// to <sessionsHostDir>/extracted.env on the host. The sandbox's
