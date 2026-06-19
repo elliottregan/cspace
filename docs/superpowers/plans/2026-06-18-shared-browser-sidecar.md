@@ -710,3 +710,93 @@ From `~/Projects/resume-redux`, boot two instances on the shared browser, run th
 ./bin/cspace-go down alpha 2>/dev/null; ./bin/cspace-go down beta 2>/dev/null
 git commit --allow-empty -m "test: verify shared browser — one sidecar, per-instance friendly DNS, context isolation, ref-counted teardown, opt-out, resume-redux e2e+MCP"
 ```
+
+---
+
+### Task 8: Make the daemon's gateway DNS listener retry the bind (acceptance-driven)
+
+**Files:**
+- Modify: `internal/cli/cmd_daemon.go` (the two gateway-listener goroutines, ~lines 218-231)
+
+**Why:** The Task 7 acceptance run found that in-container `*.cspace.test` resolution (which the shared browser now depends on, since Phase 2 dropped bare-name `/etc/hosts` injection) was NXDOMAIN. Root cause: the daemon's gateway DNS listener binds the specific gateway IP `192.168.64.1:5354`, but that IP lives on the vmnet bridge (`bridge101`) which doesn't exist until the first container boots — and `cspace up` spawns the daemon BEFORE the container. The current bind is one-shot best-effort, so it fails permanently. A freshly-spawned daemon (bridge already up) binds it fine and the sidecar resolves correctly — so the fix is to RETRY the gateway bind until the bridge appears. (This overturns the spec's "no daemon change" note; the host-loopback listener is unaffected and stays fatal-on-failure.)
+
+**Interfaces:** none new — behavior change only.
+
+- [ ] **Step 1: Replace the two one-shot gateway-listener goroutines with retrying loops**
+
+In `internal/cli/cmd_daemon.go`, replace the gateway-bind block (currently ~lines 214-231):
+```go
+	// Gateway bind — best-effort. Containers query 192.168.64.1:5354
+	// for cspace.test lookups (via dnsmasq forwarder inside the
+	// sandbox). Failure here just means in-container hostname
+	// resolution stops working; the host path is unaffected.
+	go func() {
+		server := &dns.Server{Addr: daemonDNSGatewayAddr, Net: "udp", Handler: dh}
+		log.Printf("cspace daemon: DNS listening on %s/udp (containers)", daemonDNSGatewayAddr)
+		if err := server.ListenAndServe(); err != nil {
+			log.Printf("WARN: cspace daemon DNS UDP bind on %s failed: %v", daemonDNSGatewayAddr, err)
+			log.Printf("      in-container *.cspace.test lookups will NXDOMAIN until this is resolved.")
+		}
+	}()
+	go func() {
+		server := &dns.Server{Addr: daemonDNSGatewayAddr, Net: "tcp", Handler: dh}
+		if err := server.ListenAndServe(); err != nil {
+			log.Printf("WARN: cspace daemon DNS TCP bind on %s failed: %v", daemonDNSGatewayAddr, err)
+		}
+	}()
+```
+with retrying loops (a successful `ListenAndServe` blocks while serving; a bind failure returns immediately and we retry after a short delay so the listener comes up shortly after the first sandbox boots):
+```go
+	// Gateway bind — best-effort WITH RETRY. The vmnet bridge that owns
+	// 192.168.64.1 doesn't exist until the first container boots, and the
+	// daemon is spawned by `cspace up` BEFORE that — so the initial bind
+	// loses a startup race. Retry until it binds so in-container
+	// *.cspace.test resolution (which the shared browser sidecar depends on)
+	// comes up shortly after the first sandbox starts. The host-loopback
+	// listener above is unaffected.
+	go func() {
+		for {
+			server := &dns.Server{Addr: daemonDNSGatewayAddr, Net: "udp", Handler: dh}
+			log.Printf("cspace daemon: DNS listening on %s/udp (containers)", daemonDNSGatewayAddr)
+			err := server.ListenAndServe()
+			log.Printf("WARN: cspace daemon DNS UDP bind on %s failed: %v; retrying in 3s "+
+				"(in-container *.cspace.test lookups NXDOMAIN until this binds)", daemonDNSGatewayAddr, err)
+			time.Sleep(3 * time.Second)
+		}
+	}()
+	go func() {
+		for {
+			server := &dns.Server{Addr: daemonDNSGatewayAddr, Net: "tcp", Handler: dh}
+			if err := server.ListenAndServe(); err != nil {
+				log.Printf("WARN: cspace daemon DNS TCP bind on %s failed: %v; retrying in 3s", daemonDNSGatewayAddr, err)
+			}
+			time.Sleep(3 * time.Second)
+		}
+	}()
+```
+Ensure `"time"` is imported (it almost certainly already is; add it if not).
+
+- [ ] **Step 2: Build + vet**
+
+Run: `go build ./... && go vet ./... && echo OK`
+Expected: `OK`. (No unit test — this is a network-bind retry loop; verified by the integration re-check below.)
+
+- [ ] **Step 3: Integration re-verify (the original failing case)**
+
+```bash
+make build
+pkill -f 'cspace daemon serve' 2>/dev/null; sleep 1   # clear any stale daemon
+./bin/cspace-go up alpha                                # spawns daemon (no bridge yet), then boots the container
+sleep 6                                                 # let the retry catch the now-up bridge
+lsof -nP -iUDP:5354 | grep -q '192.168.64.1:5354' && echo "gateway listener BOUND (correct)" || echo "gateway STILL DOWN (bug)"
+container exec cspace-cspace-browser getent hosts alpha.cspace.cspace.test && echo "sidecar RESOLVES friendly name (correct)"
+./bin/cspace-go down alpha
+```
+Expected: `gateway listener BOUND`, and the sidecar resolves `alpha.cspace.cspace.test` to alpha's IP.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add internal/cli/cmd_daemon.go
+git commit -m "fix(daemon): retry the gateway DNS bind so in-container .cspace.test resolves (shared browser depends on it)"
+```
