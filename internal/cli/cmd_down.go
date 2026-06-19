@@ -154,9 +154,11 @@ func (s *substrateDowner) IP(ctx context.Context, name string) (string, error) {
 	return "", fmt.Errorf("not implemented")
 }
 
-// teardownSandbox stops the canonical container, stops a browser sidecar
-// if registered, and unregisters the entry. When wipeState is true (the
-// `cspace down` default), it also reclaims the per-sandbox clone,
+// teardownSandbox stops the canonical container, stops the per-instance
+// browser sidecar (a no-op in the shared-singleton case), unregisters
+// the entry, then ref-counts the shared browser singleton — stopping it
+// only when this was the project's last sandbox. When wipeState is true
+// (the `cspace down` default), it also reclaims the per-sandbox clone,
 // sessions, and substrate-managed volumes so the next `cspace up <same
 // name>` starts fresh. Permissive on missing entries — a stale container
 // could still be running, so we always issue Stop by name regardless of

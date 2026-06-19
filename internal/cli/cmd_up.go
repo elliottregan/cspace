@@ -670,12 +670,9 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			}
 
 			// If a browser sidecar is running, inject `workspace` into
-			// /etc/hosts on BOTH sides so http://workspace:<port> is a
-			// universal URL: scripts inside the workspace use 127.0.0.1
-			// (preview server is local), the browser running in the
-			// sidecar uses the workspace's vmnet IP. e2e flows can then
-			// use the same BASE_URL for both the readiness probe and
-			// the URL Playwright opens. Best-effort.
+			// /etc/hosts inside the workspace container so
+			// http://workspace:<port> resolves to 127.0.0.1 (the
+			// preview server running locally). Best-effort.
 			if browserSidecar != nil {
 				if hErr := InjectWorkspaceHost(ctx, containerName, "127.0.0.1"); hErr != nil {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
