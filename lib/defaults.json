@@ -44,7 +44,7 @@
   },
   "advisors": {
     "decision-maker": {
-      "model": "claude-opus-4-7",
+      "model": "claude-opus-4-8",
       "effort": "max",
       "baseBranch": "main"
     }
