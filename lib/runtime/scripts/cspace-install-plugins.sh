@@ -45,6 +45,26 @@ if [ -n "$cspace_cfg" ]; then
     fi
 fi
 
+# --- cspace-browser plugin (image-local marketplace) ---
+# Register + install cspace's browser MCP plugin from the marketplace baked
+# into the image. Gated on a browser sidecar being present
+# (CSPACE_BROWSER_CDP_URL set) — this reproduces the old entrypoint behavior of
+# not exposing browser tools that can't reach a CDP endpoint. Self-contained:
+# does NOT go through the WANT/MARKETPLACES loop (that loop assumes GitHub
+# owner/repo marketplaces and would mishandle a local filesystem path).
+# Idempotent: `marketplace list` grep skips re-add; `plugins install` no-ops if
+# already installed. CSPACE_BROWSER_MARKET_DIR is overridable for tests.
+CSPACE_BROWSER_MARKET_DIR="${CSPACE_BROWSER_MARKET_DIR:-/opt/cspace/plugins}"
+if [ -n "${CSPACE_BROWSER_CDP_URL:-}" ] && [ -f "${CSPACE_BROWSER_MARKET_DIR}/.claude-plugin/marketplace.json" ]; then
+    if ! claude plugins marketplace list 2>/dev/null | grep -q "^[ *]*cspace\b"; then
+        echo "[install-plugins] adding image-local marketplace cspace from ${CSPACE_BROWSER_MARKET_DIR}"
+        claude plugins marketplace add "${CSPACE_BROWSER_MARKET_DIR}" || true
+    fi
+    echo "[install-plugins] installing cspace-browser@cspace"
+    claude plugins install --scope user "cspace-browser@cspace" || true
+fi
+# --- end cspace-browser ---
+
 # Build the combined enable list. Each entry is normalized to
 # "<plugin>@<marketplace>"; bare names from cspace's plugins.install
 # get @claude-plugins-official appended.
