@@ -47,6 +47,20 @@ func browserContainerName(project, sandbox string) string {
 	return fmt.Sprintf("cspace-%s-%s-browser", project, sandbox)
 }
 
+// browserSingletonName is the per-PROJECT shared browser sidecar container
+// name (Phase 2). One per project, shared by all that project's sandboxes.
+func browserSingletonName(project string) string {
+	return fmt.Sprintf("cspace-%s-browser", project)
+}
+
+// workspaceFriendlyHost is the per-instance hostname the shared browser uses
+// to reach a sandbox's workspace: <sandbox>.<project>.cspace.test, resolved by
+// the cspace DNS daemon to the instance's vmnet IP. Both labels are lowercased
+// to match the daemon's lowercased, case-sensitive registry comparison.
+func workspaceFriendlyHost(name, project string) string {
+	return strings.ToLower(name) + "." + strings.ToLower(project) + ".cspace.test"
+}
+
 // startBrowserSidecar runs the Playwright sidecar container, waits for its
 // IP and CDP endpoint to come up, and returns the container name and CDP
 // URL. Idempotent: if a container of the same name already exists, it is
@@ -70,23 +84,18 @@ type BrowserSidecar struct {
 	RunServerWSURL string // ws://<ip>:3000/ — for $PW_TEST_CONNECT_WS_ENDPOINT
 }
 
-// startBrowserSidecar runs the Playwright sidecar. plVersion selects the
-// run-server protocol version (must match the project's @playwright/test
-// pin per Playwright's strict cross-version handshake check); empty
-// string falls back to defaultPlaywrightVersion.
-func startBrowserSidecar(ctx context.Context, project, sandbox, plVersion string) (*BrowserSidecar, error) {
+// runBrowserSidecar starts a sidecar container with the given name. It does
+// NOT remove a pre-existing same-named container (callers decide that). The
+// cspace.playwright-version label lets the shared path detect a version-mismatched
+// singleton on reuse.
+func runBrowserSidecar(ctx context.Context, containerName, plVersion string) (*BrowserSidecar, error) {
 	if plVersion == "" {
 		plVersion = defaultPlaywrightVersion
 	}
-	containerName := browserContainerName(project, sandbox)
-
-	// Idempotency: torch any prior container with the same name.
-	_ = exec.CommandContext(ctx, "container", "stop", containerName).Run()
-	_ = exec.CommandContext(ctx, "container", "rm", containerName).Run()
-
 	args := []string{
 		"run", "-d",
 		"--name", containerName,
+		"--label", "cspace.playwright-version=" + plVersion,
 		// Public resolvers needed for the apt-get install step. Once
 		// dnsmasq is up we repoint resolv.conf at it; until then,
 		// these are how the sidecar fetches packages.
@@ -178,6 +187,16 @@ func startBrowserSidecar(ctx context.Context, project, sandbox, plVersion string
 		CDPURL:         cdpURL,
 		RunServerWSURL: wsURL,
 	}, nil
+}
+
+// startBrowserSidecar is the per-instance path (opt-out / --no-shared-browser):
+// it torches any prior same-named container then runs fresh. Unchanged signature.
+func startBrowserSidecar(ctx context.Context, project, sandbox, plVersion string) (*BrowserSidecar, error) {
+	containerName := browserContainerName(project, sandbox)
+	// Idempotency: torch any prior container with the same name.
+	_ = exec.CommandContext(ctx, "container", "stop", containerName).Run()
+	_ = exec.CommandContext(ctx, "container", "rm", containerName).Run()
+	return runBrowserSidecar(ctx, containerName, plVersion)
 }
 
 // InjectWorkspaceHost writes a /etc/hosts entry inside the browser sidecar
@@ -300,6 +319,74 @@ func stopBrowserSidecar(ctx context.Context, name string) {
 	}
 	_ = exec.CommandContext(ctx, "container", "stop", name).Run()
 	_ = exec.CommandContext(ctx, "container", "rm", name).Run()
+}
+
+// ensureSharedBrowserSidecar returns the project's shared browser sidecar,
+// starting it if absent and REUSING it if a healthy, version-matched one is
+// already running. Never torches a healthy singleton. The bool is startedNew:
+// true iff this call created the container (the caller uses it to gate
+// error-path teardown so a reused singleton is never stopped).
+func ensureSharedBrowserSidecar(ctx context.Context, project, plVersion string) (*BrowserSidecar, bool, error) {
+	if plVersion == "" {
+		plVersion = defaultPlaywrightVersion
+	}
+	name := browserSingletonName(project)
+
+	if containerExists(ctx, name) {
+		// Healthy + version-matched? Reuse without torching.
+		ip, ipErr := waitForBrowserIP(ctx, name, 5*time.Second)
+		if ipErr == nil {
+			cdpURL := fmt.Sprintf("http://%s:%d", ip, browserCDPPort)
+			if waitForCDP(ctx, cdpURL, 10*time.Second) == nil && sidecarVersion(ctx, name) == plVersion {
+				wsURL := fmt.Sprintf("ws://%s:%d/", ip, browserRunServerPort)
+				return &BrowserSidecar{ContainerName: name, IP: ip, CDPURL: cdpURL, RunServerWSURL: wsURL}, false, nil
+			}
+		}
+		// Exists but unhealthy / version-mismatched: torch then restart.
+		stopBrowserSidecar(ctx, name)
+	}
+	bs, err := runBrowserSidecar(ctx, name, plVersion)
+	if err != nil {
+		// Concurrency: a sibling `up` may have created it between our check and
+		// run ("already exists"). Re-probe and reuse if it's now healthy.
+		if containerExists(ctx, name) {
+			if ip, ipErr := waitForBrowserIP(ctx, name, 5*time.Second); ipErr == nil {
+				cdpURL := fmt.Sprintf("http://%s:%d", ip, browserCDPPort)
+				if waitForCDP(ctx, cdpURL, 10*time.Second) == nil {
+					wsURL := fmt.Sprintf("ws://%s:%d/", ip, browserRunServerPort)
+					return &BrowserSidecar{ContainerName: name, IP: ip, CDPURL: cdpURL, RunServerWSURL: wsURL}, false, nil
+				}
+			}
+		}
+		return nil, false, err
+	}
+	return bs, true, nil
+}
+
+// sidecarVersion reads the cspace.playwright-version recorded on the running
+// sidecar (the --label from runBrowserSidecar). Returns "" if it can't be
+// read, which forces a conservative restart on reuse.
+func sidecarVersion(ctx context.Context, name string) string {
+	out, err := exec.CommandContext(ctx, "container", "inspect", name).Output()
+	if err != nil {
+		return ""
+	}
+	// cspace.playwright-version appears once, as "<key>":"<value>" or
+	// "key=value" in the labels/env block. Extract the value after the marker.
+	s := string(out)
+	const marker = "cspace.playwright-version"
+	i := strings.Index(s, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := s[i+len(marker):]
+	// skip non-version chars (": =\") then read until the next quote/space/comma
+	rest = strings.TrimLeft(rest, "\":= ")
+	end := strings.IndexAny(rest, "\", \n}")
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
 }
 
 // detectPlaywrightVersion reads the project's @playwright/test pin from

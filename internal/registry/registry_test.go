@@ -201,3 +201,25 @@ func TestFreePort(t *testing.T) {
 		t.Fatalf("expected ephemeral port, got %d", p)
 	}
 }
+
+func TestCountForProject(t *testing.T) {
+	r := &Registry{Path: filepath.Join(t.TempDir(), "reg.json")}
+	for _, e := range []Entry{
+		{Project: "alpha", Name: "mercury", IP: "10.0.0.1"},
+		{Project: "alpha", Name: "venus", IP: "10.0.0.2"},
+		{Project: "beta", Name: "mercury", IP: "10.0.0.3"},
+	} {
+		if err := r.Register(e); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+	}
+	for proj, want := range map[string]int{"alpha": 2, "beta": 1, "gamma": 0} {
+		got, err := r.CountForProject(proj)
+		if err != nil {
+			t.Fatalf("count %s: %v", proj, err)
+		}
+		if got != want {
+			t.Errorf("CountForProject(%q) = %d, want %d", proj, got, want)
+		}
+	}
+}

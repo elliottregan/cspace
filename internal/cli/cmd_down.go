@@ -154,9 +154,11 @@ func (s *substrateDowner) IP(ctx context.Context, name string) (string, error) {
 	return "", fmt.Errorf("not implemented")
 }
 
-// teardownSandbox stops the canonical container, stops a browser sidecar
-// if registered, and unregisters the entry. When wipeState is true (the
-// `cspace down` default), it also reclaims the per-sandbox clone,
+// teardownSandbox stops the canonical container, stops the per-instance
+// browser sidecar (a no-op in the shared-singleton case), unregisters
+// the entry, then ref-counts the shared browser singleton — stopping it
+// only when this was the project's last sandbox. When wipeState is true
+// (the `cspace down` default), it also reclaims the per-sandbox clone,
 // sessions, and substrate-managed volumes so the next `cspace up <same
 // name>` starts fresh. Permissive on missing entries — a stale container
 // could still be running, so we always issue Stop by name regardless of
@@ -169,8 +171,6 @@ func teardownSandbox(
 	out io.Writer,
 	wipeState bool,
 ) {
-	entry, _ := r.Lookup(project, name)
-
 	// Tear down devcontainer-defined sidecars (e.g., database, cache) before
 	// stopping the main sandbox. Non-fatal; print a warning but continue.
 	//
@@ -213,13 +213,21 @@ func teardownSandbox(
 
 	_ = a.Stop(ctx, fmt.Sprintf("cspace-%s-%s", project, name))
 
-	// Stop the sidecar AFTER the sandbox so the agent's outstanding
-	// CDP connections drain naturally. stopBrowserSidecar is idempotent.
-	if entry.BrowserContainer != "" {
-		stopBrowserSidecar(ctx, entry.BrowserContainer)
-	}
+	// Per-instance (opt-out / --no-shared-browser) sidecar: stop this sandbox's
+	// own browser. Idempotent and a no-op in the shared case (no such container).
+	stopBrowserSidecar(ctx, browserContainerName(project, name))
 
+	// Remove this instance from the registry BEFORE counting so it is not
+	// included in the remaining-sandboxes tally.
 	_ = r.Unregister(project, name)
+
+	// Shared browser sidecar: ref-counted — stop it only when this was the last
+	// sandbox in the project. Idempotent and a no-op when no singleton exists.
+	if remaining, err := r.CountForProject(project); err != nil {
+		_, _ = fmt.Fprintf(out, "[cspace] warning: registry count during browser teardown: %v\n", err)
+	} else if remaining == 0 {
+		stopBrowserSidecar(ctx, browserSingletonName(project))
+	}
 
 	if wipeState {
 		wipeSandboxState(ctx, a, project, name, out)

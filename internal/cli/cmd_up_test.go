@@ -10,6 +10,7 @@ import (
 	"time"
 
 	v2 "github.com/elliottregan/cspace/internal/compose/v2"
+	"github.com/elliottregan/cspace/internal/config"
 	"github.com/elliottregan/cspace/internal/devcontainer"
 	"github.com/spf13/cobra"
 )
@@ -327,6 +328,30 @@ func TestJoinPostCmd(t *testing.T) {
 			got := joinPostCmd(c.in)
 			if got != c.want {
 				t.Fatalf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestResolveSharedBrowser(t *testing.T) {
+	b := func(v bool) *bool { return &v }
+	cases := []struct {
+		name      string
+		cfgShared *bool
+		noShared  bool
+		want      bool
+	}{
+		{"default shared", nil, false, true},
+		{"config true", b(true), false, true},
+		{"config false", b(false), false, false},
+		{"flag off default", nil, true, false},
+		{"flag overrides config true", b(true), true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveSharedBrowser(config.BrowserConfig{Shared: tc.cfgShared}, tc.noShared)
+			if got != tc.want {
+				t.Errorf("got %v want %v", got, tc.want)
 			}
 		})
 	}

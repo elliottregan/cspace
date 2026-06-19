@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/elliottregan/cspace/internal/config"
 	"github.com/elliottregan/cspace/internal/devcontainer"
 	"github.com/elliottregan/cspace/internal/orchestrator"
 	"github.com/elliottregan/cspace/internal/overlay"
@@ -37,6 +38,7 @@ func newUpCmd() *cobra.Command {
 	var baseBranch string
 	var workBranch string
 	var noBrowser bool
+	var noSharedBrowser bool
 	var cpus int
 	var memoryMiB int
 	var noOverlay bool
@@ -538,7 +540,20 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				// fail with 428 Precondition Required; tracking the
 				// project pin avoids that without dictating a version.
 				plVersion := detectPlaywrightVersion(cfg.ProjectRoot)
-				bs, berr := startBrowserSidecar(ctx, project, name, plVersion)
+				var b config.BrowserConfig
+				if cfg != nil {
+					b = cfg.Browser
+				}
+				shared := resolveSharedBrowser(b, noSharedBrowser)
+				var bs *BrowserSidecar
+				var startedNew bool
+				var berr error
+				if shared {
+					bs, startedNew, berr = ensureSharedBrowserSidecar(ctx, project, plVersion)
+				} else {
+					bs, berr = startBrowserSidecar(ctx, project, name, plVersion)
+					startedNew = true
+				}
 				if berr != nil {
 					return fmt.Errorf("browser sidecar: %w", berr)
 				}
@@ -558,12 +573,14 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				// or preview server running inside the workspace from
 				// the browser sidecar. Hosts entry written below once
 				// the workspace IP is known.
-				env["CSPACE_WORKSPACE_HOST"] = "workspace"
+				env["CSPACE_WORKSPACE_HOST"] = workspaceFriendlyHost(name, project)
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 					"browser sidecar: %s (cdp %s, run-server %s)\n",
 					bs.ContainerName, bs.CDPURL, bs.RunServerWSURL)
 				defer func() {
-					if err != nil {
+					// Only tear down a sidecar THIS up created. A reused
+					// shared singleton is left for the instances still using it.
+					if err != nil && startedNew {
 						stopBrowserSidecar(context.Background(), bs.ContainerName)
 					}
 				}()
@@ -658,17 +675,10 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			}
 
 			// If a browser sidecar is running, inject `workspace` into
-			// /etc/hosts on BOTH sides so http://workspace:<port> is a
-			// universal URL: scripts inside the workspace use 127.0.0.1
-			// (preview server is local), the browser running in the
-			// sidecar uses the workspace's vmnet IP. e2e flows can then
-			// use the same BASE_URL for both the readiness probe and
-			// the URL Playwright opens. Best-effort.
+			// /etc/hosts inside the workspace container so
+			// http://workspace:<port> resolves to 127.0.0.1 (the
+			// preview server running locally). Best-effort.
 			if browserSidecar != nil {
-				if hErr := InjectWorkspaceHost(ctx, browserSidecar.ContainerName, ip); hErr != nil {
-					_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
-						"[cspace] warning: inject workspace host into browser sidecar: %v\n", hErr)
-				}
 				if hErr := InjectWorkspaceHost(ctx, containerName, "127.0.0.1"); hErr != nil {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
 						"[cspace] warning: inject workspace host into workspace: %v\n", hErr)
@@ -693,22 +703,6 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 					_ = a.Stop(context.Background(), containerName)
 					err = fmt.Errorf("orchestrate sidecars: %w", upErr)
 					return err
-				}
-				// Extend the browser sidecar's /etc/hosts with the compose
-				// sidecar IPs the orchestrator just resolved. Without this,
-				// headless Chromium can't reach `convex-backend:3210` (the
-				// direct URL Convex returns for storage uploads, etc.) and
-				// fails the fetch with ERR_NAME_NOT_RESOLVED — even though
-				// the WebSocket proxy in the workspace handles every other
-				// Convex call. The workspace and other compose microVMs
-				// already get this map via the orchestrator's own injection.
-				if browserSidecar != nil {
-					hosts := orch.ServiceIPs()
-					hosts["workspace"] = ip
-					if hErr := InjectHosts(ctx, browserSidecar.ContainerName, hosts); hErr != nil {
-						_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
-							"[cspace] warning: extend browser sidecar hosts: %v\n", hErr)
-					}
 				}
 				// Write extracted env vars (e.g. CONVEX_SELF_HOSTED_ADMIN_KEY)
 				// to <sessionsHostDir>/extracted.env on the host. The sandbox's
@@ -834,6 +828,8 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 		"create a fresh branch off baseBranch for the sandbox's work (use `auto` for the historical cspace/<sandbox> shape, or pass an explicit name like `issue/538-fix`); empty = stay on baseBranch")
 	cmd.Flags().BoolVar(&noBrowser, "no-browser", false,
 		"skip the default Playwright browser sidecar (the agent's playwright-mcp / chrome-devtools-mcp will fall back to launching their own browser, which fails on ARM64)")
+	cmd.Flags().BoolVar(&noSharedBrowser, "no-shared-browser", false,
+		"use a per-sandbox browser sidecar instead of the shared project browser (default: shared)")
 	cmd.Flags().IntVar(&cpus, "cpus", 0,
 		"CPU cap for this sandbox (overrides .cspace.json resources.cpus and the default of 4)")
 	cmd.Flags().IntVar(&memoryMiB, "memory", 0,
@@ -1220,6 +1216,20 @@ func resolveBrowserEnabled(dcBrowser *bool, noBrowser bool, projectCDPURL string
 	default:
 		return browserDecision{skipReason: "customizations.cspace.browser=false"}
 	}
+}
+
+// resolveSharedBrowser decides whether a project's sandboxes share one
+// browser sidecar. Default true; .cspace.json browser.shared overrides the
+// default; --no-shared-browser overrides config (applied last = flag wins).
+func resolveSharedBrowser(cfgBrowser config.BrowserConfig, noSharedBrowser bool) bool {
+	shared := true
+	if cfgBrowser.Shared != nil {
+		shared = *cfgBrowser.Shared
+	}
+	if noSharedBrowser {
+		shared = false
+	}
+	return shared
 }
 
 // discoverClaudeOauth is a seam so tests can stub host OAuth discovery without

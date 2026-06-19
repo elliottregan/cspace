@@ -169,7 +169,11 @@ func runRegistryPrune(out io.Writer, dryRun bool) error {
 	pruneCount := 0
 	clearedBrowserCount := 0
 	stuckBootingCount := 0
+	// Track every project that had an entry this run so we can check for
+	// orphaned shared browser singletons after the per-entry loop.
+	seenProjects := map[string]struct{}{}
 	for _, e := range entries {
+		seenProjects[e.Project] = struct{}{}
 		sandboxAlive := containerExists(ctx, containerNameForEntry(e))
 		switch {
 		case !sandboxAlive:
@@ -214,8 +218,37 @@ func runRegistryPrune(out io.Writer, dryRun bool) error {
 		}
 	}
 
+	// Shared browser singleton backstop: if a project's last sandbox died
+	// abnormally, cspace down's ref-counted stop never ran, leaving the
+	// heavyweight browser microVM running indefinitely. After the per-entry
+	// loop, for every project that appeared in the registry this run, check
+	// whether any live sandboxes remain. If none do and the shared singleton
+	// container still exists, stop it now.
+	stoppedSingletonCount := 0
+	for project := range seenProjects {
+		remaining, err := r.CountForProject(project)
+		if err != nil {
+			_, _ = fmt.Fprintf(out, "warning: registry count for %s: %v\n", project, err)
+			continue
+		}
+		if remaining > 0 {
+			continue
+		}
+		singletonName := browserSingletonName(project)
+		if !containerExists(ctx, singletonName) {
+			continue
+		}
+		if dryRun {
+			_, _ = fmt.Fprintf(out, "would stop shared browser sidecar: %s\n", singletonName)
+		} else {
+			stopBrowserSidecar(ctx, singletonName)
+			_, _ = fmt.Fprintf(out, "stopped shared browser sidecar: %s\n", singletonName)
+		}
+		stoppedSingletonCount++
+	}
+
 	switch {
-	case pruneCount == 0 && clearedBrowserCount == 0 && stuckBootingCount == 0:
+	case pruneCount == 0 && clearedBrowserCount == 0 && stuckBootingCount == 0 && stoppedSingletonCount == 0:
 		_, _ = fmt.Fprintln(out, "no dead entries to prune")
 	case pruneCount == 0 && clearedBrowserCount == 0:
 		// Only stuck-booting entries — nothing to prune, but the warnings

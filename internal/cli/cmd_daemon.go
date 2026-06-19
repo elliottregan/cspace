@@ -211,22 +211,30 @@ func runDaemonServe() error {
 			os.Exit(1)
 		}
 	}()
-	// Gateway bind — best-effort. Containers query 192.168.64.1:5354
-	// for cspace.test lookups (via dnsmasq forwarder inside the
-	// sandbox). Failure here just means in-container hostname
-	// resolution stops working; the host path is unaffected.
+	// Gateway bind — best-effort WITH RETRY. The vmnet bridge that owns
+	// 192.168.64.1 doesn't exist until the first container boots, and the
+	// daemon is spawned by `cspace up` BEFORE that — so the initial bind
+	// loses a startup race. Retry until it binds so in-container
+	// *.cspace.test resolution (which the shared browser sidecar depends on)
+	// comes up shortly after the first sandbox starts. The host-loopback
+	// listener above is unaffected.
 	go func() {
-		server := &dns.Server{Addr: daemonDNSGatewayAddr, Net: "udp", Handler: dh}
-		log.Printf("cspace daemon: DNS listening on %s/udp (containers)", daemonDNSGatewayAddr)
-		if err := server.ListenAndServe(); err != nil {
-			log.Printf("WARN: cspace daemon DNS UDP bind on %s failed: %v", daemonDNSGatewayAddr, err)
-			log.Printf("      in-container *.cspace.test lookups will NXDOMAIN until this is resolved.")
+		for {
+			server := &dns.Server{Addr: daemonDNSGatewayAddr, Net: "udp", Handler: dh}
+			log.Printf("cspace daemon: DNS listening on %s/udp (containers)", daemonDNSGatewayAddr)
+			err := server.ListenAndServe()
+			log.Printf("WARN: cspace daemon DNS UDP bind on %s failed: %v; retrying in 3s "+
+				"(in-container *.cspace.test lookups NXDOMAIN until this binds)", daemonDNSGatewayAddr, err)
+			time.Sleep(3 * time.Second)
 		}
 	}()
 	go func() {
-		server := &dns.Server{Addr: daemonDNSGatewayAddr, Net: "tcp", Handler: dh}
-		if err := server.ListenAndServe(); err != nil {
-			log.Printf("WARN: cspace daemon DNS TCP bind on %s failed: %v", daemonDNSGatewayAddr, err)
+		for {
+			server := &dns.Server{Addr: daemonDNSGatewayAddr, Net: "tcp", Handler: dh}
+			if err := server.ListenAndServe(); err != nil {
+				log.Printf("WARN: cspace daemon DNS TCP bind on %s failed: %v; retrying in 3s", daemonDNSGatewayAddr, err)
+			}
+			time.Sleep(3 * time.Second)
 		}
 	}()
 

@@ -606,3 +606,13 @@ func TestConfigCoordinatorModelEmptyByDefault(t *testing.T) {
 		t.Errorf("CoordinatorModel default = %q, want empty", cfg.Claude.CoordinatorModel)
 	}
 }
+
+func TestConfigBrowserSharedFalse(t *testing.T) {
+	cfg, err := loadConfigFromJSON(t, `{"browser":{"shared":false}}`)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Browser.Shared == nil || *cfg.Browser.Shared != false {
+		t.Fatalf("browser.shared: got %v, want explicit false", cfg.Browser.Shared)
+	}
+}

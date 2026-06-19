@@ -172,10 +172,29 @@ does not need the compose-sidecar opt-in.
   both try to create the singleton. `container run --name` errors on the second
   ("already exists"); treat that as "reuse" and inspect the existing one.
 - **Stale singleton after crash:** a singleton left running with zero live
-  instances is reaped by `registry prune` / the daemon idle path.
+  instances is reaped by `cspace registry prune` — which, because the singleton
+  name is derived (not stored in a registry entry), must explicitly stop
+  `browserSingletonName(project)` for any project with `CountForProject == 0`
+  (NOT covered by the daemon idle path, which only exits the daemon process and
+  never stops containers).
+- **`down` during `up` (narrow TOCTOU):** the singleton is created early in
+  `up` but the instance isn't registered until later. A `down` of a project's
+  only still-booting instance, racing its `up` before registration, would read
+  `CountForProject == 0` and stop the singleton out from under the live `up`.
+  Pre-existing registration-ordering window; requires unusual concurrent
+  operator action; accepted for this phase.
 - **`CSPACE_WORKSPACE_HOST` consumers:** anything still hardcoding bare
   `workspace` (instead of reading the env var) breaks under sharing. Document the
   contract; resume-redux already complies.
+- **In-container friendly DNS is now load-bearing (daemon dependency):** because
+  the shared browser resolves the workspace via `.cspace.test` (no bare-name
+  `/etc/hosts` injection), the cspace daemon's **gateway** DNS listener
+  (`192.168.64.1:5354`) must be up. It binds the vmnet bridge IP, which doesn't
+  exist until the first container boots — and `cspace up` spawns the daemon
+  before that — so the one-shot bind lost a startup race and NXDOMAINed
+  in-container lookups. This phase therefore makes the gateway listener **retry**
+  its bind (Phase 2 amends the spec's earlier "no daemon change" assumption; the
+  host-loopback listener is unaffected).
 
 ## Testing / acceptance
 

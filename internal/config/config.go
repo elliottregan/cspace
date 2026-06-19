@@ -37,6 +37,7 @@ type Config struct {
 	Services   string                   `json:"services"`
 	PostSetup  string                   `json:"post_setup"`
 	Resources  ResourcesConfig          `json:"resources,omitempty"`
+	Browser    BrowserConfig            `json:"browser,omitempty"`
 
 	// ServiceURLs declares Traefik-routed project services whose URLs cspace
 	// should inject into the main container as env vars. Key is the subdomain
@@ -109,6 +110,14 @@ type AgentConfig struct {
 type PluginsConfig struct {
 	Enabled bool     `json:"enabled"`
 	Install []string `json:"install"`
+}
+
+// BrowserConfig controls the cspace browser sidecar topology. Shared is a
+// tristate: nil = unset (defaults to shared=true); a pointer lets the
+// --no-shared-browser flag distinguish "config said true" from "config left it
+// unset" when overriding.
+type BrowserConfig struct {
+	Shared *bool `json:"shared,omitempty"`
 }
 
 // Load reads and merges configuration from all sources.
