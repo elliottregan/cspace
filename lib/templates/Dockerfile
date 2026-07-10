@@ -171,13 +171,21 @@ RUN chmod +x /opt/cspace/features/*.sh
 
 # cspace-shipped Claude Code plugins (local marketplace source). Baked
 # read-only; cspace-install-plugins.sh registers /opt/cspace/plugins as a
-# filesystem marketplace (no network). The `RUN test` guard turns the known
-# Apple Container "COPY <dir> yields empty dir" quirk into a loud build failure
-# instead of a silent missing-plugin at runtime.
+# filesystem marketplace (no network).
+#
+# Copied file-by-file, NOT as `COPY lib/plugins /opt/cspace/plugins`: Apple
+# Container (0.12.x) drops the entire contents of a whole-directory COPY during
+# build-context transfer, yielding an empty target dir. Single-file COPYs are
+# unaffected. Add a line here whenever a file is added under lib/plugins/. The
+# `RUN test` guard turns a missed file into a loud build failure instead of a
+# silent missing-plugin at runtime.
 RUN mkdir -p /opt/cspace/plugins
-COPY lib/plugins /opt/cspace/plugins
+COPY lib/plugins/.claude-plugin/marketplace.json /opt/cspace/plugins/.claude-plugin/marketplace.json
+COPY lib/plugins/cspace-browser/.mcp.json /opt/cspace/plugins/cspace-browser/.mcp.json
+COPY lib/plugins/cspace-browser/.claude-plugin/plugin.json /opt/cspace/plugins/cspace-browser/.claude-plugin/plugin.json
 RUN test -f /opt/cspace/plugins/.claude-plugin/marketplace.json \
- && test -f /opt/cspace/plugins/cspace-browser/.mcp.json
+ && test -f /opt/cspace/plugins/cspace-browser/.mcp.json \
+ && test -f /opt/cspace/plugins/cspace-browser/.claude-plugin/plugin.json
 USER dev
 
 # Version label set at build time via `--build-arg CSPACE_VERSION=...`.
