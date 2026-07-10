@@ -148,6 +148,31 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				maybeNudgeMissingAnthropicAuth(cmd.ErrOrStderr(), preflightEnv)
 			}
 
+			// Validate the GitHub credential BEFORE the overlay, mirroring the
+			// Anthropic pre-flight above. A stale GH_TOKEN /
+			// GITHUB_PERSONAL_ACCESS_TOKEN (e.g. leaked in from a project .env
+			// and picked up as a host-shell override below) otherwise shadows
+			// the valid `gh auth token` and silently breaks git/gh in the
+			// sandbox. ghTokenOverride carries a validated fallback down to the
+			// GitHub env assembly so it wins over the shadowing value.
+			ghTokenOverride := ""
+			effectiveGH := loaded["GH_TOKEN"]
+			if effectiveGH == "" {
+				effectiveGH = loaded["GITHUB_TOKEN"]
+			}
+			if effectiveGH == "" {
+				effectiveGH = loaded["GITHUB_PERSONAL_ACCESS_TOKEN"]
+			}
+			if k := os.Getenv("GH_TOKEN"); k != "" {
+				effectiveGH = k
+			}
+			if reconciled, warn := secrets.ReconcileGitHubToken(effectiveGH); warn != "" {
+				if reconciled != effectiveGH {
+					ghTokenOverride = reconciled
+				}
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", warn)
+			}
+
 			// Boot from here on: route in-flight chatter to a buffer if
 			// the planet overlay is going to run, so bubbletea isn't
 			// fighting other writes for the terminal. Buffer is flushed
@@ -417,6 +442,11 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// Host shell env wins for explicitly-set keys (e.g. one-off override).
 			if k := os.Getenv("GH_TOKEN"); k != "" {
 				env["GH_TOKEN"] = k
+			}
+			// A validated fallback from the GitHub pre-flight wins last of all:
+			// it replaces a token that GitHub definitively rejected (401).
+			if ghTokenOverride != "" {
+				env["GH_TOKEN"] = ghTokenOverride
 			}
 			propagateFamily(env, []string{"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN"})
 
