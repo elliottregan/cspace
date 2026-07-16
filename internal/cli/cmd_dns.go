@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/miekg/dns"
 	"github.com/spf13/cobra"
 )
 
@@ -296,10 +295,8 @@ func runDnsStatus(out io.Writer) error {
 // probeDnsDaemon issues a UDP query for a synthetic name and returns true if
 // the daemon responds at all (NXDOMAIN/NOERROR both count — we just need a
 // reply on the wire, which proves the daemon is bound and listening).
+// Delegates to probes.go's probeDnsAnswering (shared with the doctor
+// probes) with the loopback address baked in.
 func probeDnsDaemon(timeout time.Duration) bool {
-	msg := new(dns.Msg)
-	msg.SetQuestion("status-probe.cspace.test.", dns.TypeA)
-	c := &dns.Client{Net: "udp", Timeout: timeout}
-	resp, _, err := c.Exchange(msg, "127.0.0.1:"+dnsLocalPort)
-	return err == nil && resp != nil
+	return probeDnsAnswering("127.0.0.1:"+dnsLocalPort, timeout)
 }

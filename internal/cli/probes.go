@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/elliottregan/cspace/internal/registry"
+	"github.com/elliottregan/cspace/internal/substrate"
 	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
+	"github.com/miekg/dns"
 )
 
 // ProbeStatus is the per-check verdict.
@@ -141,29 +143,163 @@ func ProbeDaemon(ctx context.Context) ProbeResult {
 		})
 	}
 
-	// DNS UDP — share probeDnsDaemon from cmd_dns.go.
-	if probeDnsDaemon(1 * time.Second) {
-		r.Checks = append(r.Checks, ProbeCheck{
+	// DNS UDP — loopback listener, then the container-facing gateway
+	// listener and an actual in-container resolution, all via the shared
+	// probeDnsAt helper.
+	r.Checks = append(r.Checks, probeDnsAt("127.0.0.1:"+dnsLocalPort, "DNS", false /*failIsWarn*/))
+	r.Checks = append(r.Checks, probeGatewayDNS())
+	r.Checks = append(r.Checks, probeInContainerDNS())
+	return r
+}
+
+// probeDnsAnswering issues a synthetic UDP DNS query at addr and reports
+// whether anything answered. NXDOMAIN/NOERROR both count as "answering" —
+// this proves the listener is bound and alive, not that the record itself
+// resolves correctly.
+func probeDnsAnswering(addr string, timeout time.Duration) bool {
+	msg := new(dns.Msg)
+	msg.SetQuestion("status-probe.cspace.test.", dns.TypeA)
+	c := &dns.Client{Net: "udp", Timeout: timeout}
+	resp, _, err := c.Exchange(msg, addr)
+	return err == nil && resp != nil
+}
+
+// probeDnsAt checks a single UDP DNS listener and reports a ProbeCheck.
+//
+// When failIsWarn is true, any failure to get an answer degrades to
+// ProbeWarn rather than ProbeFail — used for the container-facing gateway
+// listener (192.168.64.1:5354), which simply doesn't exist until a sandbox
+// has booted and claimed a vmnet gateway IP; a hard Fail there would fail
+// `doctor` in CI where no vmnet bridge exists at all.
+//
+// When failIsWarn is false (the always-on loopback daemon), a failure is
+// further split: if the UDP port itself refuses a connection, that's a
+// Fail; if the port accepts a connection but the synthetic query goes
+// unanswered, that's a Warn (something is listening but not the cspace
+// daemon).
+func probeDnsAt(addr, label string, failIsWarn bool) ProbeCheck {
+	if probeDnsAnswering(addr, 1*time.Second) {
+		return ProbeCheck{
 			Status: ProbePass,
-			Title:  "DNS responding on 127.0.0.1:" + dnsLocalPort + "/udp",
-		})
-	} else {
-		// Differentiate "port closed" vs "port open but not answering".
-		if c, err := net.DialTimeout("udp", "127.0.0.1:"+dnsLocalPort, 500*time.Millisecond); err == nil {
-			_ = c.Close()
-			r.Checks = append(r.Checks, ProbeCheck{
-				Status:  ProbeWarn,
-				Title:   "DNS port " + dnsLocalPort + "/udp open but not answering queries",
-				Details: []string{"another process may hold UDP/" + dnsLocalPort + "; check `lsof -nP -iUDP:" + dnsLocalPort + "`"},
-			})
-		} else {
-			r.Checks = append(r.Checks, ProbeCheck{
-				Status: ProbeFail,
-				Title:  "DNS not responding on 127.0.0.1:" + dnsLocalPort + "/udp",
-			})
+			Title:  label + " responding on " + addr + "/udp",
 		}
 	}
-	return r
+	if failIsWarn {
+		return ProbeCheck{
+			Status:  ProbeWarn,
+			Title:   label + " not responding on " + addr + "/udp",
+			Details: []string{"expected until a sandbox has booted and claimed a vmnet gateway IP"},
+		}
+	}
+	// Differentiate "port closed" vs "port open but not answering".
+	if c, err := net.DialTimeout("udp", addr, 500*time.Millisecond); err == nil {
+		_ = c.Close()
+		return ProbeCheck{
+			Status:  ProbeWarn,
+			Title:   label + " port open but not answering queries at " + addr,
+			Details: []string{"another process may hold that UDP port; check `lsof -nP -iUDP:" + dnsLocalPort + "`"},
+		}
+	}
+	return ProbeCheck{
+		Status: ProbeFail,
+		Title:  label + " not responding on " + addr + "/udp",
+	}
+}
+
+// probeGatewayDNS checks the container-facing gateway DNS listener
+// (192.168.64.1:5354) that sandboxes query from inside their devcontainer.
+// Unlike the loopback listener, this address is only bound once at least
+// one sandbox has booted and claimed a vmnet gateway IP, so a failure here
+// always degrades to Warn, never Fail.
+func probeGatewayDNS() ProbeCheck {
+	return probeDnsAt("192.168.64.1:"+dnsLocalPort, "container-facing DNS (gateway)", true /*failIsWarn*/)
+}
+
+// probeInContainerDNS fulfils the "in-container resolution" half of the
+// gateway+in-container promise: it picks one alive sandbox from the
+// registry and resolves its own friendly hostname from inside its
+// devcontainer via a single `getent hosts` exec. Doctor probes must stay
+// fast, so — unlike verifyInContainerResolution's 3x2s boot-time retry loop
+// — this makes exactly one attempt.
+func probeInContainerDNS() ProbeCheck {
+	path, err := registry.DefaultPath()
+	if err != nil {
+		return ProbeCheck{
+			Status:  ProbeWarn,
+			Title:   "in-container DNS: registry path unavailable",
+			Details: []string{err.Error()},
+		}
+	}
+	reg := &registry.Registry{Path: path}
+	entries, err := reg.List()
+	if err != nil {
+		return ProbeCheck{
+			Status:  ProbeWarn,
+			Title:   "in-container DNS: registry read failed",
+			Details: []string{err.Error()},
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	entry, ok := firstAliveEntry(ctx, entries)
+	if !ok {
+		return ProbeCheck{
+			Status: ProbePass,
+			Title:  "in-container DNS (no sandbox to test)",
+		}
+	}
+
+	a := applecontainer.New()
+	exec := func(execCtx context.Context, container string, argv ...string) ([]byte, error) {
+		res, execErr := a.Exec(execCtx, container, argv, substrate.ExecOpts{})
+		return []byte(res.Stdout), execErr
+	}
+	return checkInContainerDNSOnce(ctx, exec, containerNameForEntry(entry), workspaceFriendlyHost(entry.Name, entry.Project))
+}
+
+// firstAliveEntry returns the first registry entry that has an assigned IP,
+// a live container, and isn't still mid-boot. Mirrors the aliveness check
+// ProbeSandboxes uses.
+func firstAliveEntry(ctx context.Context, entries []registry.Entry) (registry.Entry, bool) {
+	for _, e := range entries {
+		if e.IP == "" {
+			continue
+		}
+		if e.State == "starting" {
+			continue
+		}
+		if !containerExists(ctx, containerNameForEntry(e)) {
+			continue
+		}
+		return e, true
+	}
+	return registry.Entry{}, false
+}
+
+// checkInContainerDNSOnce runs a single `getent hosts` exec inside container
+// and maps the outcome to a ProbeCheck: resolves -> Pass; doesn't resolve or
+// exec error -> Warn (a dead daemon here is advisory, not a doctor failure).
+func checkInContainerDNSOnce(ctx context.Context, exec containerExecFn, container, host string) ProbeCheck {
+	out, err := exec(ctx, container, "getent", "hosts", host)
+	if err != nil {
+		return ProbeCheck{
+			Status:  ProbeWarn,
+			Title:   "in-container DNS: " + host + " did not resolve inside " + container,
+			Details: []string{err.Error()},
+		}
+	}
+	if strings.TrimSpace(string(out)) == "" {
+		return ProbeCheck{
+			Status: ProbeWarn,
+			Title:  "in-container DNS: " + host + " did not resolve inside " + container,
+		}
+	}
+	return ProbeCheck{
+		Status: ProbePass,
+		Title:  "in-container DNS: " + host + " resolves inside " + container,
+	}
 }
 
 // ProbeDns reports the macOS resolver state for *.<dnsDomain>. On non-darwin
