@@ -200,8 +200,9 @@ func startBrowserSidecar(ctx context.Context, project, sandbox, plVersion string
 }
 
 // InjectWorkspaceHost writes a /etc/hosts entry inside the browser sidecar
-// mapping `workspace` → workspaceIP. Convenience wrapper around InjectHosts
-// for the early-injection case where only the workspace IP is known.
+// mapping `workspace` → workspaceIP, so headless Chromium can resolve
+// http://workspace:<port> URLs back to the sandbox. Convenience wrapper
+// around InjectHosts for this single-alias case.
 func InjectWorkspaceHost(ctx context.Context, sidecarName, workspaceIP string) error {
 	if sidecarName == "" || workspaceIP == "" {
 		return nil
@@ -211,14 +212,9 @@ func InjectWorkspaceHost(ctx context.Context, sidecarName, workspaceIP string) e
 
 // InjectHosts writes a cspace-managed block to a sidecar microVM's
 // /etc/hosts mapping each hostname → IP. Replaces any prior cspace-injected
-// block (idempotent), so callers can re-issue with a wider map after more
-// IPs become known — for example, the browser sidecar gets just `workspace`
-// when the workspace boots, then the full set including convex-backend,
-// convex-dashboard, etc. once compose sidecars are up. Without this second
-// pass, headless Chromium fails fetches to direct sidecar URLs (e.g. Convex
-// storage upload's `http://convex-backend:3210/...` redirects) with
-// ERR_NAME_NOT_RESOLVED, since the sidecar's dnsmasq only forwards to public
-// resolvers and nothing knows the sandbox-internal hostnames.
+// block (idempotent). Currently used only to inject the `workspace` alias
+// (see InjectWorkspaceHost); other sandbox-internal hostnames are resolved
+// via daemon DNS rather than /etc/hosts.
 //
 // Best-effort: a single bash invocation, errors return up so callers can
 // log a warning and continue.
