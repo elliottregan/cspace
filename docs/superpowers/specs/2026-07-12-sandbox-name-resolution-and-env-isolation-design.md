@@ -213,9 +213,14 @@ env_file:
   would race and dirty the working tree. Dynamic values (admin keys, the
   self-hosted URL, the workspace host) stay in the existing
   `/sessions/extracted.env` channel.
-- **Precedence (stated honestly):** highest *among env_files only*. compose
-  `environment:`, devcontainer `containerEnv`, `.cspace/secrets.env`, and
-  `--env` all still beat it. Document this so users don't fight it.
+- **Precedence (stated honestly):** highest *among env_files only*. Compose
+  `environment:` (which includes `env_file`-resolved content, i.e. this file),
+  devcontainer `containerEnv`, and `--env` still beat it — but
+  `.cspace/secrets.env` does **not**; it merges into the env map *before*
+  compose `environment:` is applied, so `env_file` content (`.env.cspace`)
+  actually out-ranks it. Document this so users don't fight it. (Actual
+  shipped order: `env_file` out-ranks `secrets.env`; see
+  `docs/env-cspace.md`.)
 - **Absent locally → zero effect**, so the box-native workflow (`pnpm dev` with
   no container) is untouched — the core "doesn't enforce its usage" requirement.
 

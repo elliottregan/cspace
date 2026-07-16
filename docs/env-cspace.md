@@ -60,18 +60,35 @@ self-hosted backend URL, the workspace host) continue to ride the existing
 ## Precedence (stated honestly)
 
 `.env.cspace` only wins **among `env_file` entries** — specifically, it wins
-over `.env` because it's declared later in the `env_file:` list. It does
-**not** out-rank other env sources. All of the following still beat an
-`env_file`-sourced value for the same key:
+over `.env` because it's declared later in the `env_file:` list. Beyond that,
+here is the actual merge order `cspace up` applies (later steps overwrite
+earlier ones on key collision — see `internal/cli/cmd_up.go`):
 
-- Compose service `environment:` (explicit keys always beat `env_file:` per
-  the compose spec, independent of cspace)
-- devcontainer.json `containerEnv`
-- `.cspace/secrets.env` (cspace-delivered secrets — see below)
-- `cspace up --env KEY=VALUE`
+1. `.cspace/secrets.env` (cspace-delivered secrets) — merged into the env map
+   first (`cmd_up.go:250-252`).
+2. Compose service `environment:`, which includes whatever compose-go already
+   resolved from `env_file:` entries — i.e. **`.env` and `.env.cspace`** —
+   merges next (`cmd_up.go:285-291`), overwriting same-named keys from step 1.
+3. devcontainer.json `containerEnv` merges after that (`cmd_up.go:295-297`).
+4. `cspace up --env KEY=VALUE` merges last (`cmd_up.go:395-401`) and always
+   wins.
 
-Don't fight this: if a value declared in `.env.cspace` isn't taking effect,
-check whether one of the above is also setting that key.
+So, highest to lowest: **`--env` > devcontainer `containerEnv` > compose
+`env_file` (`.env.cspace` / `.env`) > `.cspace/secrets.env`**.
+
+**Security caveat:** because `.env.cspace` out-ranks `.cspace/secrets.env` in
+this order, a project that redeclares one of cspace's own secret key names
+(`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`,
+`GITHUB_PERSONAL_ACCESS_TOKEN`) in `.env.cspace` **silently overrides the
+delivered secret** — the sandbox ends up running with whatever `.env.cspace`
+set (often blank or stale) instead of the credential cspace loaded from the
+keychain/secrets file, with no warning. `.env.cspace` must not redeclare
+cspace secret keys.
+
+This ordering is arguably surprising — one might expect a cspace-delivered
+secret to always win over a project's committed override file — and is
+tracked as a possible follow-up. The above is what ships today, not an
+aspiration; don't design around a "secrets always win" assumption.
 
 ## Naming caveat
 
@@ -94,8 +111,10 @@ These two files solve different problems and shouldn't be confused:
 
 Avoid reusing one of cspace's own secret key names
 (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`,
-`GITHUB_PERSONAL_ACCESS_TOKEN`) as a key in `.env.cspace` — see the precedence
-note above.
+`GITHUB_PERSONAL_ACCESS_TOKEN`) as a key in `.env.cspace` — per the precedence
+note above, `.env.cspace` out-ranks `.cspace/secrets.env`, so reusing one of
+these keys silently overrides the delivered secret rather than the other way
+around.
 
 ## Inert on the local box
 
