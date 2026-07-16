@@ -36,10 +36,12 @@ func TestNewDaemonCommandIsDetached(t *testing.T) {
 	}
 }
 
-// A detached daemon must keep answering after its spawner exits. We build the
-// real binary, run a throwaway "spawner" that calls the same spawn path and
-// then exits, and assert the daemon is still up. DNS/HTTP ports are overridden
-// so this never collides with a developer's live daemon.
+// Verifies that the daemon detachment technique (Setsid + *os.File stdio) keeps
+// a "daemon serve" process alive after its spawner exits. This test hand-builds
+// the detachment wiring directly; production wiring in newDaemonCommand and
+// ensureRegistryDaemon is guarded separately by TestNewDaemonCommandIsDetached
+// plus code review. DNS/HTTP ports are overridden so the daemon never collides
+// with a developer's live instance.
 func TestDaemonSurvivesSpawnerExit(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds + spawns real processes")

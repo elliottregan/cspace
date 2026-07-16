@@ -194,8 +194,8 @@ func runDaemonServe() error {
 	// resolve <name>.cspace.test even though HTTP /lookup still works, and
 	// `cspace dns status` would (today) report "running" via the HTTP probe
 	// while users see broken name resolution. Exit non-zero so the parent
-	// (cspace up's ensureRegistryDaemon, which captures stderr) can surface
-	// the real error.
+	// (cspace up's ensureRegistryDaemon, which tails ~/.cspace/daemon.log on
+	// timeout) can surface the real error.
 	dh := daemonDNSHandler(r, &lastActivity)
 	listenAddr, gatewayAddr := daemonDNSAddrs()
 	dnsPort := listenAddr
