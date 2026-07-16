@@ -256,3 +256,32 @@ func TestLiveSandboxIP(t *testing.T) {
 		t.Errorf("want registry fallback 192.168.64.9, got %s", got)
 	}
 }
+
+// TestLiveSandboxIPNegativeCache verifies that a FAILING inspect is bound
+// to at most one call per name per daemonDNSTTL, same as a succeeding one.
+// Without negative-caching the failure, a name whose container is
+// permanently gone would re-invoke inspectContainerIP (and pay its full 2s
+// timeout) on every single DNS query, defeating the "at most one inspect
+// per name per TTL" bound the memo exists to provide.
+func TestLiveSandboxIPNegativeCache(t *testing.T) {
+	orig := inspectContainerIP
+	t.Cleanup(func() { inspectContainerIP = orig })
+	const container = "cspace-p-venus"
+	t.Cleanup(func() { sandboxIPMemo.Delete(container) })
+	sandboxIPMemo.Delete(container) // avoid colliding with any leftover entry
+
+	var calls int
+	inspectContainerIP = func(string) (string, error) {
+		calls++
+		return "", errContainerGone
+	}
+
+	for i := 0; i < 2; i++ {
+		if got := liveSandboxIP("p", "venus", "192.168.64.9"); got != "192.168.64.9" {
+			t.Errorf("call %d: want registry fallback 192.168.64.9, got %s", i, got)
+		}
+	}
+	if calls != 1 {
+		t.Errorf("want inspectContainerIP invoked exactly once (second call served from negative memo), got %d calls", calls)
+	}
+}

@@ -585,7 +585,10 @@ var sandboxIPMemo sync.Map
 // IP — vmnet reassigns freed IPs, so a stale registry entry can point at a
 // different live container). Memoized for the DNS TTL so it's at most one
 // inspect per name per daemonDNSTTL seconds, bounding the subprocess cost
-// on the DNS hot path.
+// on the DNS hot path — this bound applies whether the inspect succeeds or
+// fails: a failing inspect is negative-cached (empty IP, fresh timestamp)
+// so a name whose container is gone doesn't pay the inspect cost on every
+// query for the rest of the TTL window.
 // CAVEAT: when inspect can't answer (timeout/apiserver hung/container
 // gone) it falls back to the registry IP, which may still be stale — the
 // reassigned-IP hazard is reduced, not eliminated, in that failure window.
@@ -595,12 +598,19 @@ func liveSandboxIP(project, name, registryIP string) string {
 	m := v.(*ipMemo)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.ip != "" && time.Since(m.when) < daemonDNSTTL*time.Second {
-		return m.ip
+	if !m.when.IsZero() && time.Since(m.when) < daemonDNSTTL*time.Second {
+		// Recently attempted, success or failure: honor the memo without
+		// re-inspecting.
+		if m.ip != "" {
+			return m.ip
+		}
+		return registryIP
 	}
+	m.when = time.Now()
 	if ip, err := inspectContainerIP(container); err == nil && ip != "" {
-		m.ip, m.when = ip, time.Now()
+		m.ip = ip
 		return ip
 	}
+	m.ip = "" // negative-cache the failure so we don't re-inspect until TTL expiry
 	return registryIP
 }
