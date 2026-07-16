@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -9,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -372,7 +375,7 @@ func daemonDNSHandler(r *registry.Registry, lastActivity *atomic.Int64) dns.Hand
 				reply.Rcode = dns.RcodeNameError
 				continue
 			case 1:
-				ip = matches[0].IP
+				ip = liveSandboxIP(matches[0].Project, matches[0].Name, matches[0].IP)
 				if service != "" {
 					// 4-label query: redirect to the sidecar container
 					// `cspace-<project>-<sandbox>-<service>` and resolve
@@ -506,12 +509,12 @@ func waitPortFree(addr string, d time.Duration) {
 	}
 }
 
-// lookupSidecarIP resolves the vmnet IP of a compose-spawned sidecar by
-// shelling out to `container inspect`. Returns ("", nil) when the
-// sidecar isn't running. The DNS handler treats both empty IP and a
+// lookupSidecarIPCtx resolves the vmnet IP of a compose-spawned sidecar by
+// shelling out to `container inspect`, bounded by ctx. Returns ("", nil)
+// when the sidecar isn't running. The DNS handler treats both empty IP and a
 // non-nil error as NXDOMAIN.
-func lookupSidecarIP(name string) (string, error) {
-	out, err := exec.Command("container", "inspect", name).Output()
+func lookupSidecarIPCtx(ctx context.Context, name string) (string, error) {
+	out, err := exec.CommandContext(ctx, "container", "inspect", name).Output()
 	if err != nil {
 		// Apple Container exits non-zero only on transport-level error;
 		// missing containers come back as exit 0 with body "[]". Treat
@@ -535,4 +538,69 @@ func lookupSidecarIP(name string) (string, error) {
 		addr = addr[:i]
 	}
 	return addr, nil
+}
+
+// lookupSidecarIP is lookupSidecarIPCtx run with an unbounded context. It
+// exists to preserve the DNS handler's one existing sidecar-resolution call
+// site (the 3-label <service>.<sandbox>.<project> branch) unchanged; that
+// branch's own registry match already bounds how often it fires, so it
+// doesn't get the 2s deadline applied to the higher-frequency
+// liveSandboxIP path below.
+func lookupSidecarIP(name string) (string, error) {
+	return lookupSidecarIPCtx(context.Background(), name)
+}
+
+// errContainerGone is returned by test stubs of inspectContainerIP to
+// simulate a container that no longer exists (or an inspect that failed for
+// any other reason); liveSandboxIP treats any non-nil error the same way,
+// by falling back to the registry IP.
+var errContainerGone = errors.New("container not found")
+
+// inspectContainerIP is the package seam liveSandboxIP calls to get a
+// container's live IP; it's a var so tests can stub it without shelling
+// out. The 2s timeout bounds a single DNS answer's worst case if the Apple
+// Container apiserver is hung, rather than blocking indefinitely.
+var inspectContainerIP = func(container string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return lookupSidecarIPCtx(ctx, container)
+}
+
+// ipMemo holds the last inspected IP for one container plus when it was
+// fetched, guarded by its own mutex so concurrent DNS handler goroutines
+// resolving the same name serialize on one inspect instead of racing.
+type ipMemo struct {
+	mu   sync.Mutex
+	ip   string
+	when time.Time
+}
+
+// sandboxIPMemo maps container name -> *ipMemo. sync.Map because the DNS
+// handler runs one goroutine per query and this is a read-mostly cache
+// across many distinct sandbox names.
+var sandboxIPMemo sync.Map
+
+// liveSandboxIP prefers the container's currently-inspected IP over the
+// registry value (which goes stale when a sandbox restarts onto a new vmnet
+// IP — vmnet reassigns freed IPs, so a stale registry entry can point at a
+// different live container). Memoized for the DNS TTL so it's at most one
+// inspect per name per daemonDNSTTL seconds, bounding the subprocess cost
+// on the DNS hot path.
+// CAVEAT: when inspect can't answer (timeout/apiserver hung/container
+// gone) it falls back to the registry IP, which may still be stale — the
+// reassigned-IP hazard is reduced, not eliminated, in that failure window.
+func liveSandboxIP(project, name, registryIP string) string {
+	container := fmt.Sprintf("cspace-%s-%s", project, name)
+	v, _ := sandboxIPMemo.LoadOrStore(container, &ipMemo{})
+	m := v.(*ipMemo)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ip != "" && time.Since(m.when) < daemonDNSTTL*time.Second {
+		return m.ip
+	}
+	if ip, err := inspectContainerIP(container); err == nil && ip != "" {
+		m.ip, m.when = ip, time.Now()
+		return ip
+	}
+	return registryIP
 }

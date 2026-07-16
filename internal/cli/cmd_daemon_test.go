@@ -229,3 +229,30 @@ func TestStopRegistryDaemonKillsMatchingProcessAndFreesPorts(t *testing.T) {
 		t.Error("DNS port still accepting connections after stopRegistryDaemon returned")
 	}
 }
+
+// TestLiveSandboxIP verifies liveSandboxIP prefers the live inspected IP
+// over the registry's (potentially stale, post-vmnet-reassignment) IP, and
+// falls back to the registry IP when the inspect fails.
+//
+// Both assertions target the same (project, name) so they share a memo
+// entry; the memo is deliberately TTL'd (see liveSandboxIP) to bound
+// inspects on the DNS hot path, so the entry is cleared between the two
+// stub swaps below to simulate TTL expiry rather than asserting a stale
+// cache hit.
+func TestLiveSandboxIP(t *testing.T) {
+	orig := inspectContainerIP
+	t.Cleanup(func() { inspectContainerIP = orig })
+	const container = "cspace-p-mercury"
+	t.Cleanup(func() { sandboxIPMemo.Delete(container) })
+
+	inspectContainerIP = func(string) (string, error) { return "192.168.64.42", nil }
+	if got := liveSandboxIP("p", "mercury", "192.168.64.9"); got != "192.168.64.42" {
+		t.Errorf("want live 192.168.64.42, got %s", got)
+	}
+
+	sandboxIPMemo.Delete(container) // simulate TTL expiry before the next inspect
+	inspectContainerIP = func(string) (string, error) { return "", errContainerGone }
+	if got := liveSandboxIP("p", "mercury", "192.168.64.9"); got != "192.168.64.9" {
+		t.Errorf("want registry fallback 192.168.64.9, got %s", got)
+	}
+}
