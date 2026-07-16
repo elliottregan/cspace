@@ -43,6 +43,21 @@ const (
 	daemonIdleDefault = 30 * time.Minute
 )
 
+// daemonDNSAddrs returns the DNS listen/gateway addresses, allowing tests to
+// override the well-known defaults via env so they don't collide with a
+// developer's real daemon.
+func daemonDNSAddrs() (listen, gateway string) {
+	listen = daemonDNSListenAddr
+	if v := os.Getenv("CSPACE_DAEMON_DNS_ADDR"); v != "" {
+		listen = v
+	}
+	gateway = daemonDNSGatewayAddr
+	if v := os.Getenv("CSPACE_DAEMON_GATEWAY_ADDR"); v != "" {
+		gateway = v
+	}
+	return
+}
+
 func newDaemonCmd() *cobra.Command {
 	parent := &cobra.Command{
 		Use:   "daemon",
@@ -182,18 +197,19 @@ func runDaemonServe() error {
 	// (cspace up's ensureRegistryDaemon, which captures stderr) can surface
 	// the real error.
 	dh := daemonDNSHandler(r, &lastActivity)
-	dnsPort := daemonDNSListenAddr
-	if i := strings.LastIndex(daemonDNSListenAddr, ":"); i >= 0 {
-		dnsPort = daemonDNSListenAddr[i+1:]
+	listenAddr, gatewayAddr := daemonDNSAddrs()
+	dnsPort := listenAddr
+	if i := strings.LastIndex(listenAddr, ":"); i >= 0 {
+		dnsPort = listenAddr[i+1:]
 	}
 	// Loopback bind is fatal — it's how the host's /etc/resolver/
 	// cspace.test routes name lookups. Without it, friendly URLs
 	// don't work from the host browser at all.
 	go func() {
-		server := &dns.Server{Addr: daemonDNSListenAddr, Net: "udp", Handler: dh}
-		log.Printf("cspace daemon: DNS listening on %s/udp", daemonDNSListenAddr)
+		server := &dns.Server{Addr: listenAddr, Net: "udp", Handler: dh}
+		log.Printf("cspace daemon: DNS listening on %s/udp", listenAddr)
 		if err := server.ListenAndServe(); err != nil {
-			log.Printf("FATAL: cspace daemon DNS UDP bind on %s failed: %v", daemonDNSListenAddr, err)
+			log.Printf("FATAL: cspace daemon DNS UDP bind on %s failed: %v", listenAddr, err)
 			log.Printf("       another process may be using this port; check with `lsof -nP -iUDP:%s`", dnsPort)
 			log.Printf("       common culprits: another cspace daemon process, or mDNSResponder if 5353 was mistakenly chosen")
 			log.Printf("       cspace daemon cannot serve DNS without UDP; exiting")
@@ -201,10 +217,10 @@ func runDaemonServe() error {
 		}
 	}()
 	go func() {
-		server := &dns.Server{Addr: daemonDNSListenAddr, Net: "tcp", Handler: dh}
-		log.Printf("cspace daemon: DNS listening on %s/tcp", daemonDNSListenAddr)
+		server := &dns.Server{Addr: listenAddr, Net: "tcp", Handler: dh}
+		log.Printf("cspace daemon: DNS listening on %s/tcp", listenAddr)
 		if err := server.ListenAndServe(); err != nil {
-			log.Printf("FATAL: cspace daemon DNS TCP bind on %s failed: %v", daemonDNSListenAddr, err)
+			log.Printf("FATAL: cspace daemon DNS TCP bind on %s failed: %v", listenAddr, err)
 			log.Printf("       another process may be using this port; check with `lsof -nP -iTCP:%s`", dnsPort)
 			log.Printf("       common culprits: another cspace daemon process holding the port")
 			log.Printf("       cspace daemon cannot serve DNS without TCP; exiting")
@@ -220,19 +236,19 @@ func runDaemonServe() error {
 	// listener above is unaffected.
 	go func() {
 		for {
-			server := &dns.Server{Addr: daemonDNSGatewayAddr, Net: "udp", Handler: dh}
-			log.Printf("cspace daemon: DNS listening on %s/udp (containers)", daemonDNSGatewayAddr)
+			server := &dns.Server{Addr: gatewayAddr, Net: "udp", Handler: dh}
+			log.Printf("cspace daemon: DNS listening on %s/udp (containers)", gatewayAddr)
 			err := server.ListenAndServe()
 			log.Printf("WARN: cspace daemon DNS UDP bind on %s failed: %v; retrying in 3s "+
-				"(in-container *.cspace.test lookups NXDOMAIN until this binds)", daemonDNSGatewayAddr, err)
+				"(in-container *.cspace.test lookups NXDOMAIN until this binds)", gatewayAddr, err)
 			time.Sleep(3 * time.Second)
 		}
 	}()
 	go func() {
 		for {
-			server := &dns.Server{Addr: daemonDNSGatewayAddr, Net: "tcp", Handler: dh}
+			server := &dns.Server{Addr: gatewayAddr, Net: "tcp", Handler: dh}
 			if err := server.ListenAndServe(); err != nil {
-				log.Printf("WARN: cspace daemon DNS TCP bind on %s failed: %v; retrying in 3s", daemonDNSGatewayAddr, err)
+				log.Printf("WARN: cspace daemon DNS TCP bind on %s failed: %v; retrying in 3s", gatewayAddr, err)
 			}
 			time.Sleep(3 * time.Second)
 		}

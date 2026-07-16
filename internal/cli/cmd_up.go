@@ -15,7 +15,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/elliottregan/cspace/internal/config"
@@ -1137,6 +1136,8 @@ func randHex(n int) string {
 // one extra daemon, and only one will manage to bind the port; the others
 // exit immediately.
 func ensureRegistryDaemon() error {
+	// TODO(task 2): replace with daemonHealthVersion(time.Second) reuse check
+	// (also verifies the running daemon matches this binary's version).
 	conn, err := net.DialTimeout("tcp", "127.0.0.1:6280", time.Second)
 	if err == nil {
 		_ = conn.Close()
@@ -1149,83 +1150,35 @@ func ensureRegistryDaemon() error {
 	if err != nil {
 		return fmt.Errorf("locate cspace binary: %w", err)
 	}
-	c := exec.Command(self, "daemon", "serve")
-	// Capture daemon stderr so a fast-fail (e.g. DNS UDP bind failure on a
-	// squatted port 5354) bubbles up as a useful error instead of "not
-	// accepting connections" with no context. The buffer is bounded by
-	// limitedBuffer so a misbehaving daemon can't grow it without bound.
-	stderrBuf := &limitedBuffer{max: 8 * 1024}
-	c.Stdout = nil
-	c.Stderr = stderrBuf
-	if err := c.Start(); err != nil {
+	cmd, logFile, err := newDaemonCommand(self)
+	if err != nil {
+		return fmt.Errorf("prepare daemon: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		_ = logFile.Close()
 		return fmt.Errorf("spawn cspace daemon: %w", err)
 	}
-	// Daemon takes ~250ms to bind in practice. Wait for the port to actually
-	// accept connections, but also short-circuit if the daemon process exits
-	// (which it does on DNS bind failure — see runDaemonServe).
-	exited := make(chan error, 1)
-	go func() { exited <- c.Wait() }()
+	_ = logFile.Close()            // detached daemon keeps its own handle on the log file
+	go func() { _ = cmd.Wait() }() // reap; does NOT couple lifetimes (child is Setsid-detached)
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		conn, derr := net.DialTimeout("tcp", "127.0.0.1:6280", 250*time.Millisecond)
-		if derr == nil {
-			_ = conn.Close()
+		if c, derr := net.DialTimeout("tcp", "127.0.0.1:6280", 250*time.Millisecond); derr == nil {
+			_ = c.Close()
 			return nil
 		}
-		select {
-		case waitErr := <-exited:
-			// Daemon already exited. Surface its stderr.
-			msg := strings.TrimSpace(stderrBuf.String())
-			if msg != "" {
-				return fmt.Errorf("daemon exited before accepting connections: %w\nstderr:\n%s", waitErr, msg)
+		time.Sleep(100 * time.Millisecond)
+	}
+	if p, perr := daemonLogPath(); perr == nil {
+		if b, rerr := os.ReadFile(p); rerr == nil && len(b) > 0 {
+			tail := string(b)
+			if len(tail) > 800 {
+				tail = tail[len(tail)-800:]
 			}
-			return fmt.Errorf("daemon exited before accepting connections: %w", waitErr)
-		case <-time.After(100 * time.Millisecond):
+			return fmt.Errorf("daemon not accepting connections within 3s; ~/.cspace/daemon.log tail:\n%s", tail)
 		}
 	}
-
-	// Deadline expired without HTTP coming up and without the process
-	// exiting. Kill the orphan child, drain Wait, and surface whatever
-	// stderr we collected.
-	_ = c.Process.Kill()
-	<-exited
-	msg := strings.TrimSpace(stderrBuf.String())
-	if msg != "" {
-		return fmt.Errorf("daemon failed to start within 3s; stderr:\n%s", msg)
-	}
-	return fmt.Errorf("daemon started but not accepting connections")
-}
-
-// limitedBuffer is a goroutine-safe bytes.Buffer wrapper that caps its size,
-// dropping any writes that would exceed `max`. Used to capture daemon stderr
-// without unbounded growth in pathological cases (e.g. log spam loop).
-type limitedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-	max int
-}
-
-func (b *limitedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	remaining := b.max - b.buf.Len()
-	if remaining <= 0 {
-		// Pretend the write succeeded; we just drop overflow.
-		return len(p), nil
-	}
-	if len(p) > remaining {
-		b.buf.Write(p[:remaining])
-		return len(p), nil
-	}
-	b.buf.Write(p)
-	return len(p), nil
-}
-
-func (b *limitedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
+	return fmt.Errorf("daemon started but not accepting connections within 3s")
 }
 
 // nudgeSentinelName is the per-user marker file that records "the no-auth
