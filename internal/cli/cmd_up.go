@@ -837,6 +837,31 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			}
 			rep.Phase(overlay.PhaseReady)
 
+			// Gate: confirm the friendly .cspace.test hostname actually
+			// resolves from inside the sandbox (and the browser sidecar,
+			// if one is running) before we hand off to the agent. This
+			// catches a cspace daemon DNS outage or dnsmasq misconfig
+			// early — with a clear warning — instead of silently falling
+			// back to raw IPs deep into a session. Warn, don't fail: a
+			// broken friendly hostname degrades convenience, not
+			// correctness, so it must never block the boot.
+			containerExecAdapter := func(execCtx context.Context, container string, argv ...string) ([]byte, error) {
+				res, execErr := a.Exec(execCtx, container, argv, substrate.ExecOpts{})
+				return []byte(res.Stdout), execErr
+			}
+			if wh := workspaceFriendlyHost(name, project); wh != "" {
+				if rErr := verifyInContainerResolution(ctx, containerExecAdapter, containerName, wh); rErr != nil {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+						"warning: %v — sidecar browser and host will fall back to raw IPs; run `cspace doctor`\n", rErr)
+				}
+				if browserSidecar != nil {
+					if rErr := verifyInContainerResolution(ctx, containerExecAdapter, browserContainer, wh); rErr != nil {
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+							"warning: %v — sidecar browser and host will fall back to raw IPs; run `cspace doctor`\n", rErr)
+					}
+				}
+			}
+
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 				"%ssandbox %s up: control %s  ip %s  token %s…\n",
 				glyphPrefix(name), name, ctlURL, ip, token[:8])
