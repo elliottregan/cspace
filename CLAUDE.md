@@ -134,6 +134,8 @@ Shell scripts fired by Claude Code's hook system: progress logging on `PostToolU
 **Agent secrets** (Phase 0+): cspace-owned secrets (Anthropic API key, future GH tokens, etc.) live in `~/.cspace/secrets.env` (user-global) and `<project>/.cspace/secrets.env` (project-local override; gitignored). Project-local overrides global; an explicitly-set host shell env var still wins for one-off overrides. Format is dotenv-style (`KEY=value`, `# comments`, optional `"…"` or `'…'` quoting). The project's own `.env` is **not** loaded by cspace — that file is the app's domain and is read at runtime by the app's own dotenv tooling. Keep cspace and app secrets separate.
 Security caveat: secrets currently transit `-e` flags into the substrate. Apple Container's `vminitd` is known to log the full process env, so anyone with `container logs` access on the host can read these values. P1 will add Keychain-backed values (`KEY=keychain:<service-name>` resolved via `security find-generic-password` on macOS, equivalents on Linux) and an alternative delivery path that doesn't transit `-e`.
 
+**Project env overrides** (`.env.cspace`): distinct from the secrets above — a project-owned, static, committed file that neutralizes host/cloud env vars (e.g. a stale `CONVEX_DEPLOYMENT`) that a project's own `.env` would otherwise leak into the sandbox. Wired via a second `env_file:` entry in the project's devcontainer compose file; cspace never writes dynamic per-sandbox values into it. See `docs/env-cspace.md` for the convention, precedence rules, and the related `$CSPACE_WORKSPACE_HOST` / e2e `baseURL` guidance.
+
 ## Commit Style
 
 Short imperative sentences describing what changed and why. Examples from history:

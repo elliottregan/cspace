@@ -8,7 +8,7 @@ For the overlay to function, the image must provide:
 |---|---|---|
 | **glibc** | Supervisor is a Bun-compiled binary linked against glibc | ✓ |
 | **iptables** | Loopback NAT for ports bound to 127.0.0.1 inside the sandbox | ✓ (auto-installed via apt if missing on debian/ubuntu) |
-| **dnsmasq** | DNS forwarder (sibling-service hostnames + cspace2.local) | ✓ (auto-installed via apt if missing on debian/ubuntu) |
+| **dnsmasq** | DNS forwarder (sibling-service hostnames + cspace.test) | ✓ (auto-installed via apt if missing on debian/ubuntu) |
 | **bash** | Entrypoint is a bash script | ✓ |
 | **tini** (recommended) | PID 1 reaping; cspace's entrypoint will work without it but zombies accumulate | ✓ |
 | **sudo** (recommended) | Init script drops from root to your `remoteUser` after privileged setup | ✓ |
@@ -57,7 +57,7 @@ RUN dnf install -y iptables nftables dnsmasq
   inside the sandbox aren't reachable from sibling services or host
   browsers. Install iptables for your distro.
 - **dnsmasq absent and apt-get unavailable:** bare-name service DNS
-  (`http://convex-backend:3210`) and `*.cspace2.local` resolution fail.
+  (`http://convex-backend:3210`) and `*.cspace.test` resolution fail.
   Install dnsmasq for your distro.
 - **bash absent:** entrypoint can't run. Use an image with bash; busybox
   alone isn't enough because the entrypoint relies on bash builtins.
