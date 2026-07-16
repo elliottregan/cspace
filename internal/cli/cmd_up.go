@@ -228,6 +228,10 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				"CSPACE_REGISTRY_URL":  "http://192.168.64.1:6280",
 				"CSPACE_HOST_GATEWAY":  "192.168.64.1",
 			}
+			// Always set, independent of the browser sidecar: agents/docs
+			// point at this var as THE address to reach the workspace from
+			// outside it, and that must hold even under --no-browser.
+			applyWorkspaceHostEnv(env, name, project)
 
 			// Merged plugins config (defaults.json overlaid with project's
 			// .cspace.json) goes into the sandbox as JSON so the in-
@@ -628,11 +632,10 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				// image doesn't need a local browser.
 				env["PLAYWRIGHT_MCP_CDP_ENDPOINT"] = bs.CDPURL
 				env["PW_TEST_CONNECT_WS_ENDPOINT"] = bs.RunServerWSURL
-				// Stable hostname agents/scripts use to reach the dev
-				// or preview server running inside the workspace from
-				// the browser sidecar. Hosts entry written below once
-				// the workspace IP is known.
-				env["CSPACE_WORKSPACE_HOST"] = workspaceFriendlyHost(name, project)
+				// CSPACE_WORKSPACE_HOST is set unconditionally above (near
+				// env's construction), not here — it must hold even under
+				// --no-browser. Hosts entry written below once the
+				// workspace IP is known.
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 					"browser sidecar: %s (cdp %s, run-server %s)\n",
 					bs.ContainerName, bs.CDPURL, bs.RunServerWSURL)

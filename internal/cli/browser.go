@@ -61,6 +61,15 @@ func workspaceFriendlyHost(name, project string) string {
 	return strings.ToLower(name) + "." + strings.ToLower(project) + ".cspace.test"
 }
 
+// applyWorkspaceHostEnv sets CSPACE_WORKSPACE_HOST on env. Callers must
+// invoke this unconditionally (not gated behind browser-sidecar setup) —
+// agents/docs point at this var as THE address to reach the workspace from
+// outside it, so it must be present even when the browser sidecar is
+// disabled (--no-browser or devcontainer.json opt-out).
+func applyWorkspaceHostEnv(env map[string]string, name, project string) {
+	env["CSPACE_WORKSPACE_HOST"] = workspaceFriendlyHost(name, project)
+}
+
 // startBrowserSidecar runs the Playwright sidecar container, waits for its
 // IP and CDP endpoint to come up, and returns the container name and CDP
 // URL. Idempotent: if a container of the same name already exists, it is
