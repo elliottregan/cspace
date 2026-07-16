@@ -1136,12 +1136,16 @@ func randHex(n int) string {
 // one extra daemon, and only one will manage to bind the port; the others
 // exit immediately.
 func ensureRegistryDaemon() error {
-	// TODO(task 2): replace with daemonHealthVersion(time.Second) reuse check
-	// (also verifies the running daemon matches this binary's version).
-	conn, err := net.DialTimeout("tcp", "127.0.0.1:6280", time.Second)
-	if err == nil {
-		_ = conn.Close()
-		return nil
+	if v, ok := daemonHealthVersion(time.Second); ok {
+		if v == Version {
+			return nil
+		}
+		// A daemon is up but from a different cspace build/version. Stop
+		// it and fall through to respawn a version-matched one.
+		// stopRegistryDaemon blocks until the loopback ports are actually
+		// free, so the respawn below doesn't lose the fatal DNS/HTTP bind
+		// race against the dying process.
+		_ = stopRegistryDaemon()
 	}
 	// Use os.Executable() so the daemon spawns the SAME cspace binary the
 	// user just invoked, not whatever "cspace" might exist on PATH from an
@@ -1163,7 +1167,7 @@ func ensureRegistryDaemon() error {
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if c, derr := net.DialTimeout("tcp", "127.0.0.1:6280", 250*time.Millisecond); derr == nil {
+		if c, derr := net.DialTimeout("tcp", daemonHTTPAddr(), 250*time.Millisecond); derr == nil {
 			_ = c.Close()
 			return nil
 		}

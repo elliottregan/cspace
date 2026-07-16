@@ -24,6 +24,10 @@ supervisor's session non-interactively; use ` + "`cspace attach`" + ` for
 hands-on work.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := ensureRegistryDaemon(); err != nil {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: cspace daemon not reachable: %v\n", err)
+			}
+
 			name := args[0]
 			project := projectName()
 			containerName := fmt.Sprintf("cspace-%s-%s", project, name)

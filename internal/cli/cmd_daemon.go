@@ -58,6 +58,40 @@ func daemonDNSAddrs() (listen, gateway string) {
 	return
 }
 
+// daemonHTTPAddr returns the loopback HTTP address the daemon binds,
+// allowing tests to override the well-known port via env (mirrors
+// daemonDNSAddrs) so they don't collide with a developer's real daemon.
+func daemonHTTPAddr() string {
+	port := daemonHTTPPort
+	if v := os.Getenv("CSPACE_REGISTRY_DAEMON_PORT"); v != "" {
+		port = v
+	}
+	return "127.0.0.1:" + port
+}
+
+// daemonHealthVersion queries the daemon's /health endpoint and returns the
+// version it reports. ok is false when the daemon isn't reachable, doesn't
+// respond 200, or the body doesn't decode — callers treat that as "no
+// version-matched daemon running" rather than an error.
+func daemonHealthVersion(timeout time.Duration) (string, bool) {
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Get("http://" + daemonHTTPAddr() + "/health")
+	if err != nil {
+		return "", false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return "", false
+	}
+	var body struct {
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return "", false
+	}
+	return body.Version, true
+}
+
 func newDaemonCmd() *cobra.Command {
 	parent := &cobra.Command{
 		Use:   "daemon",
@@ -132,10 +166,7 @@ func runDaemonServe() error {
 		_ = json.NewEncoder(w).Encode(entries)
 	})
 
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintln(w, `{"ok":true}`)
-	})
+	mux.HandleFunc("GET /health", healthHandler)
 
 	// Idle-shutdown: track time of last HTTP request via an atomic, and
 	// have a background ticker exit the daemon once it has been idle past
@@ -260,6 +291,14 @@ func runDaemonServe() error {
 		return err
 	}
 	return nil
+}
+
+// healthHandler reports liveness plus the running binary's version, so
+// callers (ensureRegistryDaemon) can distinguish "a daemon is up" from "a
+// daemon matching this build is up" and replace a stale one on mismatch.
+func healthHandler(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": Version})
 }
 
 // daemonDNSHandler answers A queries for <sandbox>.cspace.test from the
@@ -418,21 +457,52 @@ func newDaemonStopCmd() *cobra.Command {
 		Use:   "stop",
 		Short: "Stop the cspace daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Match the embedded subcommand's process line. Anchoring on
-			// "daemon serve" is broad enough to catch both `cspace daemon
-			// serve` and `bin/cspace-go daemon serve` invocations, and
-			// narrow enough to skip `cspace daemon stop` itself (different
-			// argv tail).
-			out, err := exec.Command("pkill", "-f", "daemon serve").CombinedOutput()
-			if err != nil {
-				// pkill returns 1 when no matches; not an error for our purposes.
-				if !strings.Contains(err.Error(), "exit status 1") {
-					return fmt.Errorf("pkill: %w (%s)", err, out)
-				}
+			if err := stopRegistryDaemon(); err != nil {
+				return err
 			}
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "daemon: stopped")
 			return nil
 		},
+	}
+}
+
+// stopRegistryDaemon kills any running daemon process and blocks until its
+// fatal-to-rebind loopback ports (HTTP + DNS listen addr) are actually free,
+// or a timeout elapses. Without this wait, a caller that immediately
+// respawns a new daemon (ensureRegistryDaemon on a stale-version reuse
+// check) can race the dying process for the loopback DNS bind and lose,
+// since that bind is fatal to the new daemon.
+func stopRegistryDaemon() error {
+	// Match the embedded subcommand's process line. Anchoring on "daemon
+	// serve" is broad enough to catch both `cspace daemon serve` and
+	// `bin/cspace-go daemon serve` invocations, and narrow enough to skip
+	// `cspace daemon stop` itself (different argv tail).
+	out, err := exec.Command("pkill", "-f", "daemon serve").CombinedOutput()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
+			return nil // pkill exit 1 == no matches
+		}
+		return fmt.Errorf("pkill: %w (%s)", err, out)
+	}
+	listen, _ := daemonDNSAddrs()
+	waitPortFree(daemonHTTPAddr(), 3*time.Second)
+	waitPortFree(listen, 3*time.Second)
+	return nil
+}
+
+// waitPortFree polls addr until dialing it is refused (port free) or the
+// deadline elapses. It never returns an error — callers treat a still-bound
+// port past the deadline as "did our best" and fall through to the caller's
+// own respawn-retry loop.
+func waitPortFree(addr string, d time.Duration) {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		c, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err != nil { // refused == free
+			return
+		}
+		_ = c.Close()
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
