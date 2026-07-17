@@ -275,6 +275,18 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 						}
 					}
 					sandboxImage = resolveSandboxImage(ctx, plan, "cspace:latest")
+					// Snapshot the cspace-delivered secret values (from
+					// `loaded`, merged into env above) BEFORE the compose
+					// env_file merge below can silently override them. Used
+					// only for the fail-loud warning after the merge — it
+					// never changes which value wins.
+					secretKeys := secrets.SecretKeys()
+					secretValues := map[string]string{}
+					for _, k := range secretKeys {
+						if v, ok := env[k]; ok {
+							secretValues[k] = v
+						}
+					}
 					// Compose service.environment (including any env_file
 					// content compose-go resolved at parse time) merges
 					// FIRST so devcontainer.json containerEnv can override.
@@ -288,6 +300,19 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 								env[k] = v
 							}
 						}
+					}
+					// Fail loud: warn (don't block) if the env_file merge
+					// just above silently overrode a cspace-delivered
+					// secret. This must run BEFORE the containerEnv merge
+					// below, so an intentional devcontainer.json
+					// containerEnv override doesn't get flagged — only
+					// env_file collisions do. See docs/env-cspace.md's
+					// "Precedence (stated honestly)" section: env_file
+					// wins by design, this only makes the footgun loud.
+					for _, key := range envFileSecretCollisions(secretValues, env, secretKeys) {
+						fmt.Fprintf(cmd.ErrOrStderr(),
+							"warning: a project env_file (.env / .env.cspace) overrides the cspace-delivered secret %s — the sandbox will use the env_file value, not the credential cspace loaded. Remove %s from your env_file (or rename it) to use the delivered secret.\n",
+							key, key)
 					}
 					// containerEnv merges into env: devcontainer values override
 					// compose env (more specific) and lose to secrets file +
