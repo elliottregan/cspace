@@ -204,6 +204,12 @@ func TestStopRegistryDaemonKillsMatchingProcessAndFreesPorts(t *testing.T) {
 		_ = syscall.Kill(pid, syscall.SIGKILL)
 		_ = logf.Close()
 	})
+	// Reap the spawned child asynchronously so the OS releases the pid once
+	// the daemon exits. Without this, the process lingers as a zombie after
+	// stopRegistryDaemon's pkill succeeds (ports free, but the pid is still
+	// "alive" to kill(pid, 0) until waited on) — a test-harness artifact, not
+	// a production concern, since the real daemon is reparented to init.
+	go func() { _ = spawner.Wait() }()
 
 	waitForPort(t, "127.0.0.1:"+httpPort, 5*time.Second)
 
@@ -217,7 +223,17 @@ func TestStopRegistryDaemonKillsMatchingProcessAndFreesPorts(t *testing.T) {
 		t.Fatalf("stopRegistryDaemon() = %v, want nil", err)
 	}
 
-	if syscall.Kill(pid, 0) == nil {
+	// The async Wait() above races with stopRegistryDaemon returning, so
+	// poll briefly for the pid to be reaped rather than checking once.
+	alive := true
+	for i := 0; i < 20; i++ {
+		if syscall.Kill(pid, 0) != nil {
+			alive = false
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if alive {
 		t.Error("daemon process still alive after stopRegistryDaemon returned")
 	}
 	if c, derr := net.DialTimeout("tcp", "127.0.0.1:"+httpPort, 200*time.Millisecond); derr == nil {
