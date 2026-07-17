@@ -4,137 +4,107 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**cspace** is a CLI for managing isolated Claude Code devcontainer instances. It spins up Docker containers with independent workspaces, browser sidecars, and network firewalls, then runs autonomous Claude agents against GitHub issues. Written in Go (CLI) with a Node.js agent supervisor component.
+**cspace** is a CLI for managing isolated Claude Code sandboxes on macOS, built on Apple Container (lightweight microVMs driven by the `container` CLI). `cspace up` provisions a sandbox with its own git clone of the project, seeds Claude Code inside it, wires per-sandbox DNS (`<sandbox>.<project>.cspace.test`), and shares one ref-counted browser sidecar per project (Chromium CDP on :9222 for browser MCP, a Playwright run-server on :3000 for e2e). The CLI is Go (Cobra); the optional in-sandbox agent supervisor is Bun/TypeScript.
 
-## Project Context
+**Trust this file and the code over older docs.** This file was rewritten 2026-07-16 to match the code. Design docs under `docs/superpowers/specs/` describe components that were removed or never shipped in their described form — a Node ESM supervisor with a Unix control socket, agent playbooks (`lib/agents/`), advisor agents, coordinator orchestration, and the `cspace-context` MCP server (the root `.mcp.json` still registers `cspace context-server`, but no such command exists). Known-but-unfixed problems are tracked as findings in `.cspace/context/findings/` — check there before "discovering" a bug, and log new ones there.
 
-The `.cspace/context/` directory holds layered planning context accessible via the `cspace-context` MCP server.
+## Commands
 
-- `direction.md`, `principles.md`, `roadmap.md` — human-owned. Edit directly.
-- `decisions/` and `discoveries/` — agent-owned terminal records. Written by agents via `log_decision` / `log_discovery`. Immutable once written; curate with `remove_entry`.
-- `findings/` — agent-owned lifecycle records (bugs, observations, refactor proposals). Written by `log_finding`, grown by `append_to_finding` (append-only audit trail), queried by `list_findings` / `read_finding`. Each has a `status` that transitions through `open → acknowledged → resolved|wontfix`. When a commit resolves a finding, append `(cs-finding:<slug>)` to the commit message and call `append_to_finding(..., status="resolved")`.
+- `cspace up [name]`, `cspace down`, `cspace attach`, `cspace ports` — sandbox lifecycle
+- `cspace send <instance> <text>` — inject a user turn into a sandbox's supervisor via its HTTP control port
+- `cspace keychain init|status` — store/inspect credentials in the macOS Keychain
+- `cspace image build` — rebuild the sandbox image (uses the repo's `lib/` when run from a cspace checkout, embedded assets otherwise)
+- `cspace daemon …`, `cspace dns …`, `cspace registry …`, `cspace doctor` — host daemon, resolver install, registry inspection, diagnostics
+- `cspace self-update`, `cspace version`, `cspace completion`
 
-Agents call `read_context` at the start of non-trivial work. `.cspace/context/` is bind-mounted from the host into every cspace container for the project, so writes (decisions, discoveries, findings) by one agent are visible to siblings in real time without git push/pull. The cspace-context MCP server reads/writes directly against this bind mount; `writeEntry` uses `O_EXCL` create for race-safe concurrent creates across containers. See `docs/superpowers/specs/2026-04-13-context-mcp-server-design.md` for the original contract (findings are a later extension).
+## Development
+
+```bash
+make build        # check-hooks + sync-embedded + go build -> bin/cspace-go
+make test         # go tests (runs sync-embedded first)
+make vet
+make lint
+make check        # fmt-check + vet + lint + test
+cspace image build  # rebuild the sandbox image after Dockerfile/scripts changes
+
+cd lib/agent-supervisor-bun && bun install   # supervisor deps (Bun, not pnpm)
+```
+
+**Always build via `make`** (or run `make sync-embedded` first). `internal/assets/embedded/` is gitignored and populated from `lib/` by `make sync-embedded`; a bare `go build`/`go install` on a clean checkout embeds an empty asset tree and fails only at runtime.
+
+## Architecture
+
+### Go CLI (`cmd/cspace/`, `internal/`)
+
+Entry point is `cmd/cspace/main.go` → `cli.Execute()`. Commands are `newXxxCmd()` functions in `internal/cli/`, registered via `AddCommand()` in `root.go`. `cmd_up.go` holds the (large, ~875-line) boot flow: daemon spawn, credential reconciliation, devcontainer merge, clone provisioning, sidecars, registry writes, DNS gate, attach. Internal packages:
+
+- **config** — three-layer JSON merge: embedded `defaults.json` → `.cspace.json` → `.cspace.local.json` via `config.Load()`. `DeepMerge` replaces arrays wholesale (setting `plugins.install` in `.cspace.json` discards the whole default list, it does not append).
+- **secrets** — credential resolution, macOS Keychain access, host auto-discovery (see Credentials below)
+- **registry** — the sandbox registry persisted/served by the daemon
+- **substrate/applecontainer** — wrapper around the Apple Container `container` CLI (run/stop/inspect/build)
+- **orchestrator** — multi-service lifecycle for sidecars: compose-plan execution, healthchecks, `/etc/hosts` injection
+- **compose/v2**, **devcontainer** — parse a project's `dockerComposeFile`/`devcontainer.json` and merge them into the sandbox plan
+- **overlay** — the `cspace up` TUI overlay
+- **planets** — instance naming/port data (`planets.json`); **sandboxmode** — in-sandbox detection via `CSPACE_*` env; **features** — optional runtime feature installers; **assets** — the `go:embed` FS
+
+### Host daemon (`cspace daemon serve`)
+
+One background process per host, auto-spawned by `cspace up` (detached with `Setsid`, logging to `~/.cspace/daemon.log` with 1MiB rotation). It serves DNS for `*.cspace.test` on `127.0.0.1:5354` (host side; `sudo cspace dns install` writes `/etc/resolver/cspace.test`) and `192.168.64.1:5354` (vmnet gateway side, for sandboxes and sidecars), plus an HTTP registry API on `127.0.0.1:6280`. `cspace up` does a version handshake against `/health` and stops/respawns a version-mismatched daemon. DNS answers prefer a live `container inspect` IP (TTL-memoized, negative-cached) over the registry-recorded IP.
+
+### Agent supervisor (`lib/agent-supervisor-bun/`)
+
+Bun/TypeScript, compiled to a single binary by `build.ts` during image build. Wraps `@anthropic-ai/claude-agent-sdk`'s `query()` with an async prompt queue so user turns can be injected mid-session. Control is HTTP on `CSPACE_CONTROL_PORT` (default 6201) with bearer-token auth (`CSPACE_CONTROL_TOKEN`): `POST /send` injects a turn, `GET /health` reports the session. Events append to `/sessions/primary/events.ndjson`; on restart the supervisor resumes the last session id found in that log. `lib/runtime/scripts/cspace-supervisor-loop.sh` restarts it, treating exit codes 0/143/137 as clean shutdown. **Status note:** this layer is lightly used and is a candidate for removal; see the supervisor finding before investing work here.
+
+### Sandbox runtime (`lib/`)
+
+`lib/` is the source of truth; `make sync-embedded` copies an explicit allowlist into `internal/assets/embedded/` for `go:embed`.
+
+- **templates/Dockerfile** — the sandbox image (Debian-based: Node, Bun, Claude Code, MCP servers, dev tooling). Apple Container's builder does **not** recurse directory COPYs, so files are COPY'd individually — when you add a file under `lib/runtime/scripts/` or `lib/plugins/`, you must also add a COPY line or it silently won't ship (see the per-file-COPY finding).
+- **runtime/scripts/** — `cspace-entrypoint.sh` (settings seed, git identity, in-sandbox DNS forwarder, inbound DNAT), `cspace-install-plugins.sh`, `cspace-supervisor-loop.sh`, `statusline.sh`
+- **runtime/features/** — optional installers: node, python, git, github-cli, docker-in-docker, common-utils
+- **plugins/** — the `cspace-browser` Claude plugin (marketplace + `.mcp.json` wiring for the shared browser sidecar)
+- **defaults.json** — embedded config defaults. Vestigial keys from the earlier orchestration design — `advisors`, `agent`, `verify`, `claude`, `post_setup` — are parsed into `config.Config` but have no consumers.
+
+## Project context (`.cspace/context/`)
+
+Layered planning context, bind-mounted into every sandbox for the project so writes are visible to sibling agents without git push/pull.
+
+- `direction.md`, `principles.md`, `roadmap.md` — human-owned; edit directly.
+- `decisions/`, `discoveries/` — agent-owned terminal records; immutable once written.
+- `findings/` — lifecycle records (bugs, observations, refactor proposals). Plain markdown, edited directly (the MCP server from the original spec is not currently shipped). Frontmatter: `title`, `date`, `kind: finding`, `status: open|acknowledged|resolved|wontfix`, `category: bug|observation|refactor`, `tags`. Body: `## Summary`, `## Details`, `## Updates` (append timestamped status entries; never rewrite history). When a commit resolves a finding, append `(cs-finding:<slug>)` to the commit message and add a resolved entry to its Updates section.
+
+Read the relevant findings at the start of non-trivial work.
 
 ## Anthropic credentials
 
 cspace sandboxes need an Anthropic credential to drive Claude Code. Two token formats are supported, but they **must ride different env vars** — the wrong carrier causes "Invalid API key" errors and a spurious "custom API key" prompt in interactive Claude:
 
-- **Long-lived API key** (`sk-ant-api-...`) from <https://console.anthropic.com/settings/keys> → delivered via `ANTHROPIC_API_KEY`. Stable across sessions, no expiry. **Recommended for daily use** — paste once into Keychain via `cspace keychain init` and forget about it.
-- **Long-lived OAuth token** (`sk-ant-oat-...`) from `claude setup-token` → delivered via `CLAUDE_CODE_OAUTH_TOKEN`. `cspace keychain init` detects the `oat` prefix and stores it under the correct service (`cspace-CLAUDE_CODE_OAUTH_TOKEN`) automatically. Fine for short/casual sessions; for multi-day or autonomous runs prefer an API key.
-- **Short-lived OAuth token** auto-discovered from `claude /login`'s macOS Keychain entry (the `Claude Code-credentials` envelope). Refreshes when the host's `claude` CLI runs; otherwise expires within ~hours. Convenient for first-run / demo, but **don't rely on it for sessions over a day** — the agent will lose auth mid-task.
+- **Long-lived API key** (`sk-ant-api-…`) → `ANTHROPIC_API_KEY`. Stable, no expiry. **Recommended for daily use** — paste once via `cspace keychain init`.
+- **Long-lived OAuth token** (`sk-ant-oat-…`, from `claude setup-token`) → `CLAUDE_CODE_OAUTH_TOKEN`. `cspace keychain init` routes by prefix automatically.
+- **Short-lived OAuth token** auto-discovered from the host's `claude /login` Keychain entry. Convenient for first-run, but expires within hours — don't rely on it for sessions over a day.
 
-`cspace keychain status` shows where each credential is sourced from. If you see `auto-discovered (Claude Code OAuth)` with an expiry date approaching, run `cspace keychain init` and paste a long-lived token.
+`cspace keychain status` shows where each credential is sourced from. Resolution order (first reachable wins): `<project>/.cspace/secrets.env` → `~/.cspace/secrets.env` → macOS Keychain (`cspace-ANTHROPIC_API_KEY` / `cspace-CLAUDE_CODE_OAUTH_TOKEN`) → auto-discovery from the host's Claude Code login.
 
-Resolution order (highest precedence first; first reachable wins):
+GitHub credentials follow the same precedence; auto-discovery uses `gh auth token`, and a token GitHub rejects with 401 at `up`-time preflight is replaced by the `gh auth token` fallback. The three GitHub env vars are deliberate: `gh` CLI reads `GH_TOKEN`, the GitHub MCP server reads `GITHUB_PERSONAL_ACCESS_TOKEN`, Actions-style tooling reads `GITHUB_TOKEN` — cspace propagates one value across all three (`propagateFamily`).
 
-1. `<project>/.cspace/secrets.env` — project-scoped lock-in
-2. `~/.cspace/secrets.env` — user-global manual entry
-3. macOS Keychain `cspace-ANTHROPIC_API_KEY` or `cspace-CLAUDE_CODE_OAUTH_TOKEN` — set via `cspace keychain init` (prefix-routed automatically)
-4. Auto-discovery from host's `claude /login` state — convenience layer (short-lived OAuth)
+## Env plumbing
 
-GitHub credentials (`GH_TOKEN` / `GITHUB_TOKEN` / `GITHUB_PERSONAL_ACCESS_TOKEN`) follow the same precedence; auto-discovery uses `gh auth token`.
+`docs/env-cspace.md` documents the `.env.cspace` convention (project-declared container overrides), the full env merge order, and the `$CSPACE_WORKSPACE_HOST` / e2e `baseURL` guidance. Two sharp edges, both tracked as findings: compose `env_file` entries out-rank `.cspace/secrets.env` (a project redeclaring a secret key silently overrides the delivered credential — `cspace up` warns for the known secret keys), and `--env` does not currently win over ambient host-shell credentials despite the documented contract.
 
-## Advisors
+Security caveat: secrets currently transit `-e` flags into the substrate, and Apple Container's `vminitd` logs the full process env — anyone with `container logs` access on the host can read them.
 
-Advisors are long-running specialist agents consulted alongside the coordinator. Each runs in its own cspace container as `role=advisor` — persistent, session-continuous across `cspace coordinate` invocations. They are declared in `.cspace.json` under `advisors` (see defaults for the decision-maker).
+## Key patterns
 
-- **Role prompts** live at `lib/advisors/<name>.md` (shipped) or `.cspace/advisors/<name>.md` (per-project override).
-- **Opinions** come from `.cspace/context/principles.md` (human-owned per the context-server spec). Populate it with the project's architectural preferences; the decision-maker reads it on each consultation.
-- **Lifecycle:** `cspace coordinate` auto-launches configured advisors. `cspace advisor list|down|restart` manages them explicitly. Advisors persist across coordinator sessions so their SDK sessions accumulate project context.
-- **Communication:** coordinators and workers consult via the `ask_advisor` MCP tool on the agent-messenger server. Replies arrive as new user turns, not tool results.
+- **Instance naming**: planet names (`mercury`, `venus`, …) with deterministic ports are reserved for the human-facing TUI. Agents spawning sandboxes should use descriptive names (`issue-<n>`, a short task label). Note: explicit names currently bypass collision checks (see finding).
+- **Sessions**: per-sandbox at `~/.cspace/sessions/<project>/<sandbox>/` on the host, bind-mounted into the sandbox; wiped by `cspace down`.
+- **Adding a CLI command**: create `newXxxCmd()` in a new file under `internal/cli/`, register it in `root.go`.
+- **Template resolution**: `cspace image build` uses the repo's `lib/templates/Dockerfile` when run from a cspace checkout, otherwise the embedded copy.
 
-See `docs/superpowers/specs/2026-04-18-advisor-agents-design.md` for the full design.
+## Security posture (read before relying on it)
 
-## Development
-
-The CLI is built with Go using the Cobra framework. The agent supervisor is Node.js ESM.
-
-```bash
-# Build and run locally
-make build
-./bin/cspace-go --help
-
-# Run tests and static analysis
-make test
-make vet
-
-# Rebuild container image after Dockerfile/template changes
-cspace rebuild
-
-# Launch a test instance
-cspace up
-cspace ssh mercury
-
-# Agent supervisor dependencies (inside container or for local dev)
-cd lib/agent-supervisor && pnpm install
-```
-
-## Architecture
-
-### CLI (`cmd/cspace/`, `internal/`)
-
-Go binary built with Cobra. Entry point is `cmd/cspace/main.go`, which calls `cli.Execute()`. Commands are organized in `internal/cli/` as `newXxxCmd()` functions registered via `AddCommand()` in `root.go`. Internal packages:
-
-- **config** — Three-layer config merging: embedded `defaults.json` -> `.cspace.json` -> `.cspace.local.json`
-- **instance** — Container lifecycle (queries, exec, health checks)
-- **compose** — Docker Compose file resolution and environment export
-- **ports** — Deterministic port assignment using planet names (mercury=1, venus=2, etc.)
-- **supervisor** — Launches the Node.js agent supervisor, NDJSON stream processing, dispatch
-- **provision** — Container provisioning (git bundle, compose up, workspace init)
-- **docker** — Low-level Docker CLI wrappers
-- **assets** — Embedded filesystem (`go:embed`) for templates, scripts, hooks, agents
-
-### Agent Supervisor (`lib/agent-supervisor/`)
-
-Node.js process (ESM) that wraps the Claude Agent SDK's `query()` with:
-- An async-queue-backed prompt stream for injecting user turns mid-session
-- A Unix socket server (`/logs/messages/{instance}/supervisor.sock`) for host->container commands (`send`, `interrupt`, `status`)
-- NDJSON event streaming to stdout, processed by Go's `ProcessStream()` for terminal rendering
-- MCP tools for coordinator diagnostics (`agent_health`, `agent_recent_activity`, `read_agent_stream`). All inter-agent messaging goes through `cspace send` via the socket — workers report completion with `cspace send _coordinator`, coordinators direct workers with `cspace send <instance>`
-- Persistent event logs at `/logs/events/{instance}/session-*.ndjson` — the same SDK events `cspace up` renders to stderr, captured to disk so coordinators can reconstruct a child's stream via `read_agent_stream` even after BashOutput is lost
-
-Key dependency: `@anthropic-ai/claude-agent-sdk`
-
-### Container Environment (`lib/scripts/`, `lib/templates/`)
-
-- **Dockerfile** — Alpine + Node + Claude Code + SSH + Docker-in-Docker
-- **docker-compose.core.yml** — Devcontainer + Playwright run-server + Chromium CDP sidecar
-- **entrypoint.sh** — Container init: firewall, plugins, workspace setup
-- **init-firewall.sh** — iptables allowlist (GitHub, npm, Anthropic + custom domains)
-- **init-claude-plugins.sh** — Writes Claude settings.json, hooks config, MCP servers
-
-### Agent Playbooks (`lib/agents/`)
-
-- **implementer.md** — 7-phase autonomous workflow: Setup -> Explore -> Design -> Implement -> Verify -> Ship -> Review
-- **coordinator.md** — Multi-agent orchestration with dependency graph resolution and base branch chaining
-
-### Hooks (`lib/hooks/`)
-
-Shell scripts fired by Claude Code's hook system: progress logging on `PostToolUse`, transcript archival on `SessionEnd`.
-
-## Key Patterns
-
-**Config merging**: All config flows through `config.Load()` which deep-merges JSON in precedence order: embedded `defaults.json` -> `.cspace.json` -> `.cspace.local.json`. The merged result is available as `*config.Config`.
-
-**Template overrides**: Users place files in `.cspace/` to override built-in templates (Dockerfile, compose files, agent playbooks). Resolution checks project dir first, falls back to `$ASSETS_DIR/templates/` or `$ASSETS_DIR/agents/`.
-
-**Instance naming**: Auto-assigned from planet names with deterministic port ranges. Custom names get random port assignment. When spawning a cspace instance from an agent, use a descriptive or numbered name (`issue-<n>`, `cs-agent-<n>`, or a short task label). Planet names (`mercury`, `venus`, …) are reserved for the human-facing TUI.
-
-**Exit code handling**: Exit codes 0 and 2 (stream pipe closed) are success; 141 (SIGPIPE) is expected.
-
-**Adding a CLI command**: Create a `newXxxCmd()` function in a new file under `internal/cli/`, returning a `*cobra.Command`. Register it via `root.AddCommand()` in `root.go`.
-
-**Embedded assets**: Templates, scripts, hooks, and agents are embedded via `go:embed` in `internal/assets/`. Run `make sync-embedded` (automatic with `make build`) to copy `lib/` contents into `internal/assets/embedded/` before building.
-
-**Agent memory** (Claude Code's built-in): Each project's `.cspace/memory/` directory is bind-mounted into every container at `/home/dev/.claude/projects/-workspace/memory`. Committed to git so learnings persist across volume wipes, container rebuilds, and fresh clones. Agents read/write via Claude Code's built-in memory system (four types: user, feedback, project, reference); `MEMORY.md` is the index. `cspace up` creates the directory with an empty stub on first provision. If you have pre-existing memory in the legacy `cspace-<project>-memory` Docker volume, run `cspace memory migrate` once to copy it into the repo. cspace does not intercept or reconcile Claude's memory writes — treat this as per-session personal memory that happens to persist. For cross-container collaborative memory (decisions, discoveries, findings), use the cspace-context MCP server (`.cspace/context/`, see the "Project Context" section above) — that layer is explicitly designed for live sharing.
-
-**Agent sessions**: Every Claude Code session JSONL for a project lives in `$HOME/.cspace/sessions/<project-name>/` on the host (outside the repo — contains conversation history, potentially large, may include secrets). That directory is bind-mounted into every container at `/home/dev/.claude/projects/-workspace/`, overlaid with the nested memory mount above. Effect: sessions survive volume wipes and `cspace down`; all instances for a project see the same sessions; teleport is a resume-by-session-id operation with no JSONL copy. `cspace up` creates the host directory with user ownership before compose. Run `cspace sessions migrate` once to rescue sessions from the legacy per-instance `claude-home` Docker volumes. `CSPACE_TELEPORT_DIR` is deliberately not propagated into containers — it names a host path used only for the `/teleport` bind mount, and in-container scripts use `/teleport` directly so host-OS paths can't leak across the boundary.
-
-**Agent secrets** (Phase 0+): cspace-owned secrets (Anthropic API key, future GH tokens, etc.) live in `~/.cspace/secrets.env` (user-global) and `<project>/.cspace/secrets.env` (project-local override; gitignored). Project-local overrides global; an explicitly-set host shell env var still wins for one-off overrides. Format is dotenv-style (`KEY=value`, `# comments`, optional `"…"` or `'…'` quoting). The project's own `.env` is **not** loaded by cspace — that file is the app's domain and is read at runtime by the app's own dotenv tooling. Keep cspace and app secrets separate.
-Security caveat: secrets currently transit `-e` flags into the substrate. Apple Container's `vminitd` is known to log the full process env, so anyone with `container logs` access on the host can read these values. P1 will add Keychain-backed values (`KEY=keychain:<service-name>` resolved via `security find-generic-password` on macOS, equivalents on Linux) and an alternative delivery path that doesn't transit `-e`.
-
-**Project env overrides** (`.env.cspace`): distinct from the secrets above — a project-owned, static, committed file that neutralizes host/cloud env vars (e.g. a stale `CONVEX_DEPLOYMENT`) that a project's own `.env` would otherwise leak into the sandbox. Wired via a second `env_file:` entry in the project's devcontainer compose file; cspace never writes dynamic per-sandbox values into it. See `docs/env-cspace.md` for the convention, precedence rules, and the related `$CSPACE_WORKSPACE_HOST` / e2e `baseURL` guidance.
+- **There is no firewall.** The `firewall.*` config is parsed and merged but no egress filtering is implemented — deliberately tabled for now (agents benefit from web access); see the firewall finding. Never describe sandboxes as network-restricted.
+- The entrypoint's inbound DNAT forwards all vmnet TCP to loopback, so "loopback-only" services in a sandbox are reachable by its vmnet peers.
+- The supervisor control port binds 0.0.0.0 with bearer-token auth; the check is skipped if the token is empty (production always sets one).
 
 ## Commit Style
 

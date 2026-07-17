@@ -65,16 +65,26 @@ here is the actual merge order `cspace up` applies (later steps overwrite
 earlier ones on key collision — see `internal/cli/cmd_up.go`):
 
 1. `.cspace/secrets.env` (cspace-delivered secrets) — merged into the env map
-   first (`cmd_up.go:250-252`).
+   first.
 2. Compose service `environment:`, which includes whatever compose-go already
    resolved from `env_file:` entries — i.e. **`.env` and `.env.cspace`** —
-   merges next (`cmd_up.go:285-291`), overwriting same-named keys from step 1.
-3. devcontainer.json `containerEnv` merges after that (`cmd_up.go:295-297`).
-4. `cspace up --env KEY=VALUE` merges last (`cmd_up.go:395-401`) and always
-   wins.
+   merges next, overwriting same-named keys from step 1.
+3. devcontainer.json `containerEnv` merges after that.
+4. `cspace up --env KEY=VALUE` merges after step 3.
 
-So, highest to lowest: **`--env` > devcontainer `containerEnv` > compose
-`env_file` (`.env.cspace` / `.env`) > `.cspace/secrets.env`**.
+So, highest to lowest (for non-credential keys): **`--env` > devcontainer
+`containerEnv` > compose `env_file` (`.env.cspace` / `.env`) >
+`.cspace/secrets.env`**.
+
+**Known issue (credential keys):** several credential passthrough steps
+currently run *after* the `--env` merge — host-shell `ANTHROPIC_API_KEY` /
+`CLAUDE_CODE_OAUTH_TOKEN` / `GH_TOKEN`, the GitHub 401-fallback, and the
+GitHub token family propagation — so for those keys an ambient host value can
+silently override an explicit `--env`. The intended contract is "`--env`
+always wins"; the gap is tracked in
+`.cspace/context/findings/2026-07-16-env-precedence-smeared-env-flag-loses-to-ambient-credentials.md`.
+Until it's fixed, don't rely on `--env` to override a credential that's also
+set in your host shell.
 
 **Security caveat:** because `.env.cspace` out-ranks `.cspace/secrets.env` in
 this order, a project that redeclares one of cspace's own secret key names

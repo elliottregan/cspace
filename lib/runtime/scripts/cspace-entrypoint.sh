@@ -80,8 +80,11 @@ fi
 #   - theme: skips the "choose a text style" picker (paired with
 #     hasCompletedOnboarding in ~/.claude.json, merged after claude update).
 #   - permissions.defaultMode=bypassPermissions: cspace sandboxes are
-#     disposable microVMs with a firewall, so the agent runs without
-#     per-command approval prompts.
+#     disposable microVMs, so the agent runs without per-command approval
+#     prompts. NOTE: the firewall.* config is parsed but egress filtering
+#     is NOT implemented (see finding
+#     2026-07-16-firewall-config-parsed-but-never-enforced) — do not lean
+#     on a network allowlist as a safety layer here.
 #   - skipDangerousModePermissionPrompt: pre-accepts the one-time
 #     "running in Bypass Permissions mode" warning (the v2.1.x replacement
 #     for the old bypassPermissionsModeAccepted key).
