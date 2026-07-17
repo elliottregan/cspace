@@ -310,7 +310,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 					// "Precedence (stated honestly)" section: env_file
 					// wins by design, this only makes the footgun loud.
 					for _, key := range envFileSecretCollisions(secretValues, env, secretKeys) {
-						fmt.Fprintf(cmd.ErrOrStderr(),
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
 							"warning: a project env_file (.env / .env.cspace) overrides the cspace-delivered secret %s — the sandbox will use the env_file value, not the credential cspace loaded. Remove %s from your env_file (or rename it) to use the delivered secret.\n",
 							key, key)
 					}

@@ -19,7 +19,7 @@ func TestNewDaemonCommandIsDetached(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newDaemonCommand: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setsid {
 		t.Error("daemon command must set Setsid so it survives the parent")
