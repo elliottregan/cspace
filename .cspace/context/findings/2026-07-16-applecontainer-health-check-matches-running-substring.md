@@ -2,7 +2,7 @@
 title: Apple Container health check passes on any output containing "running"
 date: 2026-07-16
 kind: finding
-status: open
+status: resolved
 category: bug
 tags: applecontainer, substrate, health-check, cmd-up
 ---
@@ -18,3 +18,11 @@ tags: applecontainer, substrate, health-check, cmd-up
 ## Updates
 ### 2026-07-17T03:42:21Z — @agent — status: open
 filed from the 2026-07-16 hardening survey
+
+### 2026-07-17T04:20:00Z — @agent — status: resolved
+`HealthCheck` now delegates to `parseSystemStatus`, which prefers the 0.12.x
+FIELD/VALUE table's `status` row (exact value match) and fails closed on
+negated ("not running") or unrecognized output. Table-driven unit tests cover
+the false-positive case plus real 0.12.3 table output; the live read-only
+`TestHealthCheckRunning` integration test still passes against a running
+apiserver.

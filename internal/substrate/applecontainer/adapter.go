@@ -109,14 +109,34 @@ func (a *Adapter) HealthCheck(ctx context.Context) error {
 		return fmt.Errorf("container system status: %w (output: %s)",
 			err, strings.TrimSpace(string(out)))
 	}
-	text := strings.ToLower(string(out))
-	// `container system status` outputs vary, but contain the word "running"
-	// when the apiserver is up. Check for that.
-	if !strings.Contains(text, "running") {
-		return fmt.Errorf("apple container apiserver not running: %s",
-			strings.TrimSpace(string(out)))
+	return parseSystemStatus(string(out))
+}
+
+// parseSystemStatus interprets `container system status` output, returning
+// nil only when the apiserver is affirmatively reported running. 0.12.x
+// prints a FIELD/VALUE table with a `status` row; older builds print prose.
+// Anything unrecognized is treated as not running — a bare substring test
+// is unsafe because "apiserver is not running" contains "running".
+func parseSystemStatus(output string) error {
+	text := strings.ToLower(output)
+	for _, line := range strings.Split(text, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "status" {
+			if fields[1] == "running" {
+				return nil
+			}
+			return fmt.Errorf("apple container apiserver not running (status: %s)", fields[1])
+		}
 	}
-	return nil
+	if strings.Contains(text, "not running") {
+		return fmt.Errorf("apple container apiserver not running: %s",
+			strings.TrimSpace(output))
+	}
+	if strings.Contains(text, "running") {
+		return nil
+	}
+	return fmt.Errorf("unrecognized `container system status` output (treating apiserver as not running): %s",
+		strings.TrimSpace(output))
 }
 
 // Default resource caps for cspace sandboxes when the caller hasn't

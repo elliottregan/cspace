@@ -61,6 +61,48 @@ func TestStopIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestParseSystemStatus is a pure unit test — no container CLI required.
+// Guards against the substring false positive where "apiserver is not
+// running" was read as healthy because it contains "running".
+func TestParseSystemStatus(t *testing.T) {
+	table012 := `FIELD              VALUE
+status             running
+appRoot            /Users/dev/Library/Application Support/com.apple.container/
+installRoot        /opt/homebrew/Cellar/container/0.12.3/
+logRoot
+apiserver.version  container-apiserver version 0.12.3 (build: release, commit: unspeci)
+apiserver.commit   unspecified
+apiserver.build    release
+apiserver.appName  container-apiserver`
+
+	cases := []struct {
+		name    string
+		output  string
+		healthy bool
+	}{
+		{"0.12.x table, status running", table012, true},
+		{"0.12.x table, status stopped",
+			strings.Replace(table012, "status             running", "status             stopped", 1), false},
+		{"prose affirmative", "apiserver is running", true},
+		{"prose negated", "apiserver is not running", false},
+		{"prose negated, mixed case",
+			"apiserver is NOT running. Start it with `container system start`.", false},
+		{"empty output", "", false},
+		{"unrecognized output", "everything is fine", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := parseSystemStatus(tc.output)
+			if tc.healthy && err != nil {
+				t.Fatalf("expected healthy, got error: %v", err)
+			}
+			if !tc.healthy && err == nil {
+				t.Fatal("expected unhealthy, got nil error")
+			}
+		})
+	}
+}
+
 func TestHealthCheckRunning(t *testing.T) {
 	requireContainerCLI(t)
 	a := New()
