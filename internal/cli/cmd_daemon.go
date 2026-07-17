@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -9,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -42,6 +45,55 @@ const (
 	// CSPACE_REGISTRY_DAEMON_IDLE is unset.
 	daemonIdleDefault = 30 * time.Minute
 )
+
+// daemonDNSAddrs returns the DNS listen/gateway addresses, allowing tests to
+// override the well-known defaults via env so they don't collide with a
+// developer's real daemon.
+func daemonDNSAddrs() (listen, gateway string) {
+	listen = daemonDNSListenAddr
+	if v := os.Getenv("CSPACE_DAEMON_DNS_ADDR"); v != "" {
+		listen = v
+	}
+	gateway = daemonDNSGatewayAddr
+	if v := os.Getenv("CSPACE_DAEMON_GATEWAY_ADDR"); v != "" {
+		gateway = v
+	}
+	return
+}
+
+// daemonHTTPAddr returns the loopback HTTP address the daemon binds,
+// allowing tests to override the well-known port via env (mirrors
+// daemonDNSAddrs) so they don't collide with a developer's real daemon.
+func daemonHTTPAddr() string {
+	port := daemonHTTPPort
+	if v := os.Getenv("CSPACE_REGISTRY_DAEMON_PORT"); v != "" {
+		port = v
+	}
+	return "127.0.0.1:" + port
+}
+
+// daemonHealthVersion queries the daemon's /health endpoint and returns the
+// version it reports. ok is false when the daemon isn't reachable, doesn't
+// respond 200, or the body doesn't decode — callers treat that as "no
+// version-matched daemon running" rather than an error.
+func daemonHealthVersion(timeout time.Duration) (string, bool) {
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Get("http://" + daemonHTTPAddr() + "/health")
+	if err != nil {
+		return "", false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return "", false
+	}
+	var body struct {
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return "", false
+	}
+	return body.Version, true
+}
 
 func newDaemonCmd() *cobra.Command {
 	parent := &cobra.Command{
@@ -117,10 +169,7 @@ func runDaemonServe() error {
 		_ = json.NewEncoder(w).Encode(entries)
 	})
 
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintln(w, `{"ok":true}`)
-	})
+	mux.HandleFunc("GET /health", healthHandler)
 
 	// Idle-shutdown: track time of last HTTP request via an atomic, and
 	// have a background ticker exit the daemon once it has been idle past
@@ -179,21 +228,22 @@ func runDaemonServe() error {
 	// resolve <name>.cspace.test even though HTTP /lookup still works, and
 	// `cspace dns status` would (today) report "running" via the HTTP probe
 	// while users see broken name resolution. Exit non-zero so the parent
-	// (cspace up's ensureRegistryDaemon, which captures stderr) can surface
-	// the real error.
+	// (cspace up's ensureRegistryDaemon, which tails ~/.cspace/daemon.log on
+	// timeout) can surface the real error.
 	dh := daemonDNSHandler(r, &lastActivity)
-	dnsPort := daemonDNSListenAddr
-	if i := strings.LastIndex(daemonDNSListenAddr, ":"); i >= 0 {
-		dnsPort = daemonDNSListenAddr[i+1:]
+	listenAddr, gatewayAddr := daemonDNSAddrs()
+	dnsPort := listenAddr
+	if i := strings.LastIndex(listenAddr, ":"); i >= 0 {
+		dnsPort = listenAddr[i+1:]
 	}
 	// Loopback bind is fatal — it's how the host's /etc/resolver/
 	// cspace.test routes name lookups. Without it, friendly URLs
 	// don't work from the host browser at all.
 	go func() {
-		server := &dns.Server{Addr: daemonDNSListenAddr, Net: "udp", Handler: dh}
-		log.Printf("cspace daemon: DNS listening on %s/udp", daemonDNSListenAddr)
+		server := &dns.Server{Addr: listenAddr, Net: "udp", Handler: dh}
+		log.Printf("cspace daemon: DNS listening on %s/udp", listenAddr)
 		if err := server.ListenAndServe(); err != nil {
-			log.Printf("FATAL: cspace daemon DNS UDP bind on %s failed: %v", daemonDNSListenAddr, err)
+			log.Printf("FATAL: cspace daemon DNS UDP bind on %s failed: %v", listenAddr, err)
 			log.Printf("       another process may be using this port; check with `lsof -nP -iUDP:%s`", dnsPort)
 			log.Printf("       common culprits: another cspace daemon process, or mDNSResponder if 5353 was mistakenly chosen")
 			log.Printf("       cspace daemon cannot serve DNS without UDP; exiting")
@@ -201,10 +251,10 @@ func runDaemonServe() error {
 		}
 	}()
 	go func() {
-		server := &dns.Server{Addr: daemonDNSListenAddr, Net: "tcp", Handler: dh}
-		log.Printf("cspace daemon: DNS listening on %s/tcp", daemonDNSListenAddr)
+		server := &dns.Server{Addr: listenAddr, Net: "tcp", Handler: dh}
+		log.Printf("cspace daemon: DNS listening on %s/tcp", listenAddr)
 		if err := server.ListenAndServe(); err != nil {
-			log.Printf("FATAL: cspace daemon DNS TCP bind on %s failed: %v", daemonDNSListenAddr, err)
+			log.Printf("FATAL: cspace daemon DNS TCP bind on %s failed: %v", listenAddr, err)
 			log.Printf("       another process may be using this port; check with `lsof -nP -iTCP:%s`", dnsPort)
 			log.Printf("       common culprits: another cspace daemon process holding the port")
 			log.Printf("       cspace daemon cannot serve DNS without TCP; exiting")
@@ -220,19 +270,19 @@ func runDaemonServe() error {
 	// listener above is unaffected.
 	go func() {
 		for {
-			server := &dns.Server{Addr: daemonDNSGatewayAddr, Net: "udp", Handler: dh}
-			log.Printf("cspace daemon: DNS listening on %s/udp (containers)", daemonDNSGatewayAddr)
+			server := &dns.Server{Addr: gatewayAddr, Net: "udp", Handler: dh}
+			log.Printf("cspace daemon: DNS listening on %s/udp (containers)", gatewayAddr)
 			err := server.ListenAndServe()
 			log.Printf("WARN: cspace daemon DNS UDP bind on %s failed: %v; retrying in 3s "+
-				"(in-container *.cspace.test lookups NXDOMAIN until this binds)", daemonDNSGatewayAddr, err)
+				"(in-container *.cspace.test lookups NXDOMAIN until this binds)", gatewayAddr, err)
 			time.Sleep(3 * time.Second)
 		}
 	}()
 	go func() {
 		for {
-			server := &dns.Server{Addr: daemonDNSGatewayAddr, Net: "tcp", Handler: dh}
+			server := &dns.Server{Addr: gatewayAddr, Net: "tcp", Handler: dh}
 			if err := server.ListenAndServe(); err != nil {
-				log.Printf("WARN: cspace daemon DNS TCP bind on %s failed: %v; retrying in 3s", daemonDNSGatewayAddr, err)
+				log.Printf("WARN: cspace daemon DNS TCP bind on %s failed: %v; retrying in 3s", gatewayAddr, err)
 			}
 			time.Sleep(3 * time.Second)
 		}
@@ -244,6 +294,14 @@ func runDaemonServe() error {
 		return err
 	}
 	return nil
+}
+
+// healthHandler reports liveness plus the running binary's version, so
+// callers (ensureRegistryDaemon) can distinguish "a daemon is up" from "a
+// daemon matching this build is up" and replace a stale one on mismatch.
+func healthHandler(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": Version})
 }
 
 // daemonDNSHandler answers A queries for <sandbox>.cspace.test from the
@@ -317,7 +375,7 @@ func daemonDNSHandler(r *registry.Registry, lastActivity *atomic.Int64) dns.Hand
 				reply.Rcode = dns.RcodeNameError
 				continue
 			case 1:
-				ip = matches[0].IP
+				ip = liveSandboxIP(matches[0].Project, matches[0].Name, matches[0].IP)
 				if service != "" {
 					// 4-label query: redirect to the sidecar container
 					// `cspace-<project>-<sandbox>-<service>` and resolve
@@ -402,17 +460,8 @@ func newDaemonStopCmd() *cobra.Command {
 		Use:   "stop",
 		Short: "Stop the cspace daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Match the embedded subcommand's process line. Anchoring on
-			// "daemon serve" is broad enough to catch both `cspace daemon
-			// serve` and `bin/cspace-go daemon serve` invocations, and
-			// narrow enough to skip `cspace daemon stop` itself (different
-			// argv tail).
-			out, err := exec.Command("pkill", "-f", "daemon serve").CombinedOutput()
-			if err != nil {
-				// pkill returns 1 when no matches; not an error for our purposes.
-				if !strings.Contains(err.Error(), "exit status 1") {
-					return fmt.Errorf("pkill: %w (%s)", err, out)
-				}
+			if err := stopRegistryDaemon(); err != nil {
+				return err
 			}
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "daemon: stopped")
 			return nil
@@ -420,12 +469,52 @@ func newDaemonStopCmd() *cobra.Command {
 	}
 }
 
-// lookupSidecarIP resolves the vmnet IP of a compose-spawned sidecar by
-// shelling out to `container inspect`. Returns ("", nil) when the
-// sidecar isn't running. The DNS handler treats both empty IP and a
+// stopRegistryDaemon kills any running daemon process and blocks until its
+// fatal-to-rebind loopback ports (HTTP + DNS listen addr) are actually free,
+// or a timeout elapses. Without this wait, a caller that immediately
+// respawns a new daemon (ensureRegistryDaemon on a stale-version reuse
+// check) can race the dying process for the loopback DNS bind and lose,
+// since that bind is fatal to the new daemon.
+func stopRegistryDaemon() error {
+	// Match the embedded subcommand's process line. Anchoring on "daemon
+	// serve" is broad enough to catch both `cspace daemon serve` and
+	// `bin/cspace-go daemon serve` invocations, and narrow enough to skip
+	// `cspace daemon stop` itself (different argv tail).
+	out, err := exec.Command("pkill", "-f", "daemon serve").CombinedOutput()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
+			return nil // pkill exit 1 == no matches
+		}
+		return fmt.Errorf("pkill: %w (%s)", err, out)
+	}
+	listen, _ := daemonDNSAddrs()
+	waitPortFree(daemonHTTPAddr(), 3*time.Second)
+	waitPortFree(listen, 3*time.Second)
+	return nil
+}
+
+// waitPortFree polls addr until dialing it is refused (port free) or the
+// deadline elapses. It never returns an error — callers treat a still-bound
+// port past the deadline as "did our best" and fall through to the caller's
+// own respawn-retry loop.
+func waitPortFree(addr string, d time.Duration) {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		c, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err != nil { // refused == free
+			return
+		}
+		_ = c.Close()
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// lookupSidecarIPCtx resolves the vmnet IP of a compose-spawned sidecar by
+// shelling out to `container inspect`, bounded by ctx. Returns ("", nil)
+// when the sidecar isn't running. The DNS handler treats both empty IP and a
 // non-nil error as NXDOMAIN.
-func lookupSidecarIP(name string) (string, error) {
-	out, err := exec.Command("container", "inspect", name).Output()
+func lookupSidecarIPCtx(ctx context.Context, name string) (string, error) {
+	out, err := exec.CommandContext(ctx, "container", "inspect", name).Output()
 	if err != nil {
 		// Apple Container exits non-zero only on transport-level error;
 		// missing containers come back as exit 0 with body "[]". Treat
@@ -449,4 +538,79 @@ func lookupSidecarIP(name string) (string, error) {
 		addr = addr[:i]
 	}
 	return addr, nil
+}
+
+// lookupSidecarIP is lookupSidecarIPCtx run with an unbounded context. It
+// exists to preserve the DNS handler's one existing sidecar-resolution call
+// site (the 3-label <service>.<sandbox>.<project> branch) unchanged; that
+// branch's own registry match already bounds how often it fires, so it
+// doesn't get the 2s deadline applied to the higher-frequency
+// liveSandboxIP path below.
+func lookupSidecarIP(name string) (string, error) {
+	return lookupSidecarIPCtx(context.Background(), name)
+}
+
+// errContainerGone is returned by test stubs of inspectContainerIP to
+// simulate a container that no longer exists (or an inspect that failed for
+// any other reason); liveSandboxIP treats any non-nil error the same way,
+// by falling back to the registry IP.
+var errContainerGone = errors.New("container not found")
+
+// inspectContainerIP is the package seam liveSandboxIP calls to get a
+// container's live IP; it's a var so tests can stub it without shelling
+// out. The 2s timeout bounds a single DNS answer's worst case if the Apple
+// Container apiserver is hung, rather than blocking indefinitely.
+var inspectContainerIP = func(container string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return lookupSidecarIPCtx(ctx, container)
+}
+
+// ipMemo holds the last inspected IP for one container plus when it was
+// fetched, guarded by its own mutex so concurrent DNS handler goroutines
+// resolving the same name serialize on one inspect instead of racing.
+type ipMemo struct {
+	mu   sync.Mutex
+	ip   string
+	when time.Time
+}
+
+// sandboxIPMemo maps container name -> *ipMemo. sync.Map because the DNS
+// handler runs one goroutine per query and this is a read-mostly cache
+// across many distinct sandbox names.
+var sandboxIPMemo sync.Map
+
+// liveSandboxIP prefers the container's currently-inspected IP over the
+// registry value (which goes stale when a sandbox restarts onto a new vmnet
+// IP — vmnet reassigns freed IPs, so a stale registry entry can point at a
+// different live container). Memoized for the DNS TTL so it's at most one
+// inspect per name per daemonDNSTTL seconds, bounding the subprocess cost
+// on the DNS hot path — this bound applies whether the inspect succeeds or
+// fails: a failing inspect is negative-cached (empty IP, fresh timestamp)
+// so a name whose container is gone doesn't pay the inspect cost on every
+// query for the rest of the TTL window.
+// CAVEAT: when inspect can't answer (timeout/apiserver hung/container
+// gone) it falls back to the registry IP, which may still be stale — the
+// reassigned-IP hazard is reduced, not eliminated, in that failure window.
+func liveSandboxIP(project, name, registryIP string) string {
+	container := fmt.Sprintf("cspace-%s-%s", project, name)
+	v, _ := sandboxIPMemo.LoadOrStore(container, &ipMemo{})
+	m := v.(*ipMemo)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.when.IsZero() && time.Since(m.when) < daemonDNSTTL*time.Second {
+		// Recently attempted, success or failure: honor the memo without
+		// re-inspecting.
+		if m.ip != "" {
+			return m.ip
+		}
+		return registryIP
+	}
+	m.when = time.Now()
+	if ip, err := inspectContainerIP(container); err == nil && ip != "" {
+		m.ip = ip
+		return ip
+	}
+	m.ip = "" // negative-cache the failure so we don't re-inspect until TTL expiry
+	return registryIP
 }

@@ -20,6 +20,10 @@ func newSendCmd() *cobra.Command {
 		Short: "Inject a user turn into a sandbox session",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := ensureRegistryDaemon(); err != nil {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: cspace daemon not reachable: %v\n", err)
+			}
+
 			target, text := args[0], args[1]
 
 			name, session := target, "primary"

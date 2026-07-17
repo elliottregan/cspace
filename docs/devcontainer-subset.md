@@ -107,7 +107,7 @@ microVMs don't share the host's port space the way Docker Desktop does
 — each microVM gets its own vmnet IP. cspace surfaces forwarded ports in
 two ways:
 
-- **From the host browser:** `http://<sandbox>.<project>.cspace2.local:<port>` —
+- **From the host browser:** `http://<sandbox>.<project>.cspace.test:<port>` —
   resolved by cspace's DNS daemon to the sandbox's vmnet IP.
 - **From sibling services inside the sandbox cluster:** `http://<service>:<port>` —
   resolved by the injected `/etc/hosts` entries.
@@ -115,6 +115,14 @@ two ways:
 The `ports:` directive itself is informational in cspace. We don't fail
 the file when it's present, but we don't bind the host port — the access
 pattern above replaces it.
+
+The same qualified name is exported inside the sandbox as
+`$CSPACE_WORKSPACE_HOST` — use it (not `$(hostname)` or `localhost`) whenever
+code running inside or alongside the sandbox needs an externally-reachable
+address for the workspace, including a project's e2e `baseURL`. See
+[docs/env-cspace.md](./env-cspace.md) for the full convention, plus the
+related `.env.cspace` pattern for neutralizing host/cloud env vars inside the
+container.
 
 ## cspace customizations
 
@@ -189,7 +197,7 @@ Expected divergences:
   Projects relying on `extractCredentials` need a manual fallback when
   opening in VS Code (e.g., a documented step to copy the admin key from
   the convex-backend container).
-- Port access pattern differs: cspace uses `<sandbox>.<project>.cspace2.local:<port>`,
+- Port access pattern differs: cspace uses `<sandbox>.<project>.cspace.test:<port>`,
   VS Code uses `localhost:<forwardedPort>`. The compose file is identical;
   the URL pattern in your local docs/links may need to vary.
 

@@ -15,7 +15,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/elliottregan/cspace/internal/config"
@@ -229,6 +228,10 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				"CSPACE_REGISTRY_URL":  "http://192.168.64.1:6280",
 				"CSPACE_HOST_GATEWAY":  "192.168.64.1",
 			}
+			// Always set, independent of the browser sidecar: agents/docs
+			// point at this var as THE address to reach the workspace from
+			// outside it, and that must hold even under --no-browser.
+			applyWorkspaceHostEnv(env, name, project)
 
 			// Merged plugins config (defaults.json overlaid with project's
 			// .cspace.json) goes into the sandbox as JSON so the in-
@@ -272,6 +275,18 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 						}
 					}
 					sandboxImage = resolveSandboxImage(ctx, plan, "cspace:latest")
+					// Snapshot the cspace-delivered secret values (from
+					// `loaded`, merged into env above) BEFORE the compose
+					// env_file merge below can silently override them. Used
+					// only for the fail-loud warning after the merge — it
+					// never changes which value wins.
+					secretKeys := secrets.SecretKeys()
+					secretValues := map[string]string{}
+					for _, k := range secretKeys {
+						if v, ok := env[k]; ok {
+							secretValues[k] = v
+						}
+					}
 					// Compose service.environment (including any env_file
 					// content compose-go resolved at parse time) merges
 					// FIRST so devcontainer.json containerEnv can override.
@@ -285,6 +300,19 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 								env[k] = v
 							}
 						}
+					}
+					// Fail loud: warn (don't block) if the env_file merge
+					// just above silently overrode a cspace-delivered
+					// secret. This must run BEFORE the containerEnv merge
+					// below, so an intentional devcontainer.json
+					// containerEnv override doesn't get flagged — only
+					// env_file collisions do. See docs/env-cspace.md's
+					// "Precedence (stated honestly)" section: env_file
+					// wins by design, this only makes the footgun loud.
+					for _, key := range envFileSecretCollisions(secretValues, env, secretKeys) {
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+							"warning: a project env_file (.env / .env.cspace) overrides the cspace-delivered secret %s — the sandbox will use the env_file value, not the credential cspace loaded. Remove %s from your env_file (or rename it) to use the delivered secret.\n",
+							key, key)
 					}
 					// containerEnv merges into env: devcontainer values override
 					// compose env (more specific) and lose to secrets file +
@@ -629,11 +657,10 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				// image doesn't need a local browser.
 				env["PLAYWRIGHT_MCP_CDP_ENDPOINT"] = bs.CDPURL
 				env["PW_TEST_CONNECT_WS_ENDPOINT"] = bs.RunServerWSURL
-				// Stable hostname agents/scripts use to reach the dev
-				// or preview server running inside the workspace from
-				// the browser sidecar. Hosts entry written below once
-				// the workspace IP is known.
-				env["CSPACE_WORKSPACE_HOST"] = workspaceFriendlyHost(name, project)
+				// CSPACE_WORKSPACE_HOST is set unconditionally above (near
+				// env's construction), not here — it must hold even under
+				// --no-browser. Hosts entry written below once the
+				// workspace IP is known.
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 					"browser sidecar: %s (cdp %s, run-server %s)\n",
 					bs.ContainerName, bs.CDPURL, bs.RunServerWSURL)
@@ -837,6 +864,31 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				return err
 			}
 			rep.Phase(overlay.PhaseReady)
+
+			// Gate: confirm the friendly .cspace.test hostname actually
+			// resolves from inside the sandbox (and the browser sidecar,
+			// if one is running) before we hand off to the agent. This
+			// catches a cspace daemon DNS outage or dnsmasq misconfig
+			// early — with a clear warning — instead of silently falling
+			// back to raw IPs deep into a session. Warn, don't fail: a
+			// broken friendly hostname degrades convenience, not
+			// correctness, so it must never block the boot.
+			containerExecAdapter := func(execCtx context.Context, container string, argv ...string) ([]byte, error) {
+				res, execErr := a.Exec(execCtx, container, argv, substrate.ExecOpts{})
+				return []byte(res.Stdout), execErr
+			}
+			if wh := workspaceFriendlyHost(name, project); wh != "" {
+				if rErr := verifyInContainerResolution(ctx, containerExecAdapter, containerName, wh); rErr != nil {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+						"warning: %v — sidecar browser and host will fall back to raw IPs; run `cspace doctor`\n", rErr)
+				}
+				if browserSidecar != nil {
+					if rErr := verifyInContainerResolution(ctx, containerExecAdapter, browserContainer, wh); rErr != nil {
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+							"warning: %v — sidecar browser and host will fall back to raw IPs; run `cspace doctor`\n", rErr)
+					}
+				}
+			}
 
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 				"%ssandbox %s up: control %s  ip %s  token %s…\n",
@@ -1137,10 +1189,16 @@ func randHex(n int) string {
 // one extra daemon, and only one will manage to bind the port; the others
 // exit immediately.
 func ensureRegistryDaemon() error {
-	conn, err := net.DialTimeout("tcp", "127.0.0.1:6280", time.Second)
-	if err == nil {
-		_ = conn.Close()
-		return nil
+	if v, ok := daemonHealthVersion(time.Second); ok {
+		if v == Version {
+			return nil
+		}
+		// A daemon is up but from a different cspace build/version. Stop
+		// it and fall through to respawn a version-matched one.
+		// stopRegistryDaemon blocks until the loopback ports are actually
+		// free, so the respawn below doesn't lose the fatal DNS/HTTP bind
+		// race against the dying process.
+		_ = stopRegistryDaemon()
 	}
 	// Use os.Executable() so the daemon spawns the SAME cspace binary the
 	// user just invoked, not whatever "cspace" might exist on PATH from an
@@ -1149,83 +1207,35 @@ func ensureRegistryDaemon() error {
 	if err != nil {
 		return fmt.Errorf("locate cspace binary: %w", err)
 	}
-	c := exec.Command(self, "daemon", "serve")
-	// Capture daemon stderr so a fast-fail (e.g. DNS UDP bind failure on a
-	// squatted port 5354) bubbles up as a useful error instead of "not
-	// accepting connections" with no context. The buffer is bounded by
-	// limitedBuffer so a misbehaving daemon can't grow it without bound.
-	stderrBuf := &limitedBuffer{max: 8 * 1024}
-	c.Stdout = nil
-	c.Stderr = stderrBuf
-	if err := c.Start(); err != nil {
+	cmd, logFile, err := newDaemonCommand(self)
+	if err != nil {
+		return fmt.Errorf("prepare daemon: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		_ = logFile.Close()
 		return fmt.Errorf("spawn cspace daemon: %w", err)
 	}
-	// Daemon takes ~250ms to bind in practice. Wait for the port to actually
-	// accept connections, but also short-circuit if the daemon process exits
-	// (which it does on DNS bind failure — see runDaemonServe).
-	exited := make(chan error, 1)
-	go func() { exited <- c.Wait() }()
+	_ = logFile.Close()            // detached daemon keeps its own handle on the log file
+	go func() { _ = cmd.Wait() }() // reap; does NOT couple lifetimes (child is Setsid-detached)
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		conn, derr := net.DialTimeout("tcp", "127.0.0.1:6280", 250*time.Millisecond)
-		if derr == nil {
-			_ = conn.Close()
+		if c, derr := net.DialTimeout("tcp", daemonHTTPAddr(), 250*time.Millisecond); derr == nil {
+			_ = c.Close()
 			return nil
 		}
-		select {
-		case waitErr := <-exited:
-			// Daemon already exited. Surface its stderr.
-			msg := strings.TrimSpace(stderrBuf.String())
-			if msg != "" {
-				return fmt.Errorf("daemon exited before accepting connections: %w\nstderr:\n%s", waitErr, msg)
+		time.Sleep(100 * time.Millisecond)
+	}
+	if p, perr := daemonLogPath(); perr == nil {
+		if b, rerr := os.ReadFile(p); rerr == nil && len(b) > 0 {
+			tail := string(b)
+			if len(tail) > 800 {
+				tail = tail[len(tail)-800:]
 			}
-			return fmt.Errorf("daemon exited before accepting connections: %w", waitErr)
-		case <-time.After(100 * time.Millisecond):
+			return fmt.Errorf("daemon not accepting connections within 3s; ~/.cspace/daemon.log tail:\n%s", tail)
 		}
 	}
-
-	// Deadline expired without HTTP coming up and without the process
-	// exiting. Kill the orphan child, drain Wait, and surface whatever
-	// stderr we collected.
-	_ = c.Process.Kill()
-	<-exited
-	msg := strings.TrimSpace(stderrBuf.String())
-	if msg != "" {
-		return fmt.Errorf("daemon failed to start within 3s; stderr:\n%s", msg)
-	}
-	return fmt.Errorf("daemon started but not accepting connections")
-}
-
-// limitedBuffer is a goroutine-safe bytes.Buffer wrapper that caps its size,
-// dropping any writes that would exceed `max`. Used to capture daemon stderr
-// without unbounded growth in pathological cases (e.g. log spam loop).
-type limitedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-	max int
-}
-
-func (b *limitedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	remaining := b.max - b.buf.Len()
-	if remaining <= 0 {
-		// Pretend the write succeeded; we just drop overflow.
-		return len(p), nil
-	}
-	if len(p) > remaining {
-		b.buf.Write(p[:remaining])
-		return len(p), nil
-	}
-	b.buf.Write(p)
-	return len(p), nil
-}
-
-func (b *limitedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
+	return fmt.Errorf("daemon started but not accepting connections within 3s")
 }
 
 // nudgeSentinelName is the per-user marker file that records "the no-auth

@@ -35,6 +35,16 @@ var cspaceKeys = []string{
 	"GITHUB_PERSONAL_ACCESS_TOKEN",
 }
 
+// SecretKeys returns the canonical list of cspace-owned secret env var
+// names (a copy, so callers can't mutate cspaceKeys). Used by cmd_up.go to
+// detect when a project's compose env_file silently overrides a
+// cspace-delivered secret.
+func SecretKeys() []string {
+	out := make([]string, len(cspaceKeys))
+	copy(out, cspaceKeys)
+	return out
+}
+
 // discoverClaudeOauthToken and discoverGhAuthToken are package-level function
 // variables so tests can swap them with stubs without exec'ing real binaries.
 var (

@@ -175,6 +175,18 @@ func TestWarnExpiredAutoDiscoveredAuth(t *testing.T) {
 
 // TestResolveBrowserEnabled covers the browser-sidecar precedence ladder:
 // project CSPACE_BROWSER_CDP_URL > --no-browser > devcontainer tristate > default ON.
+// TestWorkspaceHostSetWithoutBrowser guards against CSPACE_WORKSPACE_HOST
+// regressing into a browser-sidecar-only assignment: agents/docs point at
+// this var as THE address to reach the workspace, so it must be set even
+// under --no-browser.
+func TestWorkspaceHostSetWithoutBrowser(t *testing.T) {
+	env := map[string]string{}
+	applyWorkspaceHostEnv(env, "mercury", "resume-redux")
+	if env["CSPACE_WORKSPACE_HOST"] != "mercury.resume-redux.cspace.test" {
+		t.Fatalf("got %q", env["CSPACE_WORKSPACE_HOST"])
+	}
+}
+
 func TestResolveBrowserEnabled(t *testing.T) {
 	bptr := func(b bool) *bool { return &b }
 	cases := []struct {
