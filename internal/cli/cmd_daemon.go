@@ -171,6 +171,8 @@ func runDaemonServe() error {
 
 	mux.HandleFunc("GET /health", healthHandler)
 
+	mux.HandleFunc("POST /browser/restart/{project}", browserRestartHandler(r))
+
 	// Idle-shutdown: track time of last HTTP request via an atomic, and
 	// have a background ticker exit the daemon once it has been idle past
 	// idleTimeout AND the registry has no live entries. The "no entries"
@@ -302,6 +304,113 @@ func runDaemonServe() error {
 func healthHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": Version})
+}
+
+// browserRestartTimeout bounds each POST /browser/restart/{project} request.
+// Set comfortably above restartBrowserSidecar's own browserRestartBudget
+// (120s) so the ladder always gets to run its own deadline logic to
+// completion rather than being cut off by the HTTP request context first.
+const browserRestartTimeout = 150 * time.Second
+
+// browserRestartLocks serializes concurrent restart requests for the same
+// project so two overlapping POST /browser/restart/<project> calls can't
+// race the restart ladder against itself (e.g. one recreating the
+// container while the other is mid stop/start). Keyed by project name,
+// values are *sync.Mutex — same LoadOrStore-a-per-key-struct shape as
+// sandboxIPMemo above, minus the per-key extra state since here the mutex
+// itself is all that's needed.
+var browserRestartLocks sync.Map
+
+// browserRestartHandler handles POST /browser/restart/{project}: restarts
+// the project's shared browser sidecar via restartBrowserFn (the
+// restartBrowserSidecar ladder). Extracted from runDaemonServe (rather than
+// registered as an inline closure) so tests can invoke it directly with a
+// crafted RemoteAddr and req.SetPathValue, without binding a real listener.
+//
+// Auth: a loopback caller (RemoteAddr host 127.0.0.1/::1 — i.e. the host's
+// own `cspace browser restart` CLI talking to the daemon over loopback) is
+// trusted implicitly. A non-loopback caller (a sandbox reaching the daemon
+// via the vmnet gateway IP) must present `Authorization: Bearer <tok>`
+// matching a registry entry whose Project equals the path's {project} —
+// this stops one project's sandboxes from restarting a sibling project's
+// shared browser.
+func browserRestartHandler(r *registry.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		project := req.PathValue("project")
+		if project == "" {
+			http.Error(w, "expected /browser/restart/<project>", http.StatusBadRequest)
+			return
+		}
+
+		if !isLoopbackRemoteAddr(req.RemoteAddr) && !browserRestartAuthorized(r, req, project) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		lockV, _ := browserRestartLocks.LoadOrStore(project, &sync.Mutex{})
+		lock := lockV.(*sync.Mutex)
+		lock.Lock()
+		defer lock.Unlock()
+
+		ctx, cancel := context.WithTimeout(req.Context(), browserRestartTimeout)
+		defer cancel()
+
+		bs, err := restartBrowserFn(ctx, project, "")
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil {
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":             true,
+			"ip":             bs.IP,
+			"cdpUrl":         bs.CDPURL,
+			"runServerWsUrl": bs.RunServerWSURL,
+		})
+	}
+}
+
+// isLoopbackRemoteAddr reports whether an http.Request.RemoteAddr's host
+// portion is a loopback address — 127.0.0.0/8, ::1, or an IPv4-mapped IPv6
+// form of either (e.g. ::ffff:127.0.0.1, which net.IP.IsLoopback correctly
+// recognizes). Uses net.SplitHostPort + net.ParseIP rather than a string
+// prefix/equality check so a crafted value like "127.0.0.1.evil.com:1234"
+// (not a valid IP) can't be mistaken for loopback.
+func isLoopbackRemoteAddr(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr // no port present; be permissive about the shape
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// browserRestartAuthorized reports whether req carries a Bearer token
+// matching a registry entry for project. Both sides of the comparison must
+// be non-empty: an empty/missing Authorization header must never match an
+// entry whose Token field happens to be empty (e.g. a sandbox that hasn't
+// been issued a token yet) — that would let an unauthenticated request in.
+func browserRestartAuthorized(r *registry.Registry, req *http.Request, project string) bool {
+	const prefix = "Bearer "
+	auth := req.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, prefix) {
+		return false
+	}
+	tok := strings.TrimPrefix(auth, prefix)
+	if tok == "" {
+		return false
+	}
+	entries, err := r.List()
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.Project == project && e.Token != "" && e.Token == tok {
+			return true
+		}
+	}
+	return false
 }
 
 // daemonDNSHandler answers A queries for <sandbox>.cspace.test from the

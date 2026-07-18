@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net"
@@ -518,5 +519,284 @@ func TestDaemonDNSHandlerUnknownSandboxNXDOMAIN(t *testing.T) {
 
 	if w.msg == nil || w.msg.Rcode != dns.RcodeNameError {
 		t.Fatalf("got %+v, want Rcode NXDOMAIN", w.msg)
+	}
+}
+
+// stubRestartBrowserFn replaces the restartBrowserFn seam for the duration
+// of a test and restores the original on cleanup, matching
+// stubInspectContainerIP/stubLookupSidecarIPFn above.
+func stubRestartBrowserFn(t *testing.T, fn func(ctx context.Context, project, plVersion string) (*BrowserSidecar, error)) {
+	t.Helper()
+	orig := restartBrowserFn
+	t.Cleanup(func() { restartBrowserFn = orig })
+	restartBrowserFn = fn
+}
+
+// TestBrowserRestartHandlerLoopbackAllowed covers brief case (a): a loopback
+// caller (the host CLI, via httptest.NewServer which reports RemoteAddr
+// 127.0.0.1) is allowed without any Authorization header, and a successful
+// restartBrowserFn's BrowserSidecar fields flow into the 200 JSON body.
+func TestBrowserRestartHandlerLoopbackAllowed(t *testing.T) {
+	regPath := filepath.Join(t.TempDir(), "registry.json")
+	r := &registry.Registry{Path: regPath}
+
+	var gotProject, gotPlVersion string
+	stubRestartBrowserFn(t, func(ctx context.Context, project, plVersion string) (*BrowserSidecar, error) {
+		gotProject, gotPlVersion = project, plVersion
+		return &BrowserSidecar{
+			ContainerName:  "cspace-demo-browser",
+			IP:             "192.168.64.99",
+			CDPURL:         "http://192.168.64.99:9222",
+			RunServerWSURL: "ws://192.168.64.99:3000/",
+		}, nil
+	})
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /browser/restart/{project}", browserRestartHandler(r))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/browser/restart/demo", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if gotProject != "demo" {
+		t.Fatalf("restartBrowserFn called with project %q, want demo", gotProject)
+	}
+	_ = gotPlVersion // recorded for visibility only; brief doesn't constrain this value
+
+	var body struct {
+		OK             bool   `json:"ok"`
+		IP             string `json:"ip"`
+		CDPURL         string `json:"cdpUrl"`
+		RunServerWSURL string `json:"runServerWsUrl"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.OK || body.IP != "192.168.64.99" ||
+		body.CDPURL != "http://192.168.64.99:9222" ||
+		body.RunServerWSURL != "ws://192.168.64.99:3000/" {
+		t.Fatalf("got %+v, want ok=true with sidecar fields", body)
+	}
+}
+
+// TestBrowserRestartHandlerNonLoopbackNoTokenUnauthorized covers brief case
+// (b): a non-loopback caller (simulated via a crafted RemoteAddr, since
+// direct handler invocation bypasses any real listener) presenting no
+// Authorization header must get 401, and the restart ladder must never run.
+func TestBrowserRestartHandlerNonLoopbackNoTokenUnauthorized(t *testing.T) {
+	regPath := filepath.Join(t.TempDir(), "registry.json")
+	r := &registry.Registry{Path: regPath}
+	if err := r.Register(registry.Entry{Project: "demo", Name: "mercury", Token: "tok-demo", StartedAt: time.Now()}); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+
+	called := false
+	stubRestartBrowserFn(t, func(context.Context, string, string) (*BrowserSidecar, error) {
+		called = true
+		return nil, nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/browser/restart/demo", nil)
+	req.RemoteAddr = "192.168.64.85:5555"
+	req.SetPathValue("project", "demo")
+	rec := httptest.NewRecorder()
+
+	browserRestartHandler(r)(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if called {
+		t.Fatal("restartBrowserFn must not be called when auth fails")
+	}
+}
+
+// TestBrowserRestartHandlerNonLoopbackValidTokenAuthorized covers brief case
+// (c): a non-loopback caller with a Bearer token matching a registry entry
+// for the SAME project is authorized and gets a 200.
+func TestBrowserRestartHandlerNonLoopbackValidTokenAuthorized(t *testing.T) {
+	regPath := filepath.Join(t.TempDir(), "registry.json")
+	r := &registry.Registry{Path: regPath}
+	if err := r.Register(registry.Entry{Project: "demo", Name: "mercury", Token: "tok-demo", StartedAt: time.Now()}); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+
+	stubRestartBrowserFn(t, func(context.Context, string, string) (*BrowserSidecar, error) {
+		return &BrowserSidecar{
+			IP:             "192.168.64.10",
+			CDPURL:         "http://192.168.64.10:9222",
+			RunServerWSURL: "ws://192.168.64.10:3000/",
+		}, nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/browser/restart/demo", nil)
+	req.RemoteAddr = "192.168.64.85:5555"
+	req.Header.Set("Authorization", "Bearer tok-demo")
+	req.SetPathValue("project", "demo")
+	rec := httptest.NewRecorder()
+
+	browserRestartHandler(r)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestBrowserRestartHandlerTokenFromDifferentProjectUnauthorized covers
+// brief case (d): a valid token, but issued to a DIFFERENT project's
+// registry entry, must 401 — proves the handler checks Project == project,
+// not merely "does this token exist anywhere".
+func TestBrowserRestartHandlerTokenFromDifferentProjectUnauthorized(t *testing.T) {
+	regPath := filepath.Join(t.TempDir(), "registry.json")
+	r := &registry.Registry{Path: regPath}
+	if err := r.Register(registry.Entry{Project: "other", Name: "venus", Token: "tok-other", StartedAt: time.Now()}); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+
+	called := false
+	stubRestartBrowserFn(t, func(context.Context, string, string) (*BrowserSidecar, error) {
+		called = true
+		return nil, nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/browser/restart/demo", nil)
+	req.RemoteAddr = "192.168.64.85:5555"
+	req.Header.Set("Authorization", "Bearer tok-other")
+	req.SetPathValue("project", "demo")
+	rec := httptest.NewRecorder()
+
+	browserRestartHandler(r)(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if called {
+		t.Fatal("restartBrowserFn must not be called for a token belonging to a different project")
+	}
+}
+
+// TestBrowserRestartHandlerLadderErrorReturns502 covers brief case (e): when
+// restartBrowserFn returns an error, the handler must respond 502 with
+// {"ok":false,"error":...} rather than leaking a 500 or crashing.
+func TestBrowserRestartHandlerLadderErrorReturns502(t *testing.T) {
+	regPath := filepath.Join(t.TempDir(), "registry.json")
+	r := &registry.Registry{Path: regPath}
+
+	stubRestartBrowserFn(t, func(context.Context, string, string) (*BrowserSidecar, error) {
+		return nil, errors.New("boom: container wedged")
+	})
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /browser/restart/{project}", browserRestartHandler(r))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/browser/restart/demo", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+	var body struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.OK || !strings.Contains(body.Error, "boom") {
+		t.Fatalf("got %+v, want ok=false with error containing 'boom'", body)
+	}
+}
+
+// TestBrowserRestartHandlerEmptyProjectBadRequest covers the brief's 400
+// case: an empty project path value (simulated via SetPathValue, since the
+// mux itself won't route a trailing-slash-only path to this pattern) must
+// 400 before any auth check or ladder call.
+func TestBrowserRestartHandlerEmptyProjectBadRequest(t *testing.T) {
+	regPath := filepath.Join(t.TempDir(), "registry.json")
+	r := &registry.Registry{Path: regPath}
+
+	called := false
+	stubRestartBrowserFn(t, func(context.Context, string, string) (*BrowserSidecar, error) {
+		called = true
+		return nil, nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/browser/restart/", nil)
+	req.SetPathValue("project", "")
+	rec := httptest.NewRecorder()
+
+	browserRestartHandler(r)(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if called {
+		t.Fatal("restartBrowserFn must not be called for an empty project")
+	}
+}
+
+// TestBrowserRestartHandlerSerializesPerProject verifies the per-project
+// sync.Map-of-*sync.Mutex serialization: two concurrent requests for the
+// SAME project must not run restartBrowserFn overlapping — the second must
+// wait for the first to finish. We assert this by having the fake ladder
+// record whether it ever observed another call already in flight.
+func TestBrowserRestartHandlerSerializesPerProject(t *testing.T) {
+	regPath := filepath.Join(t.TempDir(), "registry.json")
+	r := &registry.Registry{Path: regPath}
+
+	var inFlight atomic.Int32
+	var overlapped atomic.Bool
+	release := make(chan struct{})
+	stubRestartBrowserFn(t, func(ctx context.Context, project, plVersion string) (*BrowserSidecar, error) {
+		if inFlight.Add(1) > 1 {
+			overlapped.Store(true)
+		}
+		defer inFlight.Add(-1)
+		<-release
+		return &BrowserSidecar{IP: "192.168.64.1"}, nil
+	})
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /browser/restart/{project}", browserRestartHandler(r))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	post := func(done chan<- struct{}) {
+		resp, err := http.Post(srv.URL+"/browser/restart/demo", "application/json", nil)
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		close(done)
+	}
+
+	done1, done2 := make(chan struct{}), make(chan struct{})
+	go post(done1)
+	// Give the first request time to enter the handler and block inside the
+	// fake ladder on <-release before starting the second — this guarantees
+	// the second request is the one contending for the per-project lock
+	// rather than racing to get there first.
+	time.Sleep(100 * time.Millisecond)
+	go post(done2)
+	// Give the second request time to reach (and block on) the per-project
+	// mutex before we unblock the first.
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	<-done1
+	<-done2
+
+	if overlapped.Load() {
+		t.Fatal("restartBrowserFn ran concurrently for the same project; want per-project serialization")
 	}
 }

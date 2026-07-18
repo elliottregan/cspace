@@ -216,6 +216,13 @@ func restartBrowserSidecar(ctx context.Context, project, plVersion string) (*Bro
 	return bs, nil
 }
 
+// restartBrowserFn is the package seam the daemon's
+// `POST /browser/restart/{project}` handler (browserRestartHandler,
+// cmd_daemon.go) calls instead of restartBrowserSidecar directly, so its
+// tests can fake the ladder's outcome without touching real containers. Also
+// consumed by the `cspace browser restart` CLI path (Task 6).
+var restartBrowserFn = restartBrowserSidecar
+
 // browserImage returns the Microsoft Playwright Docker image for a given
 // Playwright version. Tag and run-server MUST be the same release because
 // Playwright pins to a specific chromium build ID per release; a v1.58.2
