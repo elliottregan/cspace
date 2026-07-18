@@ -732,10 +732,11 @@ type ipMemo struct {
 // (cspace-<project>-<sandbox>, keyed by liveSandboxIP) and sidecar
 // container names (cspace-<project>-browser,
 // cspace-<project>-<sandbox>-<service>, keyed by lookupSidecarIP) share
-// this one map — they're disjoint name shapes in practice (a sidecar
-// container claims its name in the substrate, so a sandbox can't also be
-// registered under the same name), and reusing one cache is simpler than
-// inventing a parallel one per call site.
+// this one map. Hyphenated sandbox names mean the shapes can textually
+// overlap, but that's safe: the substrate enforces one container per
+// name, and the memo caches a pure function of the container name, so
+// whichever path queries first caches the same answer the other would.
+// Reusing one cache is simpler than a parallel one per call site.
 var sandboxIPMemo sync.Map
 
 // memoizedContainerIP is the shared bound-and-memoize wrapper around
