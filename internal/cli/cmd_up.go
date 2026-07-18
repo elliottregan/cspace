@@ -58,6 +58,9 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			var name string
 			if len(args) == 1 {
 				name = args[0]
+				if valErr := validateSandboxName(project, name); valErr != nil {
+					return valErr
+				}
 			} else {
 				picked, err := pickPlanetName(project)
 				if err != nil {
@@ -1150,6 +1153,20 @@ func pickPlanetName(project string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("all 8 planet names are in use for project %q; pass an explicit name (e.g. `cspace up issue-42`)", project)
+}
+
+// validateSandboxName checks if an explicit sandbox name is allowed. The name
+// "browser" is reserved for the shared browser sidecar container, which uses
+// the naming pattern cspace-<project>-browser and is referenced as
+// browser.<project>.cspace.test in DNS. Returns an error for "browser";
+// nil otherwise.
+func validateSandboxName(project, name string) error {
+	if name == "browser" {
+		return fmt.Errorf(
+			`"browser" is reserved for the shared browser sidecar (browser.%s.cspace.test)`,
+			project)
+	}
+	return nil
 }
 
 // propagateFamily ensures every name in `family` has the same value as the

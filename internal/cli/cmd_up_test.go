@@ -368,3 +368,34 @@ func TestResolveSharedBrowser(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateSandboxName verifies the sandbox name validation rejects the
+// reserved name "browser" and accepts other names like "issue-42".
+func TestValidateSandboxName(t *testing.T) {
+	cases := []struct {
+		name    string
+		project string
+		input   string
+		wantErr bool
+		errHas  string // substring expected in error message when wantErr is true
+	}{
+		{"browser reserved", "test-project", "browser", true, "browser.test-project.cspace.test"},
+		{"issue-42 allowed", "test-project", "issue-42", false, ""},
+		{"mercury allowed", "test-project", "mercury", false, ""},
+		{"custom-name allowed", "test-project", "custom-name", false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateSandboxName(tc.project, tc.input)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validateSandboxName(%q, %q): got err=%v, wantErr=%v",
+					tc.project, tc.input, err, tc.wantErr)
+			}
+			if tc.wantErr && err != nil && tc.errHas != "" {
+				if !strings.Contains(err.Error(), tc.errHas) {
+					t.Errorf("error message missing %q; got: %v", tc.errHas, err)
+				}
+			}
+		})
+	}
+}
