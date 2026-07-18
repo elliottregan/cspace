@@ -457,10 +457,15 @@ func daemonDNSHandler(r *registry.Registry, lastActivity *atomic.Int64) dns.Hand
 				// no registry entry exists for the sidecar. That keeps
 				// the name restart-stable: a new IP after a sidecar
 				// restart propagates within one lookupSidecarIPFn memo
-				// TTL. A bare 1-label "browser" query is NOT reserved;
-				// it falls through to the ordinary sandbox-name path
-				// below and NXDOMAINs there since no registry entry is
-				// named "browser".
+				// TTL — lookupSidecarIP is bounded (2s ctx, same as
+				// inspectContainerIP) and memoized via the shared ipMemo
+				// cache, so a hung apiserver costs at most one bounded
+				// inspect per sidecar name per TTL window rather than one
+				// unbounded `container inspect` per query. A bare
+				// 1-label "browser" query is NOT reserved; it falls
+				// through to the ordinary sandbox-name path below and
+				// NXDOMAINs there since no registry entry is named
+				// "browser".
 				if parts[0] == "browser" {
 					sidecarIP, err := lookupSidecarIPFn(browserSingletonName(parts[1]))
 					if err != nil || sidecarIP == "" {
@@ -672,15 +677,20 @@ func lookupSidecarIPCtx(ctx context.Context, name string) (string, error) {
 	return addr, nil
 }
 
-// lookupSidecarIP is lookupSidecarIPCtx run with an unbounded context. It
-// exists to preserve the DNS handler's sidecar-resolution call sites (the
-// 3-label <service>.<sandbox>.<project> branch and the 2-label reserved
-// "browser.<project>" branch) unchanged; each call site's own registry
-// match or fixed sidecar name already bounds how often it fires, so neither
-// gets the 2s deadline applied to the higher-frequency liveSandboxIP path
-// below.
+// lookupSidecarIP resolves a sidecar container's IP for the DNS handler's
+// two sidecar-resolution call sites (the 3-label <service>.<sandbox>.<project>
+// branch and the 2-label reserved "browser.<project>" branch). It shares the
+// same bounded-and-memoized path as liveSandboxIP below (see
+// memoizedContainerIP): each distinct container name pays at most one
+// inspectContainerIP call — bounded to a 2s ctx — per daemonDNSTTL seconds,
+// with failures negative-cached the same as successes. Before this, it ran
+// lookupSidecarIPCtx with an unbounded context.Background(), so a hung Apple
+// Container apiserver could spawn one never-exiting `container inspect`
+// subprocess per browser/service DNS query with no ceiling and no cache —
+// exactly the failure mode liveSandboxIP's memo was built to avoid on the
+// higher-frequency plain-sandbox path.
 func lookupSidecarIP(name string) (string, error) {
-	return lookupSidecarIPCtx(context.Background(), name)
+	return memoizedContainerIP(name)
 }
 
 // lookupSidecarIPFn is the package seam the DNS handler calls instead of
@@ -688,10 +698,13 @@ func lookupSidecarIP(name string) (string, error) {
 // shelling out to the real `container` CLI.
 var lookupSidecarIPFn = lookupSidecarIP
 
-// errContainerGone is returned by test stubs of inspectContainerIP to
-// simulate a container that no longer exists (or an inspect that failed for
-// any other reason); liveSandboxIP treats any non-nil error the same way,
-// by falling back to the registry IP.
+// errContainerGone is returned by memoizedContainerIP on any miss (a fresh
+// failed inspect or one served from the negative memo), and by test stubs
+// of inspectContainerIP to simulate a container that no longer exists (or
+// an inspect that failed for any other reason). liveSandboxIP treats any
+// non-nil error the same way, by falling back to the registry IP;
+// lookupSidecarIP propagates it straight through to the DNS handler as
+// NXDOMAIN.
 var errContainerGone = errors.New("container not found")
 
 // inspectContainerIP is the package seam liveSandboxIP calls to get a
@@ -715,23 +728,28 @@ type ipMemo struct {
 
 // sandboxIPMemo maps container name -> *ipMemo. sync.Map because the DNS
 // handler runs one goroutine per query and this is a read-mostly cache
-// across many distinct sandbox names.
+// across many distinct sandbox names. Both plain-sandbox container names
+// (cspace-<project>-<sandbox>, keyed by liveSandboxIP) and sidecar
+// container names (cspace-<project>-browser,
+// cspace-<project>-<sandbox>-<service>, keyed by lookupSidecarIP) share
+// this one map — they're disjoint name shapes in practice (a sidecar
+// container claims its name in the substrate, so a sandbox can't also be
+// registered under the same name), and reusing one cache is simpler than
+// inventing a parallel one per call site.
 var sandboxIPMemo sync.Map
 
-// liveSandboxIP prefers the container's currently-inspected IP over the
-// registry value (which goes stale when a sandbox restarts onto a new vmnet
-// IP — vmnet reassigns freed IPs, so a stale registry entry can point at a
-// different live container). Memoized for the DNS TTL so it's at most one
-// inspect per name per daemonDNSTTL seconds, bounding the subprocess cost
-// on the DNS hot path — this bound applies whether the inspect succeeds or
-// fails: a failing inspect is negative-cached (empty IP, fresh timestamp)
-// so a name whose container is gone doesn't pay the inspect cost on every
-// query for the rest of the TTL window.
-// CAVEAT: when inspect can't answer (timeout/apiserver hung/container
-// gone) it falls back to the registry IP, which may still be stale — the
-// reassigned-IP hazard is reduced, not eliminated, in that failure window.
-func liveSandboxIP(project, name, registryIP string) string {
-	container := fmt.Sprintf("cspace-%s-%s", project, name)
+// memoizedContainerIP is the shared bound-and-memoize wrapper around
+// inspectContainerIP used by both liveSandboxIP and lookupSidecarIP: at
+// most one inspectContainerIP call — itself bounded to a 2s ctx — per
+// container name per daemonDNSTTL seconds, whether that call succeeds or
+// fails. A failing (or timed-out) inspect is negative-cached the same as a
+// successful one, so a container that's gone (or an apiserver that's
+// hung) doesn't pay the inspect cost — or the full 2s worst case — on
+// every query for the rest of the TTL window. Returns errContainerGone on
+// any miss, whether freshly inspected or served from the negative memo;
+// callers that want a fallback value (liveSandboxIP) supply their own,
+// callers that want NXDOMAIN (lookupSidecarIP) propagate the error as-is.
+func memoizedContainerIP(container string) (string, error) {
 	v, _ := sandboxIPMemo.LoadOrStore(container, &ipMemo{})
 	m := v.(*ipMemo)
 	m.mu.Lock()
@@ -740,15 +758,30 @@ func liveSandboxIP(project, name, registryIP string) string {
 		// Recently attempted, success or failure: honor the memo without
 		// re-inspecting.
 		if m.ip != "" {
-			return m.ip
+			return m.ip, nil
 		}
-		return registryIP
+		return "", errContainerGone
 	}
 	m.when = time.Now()
 	if ip, err := inspectContainerIP(container); err == nil && ip != "" {
 		m.ip = ip
-		return ip
+		return ip, nil
 	}
 	m.ip = "" // negative-cache the failure so we don't re-inspect until TTL expiry
+	return "", errContainerGone
+}
+
+// liveSandboxIP prefers the container's currently-inspected IP over the
+// registry value (which goes stale when a sandbox restarts onto a new vmnet
+// IP — vmnet reassigns freed IPs, so a stale registry entry can point at a
+// different live container).
+// CAVEAT: when inspect can't answer (timeout/apiserver hung/container
+// gone) it falls back to the registry IP, which may still be stale — the
+// reassigned-IP hazard is reduced, not eliminated, in that failure window.
+func liveSandboxIP(project, name, registryIP string) string {
+	container := fmt.Sprintf("cspace-%s-%s", project, name)
+	if ip, err := memoizedContainerIP(container); err == nil {
+		return ip
+	}
 	return registryIP
 }

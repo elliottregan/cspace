@@ -308,6 +308,113 @@ func TestLiveSandboxIPNegativeCache(t *testing.T) {
 	}
 }
 
+// TestMemoizedContainerIPBoundedSeam verifies that memoizedContainerIP — the
+// helper shared by liveSandboxIP and lookupSidecarIP — resolves through the
+// inspectContainerIP seam rather than shelling out on its own. Production
+// inspectContainerIP already bounds a single inspect to a 2s ctx (see its
+// doc comment); routing through it is what gives lookupSidecarIP the same
+// bound, closing the gap where it used to call lookupSidecarIPCtx with an
+// unbounded context.Background() directly. This suite only ever fakes
+// inspectContainerIP — it must never shell out to the real `container` CLI.
+func TestMemoizedContainerIPBoundedSeam(t *testing.T) {
+	const container = "cspace-boundtest-browser"
+	t.Cleanup(func() { sandboxIPMemo.Delete(container) })
+	sandboxIPMemo.Delete(container)
+
+	var gotName string
+	stubInspectContainerIP(t, func(name string) (string, error) {
+		gotName = name
+		return "192.168.64.77", nil
+	})
+
+	ip, err := memoizedContainerIP(container)
+	if err != nil || ip != "192.168.64.77" {
+		t.Fatalf("memoizedContainerIP() = (%q, %v), want (192.168.64.77, nil)", ip, err)
+	}
+	if gotName != container {
+		t.Errorf("inspectContainerIP called with %q, want %q", gotName, container)
+	}
+}
+
+// TestMemoizedContainerIPMemoized verifies a second call for the same
+// container name within daemonDNSTTL is served from the memo rather than
+// re-invoking inspectContainerIP — the property lookupSidecarIP (browser +
+// 3-label service DNS paths) lacked before this fix, since it called
+// lookupSidecarIPCtx directly on every query with no cache at all.
+func TestMemoizedContainerIPMemoized(t *testing.T) {
+	const container = "cspace-memotest-browser"
+	t.Cleanup(func() { sandboxIPMemo.Delete(container) })
+	sandboxIPMemo.Delete(container)
+
+	var calls int
+	stubInspectContainerIP(t, func(string) (string, error) {
+		calls++
+		return "192.168.64.78", nil
+	})
+
+	for i := 0; i < 2; i++ {
+		if ip, err := memoizedContainerIP(container); err != nil || ip != "192.168.64.78" {
+			t.Fatalf("call %d: memoizedContainerIP() = (%q, %v), want (192.168.64.78, nil)", i, ip, err)
+		}
+	}
+	if calls != 1 {
+		t.Errorf("want inspectContainerIP invoked exactly once within TTL, got %d calls", calls)
+	}
+}
+
+// TestMemoizedContainerIPNegativeCache verifies a failing inspect is
+// negative-cached the same as a successful one, so a permanently-gone
+// sidecar (or a hung apiserver) doesn't pay the inspect cost — or its
+// bounded 2s worst case — on every query for the rest of the TTL window.
+func TestMemoizedContainerIPNegativeCache(t *testing.T) {
+	const container = "cspace-negtest-browser"
+	t.Cleanup(func() { sandboxIPMemo.Delete(container) })
+	sandboxIPMemo.Delete(container)
+
+	var calls int
+	stubInspectContainerIP(t, func(string) (string, error) {
+		calls++
+		return "", errContainerGone
+	})
+
+	for i := 0; i < 2; i++ {
+		if _, err := memoizedContainerIP(container); err == nil {
+			t.Errorf("call %d: want a miss error, got nil", i)
+		}
+	}
+	if calls != 1 {
+		t.Errorf("want inspectContainerIP invoked exactly once (second call served from negative memo), got %d calls", calls)
+	}
+}
+
+// TestLookupSidecarIPUsesMemoizedContainerIP drives the DNS handler's actual
+// sidecar-resolution entry point (lookupSidecarIP, which lookupSidecarIPFn
+// defaults to) end to end, confirming it now benefits from the same
+// bounded+memoized path as memoizedContainerIP above rather than the
+// pre-fix unbounded, uncached lookupSidecarIPCtx(context.Background(), ...)
+// call. Faking only ever happens at the inspectContainerIP seam, so this
+// never shells out to the real `container` CLI.
+func TestLookupSidecarIPUsesMemoizedContainerIP(t *testing.T) {
+	const name = "cspace-e2etest-browser"
+	t.Cleanup(func() { sandboxIPMemo.Delete(name) })
+	sandboxIPMemo.Delete(name)
+
+	var calls int
+	stubInspectContainerIP(t, func(string) (string, error) {
+		calls++
+		return "192.168.64.79", nil
+	})
+
+	for i := 0; i < 2; i++ {
+		if ip, err := lookupSidecarIP(name); err != nil || ip != "192.168.64.79" {
+			t.Fatalf("call %d: lookupSidecarIP() = (%q, %v), want (192.168.64.79, nil)", i, ip, err)
+		}
+	}
+	if calls != 1 {
+		t.Errorf("want inspectContainerIP invoked exactly once (lookupSidecarIP memoized), got %d calls", calls)
+	}
+}
+
 // recordingDNSWriter is a minimal dns.ResponseWriter stub that captures the
 // reply passed to WriteMsg, so tests can drive daemonDNSHandler directly
 // without a real network listener.
