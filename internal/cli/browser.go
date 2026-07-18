@@ -366,7 +366,14 @@ func wsHandshakeOnce(addr string, timeout time.Duration) error {
 	}
 	defer func() { _ = c.Close() }()
 	_ = c.SetDeadline(time.Now().Add(timeout))
-	key := base64.StdEncoding.EncodeToString([]byte("cspace-probe-16by"))
+	// RFC 6455 §4.1 requires Sec-WebSocket-Key to be the base64 encoding of
+	// exactly 16 raw bytes (22 base64 chars + "=="). "cspace-probe-16b" is
+	// exactly 16 ASCII bytes. Node's `ws` library — which Playwright's
+	// run-server uses — validates the header against
+	// ^[+/0-9A-Za-z]{22}==$ and returns HTTP 400 for anything else,
+	// including the 17-byte/24-char value this probe previously sent,
+	// which made a healthy run-server look dead to waitForRunServerWS.
+	key := base64.StdEncoding.EncodeToString([]byte("cspace-probe-16b"))
 	req := "GET / HTTP/1.1\r\nHost: " + addr + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
 		"Sec-WebSocket-Key: " + key + "\r\nSec-WebSocket-Version: 13\r\n\r\n"
 	if _, err := c.Write([]byte(req)); err != nil {

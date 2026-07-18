@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"net"
+	"regexp"
 	"slices"
 	"testing"
 	"time"
@@ -79,6 +80,73 @@ func startFakeWS(t *testing.T, response string) string {
 		}
 	}()
 	return l.Addr().String()
+}
+
+// startFakeWSCapture returns addr of a listener that responds 101 to every
+// connection and pushes the raw request bytes it received onto reqs (one
+// send per connection). Lets a test inspect exactly what wsHandshakeOnce put
+// on the wire — in particular the Sec-WebSocket-Key header value.
+func startFakeWSCapture(t *testing.T, reqs chan<- string) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer func() { _ = c.Close() }()
+				buf := make([]byte, 1024)
+				n, _ := c.Read(buf)
+				reqs <- string(buf[:n])
+				_, _ = c.Write([]byte("HTTP/1.1 101 Switching Protocols\r\n\r\n"))
+			}(c)
+		}
+	}()
+	return l.Addr().String()
+}
+
+// secWebSocketKeyRE matches a conforming RFC 6455 Sec-WebSocket-Key: the
+// base64 encoding of exactly 16 raw bytes is always 22 base64 chars followed
+// by "==" padding. This is also the exact pattern the Node `ws` library
+// (which Playwright's run-server uses) validates against, rejecting anything
+// else with HTTP 400 — see the sidecar-restart incident that motivated this
+// test.
+var secWebSocketKeyRE = regexp.MustCompile(`(?m)^Sec-WebSocket-Key: ([+/0-9A-Za-z]{22}==)\r?$`)
+
+// TestWaitForRunServerWSKeyFormat guards against a regression where
+// wsHandshakeOnce's fixed Sec-WebSocket-Key was derived from 17 raw bytes
+// instead of 16, producing a 24-char base64 value with a single "="
+// (non-conformant). The Node `ws` library validates the header against
+// ^[+/0-9A-Za-z]{22}==$ and returns HTTP 400 for anything else, which made
+// waitForRunServerWS misreport a healthy run-server as dead.
+func TestWaitForRunServerWSKeyFormat(t *testing.T) {
+	reqs := make(chan string, 1)
+	addr := startFakeWSCapture(t, reqs)
+
+	if err := wsHandshakeOnce(addr, 3*time.Second); err != nil {
+		t.Fatalf("wsHandshakeOnce: unexpected error: %v", err)
+	}
+
+	var raw string
+	select {
+	case raw = <-reqs:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for captured request")
+	}
+
+	m := secWebSocketKeyRE.FindStringSubmatch(raw)
+	if m == nil {
+		t.Fatalf("Sec-WebSocket-Key header missing or malformed in request:\n%s", raw)
+	}
+	if !secWebSocketKeyRE.MatchString(raw) {
+		t.Errorf("Sec-WebSocket-Key %q does not match RFC 6455 form ^[+/0-9A-Za-z]{22}==$", m[1])
+	}
 }
 
 func TestWaitForRunServerWS(t *testing.T) {
