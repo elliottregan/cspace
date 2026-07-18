@@ -108,7 +108,7 @@ func runBrowserRestartInSandbox(ctx context.Context, out io.Writer) error {
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("restart failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return fmt.Errorf("restart failed: status %d: %s", resp.StatusCode, restartErrorText(body))
 	}
 
 	var result struct {
@@ -121,6 +121,22 @@ func runBrowserRestartInSandbox(ctx context.Context, out io.Writer) error {
 	}
 	printBrowserEndpoints(out, project, result.IP, result.CDPURL, result.RunServerWSURL)
 	return nil
+}
+
+// restartErrorText extracts the meaningful error text from a non-2xx
+// /browser/restart/<project> response body. browserRestartHandler's failure
+// shape (cmd_daemon.go) is JSON {"ok":false,"error":"..."}; when body parses
+// as that shape, return just the error field so the CLI doesn't dump a raw
+// JSON envelope at the user. Anything else (e.g. a plain-text http.Error
+// body from the auth/bad-request paths) falls back to the trimmed raw body.
+func restartErrorText(body []byte) string {
+	var parsed struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &parsed); err == nil && parsed.Error != "" {
+		return parsed.Error
+	}
+	return strings.TrimSpace(string(body))
 }
 
 // printBrowserEndpoints reports a successful restart's refreshed endpoints

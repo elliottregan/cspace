@@ -2,7 +2,7 @@
 title: TCP-connect-level probes pass wedged services; sidecar health checks need protocol-level asserts
 date: 2026-07-17
 kind: finding
-status: open
+status: resolved
 category: observation
 tags: browser-sidecar, health-check, probes, playwright
 ---
@@ -18,3 +18,6 @@ During the 2026-07-17 sidecar OOM, the guest kernel kept accepting TCP on :3000 
 ## Updates
 ### 2026-07-18T01:55:00Z — @agent — status: open
 filed during the 2026-07-17 sidecar OOM incident (resume-redux)
+
+### 2026-07-18T12:00:00Z — @agent — status: resolved
+Added `waitForRunServerWS` (internal/cli/browser.go): a real WebSocket-upgrade handshake, succeeding only on `HTTP/1.1 101 Switching Protocols` — a plain TCP connect (or `waitForCDP`'s pre-existing `GET /json/version` 200 check) is no longer enough on its own. Gated everywhere cspace decides a sidecar is usable: `ensureSharedBrowserSidecar`'s reuse path, `restartBrowserSidecar`'s post-restart verification, and the new `cspace browser status` command, which reports per-endpoint health without restarting.

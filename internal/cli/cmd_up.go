@@ -650,7 +650,13 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				}
 				browserSidecar = bs
 				browserContainer = bs.ContainerName
-				env["CSPACE_BROWSER_CDP_URL"] = bs.CDPURL
+				// Env carries the stable DNS name (browser.<project>.cspace.test),
+				// not the sidecar's raw vmnet IP: a restart moves the IP, which
+				// would otherwise strand every sandbox already running with the
+				// old address baked into its env (cs-finding
+				// 2026-07-17-sidecar-addressed-by-boot-baked-ip-no-recovery-path).
+				cdpURL, wsURL := browserEnvURLs(project)
+				env["CSPACE_BROWSER_CDP_URL"] = cdpURL
 				// @playwright/mcp respects PLAYWRIGHT_MCP_CDP_ENDPOINT
 				// to connect to an existing CDP browser instead of
 				// launching its own Chromium. Setting this redirects
@@ -658,15 +664,15 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				// (which runs `npx @playwright/mcp@latest` with no
 				// connect args) at our sidecar so the lean sandbox
 				// image doesn't need a local browser.
-				env["PLAYWRIGHT_MCP_CDP_ENDPOINT"] = bs.CDPURL
-				env["PW_TEST_CONNECT_WS_ENDPOINT"] = bs.RunServerWSURL
+				env["PLAYWRIGHT_MCP_CDP_ENDPOINT"] = cdpURL
+				env["PW_TEST_CONNECT_WS_ENDPOINT"] = wsURL
 				// CSPACE_WORKSPACE_HOST is set unconditionally above (near
 				// env's construction), not here — it must hold even under
 				// --no-browser. Hosts entry written below once the
 				// workspace IP is known.
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-					"browser sidecar: %s (cdp %s, run-server %s)\n",
-					bs.ContainerName, bs.CDPURL, bs.RunServerWSURL)
+					"browser sidecar: %s (cdp %s [raw ip %s], run-server %s)\n",
+					bs.ContainerName, cdpURL, bs.CDPURL, wsURL)
 				defer func() {
 					// Only tear down a sidecar THIS up created. A reused
 					// shared singleton is left for the instances still using it.

@@ -82,31 +82,70 @@ func TestRunBrowserRestartInSandboxPostsCorrectURLAndToken(t *testing.T) {
 }
 
 // TestRunBrowserRestartInSandboxNonOKStatusReturnsServerText covers a
-// non-2xx daemon response: the CLI must surface the server's error text and
-// return a non-nil error (non-zero exit at the cobra layer).
+// non-2xx daemon response in both shapes browserRestartHandler
+// (cmd_daemon.go) can produce: a plain-text http.Error body (e.g. the auth /
+// bad-request paths) and its normal failure shape,
+// {"ok":false,"error":"..."} (the restart-ladder-failed path). Either way the
+// CLI must surface just the meaningful error text — not a raw JSON envelope —
+// and return a non-nil error (non-zero exit at the cobra layer).
 func TestRunBrowserRestartInSandboxNonOKStatusReturnsServerText(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/lookup/", func(w http.ResponseWriter, req *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(registry.Entry{Token: "tok"})
-	})
-	mux.HandleFunc("/browser/restart/", func(w http.ResponseWriter, req *http.Request) {
-		http.Error(w, "verify restarted browser sidecar: timeout", http.StatusBadGateway)
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	t.Setenv("CSPACE_SANDBOX_NAME", "sandbox-a")
-	t.Setenv("CSPACE_PROJECT", "demo-project")
-	t.Setenv("CSPACE_REGISTRY_URL", srv.URL)
-
-	var out bytes.Buffer
-	err := runBrowserRestartInSandbox(context.Background(), &out)
-	if err == nil {
-		t.Fatal("want error for non-2xx response, got nil")
+	cases := []struct {
+		name       string
+		writeBody  func(w http.ResponseWriter)
+		wantText   string
+		wantAbsent string // must NOT appear in the surfaced error
+	}{
+		{
+			name: "plain text body",
+			writeBody: func(w http.ResponseWriter) {
+				http.Error(w, "verify restarted browser sidecar: timeout", http.StatusBadGateway)
+			},
+			wantText: "timeout",
+		},
+		{
+			name: "JSON-shaped ok:false body",
+			writeBody: func(w http.ResponseWriter) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadGateway)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"ok":    false,
+					"error": "verify restarted browser sidecar cspace-demo-browser: timeout",
+				})
+			},
+			wantText:   "verify restarted browser sidecar cspace-demo-browser: timeout",
+			wantAbsent: `"ok"`,
+		},
 	}
-	if !strings.Contains(err.Error(), "timeout") {
-		t.Errorf("error = %q, want it to surface the server's error text", err.Error())
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/lookup/", func(w http.ResponseWriter, req *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(registry.Entry{Token: "tok"})
+			})
+			mux.HandleFunc("/browser/restart/", func(w http.ResponseWriter, req *http.Request) {
+				tc.writeBody(w)
+			})
+			srv := httptest.NewServer(mux)
+			t.Cleanup(srv.Close)
+
+			t.Setenv("CSPACE_SANDBOX_NAME", "sandbox-a")
+			t.Setenv("CSPACE_PROJECT", "demo-project")
+			t.Setenv("CSPACE_REGISTRY_URL", srv.URL)
+
+			var out bytes.Buffer
+			err := runBrowserRestartInSandbox(context.Background(), &out)
+			if err == nil {
+				t.Fatal("want error for non-2xx response, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.wantText) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), tc.wantText)
+			}
+			if tc.wantAbsent != "" && strings.Contains(err.Error(), tc.wantAbsent) {
+				t.Errorf("error = %q, want it to NOT contain raw JSON envelope %q", err.Error(), tc.wantAbsent)
+			}
+		})
 	}
 }
 

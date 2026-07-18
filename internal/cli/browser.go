@@ -271,6 +271,23 @@ func workspaceFriendlyHost(name, project string) string {
 	return strings.ToLower(name) + "." + strings.ToLower(project) + ".cspace.test"
 }
 
+// browserEnvURLs returns the stable-DNS-name endpoints for the project's
+// shared browser sidecar: the CDP URL and run-server WS URL cmd_up.go injects
+// into a sandbox's env (CSPACE_BROWSER_CDP_URL / PLAYWRIGHT_MCP_CDP_ENDPOINT /
+// PW_TEST_CONNECT_WS_ENDPOINT). Using the name instead of the sidecar's raw
+// vmnet IP means a restart — which moves the IP — doesn't strand an
+// already-running sandbox (cs-finding
+// 2026-07-17-sidecar-addressed-by-boot-baked-ip-no-recovery-path); the
+// sandbox's dnsmasq → gateway-DNS path resolves the name fresh on every
+// lookup. Builds on browserSandboxHost (cmd_browser.go) — the same
+// browser.<project>.<suffix> name `cspace browser status`'s in-sandbox path
+// probes — so there is exactly one place that constructs that hostname.
+func browserEnvURLs(project string) (cdpURL, wsURL string) {
+	host := browserSandboxHost(project)
+	return fmt.Sprintf("http://%s:%d", host, browserCDPPort),
+		fmt.Sprintf("ws://%s:%d/", host, browserRunServerPort)
+}
+
 // applyWorkspaceHostEnv sets CSPACE_WORKSPACE_HOST on env. Callers must
 // invoke this unconditionally (not gated behind browser-sidecar setup) —
 // agents/docs point at this var as THE address to reach the workspace from

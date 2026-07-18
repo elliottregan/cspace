@@ -2,7 +2,7 @@
 title: sidecar addressed by boot-baked raw IP; restarting it strands every sandbox, and agents have no recovery path
 date: 2026-07-17
 kind: finding
-status: open
+status: resolved
 category: bug
 tags: browser-sidecar, dns, addressing, recovery, daemon, incident
 ---
@@ -22,3 +22,6 @@ Incident evidence for why restart-by-hand is not enough: Apple Container's state
 ## Updates
 ### 2026-07-18T01:55:00Z — @agent — status: open
 filed during the 2026-07-17 sidecar OOM incident (resume-redux); requirement stated by Elliott mid-incident
+
+### 2026-07-18T12:00:00Z — @agent — status: resolved
+Shipped both fixes. Stable addressing: `browser.<project>.cspace.test` now resolves in daemon DNS (`daemonDNSHandler`'s 2-label `browser` case) straight to a live `container inspect` of the singleton, no registry entry needed; a sandbox's `CSPACE_BROWSER_CDP_URL` / `PLAYWRIGHT_MCP_CDP_ENDPOINT` / `PW_TEST_CONNECT_WS_ENDPOINT` are now built from this name (`browserEnvURLs`, cmd_up.go) instead of the sidecar's raw vmnet IP, so a restart's new IP is transparent to already-running sandboxes. Agent-invocable restart: `restartBrowserSidecar`'s escalation ladder (stop → SIGKILL → host-process teardown for the split-brain case → start/recreate → protocol-level reverify) is exposed via the daemon's `POST /browser/restart/{project}` and `cspace browser restart`, working both host-side and in-sandbox (auth via the sandbox's own registry-entry token).

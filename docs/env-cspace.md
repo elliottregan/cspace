@@ -152,6 +152,15 @@ The statusline (`lib/runtime/scripts/statusline.sh`) already surfaces this
 same FQDN (`${CONTAINER}.${PROJECT}.cspace.test`) next to each listening port,
 so `cspace up`'s status output and `$CSPACE_WORKSPACE_HOST` always agree.
 
+### Reaching the browser sidecar
+
+`CSPACE_BROWSER_CDP_URL`, `PLAYWRIGHT_MCP_CDP_ENDPOINT`, and
+`PW_TEST_CONNECT_WS_ENDPOINT` now carry the shared browser sidecar's stable
+DNS name (`browser.<project>.cspace.test`) instead of its raw vmnet IP, so
+they keep working across a sidecar restart. If the sidecar wedges or an agent
+tears it down, run `cspace browser status` to check health or `cspace browser
+restart` to recover it — both work from the host and from inside a sandbox.
+
 ### e2e `baseURL` convention
 
 The `run-server` e2e browser (Playwright) runs **remotely**, in the shared

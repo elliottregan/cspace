@@ -167,6 +167,22 @@ func TestWaitForRunServerWS(t *testing.T) {
 	}
 }
 
+// TestBrowserEnvURLs pins the exact strings cmd_up.go injects into a
+// sandbox's env (CSPACE_BROWSER_CDP_URL / PLAYWRIGHT_MCP_CDP_ENDPOINT /
+// PW_TEST_CONNECT_WS_ENDPOINT): the stable DNS name, not the raw vmnet IP,
+// so a sidecar restart (which moves the IP) doesn't strand an
+// already-running sandbox (cs-finding
+// 2026-07-17-sidecar-addressed-by-boot-baked-ip-no-recovery-path).
+func TestBrowserEnvURLs(t *testing.T) {
+	cdpURL, wsURL := browserEnvURLs("demo")
+	if want := "http://browser.demo.cspace.test:9222"; cdpURL != want {
+		t.Errorf("cdpURL = %q, want %q", cdpURL, want)
+	}
+	if want := "ws://browser.demo.cspace.test:3000/"; wsURL != want {
+		t.Errorf("wsURL = %q, want %q", wsURL, want)
+	}
+}
+
 func TestWorkspaceFriendlyHost(t *testing.T) {
 	cases := map[string][2]string{
 		"mercury.resume-redux.cspace.test": {"mercury", "resume-redux"},

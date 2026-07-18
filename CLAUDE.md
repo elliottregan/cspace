@@ -15,6 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `cspace keychain init|status` — store/inspect credentials in the macOS Keychain
 - `cspace image build` — rebuild the sandbox image (uses the repo's `lib/` when run from a cspace checkout, embedded assets otherwise)
 - `cspace daemon …`, `cspace dns …`, `cspace registry …`, `cspace doctor` — host daemon, resolver install, registry inspection, diagnostics
+- `cspace browser restart|status` — restart or health-check the project's shared browser sidecar; works both from the host and from inside a sandbox
 - `cspace self-update`, `cspace version`, `cspace completion`
 
 ## Development
@@ -92,6 +93,10 @@ GitHub credentials follow the same precedence; auto-discovery uses `gh auth toke
 `docs/env-cspace.md` documents the `.env.cspace` convention (project-declared container overrides), the full env merge order, and the `$CSPACE_WORKSPACE_HOST` / e2e `baseURL` guidance. Two sharp edges, both tracked as findings: compose `env_file` entries out-rank `.cspace/secrets.env` (a project redeclaring a secret key silently overrides the delivered credential — `cspace up` warns for the known secret keys), and `--env` does not currently win over ambient host-shell credentials despite the documented contract.
 
 Security caveat: secrets currently transit `-e` flags into the substrate, and Apple Container's `vminitd` logs the full process env — anyone with `container logs` access on the host can read them.
+
+## Browser sidecar
+
+The shared per-project sidecar (`cspace-<project>-browser`) has a stable DNS name, `browser.<project>.cspace.test`, served by the host daemon's DNS handler — it survives sidecar restarts, unlike the raw vmnet IP a sandbox used to have baked into its env. `CSPACE_BROWSER_CDP_URL`, `PLAYWRIGHT_MCP_CDP_ENDPOINT`, and `PW_TEST_CONNECT_WS_ENDPOINT` all carry this name now. If the sidecar wedges or an agent tears it down, `cspace browser restart` (host-side or in-sandbox, via the daemon's `POST /browser/restart/{project}`) restarts it through an escalation ladder and reverifies liveness with protocol-level probes; `cspace browser status` reports current health without restarting.
 
 ## Key patterns
 
