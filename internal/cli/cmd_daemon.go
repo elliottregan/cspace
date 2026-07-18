@@ -333,13 +333,35 @@ func daemonDNSHandler(r *registry.Registry, lastActivity *atomic.Int64) dns.Hand
 				continue
 			}
 			parts := strings.Split(labels, ".")
-			var sandbox, project, service string
+			var sandbox, project, service, ip string
+			resolved := false
 			switch len(parts) {
 			case 1:
 				sandbox = parts[0]
 			case 2:
 				// Labels are emitted closest-first per DNS, so the
-				// sandbox label is the leftmost (parts[0]).
+				// sandbox label is the leftmost (parts[0]). "browser" is
+				// a reserved leftmost label at this 2-label position:
+				// browser.<project>.cspace.test resolves the project's
+				// shared browser sidecar (browserSingletonName) directly
+				// via container lookup, skipping the registry entirely —
+				// no registry entry exists for the sidecar. That keeps
+				// the name restart-stable: a new IP after a sidecar
+				// restart propagates within one lookupSidecarIPFn memo
+				// TTL. A bare 1-label "browser" query is NOT reserved;
+				// it falls through to the ordinary sandbox-name path
+				// below and NXDOMAINs there since no registry entry is
+				// named "browser".
+				if parts[0] == "browser" {
+					sidecarIP, err := lookupSidecarIPFn(browserSingletonName(parts[1]))
+					if err != nil || sidecarIP == "" {
+						reply.Rcode = dns.RcodeNameError
+						continue
+					}
+					ip = sidecarIP
+					resolved = true
+					break
+				}
 				sandbox, project = parts[0], parts[1]
 			case 3:
 				// <service>.<sandbox>.<project>.cspace.test — resolves
@@ -353,58 +375,59 @@ func daemonDNSHandler(r *registry.Registry, lastActivity *atomic.Int64) dns.Hand
 				continue
 			}
 
-			entries, err := r.List()
-			if err != nil {
-				log.Printf("dns: registry list: %v", err)
-				reply.Rcode = dns.RcodeServerFailure
-				continue
-			}
-			var matches []registry.Entry
-			for _, e := range entries {
-				if e.Name != sandbox || e.IP == "" {
+			if !resolved {
+				entries, err := r.List()
+				if err != nil {
+					log.Printf("dns: registry list: %v", err)
+					reply.Rcode = dns.RcodeServerFailure
 					continue
 				}
-				if project != "" && e.Project != project {
-					continue
-				}
-				matches = append(matches, e)
-			}
-			var ip string
-			switch len(matches) {
-			case 0:
-				reply.Rcode = dns.RcodeNameError
-				continue
-			case 1:
-				ip = liveSandboxIP(matches[0].Project, matches[0].Name, matches[0].IP)
-				if service != "" {
-					// 4-label query: redirect to the sidecar container
-					// `cspace-<project>-<sandbox>-<service>` and resolve
-					// via the substrate. The sandbox match above
-					// confirmed the cluster exists; the sidecar may or
-					// may not be running.
-					sidecar := fmt.Sprintf("cspace-%s-%s-%s",
-						matches[0].Project, matches[0].Name, service)
-					sidecarIP, err := lookupSidecarIP(sidecar)
-					if err != nil || sidecarIP == "" {
-						reply.Rcode = dns.RcodeNameError
+				var matches []registry.Entry
+				for _, e := range entries {
+					if e.Name != sandbox || e.IP == "" {
 						continue
 					}
-					ip = sidecarIP
+					if project != "" && e.Project != project {
+						continue
+					}
+					matches = append(matches, e)
 				}
-			default:
-				// Multiple projects have this sandbox name and the user
-				// didn't specify which. Force them to disambiguate via
-				// <sandbox>.<project>.cspace.test. Logging the
-				// ambiguity helps diagnose "why doesn't this resolve?"
-				// when two projects collide.
-				projects := make([]string, 0, len(matches))
-				for _, e := range matches {
-					projects = append(projects, e.Project)
+				switch len(matches) {
+				case 0:
+					reply.Rcode = dns.RcodeNameError
+					continue
+				case 1:
+					ip = liveSandboxIP(matches[0].Project, matches[0].Name, matches[0].IP)
+					if service != "" {
+						// 4-label query: redirect to the sidecar container
+						// `cspace-<project>-<sandbox>-<service>` and resolve
+						// via the substrate. The sandbox match above
+						// confirmed the cluster exists; the sidecar may or
+						// may not be running.
+						sidecar := fmt.Sprintf("cspace-%s-%s-%s",
+							matches[0].Project, matches[0].Name, service)
+						sidecarIP, err := lookupSidecarIPFn(sidecar)
+						if err != nil || sidecarIP == "" {
+							reply.Rcode = dns.RcodeNameError
+							continue
+						}
+						ip = sidecarIP
+					}
+				default:
+					// Multiple projects have this sandbox name and the user
+					// didn't specify which. Force them to disambiguate via
+					// <sandbox>.<project>.cspace.test. Logging the
+					// ambiguity helps diagnose "why doesn't this resolve?"
+					// when two projects collide.
+					projects := make([]string, 0, len(matches))
+					for _, e := range matches {
+						projects = append(projects, e.Project)
+					}
+					log.Printf("dns: ambiguous %s — sandbox %q exists in %v; use <sandbox>.<project>.cspace.test",
+						name, sandbox, projects)
+					reply.Rcode = dns.RcodeNameError
+					continue
 				}
-				log.Printf("dns: ambiguous %s — sandbox %q exists in %v; use <sandbox>.<project>.cspace.test",
-					name, sandbox, projects)
-				reply.Rcode = dns.RcodeNameError
-				continue
 			}
 
 			// Only A queries get a record; AAAA / others get NOERROR
@@ -541,14 +564,20 @@ func lookupSidecarIPCtx(ctx context.Context, name string) (string, error) {
 }
 
 // lookupSidecarIP is lookupSidecarIPCtx run with an unbounded context. It
-// exists to preserve the DNS handler's one existing sidecar-resolution call
-// site (the 3-label <service>.<sandbox>.<project> branch) unchanged; that
-// branch's own registry match already bounds how often it fires, so it
-// doesn't get the 2s deadline applied to the higher-frequency
-// liveSandboxIP path below.
+// exists to preserve the DNS handler's sidecar-resolution call sites (the
+// 3-label <service>.<sandbox>.<project> branch and the 2-label reserved
+// "browser.<project>" branch) unchanged; each call site's own registry
+// match or fixed sidecar name already bounds how often it fires, so neither
+// gets the 2s deadline applied to the higher-frequency liveSandboxIP path
+// below.
 func lookupSidecarIP(name string) (string, error) {
 	return lookupSidecarIPCtx(context.Background(), name)
 }
+
+// lookupSidecarIPFn is the package seam the DNS handler calls instead of
+// lookupSidecarIP directly, so tests can fake sidecar resolution without
+// shelling out to the real `container` CLI.
+var lookupSidecarIPFn = lookupSidecarIP
 
 // errContainerGone is returned by test stubs of inspectContainerIP to
 // simulate a container that no longer exists (or an inspect that failed for

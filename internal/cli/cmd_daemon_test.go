@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -10,9 +11,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/elliottregan/cspace/internal/registry"
+	"github.com/miekg/dns"
 )
 
 // TestHealthReportsVersion verifies /health reports the running binary's
@@ -299,5 +304,219 @@ func TestLiveSandboxIPNegativeCache(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("want inspectContainerIP invoked exactly once (second call served from negative memo), got %d calls", calls)
+	}
+}
+
+// recordingDNSWriter is a minimal dns.ResponseWriter stub that captures the
+// reply passed to WriteMsg, so tests can drive daemonDNSHandler directly
+// without a real network listener.
+type recordingDNSWriter struct {
+	msg *dns.Msg
+}
+
+func (w *recordingDNSWriter) LocalAddr() net.Addr         { return &net.UDPAddr{} }
+func (w *recordingDNSWriter) RemoteAddr() net.Addr        { return &net.UDPAddr{} }
+func (w *recordingDNSWriter) WriteMsg(m *dns.Msg) error   { w.msg = m; return nil }
+func (w *recordingDNSWriter) Write(b []byte) (int, error) { return len(b), nil }
+func (w *recordingDNSWriter) Close() error                { return nil }
+func (w *recordingDNSWriter) TsigStatus() error           { return nil }
+func (w *recordingDNSWriter) TsigTimersOnly(bool)         {}
+func (w *recordingDNSWriter) Hijack()                     {}
+
+// dnsQuestion builds a single-question A-record query message for name.
+func dnsQuestion(name string) *dns.Msg {
+	m := new(dns.Msg)
+	m.SetQuestion(dns.Fqdn(name), dns.TypeA)
+	return m
+}
+
+// stubInspectContainerIP replaces the package-level inspectContainerIP seam
+// for the duration of a test so liveSandboxIP's registry-path tests never
+// shell out to the real `container` CLI, and restores the original on
+// cleanup.
+func stubInspectContainerIP(t *testing.T, fn func(string) (string, error)) {
+	t.Helper()
+	orig := inspectContainerIP
+	t.Cleanup(func() { inspectContainerIP = orig })
+	inspectContainerIP = fn
+}
+
+// stubLookupSidecarIPFn replaces the lookupSidecarIPFn seam for the duration
+// of a test and restores the original on cleanup.
+func stubLookupSidecarIPFn(t *testing.T, fn func(string) (string, error)) {
+	t.Helper()
+	orig := lookupSidecarIPFn
+	t.Cleanup(func() { lookupSidecarIPFn = orig })
+	lookupSidecarIPFn = fn
+}
+
+// TestDaemonDNSHandlerBrowserLabel covers the new reserved "browser"
+// leftmost label at the 2-label position: browser.<project>.cspace.test
+// must resolve the project's shared browser sidecar via lookupSidecarIPFn,
+// entirely bypassing the registry (which has no entry for the sidecar). A
+// bare 1-label "browser" query must NOT be treated as reserved — it falls
+// through to the ordinary sandbox-name registry path and NXDOMAINs there.
+func TestDaemonDNSHandlerBrowserLabel(t *testing.T) {
+	regPath := filepath.Join(t.TempDir(), "registry.json")
+	r := &registry.Registry{Path: regPath}
+	// Seed one unrelated entry to prove the browser case doesn't
+	// accidentally match/consult it.
+	if err := r.Register(registry.Entry{
+		Project: "demo", Name: "someother", IP: "192.168.64.10", StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	var lastActivity atomic.Int64
+
+	t.Run("resolves shared browser sidecar", func(t *testing.T) {
+		var gotName string
+		stubLookupSidecarIPFn(t, func(name string) (string, error) {
+			gotName = name
+			return "192.168.64.150", nil
+		})
+
+		w := &recordingDNSWriter{}
+		daemonDNSHandler(r, &lastActivity).ServeDNS(w, dnsQuestion("browser.demo."+daemonDNSDomain))
+
+		wantName := browserSingletonName("demo")
+		if gotName != wantName {
+			t.Fatalf("lookupSidecarIPFn called with %q, want %q", gotName, wantName)
+		}
+		if w.msg == nil || len(w.msg.Answer) != 1 {
+			t.Fatalf("got msg %+v, want exactly 1 answer", w.msg)
+		}
+		a, ok := w.msg.Answer[0].(*dns.A)
+		if !ok || a.A.String() != "192.168.64.150" {
+			t.Fatalf("answer = %+v, want A 192.168.64.150", w.msg.Answer[0])
+		}
+	})
+
+	t.Run("sidecar lookup failure returns NXDOMAIN", func(t *testing.T) {
+		stubLookupSidecarIPFn(t, func(string) (string, error) {
+			return "", errors.New("container not found")
+		})
+
+		w := &recordingDNSWriter{}
+		daemonDNSHandler(r, &lastActivity).ServeDNS(w, dnsQuestion("browser.demo."+daemonDNSDomain))
+
+		if w.msg == nil || w.msg.Rcode != dns.RcodeNameError {
+			t.Fatalf("got %+v, want Rcode NXDOMAIN", w.msg)
+		}
+	})
+
+	t.Run("1-label browser stays NXDOMAIN", func(t *testing.T) {
+		called := false
+		stubLookupSidecarIPFn(t, func(string) (string, error) {
+			called = true
+			return "192.168.64.150", nil
+		})
+
+		w := &recordingDNSWriter{}
+		daemonDNSHandler(r, &lastActivity).ServeDNS(w, dnsQuestion("browser."+daemonDNSDomain))
+
+		if called {
+			t.Fatal("lookupSidecarIPFn must not be called for a 1-label 'browser' query")
+		}
+		if w.msg == nil || w.msg.Rcode != dns.RcodeNameError {
+			t.Fatalf("got %+v, want Rcode NXDOMAIN", w.msg)
+		}
+	})
+}
+
+// TestDaemonDNSHandlerServiceLabelUsesSeam guards the pre-existing 3-label
+// <service>.<sandbox>.<project> resolution path, now routed through the
+// lookupSidecarIPFn seam instead of calling lookupSidecarIP directly. This
+// must keep behaving exactly as before: registry confirms the sandbox
+// exists, then the sidecar container name is resolved through the seam.
+func TestDaemonDNSHandlerServiceLabelUsesSeam(t *testing.T) {
+	regPath := filepath.Join(t.TempDir(), "registry.json")
+	r := &registry.Registry{Path: regPath}
+	if err := r.Register(registry.Entry{
+		Project: "svcproj", Name: "svcsandbox", IP: "192.168.64.20", StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	var lastActivity atomic.Int64
+
+	// The sandbox's own IP resolution goes through the separate
+	// inspectContainerIP seam (liveSandboxIP) — stub it too so this test
+	// never shells out to the real `container` CLI.
+	stubInspectContainerIP(t, func(string) (string, error) {
+		return "", errContainerGone
+	})
+
+	var gotName string
+	stubLookupSidecarIPFn(t, func(name string) (string, error) {
+		gotName = name
+		return "192.168.64.151", nil
+	})
+
+	w := &recordingDNSWriter{}
+	daemonDNSHandler(r, &lastActivity).ServeDNS(w, dnsQuestion("browser.svcsandbox.svcproj."+daemonDNSDomain))
+
+	wantName := "cspace-svcproj-svcsandbox-browser"
+	if gotName != wantName {
+		t.Fatalf("lookupSidecarIPFn called with %q, want %q", gotName, wantName)
+	}
+	if w.msg == nil || len(w.msg.Answer) != 1 {
+		t.Fatalf("got msg %+v, want exactly 1 answer", w.msg)
+	}
+	a, ok := w.msg.Answer[0].(*dns.A)
+	if !ok || a.A.String() != "192.168.64.151" {
+		t.Fatalf("answer = %+v, want A 192.168.64.151", w.msg.Answer[0])
+	}
+}
+
+// TestDaemonDNSHandlerSandboxResolutionUnchanged guards the ordinary
+// 1-label and 2-label sandbox-name registry resolution paths, which must be
+// entirely unaffected by the new "browser" reserved label (they don't touch
+// lookupSidecarIPFn at all).
+func TestDaemonDNSHandlerSandboxResolutionUnchanged(t *testing.T) {
+	regPath := filepath.Join(t.TempDir(), "registry.json")
+	r := &registry.Registry{Path: regPath}
+	if err := r.Register(registry.Entry{
+		Project: "plainproj", Name: "plainsandbox", IP: "192.168.64.30", StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	var lastActivity atomic.Int64
+
+	stubInspectContainerIP(t, func(string) (string, error) {
+		return "", errContainerGone
+	})
+	stubLookupSidecarIPFn(t, func(string) (string, error) {
+		t.Fatal("lookupSidecarIPFn must not be called for plain sandbox resolution")
+		return "", nil
+	})
+
+	for _, name := range []string{
+		"plainsandbox." + daemonDNSDomain,
+		"plainsandbox.plainproj." + daemonDNSDomain,
+	} {
+		w := &recordingDNSWriter{}
+		daemonDNSHandler(r, &lastActivity).ServeDNS(w, dnsQuestion(name))
+
+		if w.msg == nil || len(w.msg.Answer) != 1 {
+			t.Fatalf("%s: got msg %+v, want exactly 1 answer", name, w.msg)
+		}
+		a, ok := w.msg.Answer[0].(*dns.A)
+		if !ok || a.A.String() != "192.168.64.30" {
+			t.Fatalf("%s: answer = %+v, want A 192.168.64.30", name, w.msg.Answer[0])
+		}
+	}
+}
+
+// TestDaemonDNSHandlerUnknownSandboxNXDOMAIN guards the existing "no
+// matching registry entry" NXDOMAIN behavior.
+func TestDaemonDNSHandlerUnknownSandboxNXDOMAIN(t *testing.T) {
+	regPath := filepath.Join(t.TempDir(), "registry.json")
+	r := &registry.Registry{Path: regPath}
+	var lastActivity atomic.Int64
+
+	w := &recordingDNSWriter{}
+	daemonDNSHandler(r, &lastActivity).ServeDNS(w, dnsQuestion("nosuchsandbox."+daemonDNSDomain))
+
+	if w.msg == nil || w.msg.Rcode != dns.RcodeNameError {
+		t.Fatalf("got %+v, want Rcode NXDOMAIN", w.msg)
 	}
 }
