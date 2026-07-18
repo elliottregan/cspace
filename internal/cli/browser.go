@@ -93,18 +93,26 @@ type BrowserSidecar struct {
 	RunServerWSURL string // ws://<ip>:3000/ — for $PW_TEST_CONNECT_WS_ENDPOINT
 }
 
-// runBrowserSidecar starts a sidecar container with the given name. It does
-// NOT remove a pre-existing same-named container (callers decide that). The
-// cspace.playwright-version label lets the shared path detect a version-mismatched
-// singleton on reuse.
-func runBrowserSidecar(ctx context.Context, containerName, plVersion string) (*BrowserSidecar, error) {
-	if plVersion == "" {
-		plVersion = defaultPlaywrightVersion
-	}
-	args := []string{
+// Resource caps for the browser sidecar. The sidecar bypasses the
+// substrate adapter (raw `container run` below), so without explicit
+// flags it runs on Apple Container's default 1024 MiB — which OOM-wedged
+// under shared e2e load: one long-lived CDP chromium plus a fresh browser
+// per run-server connection, shared by every sandbox in the project.
+// (cs-finding 2026-07-17-browser-sidecar-runs-on-default-1gib-and-ooms-under-e2e-load)
+const (
+	browserSidecarCPUs      = 4
+	browserSidecarMemoryMiB = 4096
+)
+
+// browserSidecarRunArgs builds the full `container run` argv for the
+// sidecar. Pure so tests can assert on the invocation shape.
+func browserSidecarRunArgs(containerName, plVersion string) []string {
+	return []string{
 		"run", "-d",
 		"--name", containerName,
 		"--label", "cspace.playwright-version=" + plVersion,
+		"--cpus", fmt.Sprintf("%d", browserSidecarCPUs),
+		"--memory", fmt.Sprintf("%dMiB", browserSidecarMemoryMiB),
 		// Public resolvers needed for the apt-get install step. Once
 		// dnsmasq is up we repoint resolv.conf at it; until then,
 		// these are how the sidecar fetches packages.
@@ -165,6 +173,17 @@ func runBrowserSidecar(ctx context.Context, containerName, plVersion string) (*B
 			fmt.Sprintf("exec npx -y playwright@%s run-server --port %d --host 0.0.0.0",
 				plVersion, browserRunServerPort),
 	}
+}
+
+// runBrowserSidecar starts a sidecar container with the given name. It does
+// NOT remove a pre-existing same-named container (callers decide that). The
+// cspace.playwright-version label lets the shared path detect a version-mismatched
+// singleton on reuse.
+func runBrowserSidecar(ctx context.Context, containerName, plVersion string) (*BrowserSidecar, error) {
+	if plVersion == "" {
+		plVersion = defaultPlaywrightVersion
+	}
+	args := browserSidecarRunArgs(containerName, plVersion)
 	cmd := exec.CommandContext(ctx, "container", args...)
 	if out, runErr := cmd.CombinedOutput(); runErr != nil {
 		return nil, fmt.Errorf("start browser sidecar: %w (%s)", runErr, strings.TrimSpace(string(out)))

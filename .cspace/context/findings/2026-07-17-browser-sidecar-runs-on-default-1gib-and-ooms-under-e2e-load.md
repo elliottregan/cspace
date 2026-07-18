@@ -2,7 +2,7 @@
 title: browser sidecar runs on Apple Container's default 1 GiB and OOMs under e2e load
 date: 2026-07-17
 kind: finding
-status: open
+status: resolved
 category: bug
 tags: browser-sidecar, resources, oom, playwright, incident
 ---
@@ -20,3 +20,11 @@ Incident 2026-07-17 (`cspace-resume-redux-browser`): guest kernel log showed `Fr
 ## Updates
 ### 2026-07-18T01:55:00Z — @agent — status: open
 filed during the 2026-07-17 sidecar OOM incident (resume-redux)
+
+### 2026-07-18T02:20:00Z — @agent — status: resolved
+`browserSidecarRunArgs` (extracted pure from `runBrowserSidecar`) now passes
+`--cpus 4 --memory 4096MiB` explicitly; guarded by
+`TestBrowserSidecarRunArgsSetsResourceCaps`. Takes effect on next sidecar
+recreation by a binary containing the fix. The orchestrator-services question
+(convex sidecars also on the raw 1024 MiB default) is noted in Details and
+left open deliberately — those haven't misbehaved.
