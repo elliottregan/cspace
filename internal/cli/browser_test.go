@@ -462,9 +462,6 @@ func TestContainerStateRunning(t *testing.T) {
 // IP acquisition first (failure surfaces as an IP error), and on a good IP the
 // CDP/WS URLs are constructed from it before the CDP probe runs.
 func TestVerifyBrowserFnDefault(t *testing.T) {
-	orig := verifyBrowserFn // exercise the real default, not a seam
-	_ = orig
-
 	t.Run("ip failure", func(t *testing.T) {
 		swapBrowserExec(t, func(_ context.Context, _ string, _ ...string) (string, error) {
 			return "[]", nil // no IP ever appears
@@ -504,4 +501,107 @@ func TestVerifyBrowserFnDefault(t *testing.T) {
 			t.Errorf("RunServerWSURL = %q", bs.RunServerWSURL)
 		}
 	})
+}
+
+// --- Fix round 1 -----------------------------------------------------------
+
+// TestBrowserExecCmdDefaultStdoutOnly exercises the REAL default browserExecCmd
+// (no seam swap) via a tiny `sh` helper process — not the `container` CLI, per
+// the fix brief. Guards against the seam's default returning CombinedOutput,
+// which corrupts the three stdout-JSON parsers (waitForBrowserIP,
+// sidecarVersion, containerStateRunning) whenever a healthy `container
+// inspect` writes anything to stderr; in the worst case, resolveBrowserSplitBrain's
+// poll misparses "running" as "not running" and teardown falsely reports success.
+func TestBrowserExecCmdDefaultStdoutOnly(t *testing.T) {
+	t.Run("stdout only, stderr excluded", func(t *testing.T) {
+		out, err := browserExecCmd(context.Background(), "sh", "-c", "echo OUT; echo NOISE 1>&2")
+		if err != nil {
+			t.Fatalf("browserExecCmd: unexpected error: %v", err)
+		}
+		if out != "OUT\n" {
+			t.Errorf("out = %q, want exactly %q (stderr NOISE must not leak into stdout)", out, "OUT\n")
+		}
+	})
+
+	t.Run("stderr text surfaces in the error on failure", func(t *testing.T) {
+		_, err := browserExecCmd(context.Background(), "sh", "-c", "echo ERRTEXT 1>&2; exit 1")
+		if err == nil {
+			t.Fatal("browserExecCmd: want error, got nil")
+		}
+		if !strings.Contains(err.Error(), "ERRTEXT") {
+			t.Errorf("error = %q, want it to contain stderr text %q", err.Error(), "ERRTEXT")
+		}
+	})
+}
+
+// TestResolveBrowserSplitBrainEscapesPgrepPattern guards against browser.go:113
+// embedding the container name into the pgrep -f pattern unescaped: a "." in a
+// project name (e.g. "my.project") is a regex wildcard, so an unescaped
+// pattern can match — and `kill -9` — a sibling project's
+// container-runtime-linux process. The recorded pgrep pattern must carry the
+// regexp.QuoteMeta-escaped form of the container name.
+func TestResolveBrowserSplitBrainEscapesPgrepPattern(t *testing.T) {
+	fake := &scriptedExec{
+		inspectSt: []string{"running", "running", "running", "stopped"},
+		stopErr:   errors.New("Error: stop: dead exec session"),
+		killOut:   "Error: cannot kill container cspace-my.project-browser: container is not running",
+		killErr:   errors.New("exit status 1"),
+		pgrepOut:  "54321\n",
+	}
+	swapBrowserExec(t, fake.fn)
+	swapVerifyBrowser(t, func(_ context.Context, _ *BrowserSidecar) error { return nil })
+
+	if _, err := restartBrowserSidecar(context.Background(), "my.project", "1.59.0"); err != nil {
+		t.Fatalf("restartBrowserSidecar: %v", err)
+	}
+
+	calls := fake.snapshot()
+	pgrepIdx := firstIndex(calls, func(c []string) bool { return c[0] == "pgrep" })
+	if pgrepIdx < 0 {
+		t.Fatal("expected a pgrep call for split-brain teardown")
+	}
+	pgrep := calls[pgrepIdx]
+	wantEscaped := regexp.QuoteMeta("cspace-my.project-browser")
+	if wantEscaped != `cspace-my\.project-browser` {
+		t.Fatalf("sanity check failed: QuoteMeta(%q) = %q", "cspace-my.project-browser", wantEscaped)
+	}
+	if !slices.ContainsFunc(pgrep, func(a string) bool { return strings.Contains(a, wantEscaped) }) {
+		t.Errorf("pgrep pattern must carry the escaped container name %q: %v", wantEscaped, pgrep)
+	}
+	// The raw (unescaped) dotted name must NOT appear literally unless it
+	// equals the escaped form — i.e. we must not regress to embedding "." raw.
+	if slices.ContainsFunc(pgrep, func(a string) bool {
+		return strings.Contains(a, "cspace-my.project-browser") && !strings.Contains(a, wantEscaped)
+	}) {
+		t.Errorf("pgrep pattern embeds the unescaped container name: %v", pgrep)
+	}
+}
+
+// TestRemainingBudgetCapsAtFallback guards against remainingBudget returning
+// the full remaining time on ctx's deadline regardless of fallback, which
+// made the restart ladder's per-probe slices (30s/90s/30s) dead: with a
+// generous outer budget (e.g. the ladder's 120s), the IP probe alone could
+// consume the whole thing. remainingBudget must return min(remaining, fallback).
+func TestRemainingBudgetCapsAtFallback(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	got := remainingBudget(ctx, 100*time.Millisecond)
+	if got > 500*time.Millisecond {
+		t.Errorf("remainingBudget = %v, want capped near the 100ms fallback, not the full ~10s remaining", got)
+	}
+}
+
+// TestRemainingBudgetUsesRemainingWhenSmaller is the companion case: when
+// ctx's remaining time is smaller than fallback, that smaller remaining value
+// (not fallback) must win, so callers still respect an imminent deadline.
+func TestRemainingBudgetUsesRemainingWhenSmaller(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	time.Sleep(10 * time.Millisecond)
+
+	got := remainingBudget(ctx, 30*time.Second)
+	if got <= 0 || got > 50*time.Millisecond {
+		t.Errorf("remainingBudget = %v, want (0, 50ms]", got)
+	}
 }

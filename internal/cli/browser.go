@@ -1,15 +1,18 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -19,10 +22,22 @@ import (
 // every substrate (`container ...`), `pgrep`, and `kill` invocation — the same
 // function-var pattern as validateGitHubToken — so tests script each outcome
 // without touching real containers or host processes. Default: run the named
-// binary and return its combined stdout+stderr.
+// binary and return ONLY its stdout (stderr noise on an otherwise-successful
+// call must never corrupt the stdout-JSON parsers — waitForBrowserIP,
+// sidecarVersion, containerStateRunning — that read this seam's return
+// value). On failure, the stderr text is folded into the returned error so
+// the ladder's error-string matching (e.g. the "not running" split-brain
+// signature) still sees it.
 var browserExecCmd = func(ctx context.Context, name string, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
-	return string(out), err
+	out, err := exec.CommandContext(ctx, name, args...).Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+			err = fmt.Errorf("%w: %s", err, bytes.TrimSpace(exitErr.Stderr))
+		}
+		return string(out), err
+	}
+	return string(out), nil
 }
 
 // verifyBrowserFn probes a freshly (re)started sidecar for real liveness. The
@@ -57,12 +72,14 @@ const (
 	browserRestartPollInterval  = 500 * time.Millisecond
 )
 
-// remainingBudget returns how long is left on ctx's deadline, or fallback when
-// ctx carries no deadline. Never negative.
+// remainingBudget returns the smaller of (a) how long is left on ctx's
+// deadline and (b) fallback, so a generous outer budget (e.g. the restart
+// ladder's 120s) can't let one probe's slice balloon into the whole thing.
+// When ctx carries no deadline, returns fallback. Never negative.
 func remainingBudget(ctx context.Context, fallback time.Duration) time.Duration {
 	if d, ok := ctx.Deadline(); ok {
 		if r := time.Until(d); r > 0 {
-			return r
+			return min(r, fallback)
 		}
 		return 0
 	}
@@ -101,7 +118,11 @@ func containerStateRunning(ctx context.Context, name string) (running, exists bo
 // name, then poll until the substrate agrees the container is no longer
 // running. All process/substrate calls route through browserExecCmd.
 func resolveBrowserSplitBrain(ctx context.Context, name string) error {
-	pattern := "container-runtime-linux.*" + name
+	// name is embedded in a pgrep -f (regex) pattern: quote it so a literal
+	// "." in a project name (e.g. "my.project") can't act as a regex
+	// wildcard and cause kill -9 to match a sibling project's
+	// container-runtime-linux process.
+	pattern := "container-runtime-linux.*" + regexp.QuoteMeta(name)
 	if out, err := browserExecCmd(ctx, "pgrep", "-f", pattern); err == nil {
 		for _, pid := range strings.Fields(out) {
 			_, _ = browserExecCmd(ctx, "kill", "-9", pid)
