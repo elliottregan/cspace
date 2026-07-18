@@ -360,9 +360,9 @@ func daemonDNSHandler(r *registry.Registry, lastActivity *atomic.Int64) dns.Hand
 					}
 					ip = sidecarIP
 					resolved = true
-					break
+				} else {
+					sandbox, project = parts[0], parts[1]
 				}
-				sandbox, project = parts[0], parts[1]
 			case 3:
 				// <service>.<sandbox>.<project>.cspace.test — resolves
 				// to a compose-spawned sidecar microVM. The sandbox/project
