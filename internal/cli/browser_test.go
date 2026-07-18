@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"context"
+	"net"
 	"slices"
 	"testing"
+	"time"
 )
 
 // TestBrowserSidecarRunArgsSetsResourceCaps guards against the sidecar
@@ -45,6 +48,51 @@ func TestBrowserSidecarRunArgsSetsResourceCaps(t *testing.T) {
 func TestBrowserSingletonName(t *testing.T) {
 	if got := browserSingletonName("resume-redux"); got != "cspace-resume-redux-browser" {
 		t.Errorf("got %q, want cspace-resume-redux-browser", got)
+	}
+}
+
+// startFakeWS returns addr of a listener that, per connection, sends
+// `response` after reading the request (empty response = accept then hang).
+func startFakeWS(t *testing.T, response string) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				buf := make([]byte, 1024)
+				_, _ = c.Read(buf)
+				if response != "" {
+					_, _ = c.Write([]byte(response))
+				}
+				// hang until test cleanup closes the listener
+				time.Sleep(10 * time.Second)
+				_ = c.Close()
+			}(c)
+		}
+	}()
+	return l.Addr().String()
+}
+
+func TestWaitForRunServerWS(t *testing.T) {
+	ok := startFakeWS(t, "HTTP/1.1 101 Switching Protocols\r\n\r\n")
+	if err := waitForRunServerWS(context.Background(), ok, 3*time.Second); err != nil {
+		t.Errorf("101 fixture: want nil, got %v", err)
+	}
+	bad := startFakeWS(t, "HTTP/1.1 400 Bad Request\r\n\r\n")
+	if err := waitForRunServerWS(context.Background(), bad, 2*time.Second); err == nil {
+		t.Error("400 fixture: want error, got nil")
+	}
+	hang := startFakeWS(t, "") // accepts TCP, never answers — the incident shape
+	if err := waitForRunServerWS(context.Background(), hang, 2*time.Second); err == nil {
+		t.Error("hang fixture: want error, got nil")
 	}
 }
 

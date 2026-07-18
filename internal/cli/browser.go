@@ -2,8 +2,10 @@ package cli
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -334,6 +336,53 @@ func waitForCDP(ctx context.Context, cdpURL string, max time.Duration) error {
 	return fmt.Errorf("timeout waiting for CDP at %s", cdpURL)
 }
 
+// waitForRunServerWS polls the sidecar's run-server with a real WebSocket
+// upgrade handshake until it completes. A TCP-connect (or plain HTTP GET)
+// check is not enough: a wedged guest can still ACK new connections while
+// its userspace is dead, so only a completed 101 Switching Protocols
+// response proves the run-server is actually alive
+// (cs-finding 2026-07-17-tcp-connect-probes-pass-wedged-services).
+func waitForRunServerWS(ctx context.Context, addr string, max time.Duration) error {
+	deadline := time.Now().Add(max)
+	for time.Now().Before(deadline) {
+		if err := wsHandshakeOnce(addr, 3*time.Second); err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(1 * time.Second):
+		}
+	}
+	return fmt.Errorf("timeout waiting for run-server WS handshake at %s", addr)
+}
+
+// wsHandshakeOnce performs a single WebSocket-upgrade handshake attempt
+// against addr, succeeding only if the server replies with HTTP/1.1 101.
+func wsHandshakeOnce(addr string, timeout time.Duration) error {
+	c, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = c.Close() }()
+	_ = c.SetDeadline(time.Now().Add(timeout))
+	key := base64.StdEncoding.EncodeToString([]byte("cspace-probe-16by"))
+	req := "GET / HTTP/1.1\r\nHost: " + addr + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+		"Sec-WebSocket-Key: " + key + "\r\nSec-WebSocket-Version: 13\r\n\r\n"
+	if _, err := c.Write([]byte(req)); err != nil {
+		return err
+	}
+	buf := make([]byte, 64)
+	n, err := c.Read(buf)
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(string(buf[:n]), "HTTP/1.1 101") {
+		return fmt.Errorf("unexpected handshake response: %q", string(buf[:n]))
+	}
+	return nil
+}
+
 // stopBrowserSidecar stops + removes the sidecar container. Idempotent: any
 // errors from `container stop` / `container rm` are swallowed so callers
 // can use this on cleanup paths without secondary failure handling.
@@ -361,7 +410,9 @@ func ensureSharedBrowserSidecar(ctx context.Context, project, plVersion string) 
 		ip, ipErr := waitForBrowserIP(ctx, name, 5*time.Second)
 		if ipErr == nil {
 			cdpURL := fmt.Sprintf("http://%s:%d", ip, browserCDPPort)
-			if waitForCDP(ctx, cdpURL, 10*time.Second) == nil && sidecarVersion(ctx, name) == plVersion {
+			runServerAddr := fmt.Sprintf("%s:%d", ip, browserRunServerPort)
+			if waitForCDP(ctx, cdpURL, 10*time.Second) == nil && sidecarVersion(ctx, name) == plVersion &&
+				waitForRunServerWS(ctx, runServerAddr, 10*time.Second) == nil {
 				wsURL := fmt.Sprintf("ws://%s:%d/", ip, browserRunServerPort)
 				return &BrowserSidecar{ContainerName: name, IP: ip, CDPURL: cdpURL, RunServerWSURL: wsURL}, false, nil
 			}
@@ -376,7 +427,9 @@ func ensureSharedBrowserSidecar(ctx context.Context, project, plVersion string) 
 		if containerExists(ctx, name) {
 			if ip, ipErr := waitForBrowserIP(ctx, name, 5*time.Second); ipErr == nil {
 				cdpURL := fmt.Sprintf("http://%s:%d", ip, browserCDPPort)
-				if waitForCDP(ctx, cdpURL, 10*time.Second) == nil {
+				runServerAddr := fmt.Sprintf("%s:%d", ip, browserRunServerPort)
+				if waitForCDP(ctx, cdpURL, 10*time.Second) == nil &&
+					waitForRunServerWS(ctx, runServerAddr, 10*time.Second) == nil {
 					wsURL := fmt.Sprintf("ws://%s:%d/", ip, browserRunServerPort)
 					return &BrowserSidecar{ContainerName: name, IP: ip, CDPURL: cdpURL, RunServerWSURL: wsURL}, false, nil
 				}
