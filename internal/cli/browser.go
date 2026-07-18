@@ -15,6 +15,186 @@ import (
 	"time"
 )
 
+// browserExecCmd is the package seam through which the restart ladder issues
+// every substrate (`container ...`), `pgrep`, and `kill` invocation — the same
+// function-var pattern as validateGitHubToken — so tests script each outcome
+// without touching real containers or host processes. Default: run the named
+// binary and return its combined stdout+stderr.
+var browserExecCmd = func(ctx context.Context, name string, args ...string) (string, error) {
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	return string(out), err
+}
+
+// verifyBrowserFn probes a freshly (re)started sidecar for real liveness. The
+// default composes waitForBrowserIP → waitForCDP → waitForRunServerWS within
+// the caller's deadline, mutating bs with the freshly-inspected IP and URLs.
+// Seamed (like browserExecCmd) so the restart-ladder tests stay hermetic; the
+// default gets its own focused test.
+var verifyBrowserFn = func(ctx context.Context, bs *BrowserSidecar) error {
+	ip, err := waitForBrowserIP(ctx, bs.ContainerName, remainingBudget(ctx, 30*time.Second))
+	if err != nil {
+		return fmt.Errorf("browser sidecar IP: %w", err)
+	}
+	bs.IP = ip
+	bs.CDPURL = fmt.Sprintf("http://%s:%d", ip, browserCDPPort)
+	bs.RunServerWSURL = fmt.Sprintf("ws://%s:%d/", ip, browserRunServerPort)
+	if err := waitForCDP(ctx, bs.CDPURL, remainingBudget(ctx, 90*time.Second)); err != nil {
+		return fmt.Errorf("browser sidecar CDP: %w", err)
+	}
+	runServerAddr := fmt.Sprintf("%s:%d", ip, browserRunServerPort)
+	if err := waitForRunServerWS(ctx, runServerAddr, remainingBudget(ctx, 30*time.Second)); err != nil {
+		return fmt.Errorf("browser sidecar run-server WS: %w", err)
+	}
+	return nil
+}
+
+// Restart-ladder timing (spec §3). The overall budget is generous because a
+// recreate hits a fresh apt-get install; a plain stop/start reuses the
+// installed filesystem and is fast.
+const (
+	browserRestartBudget        = 120 * time.Second
+	browserSplitBrainPollBudget = 10 * time.Second
+	browserRestartPollInterval  = 500 * time.Millisecond
+)
+
+// remainingBudget returns how long is left on ctx's deadline, or fallback when
+// ctx carries no deadline. Never negative.
+func remainingBudget(ctx context.Context, fallback time.Duration) time.Duration {
+	if d, ok := ctx.Deadline(); ok {
+		if r := time.Until(d); r > 0 {
+			return r
+		}
+		return 0
+	}
+	return fallback
+}
+
+// containerStateRunning inspects the named container through browserExecCmd and
+// reports whether it is currently running and whether it exists at all. Apple
+// Container's `container inspect` exits 0 with body "[]" for a missing
+// container, so both an empty/"[]" body and an inspect error map to
+// exists=false. A populated record's top-level "status" field (value "running"
+// / "stopped") drives the running bool.
+func containerStateRunning(ctx context.Context, name string) (running, exists bool) {
+	out, err := browserExecCmd(ctx, "container", "inspect", name)
+	if err != nil {
+		return false, false
+	}
+	trimmed := strings.TrimSpace(out)
+	if trimmed == "" || trimmed == "[]" {
+		return false, false
+	}
+	var records []struct {
+		Status string `json:"status"`
+	}
+	if json.Unmarshal([]byte(trimmed), &records) != nil || len(records) == 0 {
+		return false, false
+	}
+	return strings.EqualFold(records[0].Status, "running"), true
+}
+
+// resolveBrowserSplitBrain recovers a sidecar whose substrate state has
+// diverged from reality — the 2026-07-17 incident, where `container kill`
+// reported "not running" while the state check still said running. Recovery
+// (observed to be the only thing that reconciled the substrate): SIGKILL the
+// host-side `container-runtime-linux` process whose argv carries the container
+// name, then poll until the substrate agrees the container is no longer
+// running. All process/substrate calls route through browserExecCmd.
+func resolveBrowserSplitBrain(ctx context.Context, name string) error {
+	pattern := "container-runtime-linux.*" + name
+	if out, err := browserExecCmd(ctx, "pgrep", "-f", pattern); err == nil {
+		for _, pid := range strings.Fields(out) {
+			_, _ = browserExecCmd(ctx, "kill", "-9", pid)
+		}
+	}
+	deadline := time.Now().Add(browserSplitBrainPollBudget)
+	for {
+		if running, _ := containerStateRunning(ctx, name); !running {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("container %s still running after host-process teardown", name)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(browserRestartPollInterval):
+		}
+	}
+}
+
+// restartBrowserSidecar restarts the project's shared browser sidecar via the
+// escalation ladder in spec §3: read the recorded Playwright version, stop the
+// container, escalate to SIGKILL then host-process teardown if it won't die,
+// start it (or recreate it if it's gone), and verify real liveness — all
+// within a bounded budget. Consumed by the daemon endpoint and the `cspace
+// browser restart` CLI.
+func restartBrowserSidecar(ctx context.Context, project, plVersion string) (*BrowserSidecar, error) {
+	name := browserSingletonName(project)
+
+	ctx, cancel := context.WithTimeout(ctx, browserRestartBudget)
+	defer cancel()
+
+	// 1. Pin to the running sidecar's recorded version (best-effort) so a
+	//    recreate reconstructs the same labels; else the caller's, else default.
+	if v := sidecarVersion(ctx, name); v != "" {
+		plVersion = v
+	} else if plVersion == "" {
+		plVersion = defaultPlaywrightVersion
+	}
+
+	// 2. Bounded stop. Best-effort: a missing or already-stopped container just
+	//    errors here; the state check below decides what to do.
+	_, _ = browserExecCmd(ctx, "container", "stop", "-t", "5", name)
+
+	running, exists := containerStateRunning(ctx, name)
+	switch {
+	case !exists:
+		// 3a. Gone entirely (an agent `rm`'d / "shut it down"). Recreate; the
+		//     `run -d` argv both creates and starts it, so no separate start.
+		args := browserSidecarRunArgs(name, plVersion)
+		if out, err := browserExecCmd(ctx, "container", args...); err != nil {
+			return nil, fmt.Errorf("recreate browser sidecar %s: %w (%s)", name, err, strings.TrimSpace(out))
+		}
+	default:
+		// 3b. Still present. If the stop didn't take, escalate.
+		if running {
+			killOut, killErr := browserExecCmd(ctx, "container", "kill", "--signal", "SIGKILL", name)
+			running, _ = containerStateRunning(ctx, name)
+			if running {
+				// Split-brain signature (documented): kill errored with text
+				// containing "not running" while the state check still reports
+				// running. We escalate to host-process teardown whenever the
+				// container survives SIGKILL — a superset that also covers a
+				// generic wedged-still-running container — but track the
+				// canonical signature for the returned error's context.
+				killText := strings.ToLower(killOut)
+				if killErr != nil {
+					killText += " " + strings.ToLower(killErr.Error())
+				}
+				splitBrain := killErr != nil && strings.Contains(killText, "not running")
+				if err := resolveBrowserSplitBrain(ctx, name); err != nil {
+					if splitBrain {
+						return nil, fmt.Errorf("split-brain recovery failed for %s: %w", name, err)
+					}
+					return nil, fmt.Errorf("browser sidecar %s still running after SIGKILL: %w", name, err)
+				}
+			}
+		}
+		// 3c. Container is stopped now (either it already was, or we killed it).
+		if out, err := browserExecCmd(ctx, "container", "start", name); err != nil {
+			return nil, fmt.Errorf("start browser sidecar %s: %w (%s)", name, err, strings.TrimSpace(out))
+		}
+	}
+
+	// 4. Verify real liveness within the remaining budget.
+	bs := &BrowserSidecar{ContainerName: name}
+	if err := verifyBrowserFn(ctx, bs); err != nil {
+		return nil, fmt.Errorf("verify restarted browser sidecar %s: %w", name, err)
+	}
+	return bs, nil
+}
+
 // browserImage returns the Microsoft Playwright Docker image for a given
 // Playwright version. Tag and run-server MUST be the same release because
 // Playwright pins to a specific chromium build ID per release; a v1.58.2
@@ -284,14 +464,14 @@ func InjectHosts(ctx context.Context, sidecarName string, hosts map[string]strin
 func waitForBrowserIP(ctx context.Context, name string, max time.Duration) (string, error) {
 	deadline := time.Now().Add(max)
 	for time.Now().Before(deadline) {
-		out, err := exec.CommandContext(ctx, "container", "inspect", name).Output()
+		out, err := browserExecCmd(ctx, "container", "inspect", name)
 		if err == nil {
 			var records []struct {
 				Networks []struct {
 					IPv4Address string `json:"ipv4Address"`
 				} `json:"networks"`
 			}
-			if json.Unmarshal(out, &records) == nil && len(records) > 0 {
+			if json.Unmarshal([]byte(out), &records) == nil && len(records) > 0 {
 				for _, n := range records[0].Networks {
 					if n.IPv4Address != "" {
 						if i := strings.IndexByte(n.IPv4Address, '/'); i >= 0 {
@@ -451,13 +631,13 @@ func ensureSharedBrowserSidecar(ctx context.Context, project, plVersion string) 
 // sidecar (the --label from runBrowserSidecar). Returns "" if it can't be
 // read, which forces a conservative restart on reuse.
 func sidecarVersion(ctx context.Context, name string) string {
-	out, err := exec.CommandContext(ctx, "container", "inspect", name).Output()
+	out, err := browserExecCmd(ctx, "container", "inspect", name)
 	if err != nil {
 		return ""
 	}
 	// cspace.playwright-version appears once, as "<key>":"<value>" or
 	// "key=value" in the labels/env block. Extract the value after the marker.
-	s := string(out)
+	s := out
 	const marker = "cspace.playwright-version"
 	i := strings.Index(s, marker)
 	if i < 0 {
