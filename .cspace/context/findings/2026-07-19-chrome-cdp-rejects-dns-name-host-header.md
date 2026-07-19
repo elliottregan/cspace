@@ -2,7 +2,7 @@
 title: Chrome CDP rejects the sidecar DNS name via Host-header rebinding protection; CDP env vars are broken in rc.37 sandboxes
 date: 2026-07-19
 kind: finding
-status: open
+status: resolved
 category: bug
 tags: browser-sidecar, cdp, dns, chrome, rc37
 ---
@@ -21,3 +21,14 @@ rc.37 switched sandbox env to the restart-stable name (`CSPACE_BROWSER_CDP_URL` 
 ## Updates
 ### 2026-07-19T17:20:00Z — @agent — status: open
 filed from the first full in-sandbox e2e verification run (e2e-check sandbox); discovered by the sandbox agent's `cspace browser status` pre-check disagreeing with a passing run-server e2e
+
+### 2026-07-19T18:30:00Z — @agent — status: resolved
+Implemented the loopback-relay fix: the entrypoint writes and supervises a
+~15-line Node relay (`127.0.0.1:9222` → `$CSPACE_BROWSER_HOST:9222`, fresh
+dial per connection so sidecar restarts stay transparent — Node not socat,
+which resolves its target only once). `browserEnvURLs` now emits
+`http://127.0.0.1:9222` for `CSPACE_BROWSER_CDP_URL` /
+`PLAYWRIGHT_MCP_CDP_ENDPOINT` (WS keeps the DNS name), cmd_up injects
+`CSPACE_BROWSER_HOST`, and in-sandbox `cspace browser status` probes the
+relay (the real consumer path). Requires an image rebuild to take effect
+(entrypoint change). Live-verified in a fresh sandbox post-release.

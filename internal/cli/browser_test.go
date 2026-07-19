@@ -168,14 +168,16 @@ func TestWaitForRunServerWS(t *testing.T) {
 }
 
 // TestBrowserEnvURLs pins the exact strings cmd_up.go injects into a
-// sandbox's env (CSPACE_BROWSER_CDP_URL / PLAYWRIGHT_MCP_CDP_ENDPOINT /
-// PW_TEST_CONNECT_WS_ENDPOINT): the stable DNS name, not the raw vmnet IP,
-// so a sidecar restart (which moves the IP) doesn't strand an
-// already-running sandbox (cs-finding
-// 2026-07-17-sidecar-addressed-by-boot-baked-ip-no-recovery-path).
+// sandbox's env. The WS endpoint carries the stable DNS name (restart-safe,
+// cs-finding 2026-07-17-sidecar-addressed-by-boot-baked-ip-no-recovery-path).
+// The CDP endpoints carry the in-sandbox loopback relay instead: Chrome's
+// DevTools HTTP endpoint rejects Host headers that aren't an IP or
+// localhost, so the DNS name can never work for CDP consumers (cs-finding
+// 2026-07-19-chrome-cdp-rejects-dns-name-host-header). The entrypoint's
+// relay dials the DNS name per connection, preserving restart-safety.
 func TestBrowserEnvURLs(t *testing.T) {
 	cdpURL, wsURL := browserEnvURLs("demo")
-	if want := "http://browser.demo.cspace.test:9222"; cdpURL != want {
+	if want := "http://127.0.0.1:9222"; cdpURL != want {
 		t.Errorf("cdpURL = %q, want %q", cdpURL, want)
 	}
 	if want := "ws://browser.demo.cspace.test:3000/"; wsURL != want {

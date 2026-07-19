@@ -283,9 +283,16 @@ func workspaceFriendlyHost(name, project string) string {
 // browser.<project>.<suffix> name `cspace browser status`'s in-sandbox path
 // probes — so there is exactly one place that constructs that hostname.
 func browserEnvURLs(project string) (cdpURL, wsURL string) {
-	host := browserSandboxHost(project)
-	return fmt.Sprintf("http://%s:%d", host, browserCDPPort),
-		fmt.Sprintf("ws://%s:%d/", host, browserRunServerPort)
+	// CDP rides the in-sandbox loopback relay, NOT the DNS name: Chrome's
+	// DevTools HTTP endpoint rejects any Host header that isn't an IP or
+	// localhost (DNS-rebinding protection), so name-based CDP URLs 500.
+	// The entrypoint's relay (cspace-entrypoint.sh) listens on
+	// 127.0.0.1:browserCDPPort and dials CSPACE_BROWSER_HOST per
+	// connection, so sidecar restarts stay transparent. The run-server WS
+	// endpoint has no such check and keeps the stable name. (cs-finding
+	// 2026-07-19-chrome-cdp-rejects-dns-name-host-header)
+	return fmt.Sprintf("http://127.0.0.1:%d", browserCDPPort),
+		fmt.Sprintf("ws://%s:%d/", browserSandboxHost(project), browserRunServerPort)
 }
 
 // applyWorkspaceHostEnv sets CSPACE_WORKSPACE_HOST on env. Callers must

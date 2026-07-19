@@ -316,7 +316,9 @@ func TestBrowserStatusTargetsInSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("browserStatusTargets: unexpected error: %v", err)
 	}
-	if want := "http://browser.demo-project.cspace.test:9222"; cdpURL != want {
+	// CDP probes the loopback relay (the actual consumer path — Chrome
+	// 500s name-based Host headers); WS keeps the DNS name.
+	if want := "http://127.0.0.1:9222"; cdpURL != want {
 		t.Errorf("cdpURL = %q, want %q", cdpURL, want)
 	}
 	if want := "browser.demo-project.cspace.test:3000"; wsAddr != want {

@@ -196,21 +196,23 @@ func newBrowserStatusCmd() *cobra.Command {
 }
 
 // browserStatusTargets resolves the CDP URL and run-server WS address to
-// probe, for either context. In-sandbox, both endpoints hang off the DNS
-// name browser.<project>.<suffix> — the sandbox's own resolver routes that
-// through the host daemon (see daemonDNSHandler's "browser" 2-label case).
-// On the host, the sidecar's IP comes from inspecting the container
-// directly via waitForBrowserIP (which itself goes through the
-// browserExecCmd seam).
+// probe, for either context. In-sandbox, CDP is probed via the loopback
+// relay at 127.0.0.1 — the path consumers actually use, and the only one
+// Chrome accepts (its DevTools HTTP endpoint rejects non-IP/localhost Host
+// headers, so probing the DNS name would FAIL against a healthy sidecar;
+// cs-finding 2026-07-19-chrome-cdp-rejects-dns-name-host-header). The WS
+// probe keeps the DNS name browser.<project>.<suffix>, routed through the
+// host daemon (daemonDNSHandler's "browser" 2-label case). On the host,
+// the sidecar's IP comes from inspecting the container directly via
+// waitForBrowserIP (which itself goes through the browserExecCmd seam).
 func browserStatusTargets(ctx context.Context, inSandbox bool) (cdpURL, wsAddr string, err error) {
 	if inSandbox {
 		project := sandboxmode.Project()
 		if project == "" {
 			return "", "", fmt.Errorf("CSPACE_PROJECT not set; cannot determine project in sandbox mode")
 		}
-		host := browserSandboxHost(project)
-		return fmt.Sprintf("http://%s:%d", host, browserCDPPort),
-			fmt.Sprintf("%s:%d", host, browserRunServerPort), nil
+		return fmt.Sprintf("http://127.0.0.1:%d", browserCDPPort),
+			fmt.Sprintf("%s:%d", browserSandboxHost(project), browserRunServerPort), nil
 	}
 
 	project, err := browserHostProject()

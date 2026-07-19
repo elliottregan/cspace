@@ -656,6 +656,10 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				// old address baked into its env (cs-finding
 				// 2026-07-17-sidecar-addressed-by-boot-baked-ip-no-recovery-path).
 				cdpURL, wsURL := browserEnvURLs(project)
+				// The entrypoint's CDP loopback relay dials this name per
+				// connection (Chrome rejects name-based Host headers, so
+				// CDP env vars carry 127.0.0.1 and the relay bridges).
+				env["CSPACE_BROWSER_HOST"] = browserSandboxHost(project)
 				env["CSPACE_BROWSER_CDP_URL"] = cdpURL
 				// @playwright/mcp respects PLAYWRIGHT_MCP_CDP_ENDPOINT
 				// to connect to an existing CDP browser instead of

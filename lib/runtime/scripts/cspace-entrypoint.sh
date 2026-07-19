@@ -201,6 +201,46 @@ if [ -x "$IPTABLES" ] && [ -x "$SYSCTL" ]; then
     fi
 fi
 
+# CDP loopback relay. Chrome's DevTools HTTP endpoint rejects any Host
+# header that isn't an IP address or localhost (DNS-rebinding protection),
+# so CDP consumers can never use browser.<project>.cspace.test directly —
+# cspace injects CSPACE_BROWSER_CDP_URL=http://127.0.0.1:9222 and this
+# relay bridges to the sidecar. It dials the DNS name PER CONNECTION, so a
+# sidecar restart (new IP) is picked up with no relay restart. Node, not
+# socat: socat resolves its target once at startup, which would silently
+# reinstate the stale-IP bug this design removed.
+# (cs-finding 2026-07-19-chrome-cdp-rejects-dns-name-host-header)
+if [ -n "${CSPACE_BROWSER_HOST:-}" ]; then
+    if command -v node >/dev/null 2>&1; then
+        cat > /tmp/cspace-cdp-relay.mjs <<'RELAY'
+// CDP loopback relay — written by cspace-entrypoint.sh every boot; see
+// the comment there for why this exists.
+import net from 'node:net';
+const HOST = process.env.CSPACE_BROWSER_HOST;
+const PORT = 9222;
+if (!HOST) { console.error('cdp-relay: CSPACE_BROWSER_HOST unset'); process.exit(1); }
+net.createServer((client) => {
+  // Fresh dial per connection: resolves the sidecar's DNS name each
+  // time, so a restarted sidecar (new IP) needs no relay restart.
+  const up = net.connect({ host: HOST, port: PORT });
+  client.pipe(up);
+  up.pipe(client);
+  const done = () => { client.destroy(); up.destroy(); };
+  client.on('error', done);
+  up.on('error', done);
+}).listen(PORT, '127.0.0.1', () => console.log(`cdp-relay: 127.0.0.1:${PORT} -> ${HOST}:${PORT}`));
+RELAY
+        (
+            while true; do
+                node /tmp/cspace-cdp-relay.mjs >> /tmp/cspace-cdp-relay.log 2>&1
+                sleep 1
+            done
+        ) &
+    else
+        echo "[entrypoint] WARNING: node not found; CDP loopback relay disabled (browser MCP cannot reach the sidecar)"
+    fi
+fi
+
 # Boot status file (read by the host overlay to advance phases). The
 # /sessions mount is bind-mounted from the host's
 # ~/.cspace/sessions/<project>/<sandbox>/, so writes here are visible

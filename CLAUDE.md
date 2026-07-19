@@ -96,7 +96,7 @@ Security caveat: secrets currently transit `-e` flags into the substrate, and Ap
 
 ## Browser sidecar
 
-The shared per-project sidecar (`cspace-<project>-browser`) has a stable DNS name, `browser.<project>.cspace.test`, served by the host daemon's DNS handler — it survives sidecar restarts, unlike the raw vmnet IP a sandbox used to have baked into its env. `CSPACE_BROWSER_CDP_URL`, `PLAYWRIGHT_MCP_CDP_ENDPOINT`, and `PW_TEST_CONNECT_WS_ENDPOINT` all carry this name now. If the sidecar wedges or an agent tears it down, `cspace browser restart` (host-side or in-sandbox, via the daemon's `POST /browser/restart/{project}`) restarts it through an escalation ladder and reverifies liveness with protocol-level probes; `cspace browser status` reports current health without restarting.
+The shared per-project sidecar (`cspace-<project>-browser`) has a stable DNS name, `browser.<project>.cspace.test`, served by the host daemon's DNS handler — it survives sidecar restarts, unlike the raw vmnet IP a sandbox used to have baked into its env. `PW_TEST_CONNECT_WS_ENDPOINT` carries this name. The CDP env vars (`CSPACE_BROWSER_CDP_URL`, `PLAYWRIGHT_MCP_CDP_ENDPOINT`) instead carry `http://127.0.0.1:9222` — Chrome's DevTools HTTP endpoint rejects name-based Host headers, so the entrypoint runs a loopback relay that dials the DNS name per connection (same restart-safety, Chrome-acceptable Host). If the sidecar wedges or an agent tears it down, `cspace browser restart` (host-side or in-sandbox, via the daemon's `POST /browser/restart/{project}`) restarts it through an escalation ladder and reverifies liveness with protocol-level probes; `cspace browser status` reports current health without restarting.
 
 ## Key patterns
 
