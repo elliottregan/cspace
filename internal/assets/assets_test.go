@@ -23,8 +23,10 @@ func TestDefaultsJSON_Parses(t *testing.T) {
 		t.Fatalf("DefaultsJSON() returned invalid JSON: %v", err)
 	}
 
-	// Check that expected top-level keys exist
-	expectedKeys := []string{"project", "container", "firewall", "claude", "verify", "agent", "plugins"}
+	// Check that expected top-level keys exist (the rc.39 removal cut
+	// deleted the dead claude/verify blocks; see config.Config for the
+	// consumed surface)
+	expectedKeys := []string{"project", "container", "firewall", "agent", "plugins", "services", "mcpServers"}
 	for _, key := range expectedKeys {
 		if _, ok := parsed[key]; !ok {
 			t.Errorf("defaults.json missing expected key: %s", key)
