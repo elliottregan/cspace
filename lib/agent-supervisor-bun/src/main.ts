@@ -6,6 +6,7 @@ import { runClaude } from "./claude-runner";
 import { createEventLogger, resumeSessionId } from "./event-log";
 import { resolveRole } from "./role";
 import { runAgent } from "./run-agent";
+import { handleInterrupt } from "./routes";
 import { deriveState } from "./status";
 
 const SESSION_ID = "primary";
@@ -149,12 +150,11 @@ const server = Bun.serve({
     }
 
     if (req.method === "POST" && url.pathname === "/interrupt") {
-      if (!currentQuery) {
-        return Response.json({ ok: false, error: "no active task" }, { status: 409 });
+      const result = await handleInterrupt(currentQuery);
+      if (result.body.ok) {
+        logEvent("interrupt", { source: "control-port" });
       }
-      await currentQuery.interrupt();
-      logEvent("interrupt", { source: "control-port" });
-      return Response.json({ ok: true });
+      return Response.json(result.body, { status: result.status });
     }
 
     if (req.method === "GET" && url.pathname === "/status") {
