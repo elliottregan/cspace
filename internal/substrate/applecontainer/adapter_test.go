@@ -167,3 +167,74 @@ func TestIP(t *testing.T) {
 		t.Fatalf("unexpected IP: %q", ip)
 	}
 }
+
+func TestParseContainerList(t *testing.T) {
+	const fixture = `[
+	  {"startedDate":806197425.667992,"status":"running",
+	   "networks":[{"ipv4Address":"192.168.64.108/24","network":"default"}],
+	   "configuration":{"id":"cspace-demo-mercury",
+	     "image":{"reference":"cspace:latest"},
+	     "resources":{"cpus":4,"memoryInBytes":17179869184}}},
+	  {"startedDate":805346161.290075,"status":"stopped",
+	   "networks":[],
+	   "configuration":{"id":"buildkit",
+	     "image":{"reference":"ghcr.io/apple/builder:0.12.0"},
+	     "resources":{"cpus":2,"memoryInBytes":2147483648}}}
+	]`
+	got, err := parseContainerList(fixture)
+	if err != nil {
+		t.Fatalf("parseContainerList: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	m := got[0]
+	if m.Name != "cspace-demo-mercury" || m.State != "running" || m.IP != "192.168.64.108" {
+		t.Errorf("record0 = %+v", m)
+	}
+	if m.CPUs != 4 || m.MemoryB != 17179869184 || m.Image != "cspace:latest" {
+		t.Errorf("record0 fields = %+v", m)
+	}
+	// startedDate 806197425.667992 CFAbsoluteTime -> Unix 1784504625.667992
+	if want := int64(1784504625); m.Started.Unix() != want {
+		t.Errorf("Started.Unix() = %d, want %d", m.Started.Unix(), want)
+	}
+	if got[1].IP != "" {
+		t.Errorf("record1 (no networks) IP = %q, want empty", got[1].IP)
+	}
+}
+
+func TestParseContainerListEmpty(t *testing.T) {
+	got, err := parseContainerList(`[]`)
+	if err != nil {
+		t.Fatalf("empty: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("len = %d, want 0", len(got))
+	}
+}
+
+func TestParseContainerListMalformed(t *testing.T) {
+	if _, err := parseContainerList(`{not json`); err == nil {
+		t.Fatal("want error for malformed JSON, got nil")
+	}
+}
+
+func TestListLive(t *testing.T) {
+	requireContainerCLI(t)
+	requireE2E(t)
+	a := New()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	got, err := a.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	// buildkit is essentially always present on a dev host running the substrate.
+	t.Logf("List returned %d containers", len(got))
+	for _, c := range got {
+		if c.Name == "" {
+			t.Errorf("container with empty Name: %+v", c)
+		}
+	}
+}
