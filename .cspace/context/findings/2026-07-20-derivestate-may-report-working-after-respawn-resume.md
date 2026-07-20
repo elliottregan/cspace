@@ -17,3 +17,12 @@ tags: supervisor, status, steering, resume
 ## Updates
 ### 2026-07-20T05:30:00Z — @agent — status: open
 filed from the general-agent branch's final whole-branch review; to be verified during the rc.39 live check
+
+### 2026-07-20T05:55:00Z — @agent — status: open
+CONFIRMED live during the rc.39 verification, and broader than suspected: the
+false `working` appears on BOTH triggers — a fresh boot (SDK init event lands
+before any prompt; observed `state: working`, `lastEventType: system` on a
+just-booted idle agent) and a kill-9 respawn-resume (same readings immediately
+after `supervisor-resume`). The state self-corrects after the first completed
+turn (`result` → `idle`). Fix as proposed: classify `system` events (at least
+subtype `init`) as idle markers in `deriveState`.
