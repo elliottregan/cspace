@@ -26,12 +26,12 @@
 ## File Structure
 
 - `internal/substrate/applecontainer/adapter.go` — **+**`ContainerSummary`, `List`, `parseContainerList`, `cfAbsoluteToTime` (container listing).
-- `internal/tui/types.go` — domain types: `Snapshot`, `Row`, `RowKind`, `RowState`, `AgentStatus`, `DaemonHealth`, `containerName`/`browserContainerName` helpers. Pure declarations.
+- `internal/tui/types.go` — domain types: `Snapshot`, `Row`, `RowKind`, `RowState`, `AgentStatus`, `DaemonHealth`, `BrowserHealth`, `containerName`/`browserContainerName` helpers. Pure declarations.
 - `internal/tui/correlate.go` — `Correlate(...)` pure fold (raw sources → `Snapshot`).
-- `internal/tui/events.go` — `EventLine`, `TailEvents` (read + parse events.ndjson tail, rotation-aware).
-- `internal/tui/poll.go` — `Poller` interface, `realPoller`, `NewPoller`, status fan-out, daemon health.
-- `internal/tui/actions.go` — `Actor` interface + action result message types (interface only; impl in cli).
-- `internal/tui/keys.go` — `keyMap` + pure contextual predicates (`canAttach`, `canDown`, `canSend`, `canInterrupt`, `canBrowser`).
+- `internal/tui/events.go` — `EventLine`, `TailEvents` (read + parse events.ndjson tail; rotation-safe via a stateless full re-read of the current generation).
+- `internal/tui/poll.go` — `Poller` interface, `realPoller`, `NewPoller`, status fan-out, browser-health probe, daemon health.
+- `internal/tui/actions.go` — `Actor` interface + action result message types + exported `Result`/`ResultLabel`/`ResultErr` helpers (interface only; impl in cli).
+- `internal/tui/keys.go` (+`keys_test.go`) — pure contextual predicates (`canAttach`, `canDown`, `canSend`, `canInterrupt`, `canBrowser`).
 - `internal/tui/model.go` — `Model`, `NewModel`, `Init`, `Update`, selection/mode state machine.
 - `internal/tui/view.go` — `View()` rendering + format helpers (`formatMemory`, `formatUptime`, `formatAge`).
 - `internal/cli/cmd_attach.go` — **extract** `attachArgs`.
@@ -115,7 +115,7 @@ Expected: FAIL — `undefined: parseContainerList`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Add to `internal/substrate/applecontainer/adapter.go` (mirrors `IP()`'s shell-out + unmarshal-into-slice pattern; `container ls` returns a JSON array):
+Add to `internal/substrate/applecontainer/adapter.go` (mirrors `IP()`'s shell-out + unmarshal-into-slice pattern; `container ls` returns a JSON array). **First add `"time"` to the file's import block** — the existing block (bytes, context, crypto/rand, encoding/hex, encoding/json, errors, fmt, os/exec, regexp, strconv, strings) has no `time`, and `ContainerSummary.Started`/`cfAbsoluteToTime` are its first uses:
 
 ```go
 // ContainerSummary is one row of `container ls --all --format json`, narrowed
@@ -261,7 +261,7 @@ git commit -m "Add applecontainer.List for container ls --format json"
 
 **Interfaces:**
 - Consumes: `applecontainer.ContainerSummary` (Task 1), `registry.Entry`.
-- Produces: the types below and `func Correlate(now time.Time, containers []applecontainer.ContainerSummary, entries []registry.Entry, statuses map[string]AgentStatus, daemon DaemonHealth, listErr error) Snapshot`.
+- Produces: the types below and `func Correlate(now time.Time, containers []applecontainer.ContainerSummary, entries []registry.Entry, statuses map[string]AgentStatus, browserHealth map[string]BrowserHealth, daemon DaemonHealth, listErr error) Snapshot`. `statuses` is keyed by sandbox container name (`cspace-<project>-<name>`); `browserHealth` is keyed by browser container name (`cspace-<project>-browser`).
 
 - [ ] **Step 1: Write `internal/tui/types.go`** (pure declarations — no test cycle of its own; folded into this task)
 
@@ -322,7 +322,8 @@ type Row struct {
 	IP         string
 	MemoryB    int64
 	Uptime     time.Duration
-	Agent      AgentStatus // meaningful only for RowSandbox
+	Agent      AgentStatus   // meaningful only for RowSandbox
+	Browser    BrowserHealth // meaningful only for RowBrowser
 	ControlURL string
 	Token      string
 	Selectable bool
@@ -330,6 +331,13 @@ type Row struct {
 
 // DaemonHealth is the host daemon's GET /health, decoded.
 type DaemonHealth struct {
+	Reachable bool
+	Version   string
+}
+
+// BrowserHealth is a browser sidecar's last-known CDP probe result
+// (GET :9222/json/version). Meaningful only for RowBrowser.
+type BrowserHealth struct {
 	Reachable bool
 	Version   string
 }
@@ -384,7 +392,10 @@ func TestCorrelateGroupsSortsAndNests(t *testing.T) {
 	statuses := map[string]AgentStatus{
 		"cspace-alpha-mercury": {Reachable: true, State: "idle", Session: "primary"},
 	}
-	snap := Correlate(now, containers, entries, statuses, DaemonHealth{Reachable: true, Version: "1.0"}, nil)
+	browserHealth := map[string]BrowserHealth{
+		"cspace-alpha-browser": {Reachable: true, Version: "Chrome/140"},
+	}
+	snap := Correlate(now, containers, entries, statuses, browserHealth, DaemonHealth{Reachable: true, Version: "1.0"}, nil)
 
 	// Expected row order: project header, sandbox, its sidecar, browser, system(buildkit)
 	wantKinds := []RowKind{RowProject, RowSandbox, RowSidecar, RowBrowser, RowSystem}
@@ -409,8 +420,13 @@ func TestCorrelateGroupsSortsAndNests(t *testing.T) {
 	if snap.Rows[0].Selectable || snap.Rows[2].Selectable || snap.Rows[4].Selectable {
 		t.Error("project/sidecar/system rows must not be selectable")
 	}
-	if snap.Rows[1].Token != "" && !containsToken(snap) {
-		// Token travels in the model for actions; this just asserts it's carried.
+	// Token must travel in the row model so actions can use it (never rendered).
+	if !containsToken(snap) {
+		t.Error("sandbox Token must be carried in the row model for actions")
+	}
+	// The browser row carries its last-known health probe result.
+	if br := snap.Rows[3]; !br.Browser.Reachable || br.Browser.Version != "Chrome/140" {
+		t.Errorf("browser row health = %+v, want reachable Chrome/140", br.Browser)
 	}
 }
 
@@ -430,7 +446,7 @@ func TestCorrelateDegradedWhenSupervisorUnreachable(t *testing.T) {
 	}
 	entries := []registry.Entry{{Project: "alpha", Name: "mercury", State: "ready"}}
 	// no status for the sandbox => unreachable
-	snap := Correlate(now, containers, entries, map[string]AgentStatus{}, DaemonHealth{}, nil)
+	snap := Correlate(now, containers, entries, map[string]AgentStatus{}, nil, DaemonHealth{}, nil)
 	if snap.Rows[1].State != StateDegraded {
 		t.Errorf("state = %v, want StateDegraded", snap.Rows[1].State)
 	}
@@ -439,7 +455,7 @@ func TestCorrelateDegradedWhenSupervisorUnreachable(t *testing.T) {
 func TestCorrelateStoppedWhenNoContainer(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
 	entries := []registry.Entry{{Project: "alpha", Name: "mercury", State: "ready"}}
-	snap := Correlate(now, nil, entries, map[string]AgentStatus{}, DaemonHealth{}, nil)
+	snap := Correlate(now, nil, entries, map[string]AgentStatus{}, nil, DaemonHealth{}, nil)
 	if snap.Rows[1].State != StateStopped {
 		t.Errorf("state = %v, want StateStopped", snap.Rows[1].State)
 	}
@@ -451,7 +467,7 @@ func TestCorrelateBootingFromRegistryState(t *testing.T) {
 		{Name: "cspace-alpha-mercury", State: "running", Started: now},
 	}
 	entries := []registry.Entry{{Project: "alpha", Name: "mercury", State: "starting"}}
-	snap := Correlate(now, containers, entries, map[string]AgentStatus{}, DaemonHealth{}, nil)
+	snap := Correlate(now, containers, entries, map[string]AgentStatus{}, nil, DaemonHealth{}, nil)
 	if snap.Rows[1].State != StateBooting {
 		t.Errorf("state = %v, want StateBooting", snap.Rows[1].State)
 	}
@@ -459,7 +475,7 @@ func TestCorrelateBootingFromRegistryState(t *testing.T) {
 
 func TestCorrelateCarriesListErr(t *testing.T) {
 	e := errors.New("apiserver down")
-	snap := Correlate(time.Unix(0, 0), nil, nil, map[string]AgentStatus{}, DaemonHealth{}, e)
+	snap := Correlate(time.Unix(0, 0), nil, nil, map[string]AgentStatus{}, nil, DaemonHealth{}, e)
 	if snap.Err == nil || snap.Err.Error() != "apiserver down" {
 		t.Errorf("Err = %v, want carried", snap.Err)
 	}
@@ -494,6 +510,7 @@ func Correlate(
 	containers []applecontainer.ContainerSummary,
 	entries []registry.Entry,
 	statuses map[string]AgentStatus,
+	browserHealth map[string]BrowserHealth,
 	daemon DaemonHealth,
 	listErr error,
 ) Snapshot {
@@ -522,20 +539,20 @@ func Correlate(
 
 		for _, e := range es {
 			cname := containerName(project, e.Name)
-			c, running := byName[cname], false
-			state := StateStopped
+			var running bool
 			var ip string
 			var mem int64
 			var uptime time.Duration
-			if hit, ok := byName[cname]; ok {
+			if c, ok := byName[cname]; ok {
 				consumed[cname] = true
-				running = hit.State == "running"
-				ip, mem = hit.IP, hit.MemoryB
-				if !hit.Started.IsZero() {
-					uptime = now.Sub(hit.Started)
+				running = c.State == "running"
+				ip, mem = c.IP, c.MemoryB
+				if !c.Started.IsZero() {
+					uptime = now.Sub(c.Started)
 				}
 			}
 			st := statuses[cname]
+			state := StateStopped
 			switch {
 			case running && st.Reachable:
 				state = StateRunning
@@ -545,10 +562,7 @@ func Correlate(
 				state = StateDegraded
 			case e.State == "starting":
 				state = StateBooting
-			default:
-				state = StateStopped
 			}
-			_ = c
 			rows = append(rows, Row{
 				Kind:       RowSandbox,
 				Project:    project,
@@ -602,6 +616,7 @@ func Correlate(
 				State:      sidecarState(bc.State),
 				IP:         bc.IP,
 				MemoryB:    bc.MemoryB,
+				Browser:    browserHealth[bname],
 				Selectable: true,
 			})
 		}
@@ -802,8 +817,11 @@ func SessionEventsPath(home, project, sandbox string) string {
 // TailEvents returns the last n parsed lines of the events.ndjson at path.
 // A missing file yields (nil, nil) — pre-first-event or wiped-by-down is not an
 // error. Malformed lines (including a partially-flushed trailing line) are
-// skipped, not fatal. It reads the whole file then keeps the last n valid
-// lines; the file single-generation-rotates at 10 MiB, so it is bounded.
+// skipped, not fatal. It reads the whole current-generation file then keeps the
+// last n valid lines; the file single-generation-rotates at 10 MiB, so it is
+// bounded. This stateless full re-read is rotation-SAFE (it always reads the
+// current generation from scratch); it does not read events.ndjson.1, so right
+// after a rotation the tail may briefly hold fewer than n lines.
 func TailEvents(path string, n int) ([]EventLine, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -955,6 +973,42 @@ func TestPollListErrorCarriedAndDaemonUnreachable(t *testing.T) {
 		t.Error("daemon should be unreachable")
 	}
 }
+
+func TestPollProbesBrowserHealth(t *testing.T) {
+	// A CDP /json/version stub standing in for the browser sidecar.
+	cdp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/json/version" {
+			w.WriteHeader(404)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"Browser": "Chrome/140.0"})
+	}))
+	defer cdp.Close()
+
+	reg := &registry.Registry{Path: filepath.Join(t.TempDir(), "reg.json")}
+	p := NewPoller(fakeLister{}, reg, "http://127.0.0.1:1", func() time.Time { return time.Unix(0, 0) })
+	// Redirect the CDP probe at the stub (production uses the fixed :9222 port,
+	// which httptest can't bind — the browserCDPURL seam exists for exactly this).
+	p.browserCDPURL = func(ip string) string { return cdp.URL + "/json/version" }
+
+	// A running "-browser" container is probed and mapped by container name;
+	// a non-browser container and a stopped browser are skipped.
+	containers := []applecontainer.ContainerSummary{
+		{Name: "cspace-alpha-browser", State: "running", IP: "10.0.0.9"},
+		{Name: "cspace-alpha-mercury", State: "running", IP: "10.0.0.1"},
+		{Name: "cspace-beta-browser", State: "stopped", IP: ""},
+	}
+	m := p.fetchBrowserHealth(context.Background(), containers)
+	if got := m["cspace-alpha-browser"]; !got.Reachable || got.Version != "Chrome/140.0" {
+		t.Errorf("browser health = %+v, want reachable Chrome/140.0", got)
+	}
+	if _, ok := m["cspace-alpha-mercury"]; ok {
+		t.Error("non-browser container should not be probed")
+	}
+	if _, ok := m["cspace-beta-browser"]; ok {
+		t.Error("stopped browser should not be probed")
+	}
+}
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -972,6 +1026,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -1004,17 +1059,22 @@ type realPoller struct {
 	daemonURL string
 	client    *http.Client
 	now       func() time.Time
+	// browserCDPURL builds the CDP version-probe URL from a sidecar IP. A field
+	// (not a hardcoded string) so tests can point it at an httptest server;
+	// production uses the fixed :9222 DevTools port.
+	browserCDPURL func(ip string) string
 }
 
 // NewPoller builds the real poller. daemonURL is the host daemon base
 // (e.g. "http://127.0.0.1:6280"). now is injected for testable timestamps.
 func NewPoller(lister containerLister, reg *registry.Registry, daemonURL string, now func() time.Time) *realPoller {
 	return &realPoller{
-		lister:    lister,
-		registry:  reg,
-		daemonURL: daemonURL,
-		client:    &http.Client{Timeout: probeTimeout},
-		now:       now,
+		lister:        lister,
+		registry:      reg,
+		daemonURL:     daemonURL,
+		client:        &http.Client{Timeout: probeTimeout},
+		now:           now,
+		browserCDPURL: func(ip string) string { return "http://" + ip + ":9222/json/version" },
 	}
 }
 
@@ -1022,8 +1082,62 @@ func (p *realPoller) Poll(ctx context.Context) Snapshot {
 	containers, listErr := p.lister.List(ctx)
 	entries, _ := p.registry.List() // missing file => empty slice, nil
 	statuses := p.fetchStatuses(ctx, entries)
+	browserHealth := p.fetchBrowserHealth(ctx, containers)
 	daemon := p.fetchDaemon(ctx)
-	return Correlate(p.now(), containers, entries, statuses, daemon, listErr)
+	return Correlate(p.now(), containers, entries, statuses, browserHealth, daemon, listErr)
+}
+
+// fetchBrowserHealth probes each running browser sidecar's Chrome DevTools
+// endpoint (GET http://<ip>:9222/json/version) concurrently (bounded). Chrome's
+// CDP HTTP endpoint accepts an IP-literal Host, so a host-side probe by the
+// sidecar's vmnet IP works. Only successful probes land in the map; absence =>
+// unreachable. Symmetric to fetchStatuses/fetchDaemon; keeps internal/tui free
+// of any internal/cli import.
+func (p *realPoller) fetchBrowserHealth(ctx context.Context, containers []applecontainer.ContainerSummary) map[string]BrowserHealth {
+	out := make(map[string]BrowserHealth)
+	var mu sync.Mutex
+	sem := make(chan struct{}, maxProbeConcurrency)
+	var wg sync.WaitGroup
+	for _, c := range containers {
+		if !strings.HasSuffix(c.Name, "-browser") || c.State != "running" || c.IP == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(c applecontainer.ContainerSummary) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			h, ok := p.probeBrowser(ctx, c.IP)
+			if !ok {
+				return
+			}
+			mu.Lock()
+			out[c.Name] = h
+			mu.Unlock()
+		}(c)
+	}
+	wg.Wait()
+	return out
+}
+
+func (p *realPoller) probeBrowser(ctx context.Context, ip string) (BrowserHealth, bool) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.browserCDPURL(ip), nil)
+	if err != nil {
+		return BrowserHealth{}, false
+	}
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return BrowserHealth{}, false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode/100 != 2 {
+		return BrowserHealth{}, false
+	}
+	var body struct {
+		Browser string `json:"Browser"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	return BrowserHealth{Reachable: true, Version: body.Browser}, true
 }
 
 // fetchStatuses probes each entry's GET /status concurrently (bounded). Only
@@ -1286,6 +1400,50 @@ func canInterrupt(r Row) bool {
 func canBrowser(r Row) bool { return r.Kind == RowBrowser || r.Kind == RowSandbox }
 ```
 
+Then write `internal/tui/keys_test.go` — a table asserting BOTH the true and false branch of each predicate (a predicate inverted to always-true must fail):
+
+```go
+package tui
+
+import "testing"
+
+func TestContextualPredicates(t *testing.T) {
+	runningSandbox := Row{Kind: RowSandbox, State: StateRunning, Agent: AgentStatus{Reachable: true, State: "working"}}
+	idleSandbox := Row{Kind: RowSandbox, State: StateRunning, Agent: AgentStatus{Reachable: true, State: "idle"}}
+	stoppedSandbox := Row{Kind: RowSandbox, State: StateStopped}
+	unreachableSandbox := Row{Kind: RowSandbox, State: StateDegraded, Agent: AgentStatus{Reachable: false}}
+	browser := Row{Kind: RowBrowser}
+	project := Row{Kind: RowProject}
+
+	cases := []struct {
+		name string
+		fn   func(Row) bool
+		row  Row
+		want bool
+	}{
+		{"attach running sandbox", canAttach, runningSandbox, true},
+		{"attach stopped sandbox", canAttach, stoppedSandbox, false},
+		{"attach browser", canAttach, browser, false},
+		{"down running sandbox", canDown, runningSandbox, true},
+		{"down stopped sandbox", canDown, stoppedSandbox, false},
+		{"send reachable sandbox", canSend, idleSandbox, true},
+		{"send unreachable sandbox", canSend, unreachableSandbox, false},
+		{"send browser", canSend, browser, false},
+		{"interrupt working sandbox", canInterrupt, runningSandbox, true},
+		{"interrupt idle sandbox", canInterrupt, idleSandbox, false},
+		{"interrupt unreachable sandbox", canInterrupt, unreachableSandbox, false},
+		{"browser on browser row", canBrowser, browser, true},
+		{"browser on sandbox row", canBrowser, runningSandbox, true},
+		{"browser on project row", canBrowser, project, false},
+	}
+	for _, tc := range cases {
+		if got := tc.fn(tc.row); got != tc.want {
+			t.Errorf("%s = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+```
+
 - [ ] **Step 3: Write the failing test**
 
 `internal/tui/model_test.go`:
@@ -1295,6 +1453,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -1456,11 +1615,132 @@ func TestQuitOnCtrlC(t *testing.T) {
 		t.Fatal("quit command produced nil msg")
 	} // tea.Quit's msg is tea.QuitMsg{}
 }
+
+// --- send / input state machine (mercury at row 1 is a reachable sandbox, so
+// canSend is true; the browser row at index 3 is Selectable but RowBrowser) ---
+
+func TestSendOpensInputMode(t *testing.T) {
+	a := &recordingActor{}
+	m := newTestModel(a)
+	mm, _ := m.Update(key('s'))
+	m = mm.(Model)
+	if m.mode != modeInput {
+		t.Fatalf("mode = %v, want modeInput after 's'", m.mode)
+	}
+	if len(a.sendCalls) != 0 {
+		t.Errorf("Send called before Enter: %+v", a.sendCalls)
+	}
+}
+
+func TestSendEnterCallsActor(t *testing.T) {
+	a := &recordingActor{}
+	m := newTestModel(a)
+	mm, _ := m.Update(key('s'))
+	m = mm.(Model)
+	m.input.SetValue("do the thing")
+	mm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = mm.(Model)
+	if len(a.sendCalls) != 1 {
+		t.Fatalf("send calls = %d, want 1", len(a.sendCalls))
+	}
+	if a.sendCalls[0].text != "do the thing" || a.sendCalls[0].row.Name != "mercury" {
+		t.Errorf("send call = %+v, want {mercury, \"do the thing\"}", a.sendCalls[0])
+	}
+	if m.action != "send" {
+		t.Errorf("action = %q, want \"send\"", m.action)
+	}
+	if m.mode != modeNormal {
+		t.Errorf("mode = %v, want modeNormal after send", m.mode)
+	}
+}
+
+func TestSendEmptyInputSendsNothing(t *testing.T) {
+	a := &recordingActor{}
+	m := newTestModel(a)
+	mm, _ := m.Update(key('s'))
+	m = mm.(Model)
+	mm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = mm.(Model)
+	if len(a.sendCalls) != 0 {
+		t.Errorf("empty Enter sent %+v, want none", a.sendCalls)
+	}
+	if m.mode != modeNormal {
+		t.Errorf("mode = %v, want modeNormal", m.mode)
+	}
+	if m.action != "" {
+		t.Errorf("action = %q, want empty", m.action)
+	}
+}
+
+func TestSendEscCancels(t *testing.T) {
+	a := &recordingActor{}
+	m := newTestModel(a)
+	mm, _ := m.Update(key('s'))
+	m = mm.(Model)
+	m.input.SetValue("discarded")
+	mm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = mm.(Model)
+	if len(a.sendCalls) != 0 {
+		t.Errorf("Esc sent %+v, want none", a.sendCalls)
+	}
+	if m.mode != modeNormal {
+		t.Errorf("mode = %v, want modeNormal after Esc", m.mode)
+	}
+}
+
+func TestSendGatedOnReachableSandbox(t *testing.T) {
+	a := &recordingActor{}
+	m := newTestModel(a)
+	mm, _ := m.Update(key('j')) // move to browser row (not a sandbox)
+	m = mm.(Model)
+	if got := m.selectedRow().Name; got != "browser (shared)" {
+		t.Fatalf("selection = %q, want browser (shared)", got)
+	}
+	mm, _ = m.Update(key('s'))
+	m = mm.(Model)
+	if m.mode == modeInput {
+		t.Error("'s' opened input on a non-sandbox row")
+	}
+	if len(a.sendCalls) != 0 {
+		t.Errorf("Send reachable-gate bypassed: %+v", a.sendCalls)
+	}
+}
+
+func TestErrorNoticeClearsOnKeypress(t *testing.T) {
+	m := newTestModel(&recordingActor{})
+	mm, _ := m.Update(actionResultMsg{label: "down", err: errors.New("boom")})
+	m = mm.(Model)
+	if !m.notice.isErr || m.notice.text == "" {
+		t.Fatal("error notice should be set after a failed action")
+	}
+	mm, _ = m.Update(key('j')) // any keypress
+	m = mm.(Model)
+	if m.notice.text != "" {
+		t.Errorf("error notice should clear on the next keypress, got %q", m.notice.text)
+	}
+}
+
+func TestSnapshotErrorKeepsLastKnownRows(t *testing.T) {
+	m := newTestModel(&recordingActor{}) // seeded with a good snapshot
+	before := len(m.rows)
+	if before == 0 {
+		t.Fatal("expected seeded rows")
+	}
+	// A failed `container ls` poll must NOT blank the rows.
+	mm, _ := m.Update(snapshotMsg{snap: Snapshot{Rows: nil, Err: errors.New("apiserver down")}})
+	m = mm.(Model)
+	if len(m.rows) != before {
+		t.Errorf("rows = %d after failed poll, want last-known %d", len(m.rows), before)
+	}
+	if m.snapErr == nil {
+		t.Error("snapErr should be set so the view can mark rows stale")
+	}
+}
 ```
 
 - [ ] **Step 4: Run test to verify it fails**
 
-Run: `go test ./internal/tui -run 'TestSelection|TestDown|TestInterrupt|TestAction|TestSnapshot|TestQuit' -v`
+Run: `go test ./internal/tui -run 'TestSelection|TestDown|TestInterrupt|TestAction|TestSnapshot|TestQuit|TestSend|TestErrorNotice' -v`
 Expected: FAIL — `undefined: NewModel`.
 
 - [ ] **Step 5: Write `internal/tui/model.go`**
@@ -1511,12 +1791,13 @@ type Model struct {
 	events    []EventLine
 	eventsErr error
 
-	mode    uiMode
-	input   textinput.Model
-	action  string // in-flight action label; "" when idle
-	spinner spinner.Model
-	notice  notice
-	help    bool
+	mode      uiMode
+	input     textinput.Model
+	action    string // in-flight action label; "" when idle
+	spinner   spinner.Model
+	notice    notice
+	noticeGen int // bumped per success notice so a stale fade-timer can't clear a newer one
+	help      bool
 
 	width, height int
 	quitting      bool
@@ -1529,6 +1810,10 @@ type eventsMsg struct {
 	err   error
 }
 type pollTickMsg time.Time
+
+// noticeExpireMsg fires ~3s after a success notice is set; the generation guard
+// (gen) ensures a stale timer can't clear a newer notice.
+type noticeExpireMsg struct{ gen int }
 
 // NewModel constructs the dashboard model. home is the host home dir (for the
 // event-log path); interval is the poll cadence; now is injected for tests.
@@ -1545,7 +1830,12 @@ func NewModel(p Poller, a Actor, home string, interval time.Duration, now func()
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, pollTickCmd(m.interval), m.pollNowCmd())
+	// Kick the first poll through the SAME guarded pollTickMsg path (rather than
+	// issuing pollNowCmd directly from Init, which can't set m.polling and would
+	// race a second poll from the first real tick). The spinner is seeded only
+	// when an action starts (see actionResultMsg / action dispatch), not here —
+	// this is a long-running dashboard, so we don't want a perpetual idle redraw.
+	return func() tea.Msg { return pollTickMsg(time.Time{}) }
 }
 
 func pollTickCmd(d time.Duration) tea.Cmd {
@@ -1593,14 +1883,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case snapshotMsg:
 		prev := m.selectedRow()
-		m.rows = msg.snap.Rows
 		m.daemon = msg.snap.Daemon
 		m.snapErr = msg.snap.Err
-		m.lastPoll = msg.snap.TakenAt
 		m.polling = false
-		m.restoreSelection(prev)
-		if m.notice.text != "" && !m.notice.isErr {
-			m.notice = notice{} // fade success notices on the next poll
+		// Only a successful `container ls` replaces the row set. On failure keep
+		// the last-known rows and let the view mark them stale with an "as of"
+		// marker (spec: Error Handling — render what we have, don't blank).
+		if msg.snap.Err == nil {
+			m.rows = msg.snap.Rows
+			m.lastPoll = msg.snap.TakenAt
+			m.restoreSelection(prev)
 		}
 		return m, m.readEventsCmd()
 
@@ -1611,24 +1903,56 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case actionResultMsg:
 		m.action = ""
 		if msg.err != nil {
+			// Error notices persist until the next keypress (cleared in handleKey).
 			m.notice = notice{text: msg.label + " failed: " + msg.err.Error(), isErr: true}
-		} else {
-			m.notice = notice{text: msg.label + " ok"}
+			return m, nil
 		}
-		return m, nil
+		// Success notices fade after ~3s; a generation guard prevents a stale
+		// timer from clearing a newer notice.
+		m.notice = notice{text: msg.label + " ok"}
+		m.noticeGen++
+		gen := m.noticeGen
+		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return noticeExpireMsg{gen: gen} })
 
 	case spinner.TickMsg:
+		// Only animate while an action is in flight; when idle, let the tick
+		// chain die instead of redrawing the whole dashboard forever.
+		if m.action == "" {
+			return m, nil
+		}
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
 
+	case noticeExpireMsg:
+		// Clear a success notice ~3s after it was set, unless a newer notice
+		// superseded it (generation guard) or it became an error notice.
+		if msg.gen == m.noticeGen && !m.notice.isErr {
+			m.notice = notice{}
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+	}
+	// While the send-box is open, deliver any message we didn't consume above
+	// (cursor BlinkMsg, clipboard pasteMsg) to the focused textinput so its
+	// cursor keeps blinking and ctrl+v paste completes. textinput.Update no-ops
+	// when the field is unfocused, so this is safe.
+	if m.mode == modeInput {
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
 	}
 	return m, nil
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// An error notice persists until the next keypress (spec §Footer); any key
+	// dismisses it. Success notices fade on their own timer — leave them.
+	if m.notice.isErr {
+		m.notice = notice{}
+	}
 	// global quit always available
 	if msg.Type == tea.KeyCtrlC {
 		m.quitting = true
@@ -1673,7 +1997,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if canAttach(row) {
 			m.action = "attach"
-			return m, m.actor.Attach(row)
+			return m, tea.Batch(m.actor.Attach(row), m.spinner.Tick)
 		}
 	case "d":
 		if canDown(row) {
@@ -1682,12 +2006,12 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "i":
 		if canInterrupt(row) {
 			m.action = "interrupt"
-			return m, m.actor.Interrupt(row)
+			return m, tea.Batch(m.actor.Interrupt(row), m.spinner.Tick)
 		}
 	case "b":
 		if canBrowser(row) {
 			m.action = "browser restart"
-			return m, m.actor.RestartBrowser(row)
+			return m, tea.Batch(m.actor.RestartBrowser(row), m.spinner.Tick)
 		}
 	case "s":
 		if canSend(row) {
@@ -1704,7 +2028,7 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeNormal
 		row := m.selectedRow()
 		m.action = "down"
-		return m, m.actor.Down(row)
+		return m, tea.Batch(m.actor.Down(row), m.spinner.Tick)
 	}
 	m.mode = modeNormal // any other key cancels
 	return m, nil
@@ -1721,7 +2045,7 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		row := m.selectedRow()
 		m.action = "send"
-		return m, m.actor.Send(row, text)
+		return m, tea.Batch(m.actor.Send(row, text), m.spinner.Tick)
 	case tea.KeyEsc:
 		m.mode = modeNormal
 		m.input.Blur()
@@ -1756,7 +2080,9 @@ func (m *Model) moveSelection(dir int) {
 }
 
 // restoreSelection re-points m.selected at the row matching prev's identity
-// after a new snapshot; falls back to the first selectable row.
+// after a new snapshot. If that row is gone (e.g. after a down), it moves to the
+// nearest remaining selectable row — searching outward from the previous index
+// — rather than jumping to the top. Falls back to the first selectable row.
 func (m *Model) restoreSelection(prev Row) {
 	for i, r := range m.rows {
 		if r.Selectable && r.Kind == prev.Kind && r.Project == prev.Project && r.Name == prev.Name {
@@ -1764,10 +2090,14 @@ func (m *Model) restoreSelection(prev Row) {
 			return
 		}
 	}
-	for i, r := range m.rows {
-		if r.Selectable {
-			m.selected = i
-			return
+	// nearest-selectable search outward from the old index (still held in m.selected)
+	n := len(m.rows)
+	for d := 0; d < n; d++ {
+		for _, idx := range [2]int{m.selected + d, m.selected - d} {
+			if idx >= 0 && idx < n && m.rows[idx].Selectable {
+				m.selected = idx
+				return
+			}
 		}
 	}
 	m.selected = 0
@@ -1776,7 +2106,7 @@ func (m *Model) restoreSelection(prev Row) {
 
 - [ ] **Step 6: Run tests to verify they pass**
 
-Run: `go test ./internal/tui -run 'TestSelection|TestDown|TestInterrupt|TestAction|TestSnapshot|TestQuit' -v`
+Run: `go test ./internal/tui -run 'TestSelection|TestDown|TestInterrupt|TestAction|TestSnapshot|TestQuit|TestSend|TestErrorNotice' -v`
 Expected: PASS.
 Note: `View` is not yet defined; Task 7 adds it. `Model` still satisfies `tea.Model` only after `View` exists — but these tests call `Update` directly and never assign to a `tea.Model` var requiring `View`, EXCEPT `newTestModel` does `mm.(Model)` after `m.Update(...)` which returns `tea.Model`. `Update` returns `tea.Model` regardless; the type assertion works. The package compiles without `View` only if nothing requires the full interface. To be safe, add a temporary `func (m Model) View() string { return "" }` at the end of model.go now, and Task 7 replaces it.
 
@@ -1793,7 +2123,7 @@ package tui
 func (m Model) View() string { return "" }
 ```
 
-Run: `go build ./internal/tui && go test ./internal/tui -run 'TestSelection|TestDown|TestInterrupt|TestAction|TestSnapshot|TestQuit'`
+Run: `go build ./internal/tui && go test ./internal/tui -run 'TestSelection|TestDown|TestInterrupt|TestAction|TestSnapshot|TestQuit|TestSend|TestErrorNotice'`
 Expected: builds + PASS.
 
 ```bash
@@ -1821,6 +2151,7 @@ git commit -m "Add tui model, update loop, keybindings, and action interface"
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -1887,11 +2218,81 @@ func TestViewNoEvents(t *testing.T) {
 	}
 	_ = time.Second
 }
+
+func TestViewBrowserDetailHealth(t *testing.T) {
+	m := newTestModel(&recordingActor{})
+	m.width, m.height = 100, 30
+	m.rows = []Row{
+		{Kind: RowBrowser, Name: "browser (shared)", Selectable: true,
+			Browser: BrowserHealth{Reachable: true, Version: "Chrome/140"}},
+	}
+	m.selected = 0
+	if out := m.View(); !strings.Contains(out, "CDP") || !strings.Contains(out, "Chrome/140") {
+		t.Errorf("browser detail should show CDP health; got:\n%s", out)
+	}
+	// unreachable branch shows the restart hint
+	m.rows[0].Browser = BrowserHealth{Reachable: false}
+	if out := m.View(); !strings.Contains(strings.ToLower(out), "restart") {
+		t.Errorf("unreachable browser detail should hint restart; got:\n%s", out)
+	}
+}
+
+func TestFooterHintsVaryBySelection(t *testing.T) {
+	running := Row{Kind: RowSandbox, State: StateRunning, Agent: AgentStatus{Reachable: true, State: "working"}}
+	stopped := Row{Kind: RowSandbox, State: StateStopped}
+	// helper: find a label's on-flag
+	on := func(row Row, label string) bool {
+		for _, h := range footerHints(row) {
+			if h.label == label {
+				return h.on
+			}
+		}
+		t.Fatalf("label %q not in footer hints", label)
+		return false
+	}
+	if !on(running, "[enter] attach") {
+		t.Error("attach should be enabled for a running sandbox")
+	}
+	if on(stopped, "[enter] attach") {
+		t.Error("attach should be disabled for a stopped sandbox")
+	}
+	if !on(running, "[i]nterrupt") {
+		t.Error("interrupt should be enabled for a working sandbox")
+	}
+	idle := Row{Kind: RowSandbox, State: StateRunning, Agent: AgentStatus{Reachable: true, State: "idle"}}
+	if on(idle, "[i]nterrupt") {
+		t.Error("interrupt should be disabled for an idle sandbox")
+	}
+}
+
+func TestViewSystemDivider(t *testing.T) {
+	m := newTestModel(&recordingActor{})
+	m.width, m.height = 100, 30
+	m.rows = []Row{
+		{Kind: RowProject, Name: "alpha"},
+		{Kind: RowSandbox, Project: "alpha", Name: "mercury", State: StateRunning, Selectable: true},
+		{Kind: RowSystem, Name: "buildkit", State: StateRunning},
+	}
+	m.selected = 1
+	if out := m.View(); !strings.Contains(out, "— system —") {
+		t.Errorf("system rows should be preceded by a divider; got:\n%s", out)
+	}
+}
+
+func TestViewStaleBanner(t *testing.T) {
+	m := newTestModel(&recordingActor{})
+	m.width, m.height = 100, 30
+	m.snapErr = errors.New("apiserver down")
+	m.lastPoll = time.Unix(1_000_000, 0)
+	if out := m.View(); !strings.Contains(out, "as of") {
+		t.Errorf("stale snapshot should render an 'as of' marker; got:\n%s", out)
+	}
+}
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./internal/tui -run 'TestFormatMemory|TestView' -v`
+Run: `go test ./internal/tui -run 'TestFormatMemory|TestView|TestFooterHints' -v`
 Expected: FAIL — `undefined: formatMemory` (and View stub returns "").
 
 - [ ] **Step 3: Write `internal/tui/view.go`** (replace the stub)
@@ -1908,12 +2309,13 @@ import (
 )
 
 var (
-	styleHeader   = lipgloss.NewStyle().Bold(true)
-	styleProject  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#8888ff"))
-	styleDim      = lipgloss.NewStyle().Faint(true)
-	styleSelected = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#5fffaf"))
-	styleErr      = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5555"))
-	styleOK       = lipgloss.NewStyle().Foreground(lipgloss.Color("#5fffaf"))
+	styleHeader    = lipgloss.NewStyle().Bold(true)
+	styleProject   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#8888ff"))
+	styleDim       = lipgloss.NewStyle().Faint(true)
+	styleSelected  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#5fffaf"))
+	styleErr       = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5555"))
+	styleOK        = lipgloss.NewStyle().Foreground(lipgloss.Color("#5fffaf"))
+	styleFooterKey = lipgloss.NewStyle() // enabled key: normal weight, reads brighter than the dimmed/disabled ones
 )
 
 // formatMemory renders bytes as a compact G/M string; 0 -> "-".
@@ -1976,22 +2378,17 @@ func (m Model) View() string {
 	b.WriteString(strings.Repeat("─", min(m.width, 78)))
 	b.WriteString("\n")
 
-	// list-failure banner
+	// list-failure banner, with an "as of" marker over the kept last-known rows
 	if m.snapErr != nil {
-		b.WriteString(styleErr.Render("container ls failed: "+m.snapErr.Error()+" — run cspace doctor") + "\n")
+		banner := "container ls failed: " + m.snapErr.Error() + " — run cspace doctor"
+		if !m.lastPoll.IsZero() {
+			banner += "  (as of " + m.lastPoll.Format("15:04:05") + ")"
+		}
+		b.WriteString(styleErr.Render(banner) + "\n")
 	}
 
-	// rows
-	for i, r := range m.rows {
-		line := renderRow(r)
-		if i == m.selected && r.Selectable {
-			line = styleSelected.Render("▸ " + line)
-		} else {
-			line = "  " + line
-		}
-		b.WriteString(line)
-		b.WriteString("\n")
-	}
+	// rows (with the "— system —" divider and stale-dimming handled inside)
+	b.WriteString(m.renderRows())
 
 	b.WriteString(strings.Repeat("─", min(m.width, 78)))
 	b.WriteString("\n")
@@ -2001,6 +2398,31 @@ func (m Model) View() string {
 
 	// footer
 	b.WriteString(m.renderFooter())
+	return b.String()
+}
+
+// systemDividerRendered tracks whether renderRows already emitted the
+// "— system —" divider; the divider prints once, before the first RowSystem.
+func (m Model) renderRows() string {
+	var b strings.Builder
+	dividerDone := false
+	for i, r := range m.rows {
+		if r.Kind == RowSystem && !dividerDone {
+			b.WriteString(styleDim.Render("— system —") + "\n")
+			dividerDone = true
+		}
+		line := renderRow(r)
+		if i == m.selected && r.Selectable {
+			line = styleSelected.Render("▸ " + line)
+		} else {
+			line = "  " + line
+		}
+		if m.snapErr != nil {
+			line = styleDim.Render(line) // stale snapshot: dim last-known rows
+		}
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
 	return b.String()
 }
 
@@ -2030,7 +2452,19 @@ func renderRow(r Row) string {
 
 func (m Model) renderDetail() string {
 	row := m.selectedRow()
-	if row.Kind != RowSandbox {
+	switch row.Kind {
+	case RowBrowser:
+		if row.Browser.Reachable {
+			v := row.Browser.Version
+			if v == "" {
+				v = "reachable"
+			}
+			return fmt.Sprintf("%s · CDP :9222 · %s\n", row.Name, v)
+		}
+		return styleErr.Render(row.Name+" · CDP unreachable — press b to restart") + "\n"
+	case RowSandbox:
+		// falls through to the sandbox detail below
+	default:
 		return styleDim.Render("select a sandbox for details") + "\n"
 	}
 	var b strings.Builder
@@ -2084,22 +2518,55 @@ func (m Model) renderFooter() string {
 		return styleOK.Render(m.notice.text)
 	}
 	if m.help {
-		return styleDim.Render("↑/↓ move · enter attach · s send · i interrupt · d down · b browser · r refresh · q quit")
+		// Multi-line help overlay listing every key.
+		lines := []string{
+			"keys:",
+			"  ↑/k, ↓/j   move selection",
+			"  enter      attach to the selected sandbox",
+			"  s          send a message to the agent",
+			"  i          interrupt the agent's current task",
+			"  d          tear down the sandbox (confirms)",
+			"  b          restart the project's browser sidecar",
+			"  r          refresh now",
+			"  ?          toggle this help",
+			"  q, ctrl+c  quit",
+		}
+		return styleDim.Render(strings.Join(lines, "\n"))
 	}
-	return styleDim.Render("[enter] attach  [s]end  [i]nterrupt  [d]own  [b]rowser restart  [?] help  [q]uit")
+	// Contextual hints: enabled keys for the selection read bright, invalid ones dim.
+	parts := make([]string, 0, 7)
+	for _, h := range footerHints(m.selectedRow()) {
+		if h.on {
+			parts = append(parts, styleFooterKey.Render(h.label))
+		} else {
+			parts = append(parts, styleDim.Render(h.label))
+		}
+	}
+	parts = append(parts, styleDim.Render("[?] help"), styleDim.Render("[q]uit"))
+	return strings.Join(parts, "  ")
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
+type footerHint struct {
+	label string
+	on    bool
+}
+
+// footerHints is the pure per-selection key/enabled decision the footer renders.
+// Extracted so the contextual on/off logic is testable without ANSI styling.
+func footerHints(row Row) []footerHint {
+	return []footerHint{
+		{"[enter] attach", canAttach(row)},
+		{"[s]end", canSend(row)},
+		{"[i]nterrupt", canInterrupt(row)},
+		{"[d]own", canDown(row)},
+		{"[b]rowser restart", canBrowser(row)},
 	}
-	return b
 }
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `go test ./internal/tui -run 'TestFormatMemory|TestView' -v`
+Run: `go test ./internal/tui -run 'TestFormatMemory|TestView|TestFooterHints' -v`
 Expected: PASS.
 Then full package: `go test ./internal/tui` — Expected: ok.
 
@@ -2135,6 +2602,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -2166,15 +2634,18 @@ func TestTUIActorSendPostsToControlURL(t *testing.T) {
 	row := tui.Row{Kind: tui.RowSandbox, Project: "alpha", Name: "mercury", ControlURL: srv.URL, Token: "tok"}
 	msg := drain(a.Send(row, "hello"))
 
-	res, ok := msg.(interface{ Label() string })
-	_ = res
-	_ = ok
+	if err := tui.ResultErr(msg); err != nil {
+		t.Errorf("send should succeed, got %v", err)
+	}
+	if l, _ := tui.ResultLabel(msg); l != "send" {
+		t.Errorf("label = %q, want \"send\"", l)
+	}
 	if gotPath != "/send" || gotAuth != "Bearer tok" || gotCT != "application/json" || gotBody != "hello" {
 		t.Errorf("send request: path=%q auth=%q ct=%q body=%q", gotPath, gotAuth, gotCT, gotBody)
 	}
 }
 
-func TestTUIActorInterruptSurfaces409(t *testing.T) {
+func TestTUIActorInterrupt409IsBenign(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(409)
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "no active task"})
@@ -2184,9 +2655,27 @@ func TestTUIActorInterruptSurfaces409(t *testing.T) {
 	a := newTUIActor(nil, nil, "/home/x")
 	row := tui.Row{Kind: tui.RowSandbox, ControlURL: srv.URL, Token: "tok"}
 	msg := drain(a.Interrupt(row))
-	// the message must report an error mentioning "no active task"
-	if !msgHasError(msg, "no active task") {
-		t.Errorf("interrupt 409 not surfaced: %#v", msg)
+	// A 409 "no active task" is not an error state — the agent was simply idle.
+	if err := tui.ResultErr(msg); err != nil {
+		t.Errorf("interrupt 409 should be benign, got error: %v", err)
+	}
+	if l, _ := tui.ResultLabel(msg); l != "interrupt" {
+		t.Errorf("label = %q, want \"interrupt\"", l)
+	}
+}
+
+func TestTUIActorInterrupt500Surfaces(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.WriteHeader(500)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "boom"})
+	}))
+	defer srv.Close()
+
+	a := newTUIActor(nil, nil, "/home/x")
+	row := tui.Row{Kind: tui.RowSandbox, ControlURL: srv.URL, Token: "tok"}
+	msg := drain(a.Interrupt(row))
+	if !msgHasError(msg, "boom") {
+		t.Errorf("interrupt 500 should surface an error: %#v", msg)
 	}
 }
 ```
@@ -2221,7 +2710,7 @@ func msgHasError(msg tea.Msg, want string) bool {
 }
 ```
 
-(add imports `strings`, `github.com/elliottregan/cspace/internal/tui`).
+(`strings` and `github.com/elliottregan/cspace/internal/tui` are already in the tui_actor_test.go import block above.)
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -2241,6 +2730,7 @@ import (
 	"io"
 	"net/http"
 	"os/exec"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -2279,6 +2769,13 @@ func (t *tuiActor) Down(row tui.Row) tea.Cmd {
 		defer cancel()
 		var buf bytes.Buffer
 		teardownSandbox(ctx, adapter, reg, project, name, &buf, true /* wipeState */)
+		// teardownSandbox has no return value and swallows the container Stop
+		// error; its only failure signal is warning text written to the
+		// captured writer (prefix "[cspace] warning:"). Surface those warnings
+		// instead of a false "down ok".
+		if strings.Contains(buf.String(), "warning:") {
+			return tui.Result("down", fmt.Errorf("%s", strings.TrimSpace(buf.String())))
+		}
 		return tui.Result("down", nil)
 	}
 }
@@ -2311,16 +2808,34 @@ func (t *tuiActor) Interrupt(row tui.Row) tea.Cmd {
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
-		return tui.Result("interrupt", doExpect2xx(client, req))
+		resp, err := client.Do(req)
+		if err != nil {
+			return tui.Result("interrupt", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(resp.Body)
+		// A 409 "no active task" is not an error — the agent was simply idle.
+		// Surface it as a benign (non-error) notice per the spec.
+		if resp.StatusCode == http.StatusConflict {
+			return tui.Result("interrupt", nil)
+		}
+		if resp.StatusCode/100 != 2 {
+			return tui.Result("interrupt", fmt.Errorf("status %d: %s", resp.StatusCode, agentErrorText(body)))
+		}
+		return tui.Result("interrupt", nil)
 	}
 }
 
+// RestartBrowser restarts the project's shared browser sidecar via the same
+// seam the daemon's restart handler uses. Empty plVersion lets the ladder pin
+// the version from the running sidecar (sidecarVersion) or fall back to
+// defaultPlaywrightVersion. Uses restartBrowserFn (var-seam) so tests can fake it.
 func (t *tuiActor) RestartBrowser(row tui.Row) tea.Cmd {
-	adapter, project := t.adapter, row.Project
+	project := row.Project
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
-		err := restartBrowserSidecar(ctx, adapter, project)
+		_, err := restartBrowserFn(ctx, project, "")
 		return tui.Result("browser restart", err)
 	}
 }
@@ -2341,7 +2856,7 @@ func doExpect2xx(client *http.Client, req *http.Request) error {
 }
 ```
 
-**Note for the implementer:** verify `restartBrowserSidecar`'s exact signature in `internal/cli/browser.go` and adapt the call (it may take different args, e.g. a project or container name and verify/restart function seams). If its signature differs, match it — the contract here is "restart the project's shared browser and return an error". Do not change `restartBrowserSidecar` itself.
+**Note for the implementer:** `restartBrowserFn` is the package var seam `var restartBrowserFn = restartBrowserSidecar` in `internal/cli/browser.go` (the same path the daemon's `browserRestartHandler` uses); its real signature is `func(ctx, project, plVersion string) (*BrowserSidecar, error)`. Call it (not `restartBrowserSidecar` directly) so a test can fake it. Do not change `restartBrowserFn`/`restartBrowserSidecar` themselves. `doExpect2xx` is still used by `Send`; `Interrupt` now handles its own response so it can special-case 409.
 
 - [ ] **Step 4: Update `internal/tui/actions.go`** with the exported `Result`/`ResultLabel`/`ResultErr` helpers shown in Step 1, then run tests.
 
@@ -2509,12 +3024,14 @@ git commit -m "Add cspace tui command wiring and docs"
 - Live container state (state/IP/mem/uptime) → Task 1 `List`, Task 2 fold. ✓
 - Agent status (state/queue/session/lastEventSubtype) → Task 4 poller fan-out, Task 2 `AgentStatus`. ✓
 - Detail pane status + live event tail → Task 3 `TailEvents`, Task 6 `readEventsCmd`, Task 7 detail render. ✓
+- Browser-row detail = last-known health probe → Task 2 `BrowserHealth`, Task 4 `fetchBrowserHealth`, Task 7 `renderDetail` RowBrowser branch. ✓
 - attach / down(confirm) / send / interrupt / browser restart → Task 6 keys + Task 8 actor. ✓
 - Glyphs ●/○/◐ and stopped/degraded/booting derivation → Task 2 state logic, Task 7 `stateGlyph`. ✓
-- Sidecar nesting, browser project-row, buildkit dimmed system row → Task 2 fold. ✓
-- Contextual keybindings (i only when working, etc.) → Task 6 predicates. ✓
+- Sidecar nesting, browser project-row, buildkit under `— system —` divider → Task 2 fold, Task 7 `renderRows`. ✓
+- Contextual keybindings — GATING (invalid keypress is a no-op) → Task 6 predicates; DISPLAY (per-key dim/bright by selection) → Task 7 `footerHints`/`renderFooter`. ✓
 - One-action-at-a-time gating, confirm/input footers → Task 6 mode state machine, Task 7 footer. ✓
-- Degraded/stale error handling (daemon unreachable, ls banner, no-events) → Task 2 `Err`, Task 7 render. ✓
+- Footer notice contract: error persists until keypress (Task 6 `handleKey`), success fades ~3s (Task 6 `noticeExpireMsg` timer); interrupt 409 benign (Task 8). ✓
+- Degraded/stale error handling: daemon unreachable, `container ls` failure keeps last-known rows dimmed with `as of` marker, no-events → Task 2 `Err`, Task 6 `snapshotMsg` gate, Task 7 render. ✓
 - Polling pause during modal/action, selection preservation → Task 6. ✓
 - Testing strategy (pure model/poller fakes, no live-host default) → every task's tests. ✓
 - `up` out of scope → not implemented. ✓
@@ -2522,6 +3039,16 @@ git commit -m "Add cspace tui command wiring and docs"
 **2. Placeholder scan:** No TBD/TODO. Two implementer notes flag real verification points (the `restartBrowserSidecar` signature in Task 8; the `View`-stub sequencing in Task 6) — both are concrete instructions, not placeholders.
 
 **3. Type consistency:** `ContainerSummary`, `Row`, `AgentStatus`, `Snapshot`, `Correlate`, `Poller`, `Actor`, `Result`/`ResultErr` names are consistent across Tasks 1–9. `Actor` interface (Task 6) matches `tuiActor` methods (Task 8). `NewModel`/`NewPoller`/`newTUIActor` signatures match their call sites in Task 9. `actionResultMsg` is unexported in `tui`; cross-package construction goes through the exported `tui.Result` (added in Task 8 Step 1, folded into Task 6's `actions.go`).
+
+## Review Findings Applied
+
+This plan was hardened by an adversarial multi-lens review (compile/type-consistency, Bubble Tea correctness, spec coverage, Go/SOLID, TDD test design) before execution. All 11 confirmed findings and the actionable minors were folded in:
+
+- **Compile-breakers fixed:** `RestartBrowser` now calls the real `restartBrowserFn(ctx, project, "")` seam (`_, err :=`), not the nonexistent `(ctx, adapter, project)` signature; `time` added to `adapter.go` imports; `strings` added to `poll.go` and both actor files; dead `c, running :=` double-lookup collapsed in `Correlate`; redundant `func min` deleted (Go 1.26 builtin).
+- **Bubble Tea correctness:** the top-level `Update` now forwards otherwise-unconsumed messages (cursor `BlinkMsg`, `pasteMsg`) to the focused send-box so its cursor blinks and paste completes; the spinner animates only while an action is in flight (no perpetual idle redraw); the first poll runs through the guarded `pollTickMsg` path (no unguarded startup double-poll).
+- **Spec fidelity restored:** browser-row detail shows a live CDP health probe (`BrowserHealth` + `fetchBrowserHealth`); the footer dims/brightens keys per selection (`footerHints`); a `container ls` failure keeps last-known rows dimmed with an `as of` marker instead of blanking; error notices persist until the next keypress and success notices fade on a ~3s generation-guarded timer; interrupt 409 is benign; the `— system —` divider and a multi-line help overlay are rendered; `restoreSelection` moves to the nearest selectable row.
+- **Down truthfulness:** the actor inspects `teardownSandbox`'s captured warning output and reports a failure instead of an unconditional "down ok".
+- **Test design:** dead assertions replaced with real ones (token carried in `Correlate`; send result label/err); the send/input state machine, error-notice dismissal, keep-last-known-on-error, browser detail, footer variance, system divider, stale banner, and predicate negative branches (`keys_test.go`) are now covered.
 
 ## Execution Handoff
 
