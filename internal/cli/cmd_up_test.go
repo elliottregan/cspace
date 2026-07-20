@@ -297,7 +297,7 @@ func TestWriteExtractedEnv(t *testing.T) {
 	}
 }
 
-// TestUpRoleFlagWritesSessionRoleFile verifies writeAgentRole copies the
+// TestUpRoleFlagWritesSessionRoleFile verifies syncAgentRole copies the
 // host role file's content to <sessionsDir>/agent-role.md, and that a missing
 // source file fails with a clear error (so `cspace up --role` fails fast,
 // before any provisioning).
@@ -311,8 +311,8 @@ func TestUpRoleFlagWritesSessionRoleFile(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if err := writeAgentRole(sessions, hostRole); err != nil {
-			t.Fatalf("writeAgentRole: %v", err)
+		if err := syncAgentRole(sessions, hostRole); err != nil {
+			t.Fatalf("syncAgentRole: %v", err)
 		}
 
 		got, err := os.ReadFile(filepath.Join(sessions, "agent-role.md"))
@@ -328,7 +328,7 @@ func TestUpRoleFlagWritesSessionRoleFile(t *testing.T) {
 		sessions := t.TempDir()
 		missing := filepath.Join(t.TempDir(), "nope.md")
 
-		err := writeAgentRole(sessions, missing)
+		err := syncAgentRole(sessions, missing)
 		if err == nil {
 			t.Fatal("expected an error for a missing role file, got nil")
 		}
@@ -338,6 +338,38 @@ func TestUpRoleFlagWritesSessionRoleFile(t *testing.T) {
 		// The dest file must not exist when the source read failed.
 		if _, statErr := os.Stat(filepath.Join(sessions, "agent-role.md")); statErr == nil {
 			t.Error("agent-role.md should not be written when the source is unreadable")
+		}
+	})
+}
+
+// TestSyncAgentRoleEmptyPathRemoves verifies the stale-override-clearing
+// contract added for `cspace up` runs without --role: an empty hostPath
+// means "no role file for this invocation", so syncAgentRole removes any
+// leftover <sessionsDir>/agent-role.md from a prior --role invocation of the
+// same sandbox (no intervening `down`), rather than silently reusing it and
+// shadowing a committed /workspace/.cspace/agent.md.
+func TestSyncAgentRoleEmptyPathRemoves(t *testing.T) {
+	t.Run("existing file + empty path removes it", func(t *testing.T) {
+		sessions := t.TempDir()
+		dst := filepath.Join(sessions, "agent-role.md")
+		if err := os.WriteFile(dst, []byte("stale override"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := syncAgentRole(sessions, ""); err != nil {
+			t.Fatalf("syncAgentRole: %v", err)
+		}
+
+		if _, statErr := os.Stat(dst); !os.IsNotExist(statErr) {
+			t.Errorf("expected agent-role.md to be removed, stat err = %v", statErr)
+		}
+	})
+
+	t.Run("empty path + no existing file is a no-op", func(t *testing.T) {
+		sessions := t.TempDir()
+
+		if err := syncAgentRole(sessions, ""); err != nil {
+			t.Errorf("syncAgentRole should be a no-op when there is nothing to remove, got: %v", err)
 		}
 	})
 }

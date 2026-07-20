@@ -190,13 +190,20 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// content at <sessionsHostDir>/agent-role.md, which the sandbox
 			// bind-mounts at /sessions/agent-role.md. The supervisor's
 			// resolveRole() reads it there and appends it to the system prompt.
+			// The override is per-invocation: when --role is omitted, clear
+			// any stale agent-role.md left by a prior --role run of this same
+			// sandbox (no intervening `down`) so it doesn't silently shadow a
+			// committed /workspace/.cspace/agent.md. Clearing is best-effort —
+			// a failure here warns but does not fail the boot.
 			if rolePath != "" {
 				if mkErr := os.MkdirAll(sessionsHostDir, 0o755); mkErr != nil {
 					return fmt.Errorf("create sessions dir: %w", mkErr)
 				}
-				if roleErr := writeAgentRole(sessionsHostDir, rolePath); roleErr != nil {
+				if roleErr := syncAgentRole(sessionsHostDir, rolePath); roleErr != nil {
 					return roleErr
 				}
+			} else if clearErr := syncAgentRole(sessionsHostDir, ""); clearErr != nil {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", clearErr)
 			}
 
 			// Boot from here on: route in-flight chatter to a buffer if
@@ -1017,18 +1024,34 @@ func resolveAgentModel(flagModel, cfgModel string) string {
 	return cfgModel
 }
 
-// writeAgentRole reads the role file at hostPath and stages its content at
-// <sessionsHostDir>/agent-role.md, which the sandbox bind-mounts at
+// syncAgentRole reconciles <sessionsHostDir>/agent-role.md with the current
+// invocation's --role flag, which the sandbox bind-mounts at
 // /sessions/agent-role.md. The supervisor's resolveRole() reads it there and
-// appends it to the agent's system prompt. Called only for `cspace up --role`;
-// an unreadable source returns an error (naming the path) so `up` fails fast,
-// before any provisioning, and the destination is left unwritten.
-func writeAgentRole(sessionsHostDir, hostPath string) error {
+// appends it to the agent's system prompt.
+//
+// hostPath non-empty ("cspace up --role <path>"): reads the host role file
+// and stages its content at the destination. An unreadable source returns an
+// error (naming the path) so `up` fails fast, before any provisioning, and
+// the destination is left unwritten.
+//
+// hostPath empty ("cspace up" with no --role): the override is per-invocation,
+// so any stale agent-role.md left by a prior --role run of the same sandbox
+// (no intervening `down`) is removed — otherwise it would silently shadow a
+// committed /workspace/.cspace/agent.md. A missing destination is a no-op
+// (nil); removal failures other than "not found" are returned so the caller
+// can decide how to surface them (best-effort — should not fail the boot).
+func syncAgentRole(sessionsHostDir, hostPath string) error {
+	dst := filepath.Join(sessionsHostDir, "agent-role.md")
+	if hostPath == "" {
+		if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove stale agent role %q: %w", dst, err)
+		}
+		return nil
+	}
 	content, err := os.ReadFile(hostPath)
 	if err != nil {
 		return fmt.Errorf("read --role file %q: %w", hostPath, err)
 	}
-	dst := filepath.Join(sessionsHostDir, "agent-role.md")
 	if err := os.WriteFile(dst, content, 0o644); err != nil {
 		return fmt.Errorf("write agent role to %q: %w", dst, err)
 	}
