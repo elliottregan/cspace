@@ -64,7 +64,7 @@ Bun/TypeScript, compiled to a single binary by `build.ts` during image build. Wr
 - **runtime/scripts/** — `cspace-entrypoint.sh` (settings seed, git identity, in-sandbox DNS forwarder, inbound DNAT), `cspace-install-plugins.sh`, `cspace-supervisor-loop.sh`, `statusline.sh`
 - **runtime/features/** — optional installers: node, python, git, github-cli, docker-in-docker, common-utils
 - **plugins/** — the `cspace-browser` Claude plugin (marketplace + `.mcp.json` wiring for the shared browser sidecar)
-- **defaults.json** — embedded config defaults. Vestigial keys from the earlier orchestration design — `advisors`, `agent`, `verify`, `claude`, `post_setup` — are parsed into `config.Config` but have no consumers.
+- **defaults.json** — embedded config defaults. cspace ships primitives — `up`/`send`/`down`/`browser`, the supervisor; orchestration patterns live in project-side skills such as resume-redux's `delegate-to-containers`.
 
 ## Project context (`.cspace/context/`)
 

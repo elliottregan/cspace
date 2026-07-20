@@ -1,3 +1,5 @@
+> ARCHIVED — describes a design that was never shipped in this form; see CLAUDE.md for current architecture.
+
 # Advisor Agents — Design
 
 **Date:** 2026-04-18

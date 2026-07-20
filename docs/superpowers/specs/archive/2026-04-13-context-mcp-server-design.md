@@ -1,3 +1,5 @@
+> ARCHIVED — describes a design that was never shipped in this form; see CLAUDE.md for current architecture.
+
 # Context MCP Server — Design
 
 **Date:** 2026-04-13

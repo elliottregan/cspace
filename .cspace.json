@@ -12,13 +12,5 @@
     "enabled": true,
     "domains": []
   },
-  "verify": {
-    "all": "",
-    "e2e": ""
-  },
-  "agent": {
-    "issue_label": "ready"
-  },
-  "services": "",
-  "post_setup": ""
+  "services": ""
 }

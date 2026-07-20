@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -208,13 +209,6 @@ func TestLoad_DefaultsOnly(t *testing.T) {
 		t.Error("expected firewall.enabled=true from defaults")
 	}
 
-	// Claude model defaults to opus[1m] for workers and advisor fallbacks.
-	// Coordinator has a separate setting (coordinatorModel) that defaults to
-	// Sonnet via coordinate.go logic.
-	if cfg.Claude.Model != "opus[1m]" {
-		t.Errorf("expected model=opus[1m], got %s", cfg.Claude.Model)
-	}
-
 	// Plugins should have the default list
 	if len(cfg.Plugins.Install) == 0 {
 		t.Error("expected non-empty plugins.install from defaults")
@@ -232,8 +226,8 @@ func TestLoad_WithProjectConfig(t *testing.T) {
 			"name": "my-project",
 			"repo": "user/my-project"
 		},
-		"claude": {
-			"model": "custom-model"
+		"container": {
+			"environment": {"NODE_ENV": "production"}
 		}
 	}`
 
@@ -250,24 +244,18 @@ func TestLoad_WithProjectConfig(t *testing.T) {
 	if cfg.Project.Repo != "user/my-project" {
 		t.Errorf("expected repo=user/my-project, got %s", cfg.Project.Repo)
 	}
-	if cfg.Claude.Model != "custom-model" {
-		t.Errorf("expected model=custom-model, got %s", cfg.Claude.Model)
-	}
-
-	// Effort comes from defaults — empty string means "use cspace's context-aware
-	// default" (xhigh for container env, max for autonomous supervisor).
-	if cfg.Claude.Effort != "" {
-		t.Errorf("expected empty default effort, got %s", cfg.Claude.Effort)
+	if cfg.Container.Environment["NODE_ENV"] != "production" {
+		t.Errorf("expected NODE_ENV=production, got %s", cfg.Container.Environment["NODE_ENV"])
 	}
 }
 
 func TestLoad_ThreeLayer(t *testing.T) {
 	projectJSON := `{
 		"project": { "name": "proj" },
-		"claude": { "model": "project-model" }
+		"container": { "environment": {"NODE_ENV": "project-env"} }
 	}`
 	localJSON := `{
-		"claude": { "model": "local-model" }
+		"container": { "environment": {"NODE_ENV": "local-env"} }
 	}`
 
 	dir := setupTestProject(t, projectJSON, localJSON)
@@ -278,8 +266,8 @@ func TestLoad_ThreeLayer(t *testing.T) {
 	}
 
 	// Local override should win
-	if cfg.Claude.Model != "local-model" {
-		t.Errorf("expected model=local-model (from local override), got %s", cfg.Claude.Model)
+	if cfg.Container.Environment["NODE_ENV"] != "local-env" {
+		t.Errorf("expected NODE_ENV=local-env (from local override), got %s", cfg.Container.Environment["NODE_ENV"])
 	}
 
 	// Project name should come from project config
@@ -419,6 +407,40 @@ func TestLoad_ContainerPortsAndEnv(t *testing.T) {
 	}
 }
 
+// TestLoadIgnoresUnknownKeys guards against reintroducing dead config
+// surface: keys left over from the abandoned specialized-agents design
+// (advisors/claude/verify/agent/post_setup) must be silently ignored by
+// Load rather than populating typed fields.
+func TestLoadIgnoresUnknownKeys(t *testing.T) {
+	dir := setupTestProject(t, `{"project": {"name": "proj"}}`, "")
+
+	cfgClean, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load() clean error: %v", err)
+	}
+
+	deadKeysJSON := `{
+		"project": {"name": "proj"},
+		"advisors": {"x": {}},
+		"claude": {"model": "m"},
+		"verify": {"all": "a"},
+		"agent": {"issue_label": "l"},
+		"post_setup": "s"
+	}`
+	if err := os.WriteFile(filepath.Join(dir, ".cspace.json"), []byte(deadKeysJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgWithDeadKeys, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load() with unknown keys error: %v", err)
+	}
+
+	if !reflect.DeepEqual(cfgClean, cfgWithDeadKeys) {
+		t.Errorf("Load() with unknown keys = %+v, want equal to %+v (unknown keys must be ignored)", cfgWithDeadKeys, cfgClean)
+	}
+}
+
 func TestHelpers(t *testing.T) {
 	cfg := &Config{
 		Project: ProjectConfig{
@@ -502,11 +524,6 @@ func TestLoad_RealProjectConfig(t *testing.T) {
 		t.Errorf("expected prefix=cs, got %s", cfg.Project.Prefix)
 	}
 
-	// Verify defaults were applied for fields not in .cspace.json
-	if cfg.Agent.IssueLabel != "ready" {
-		t.Errorf("expected agent.issue_label=ready, got %s", cfg.Agent.IssueLabel)
-	}
-
 	// Verify plugins came from defaults (since .cspace.json doesn't override them)
 	if len(cfg.Plugins.Install) == 0 {
 		t.Error("expected plugins.install from defaults")
@@ -532,79 +549,6 @@ func loadConfigFromJSON(t *testing.T, overlay string) (*Config, error) {
 		t.Fatal(err)
 	}
 	return Load(dir)
-}
-
-func TestConfigAdvisorsBlock(t *testing.T) {
-	cfg, err := loadConfigFromJSON(t, `{
-		"advisors": {
-			"decision-maker": {
-				"model": "claude-opus-4-7",
-				"effort": "max",
-				"baseBranch": "main"
-			},
-			"custom": {
-				"systemPromptFile": ".cspace/advisors/custom.md"
-			}
-		}
-	}`)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-
-	if len(cfg.Advisors) != 2 {
-		t.Fatalf("want 2 advisors, got %d", len(cfg.Advisors))
-	}
-	dm, ok := cfg.Advisors["decision-maker"]
-	if !ok {
-		t.Fatalf("missing decision-maker entry")
-	}
-	if dm.Model != "claude-opus-4-7" {
-		t.Errorf("Model = %q, want claude-opus-4-7", dm.Model)
-	}
-	if dm.Effort != "max" {
-		t.Errorf("Effort = %q, want max", dm.Effort)
-	}
-	if dm.BaseBranch != "main" {
-		t.Errorf("BaseBranch = %q, want main", dm.BaseBranch)
-	}
-	custom := cfg.Advisors["custom"]
-	if custom.SystemPromptFile != ".cspace/advisors/custom.md" {
-		t.Errorf("SystemPromptFile = %q", custom.SystemPromptFile)
-	}
-}
-
-func TestConfigAdvisorsNonNilAfterDefaults(t *testing.T) {
-	cfg, err := loadConfigFromJSON(t, `{}`)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if cfg.Advisors == nil {
-		t.Fatal("Advisors should be non-nil — defaults.json ships a decision-maker entry and DeepMerge preserves it when the overlay omits the key")
-	}
-}
-
-func TestConfigCoordinatorModelOverride(t *testing.T) {
-	cfg, err := loadConfigFromJSON(t, `{"claude": {"coordinatorModel": "claude-opus-4-7"}}`)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if cfg.Claude.CoordinatorModel != "claude-opus-4-7" {
-		t.Errorf("CoordinatorModel = %q, want claude-opus-4-7", cfg.Claude.CoordinatorModel)
-	}
-	// Defaults still supply Model for workers/advisors.
-	if cfg.Claude.Model != "opus[1m]" {
-		t.Errorf("Model = %q, want opus[1m] (unchanged by coordinator override)", cfg.Claude.Model)
-	}
-}
-
-func TestConfigCoordinatorModelEmptyByDefault(t *testing.T) {
-	cfg, err := loadConfigFromJSON(t, `{}`)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if cfg.Claude.CoordinatorModel != "" {
-		t.Errorf("CoordinatorModel default = %q, want empty", cfg.Claude.CoordinatorModel)
-	}
 }
 
 func TestConfigBrowserSharedFalse(t *testing.T) {

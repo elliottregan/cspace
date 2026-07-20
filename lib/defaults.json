@@ -13,18 +13,7 @@
     "enabled": true,
     "domains": []
   },
-  "claude": {
-    "model": "opus[1m]",
-    "effort": ""
-  },
   "mcpServers": {},
-  "verify": {
-    "all": "",
-    "e2e": ""
-  },
-  "agent": {
-    "issue_label": "ready"
-  },
   "plugins": {
     "enabled": true,
     "install": [
@@ -42,13 +31,5 @@
       "plugin-dev"
     ]
   },
-  "advisors": {
-    "decision-maker": {
-      "model": "claude-opus-4-8",
-      "effort": "max",
-      "baseBranch": "main"
-    }
-  },
-  "services": "",
-  "post_setup": ""
+  "services": ""
 }
