@@ -2,6 +2,7 @@ package applecontainer
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -22,8 +23,18 @@ func requireContainerCLI(t *testing.T) {
 	}
 }
 
+// requireE2E gates tests that create real containers on the host behind an
+// explicit opt-in, so a default `go test ./...` is free of host side effects.
+func requireE2E(t *testing.T) {
+	t.Helper()
+	if os.Getenv("CSPACE_E2E") == "" {
+		t.Skip("creates real containers on the host; set CSPACE_E2E=1 to run")
+	}
+}
+
 func TestRunAndExecAlpine(t *testing.T) {
 	requireContainerCLI(t)
+	requireE2E(t)
 	a := New()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -133,6 +144,7 @@ func TestVersionMatchesSupported(t *testing.T) {
 
 func TestIP(t *testing.T) {
 	requireContainerCLI(t)
+	requireE2E(t)
 	a := New()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

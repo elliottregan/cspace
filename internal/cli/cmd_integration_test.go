@@ -32,6 +32,9 @@ import (
 // --no-browser to keep it out of scope (the sidecar is slow and a separate
 // concern from lifecycle parity).
 func TestCspaceLifecycle(t *testing.T) {
+	if os.Getenv("CSPACE_E2E") == "" {
+		t.Skip("host-mutating integration test (replaces the live daemon, may rebuild cspace:latest); set CSPACE_E2E=1 to run")
+	}
 	a := applecontainer.New()
 	if !a.Available() {
 		t.Skip("Apple Container CLI not on PATH")

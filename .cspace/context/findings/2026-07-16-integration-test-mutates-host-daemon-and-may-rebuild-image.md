@@ -2,7 +2,7 @@
 title: TestCspaceLifecycle mutates host state — replaces the real daemon, can trigger a cspace:latest rebuild
 date: 2026-07-16
 kind: finding
-status: open
+status: resolved
 category: bug
 tags: tests, integration, daemon, image, dev-safety
 ---
@@ -27,3 +27,23 @@ Sandbox/clone cleanup is handled well (unique `int-*` name, `down` + clone remov
 ## Updates
 ### 2026-07-17T04:20:00Z — @agent — status: open
 filed after `go test ./internal/...` (run during the health-check fix) replaced the live rc.36 daemon and attempted an image rebuild on a machine with production sandboxes running
+
+### 2026-07-20T06:35:00Z — @agent — status: open
+Fired again, worse: a `make test` (plain `go test ./...`) during the
+deriveState fix ran TestCspaceLifecycle with a stale `bin/cspace-go`
+(rc.36-13-gc4788cd-dirty), whose up-flow version handshake replaced the
+installed rc.39 daemon — on a host with a live mercury sandbox whose browser
+DNS name depends on rc.37+ daemon code. Recovered by `cspace daemon stop` +
+respawning `daemon serve` from the Homebrew rc.39 binary. Also noted: the
+`internal/substrate/applecontainer` adapter tests (TestRunAndExecAlpine,
+TestIP) create real alpine containers on every default test run — same
+class of side effect, previously untracked here.
+
+### 2026-07-20T06:40:00Z — @agent — status: resolved
+Suggested hardening #1 implemented: TestCspaceLifecycle and the two
+container-creating adapter tests (TestRunAndExecAlpine, TestIP) now skip
+unless `CSPACE_E2E=1` is set, with skip messages naming the env var and the
+side effect. Default `go test ./...` / `make test` is side-effect-free.
+Items #2 (prompt-safe rebuild answer when opted in) and #3 (daemon
+isolation via CSPACE_DAEMON_*_ADDR overrides) remain sensible hardening for
+opt-in runs but the host-safety defect this finding tracks is closed.
