@@ -1,10 +1,12 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import type { Query } from "@anthropic-ai/claude-agent-sdk";
 import { PromptStream } from "./prompt-stream";
 import { runClaude } from "./claude-runner";
 import { createEventLogger, resumeSessionId } from "./event-log";
 import { resolveRole } from "./role";
 import { runAgent } from "./run-agent";
+import { deriveState } from "./status";
 
 const SESSION_ID = "primary";
 const SESSIONS_DIR = "/sessions";
@@ -30,6 +32,18 @@ const eventLogPath = join(sessionDir, "events.ndjson");
 const logEvent = createEventLogger({ path: eventLogPath, session: SESSION_ID });
 
 const prompts = new PromptStream();
+
+// Steering state for GET /status (spec §4). currentQuery is the live SDK
+// query handle — set by onQuery just before each runClaude() attempt starts
+// iterating, cleared (via .finally() at the call site below) the moment
+// that attempt's promise settles. This means the gap between a dead attempt
+// and the fresh-session retry's own onQuery call is honestly represented as
+// "no active task": POST /interrupt during that gap gets 409 rather than
+// calling a stale handle. lastEventTs/lastEventType feed deriveState() and
+// are surfaced as-is (undefined until the first SDK event lands).
+let currentQuery: Query | undefined;
+let lastEventTs: string | undefined;
+let lastEventType: string | undefined;
 
 // Backstop for errors that escape runAgent() itself (e.g. logEvent()
 // throwing mid-handler) rather than the SDK call it supervises. runAgent's
@@ -87,12 +101,19 @@ runAgent({
       WORKSPACE,
       (event) => {
         logEvent("sdk-event", event);
+        lastEventTs = new Date().toISOString();
+        lastEventType = event.type;
       },
       CLAUDE_PATH,
       resume,
       role,
       model,
-    ),
+      (q) => {
+        currentQuery = q;
+      },
+    ).finally(() => {
+      currentQuery = undefined;
+    }),
   resumeId: resumeID,
   log,
   exit: process.exit,
@@ -125,6 +146,26 @@ const server = Bun.serve({
 
     if (req.method === "GET" && url.pathname === "/health") {
       return Response.json({ ok: true, session: SESSION_ID });
+    }
+
+    if (req.method === "POST" && url.pathname === "/interrupt") {
+      if (!currentQuery) {
+        return Response.json({ ok: false, error: "no active task" }, { status: 409 });
+      }
+      await currentQuery.interrupt();
+      logEvent("interrupt", { source: "control-port" });
+      return Response.json({ ok: true });
+    }
+
+    if (req.method === "GET" && url.pathname === "/status") {
+      return Response.json({
+        ok: true,
+        session: SESSION_ID,
+        state: deriveState(lastEventType),
+        lastEventTs,
+        lastEventType,
+        queueDepth: prompts.depth(),
+      });
     }
 
     return new Response("not found", { status: 404 });

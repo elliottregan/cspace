@@ -77,6 +77,7 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 
 		// Supervisor
 		newSendCmd(),
+		newAgentCmd(),
 
 		// Project Setup
 		newKeychainCmd(),

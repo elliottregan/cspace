@@ -31,6 +31,15 @@ export class PromptStream implements AsyncIterable<string> {
     this.waiters.length = 0;
   }
 
+  // Number of turns pushed but not yet delivered to a consumer — i.e. the
+  // backlog GET /status reports as queueDepth (main.ts). A consumer
+  // suspended in next() awaiting a push (registered in `waiters`) does NOT
+  // count: it has no undelivered turn, just an open request for the next
+  // one.
+  depth(): number {
+    return this.queue.length;
+  }
+
   [Symbol.asyncIterator](): AsyncIterator<string> {
     return {
       next: (): Promise<IteratorResult<string>> => {

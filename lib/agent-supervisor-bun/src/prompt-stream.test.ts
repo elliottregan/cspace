@@ -85,4 +85,36 @@ describe("PromptStream", () => {
     ps.close();
     void pendingA; // never resolves; left pending intentionally.
   });
+
+  test("depth reports queued-but-undelivered turns for GET /status's queueDepth", async () => {
+    const ps = new PromptStream();
+    expect(ps.depth()).toBe(0);
+
+    ps.push("a");
+    ps.push("b");
+    expect(ps.depth()).toBe(2);
+
+    const it = ps[Symbol.asyncIterator]();
+    await it.next(); // consumes "a"
+    expect(ps.depth()).toBe(1);
+
+    await it.next(); // consumes "b"
+    expect(ps.depth()).toBe(0);
+
+    ps.close();
+  });
+
+  test("depth stays 0 while a consumer is suspended waiting for a push", async () => {
+    const ps = new PromptStream();
+    const it = ps[Symbol.asyncIterator]();
+    const pending = it.next(); // suspends: nothing queued yet
+
+    expect(ps.depth()).toBe(0);
+
+    ps.push("delayed");
+    await pending;
+    expect(ps.depth()).toBe(0);
+
+    ps.close();
+  });
 });

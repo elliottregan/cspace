@@ -1,4 +1,4 @@
-import { query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { query, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { PromptStream } from "./prompt-stream";
 
 export type EventSink = (event: SDKMessage) => void;
@@ -30,6 +30,13 @@ export async function runClaude(
   resumeSessionID?: string,
   role?: string,
   model?: string,
+  // Invoked with the live SDK query handle BEFORE iteration starts, so a
+  // caller (main.ts) can stash it for steering (POST /interrupt ->
+  // handle.interrupt()). Fires once per runClaude() call, including each
+  // fresh-session retry (run-agent.ts) — the caller is responsible for
+  // replacing its stored handle on every invocation and clearing it when
+  // that invocation's promise settles.
+  onQuery?: (q: Query) => void,
 ): Promise<void> {
   // Append the role to Claude Code's own system prompt via the preset+append
   // form — NEVER replace it, so tool behavior and safety framing stay intact.
@@ -100,6 +107,8 @@ export async function runClaude(
       ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
     },
   });
+
+  onQuery?.(stream);
 
   for await (const event of stream) {
     onEvent(event);
