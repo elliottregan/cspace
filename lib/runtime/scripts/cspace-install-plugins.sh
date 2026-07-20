@@ -38,11 +38,11 @@ echo "[$(date -Iseconds)] cspace-install-plugins: start"
 run_bounded() {
     local desc="$1"
     shift
-    if timeout 120 "$@"; then
+    if timeout -k 10 120 "$@"; then
         return 0
     fi
     echo "[install-plugins] retrying ${desc} after timeout/failure"
-    if timeout 120 "$@"; then
+    if timeout -k 10 120 "$@"; then
         return 0
     fi
     echo "[install-plugins] WARNING: ${desc} failed after retry; continuing without ${desc}"

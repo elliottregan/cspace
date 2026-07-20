@@ -556,6 +556,45 @@ func TestWaitSupervisorHealthSendsBearerToken(t *testing.T) {
 	}
 }
 
+// TestWaitSupervisorHealthWrongTokenFails is a regression guard for 6c47b05
+// (send the bearer token as an Authorization HEADER, not a URL query
+// parameter). The server here 401s any request whose Authorization header
+// isn't exactly "Bearer tok123" — so a wrong token must fail, and the
+// returned error must name neither the wrong token sent nor the token the
+// server actually wanted.
+//
+// Note on evidence: this is a regression guard, not a TDD red/green pair —
+// production code was not reverted to manufacture a failing run, since
+// that would mean mutating cmd_up.go just for the test. The failing
+// counterfactual is already on record in the Task 6 fix history instead:
+// the pre-6c47b05 implementation folded the token into the URL query
+// string, which this handler never inspects, so it would have 401'd (and
+// this test would have failed the same way) regardless of which token was
+// sent.
+func TestWaitSupervisorHealthWrongTokenFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer tok123" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	statusPath := filepath.Join(t.TempDir(), "cspace-init.status") // never written
+
+	err := waitSupervisorHealth(context.Background(), srv.URL+"/health", "wrongtok", statusPath, 300*time.Millisecond)
+	if err == nil {
+		t.Fatal("waitSupervisorHealth: expected an error for a wrong token, got nil")
+	}
+	if strings.Contains(err.Error(), "wrongtok") {
+		t.Errorf("expected error not to contain the wrong token sent, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "tok123") {
+		t.Errorf("expected error not to contain the server's accepted token, got: %v", err)
+	}
+}
+
 // TestWaitSupervisorHealthTimeoutErrorOmitsToken covers the security
 // requirement that the bearer token never rides in a URL or error string
 // that could end up in logs: even with a real token in play, the returned
