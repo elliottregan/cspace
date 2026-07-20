@@ -3,6 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -500,5 +504,126 @@ func TestValidateSandboxName(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestWaitSupervisorHealthHealthyReturnsQuickly covers the happy path: a
+// /health endpoint that answers 200 immediately should return nil well
+// before the budget elapses — the phase-aware bookkeeping must not add
+// latency to a boot that isn't stuck.
+func TestWaitSupervisorHealthHealthyReturnsQuickly(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	statusPath := filepath.Join(t.TempDir(), "cspace-init.status")
+
+	start := time.Now()
+	err := waitSupervisorHealth(context.Background(), srv.URL+"/health", statusPath, 5*time.Second)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("waitSupervisorHealth: unexpected error: %v", err)
+	}
+	if elapsed > 1*time.Second {
+		t.Errorf("expected a healthy endpoint to return quickly, took %s", elapsed)
+	}
+}
+
+// TestWaitSupervisorHealthErrorNamesStuckPhase covers a boot that never
+// becomes healthy while the status file sits on one unchanging phase: the
+// timeout error must name that phase so the console blames the actual
+// bottleneck instead of reporting a blind timeout.
+func TestWaitSupervisorHealthErrorNamesStuckPhase(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	statusPath := filepath.Join(t.TempDir(), "cspace-init.status")
+	if err := os.WriteFile(statusPath, []byte("plugins"), 0o644); err != nil {
+		t.Fatalf("write status file: %v", err)
+	}
+
+	err := waitSupervisorHealth(context.Background(), srv.URL+"/health", statusPath, 300*time.Millisecond)
+	if err == nil {
+		t.Fatal("waitSupervisorHealth: expected an error, got nil")
+	}
+	if !strings.Contains(err.Error(), `"plugins"`) {
+		t.Errorf("expected error to name the stuck phase %q, got: %v", "plugins", err)
+	}
+}
+
+// TestWaitSupervisorHealthExtendsBudgetOnPhaseProgress covers the core
+// phase-aware behavior: as long as the status file keeps advancing to a new
+// value faster than the budget, the wait must keep extending past a single
+// budget window rather than giving up — this is what protects a slow but
+// still-progressing plugin install (cs-finding
+// 2026-07-19-plugins-marketplace-add-can-stall-boot-past-health-wait) from a
+// false timeout.
+func TestWaitSupervisorHealthExtendsBudgetOnPhaseProgress(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	statusPath := filepath.Join(t.TempDir(), "cspace-init.status")
+
+	const budget = 600 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+
+	// Advance the phase every ~200ms — faster than the 600ms budget — for
+	// as long as the wait (and the surrounding ctx) is alive.
+	go func() {
+		n := 0
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(200 * time.Millisecond):
+				n++
+				_ = os.WriteFile(statusPath, []byte(fmt.Sprintf("phase-%d", n)), 0o644)
+			}
+		}
+	}()
+
+	start := time.Now()
+	err := waitSupervisorHealth(ctx, srv.URL+"/health", statusPath, budget)
+	elapsed := time.Since(start)
+
+	if elapsed <= 2*budget {
+		t.Fatalf("expected the wait to outlive a single %s budget by extending on phase progress, only ran %s (err=%v)", budget, elapsed, err)
+	}
+	if err == nil {
+		t.Fatal("waitSupervisorHealth: expected an error once ctx is done, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected ctx deadline exceeded (proving no premature stuck-phase timeout fired first), got: %v", err)
+	}
+}
+
+// TestWaitSupervisorHealthNoStatusFilePlainTimeout covers a boot with no
+// status file at all (e.g. the entrypoint hasn't written one yet, or the
+// mount isn't there): the error must fall back to the plain timeout message
+// rather than claiming a phase it never observed.
+func TestWaitSupervisorHealthNoStatusFilePlainTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	statusPath := filepath.Join(t.TempDir(), "cspace-init.status") // never written
+
+	err := waitSupervisorHealth(context.Background(), srv.URL+"/health", statusPath, 200*time.Millisecond)
+	if err == nil {
+		t.Fatal("waitSupervisorHealth: expected an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "did not respond") {
+		t.Errorf("expected plain timeout message, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "stuck in") {
+		t.Errorf("expected no phase claim when no status file was ever seen, got: %v", err)
 	}
 }

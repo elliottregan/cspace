@@ -35,7 +35,7 @@ const (
 	PhaseSidecars                    // sidecars.Up — compose sidecars (convex-backend, etc.)
 	PhaseBoot                        // substrate.Run + waitForIP for the workspace
 	PhasePlugins                     // entrypoint installing claude plugins
-	PhaseSupervisor                  // waitForHealth
+	PhaseSupervisor                  // waitSupervisorHealth
 	PhaseReady                       // MarkReady, terminal success
 )
 

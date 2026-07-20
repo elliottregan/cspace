@@ -26,6 +26,29 @@ exec > >(tee -a "$LOG") 2>&1
 
 echo "[$(date -Iseconds)] cspace-install-plugins: start"
 
+# Run a `claude plugins ...` invocation with a bounded timeout and one
+# retry. These calls fetch from GitHub (marketplace add) or a marketplace's
+# backing repo (plugin install) and can hang indefinitely on a slow/stalled
+# network — see cs-finding
+# 2026-07-19-plugins-marketplace-add-can-stall-boot-past-health-wait, where
+# an unbounded `marketplace add` held up boot for minutes. Plugins are an
+# enhancement, not boot-critical: a persistent failure (timeout or exit
+# error, twice in a row) logs a warning and lets the script continue rather
+# than stalling — or failing — the sandbox boot.
+run_bounded() {
+    local desc="$1"
+    shift
+    if timeout 120 "$@"; then
+        return 0
+    fi
+    echo "[install-plugins] retrying ${desc} after timeout/failure"
+    if timeout 120 "$@"; then
+        return 0
+    fi
+    echo "[install-plugins] WARNING: ${desc} failed after retry; continuing without ${desc}"
+    return 0
+}
+
 if ! command -v jq >/dev/null 2>&1; then
     echo "  jq missing; cannot parse plugin config — skipping"
     exit 0
@@ -58,10 +81,10 @@ CSPACE_BROWSER_MARKET_DIR="${CSPACE_BROWSER_MARKET_DIR:-/opt/cspace/plugins}"
 if [ -n "${CSPACE_BROWSER_CDP_URL:-}" ] && [ -f "${CSPACE_BROWSER_MARKET_DIR}/.claude-plugin/marketplace.json" ]; then
     if ! claude plugins marketplace list 2>/dev/null | grep -q "^[ *]*cspace\b"; then
         echo "[install-plugins] adding image-local marketplace cspace from ${CSPACE_BROWSER_MARKET_DIR}"
-        claude plugins marketplace add "${CSPACE_BROWSER_MARKET_DIR}" || true
+        run_bounded "marketplace cspace" claude plugins marketplace add "${CSPACE_BROWSER_MARKET_DIR}"
     fi
     echo "[install-plugins] installing cspace-browser@cspace"
-    claude plugins install --scope user "cspace-browser@cspace" || true
+    run_bounded "cspace-browser@cspace plugin" claude plugins install --scope user "cspace-browser@cspace"
 fi
 # --- end cspace-browser ---
 
@@ -102,7 +125,8 @@ fi
 
 # Group by marketplace so each is registered exactly once before
 # installing its plugins. Non-official marketplaces are guessed as
-# anthropics/<name> on GitHub; failures are silent.
+# anthropics/<name> on GitHub; failures are bounded + warned (run_bounded),
+# not silent.
 declare -A MARKETPLACES=()
 for entry in "${!WANT[@]}"; do
     MARKETPLACES["${entry##*@}"]=1
@@ -117,7 +141,7 @@ for marketplace in "${!MARKETPLACES[@]}"; do
         *)                repo="${marketplace}" ;;
     esac
     echo "[install-plugins] adding marketplace ${marketplace} from ${repo}"
-    claude plugins marketplace add "$repo" || true
+    run_bounded "marketplace ${marketplace}" claude plugins marketplace add "$repo"
 done
 
 # Install. claude plugins install is idempotent — already-installed
@@ -134,7 +158,7 @@ for entry in "${!WANT[@]}"; do
     short="${entry%@*}"  # strip @marketplace for compact display
     echo "plugins:${i}/${TOTAL}:${short}" > /sessions/cspace-init.status 2>/dev/null || true
     echo "[install-plugins] installing (${i}/${TOTAL}): ${entry}"
-    claude plugins install --scope user "$entry" || true
+    run_bounded "plugin ${entry}" claude plugins install --scope user "$entry"
 done
 
 echo "[$(date -Iseconds)] cspace-install-plugins: done (${TOTAL} plugins requested)"

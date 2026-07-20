@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -901,7 +902,11 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// and able to serve cspace send. Only then do we flip the entry
 			// to state=ready.
 			rep.Phase(overlay.PhaseSupervisor)
-			healthURL := fmt.Sprintf("%s/health", ctlURL)
+			// Token rides along in the URL (not a separate parameter) so
+			// waitSupervisorHealth stays testable against a bare
+			// httptest.Server URL with no auth of its own — see its doc
+			// comment.
+			healthURL := fmt.Sprintf("%s/health?token=%s", ctlURL, url.QueryEscape(token))
 			// 60s rather than 10s: the entrypoint installs Claude Code
 			// plugins declared in /workspace/.claude/settings.json
 			// before exec'ing the supervisor. A project with a dozen
@@ -909,7 +914,16 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// closer to 5s/plugin cold. 60s is enough for ~12 plugins
 			// cold or many more warm. The supervisor itself responds
 			// in <1 s once it actually starts.
-			if hErr := waitForHealth(ctx, healthURL, token, 60*time.Second); hErr != nil {
+			//
+			// This is now a PER-PHASE budget, not a hard ceiling:
+			// waitSupervisorHealth resets it whenever
+			// /sessions/cspace-init.status shows a new phase value between
+			// polls, so a slow-but-progressing plugin install (cs-finding
+			// 2026-07-19-plugins-marketplace-add-can-stall-boot-past-health-wait)
+			// doesn't trip a false "/health did not respond" failure while
+			// the sandbox is actually still working — only a genuinely
+			// stuck phase does, and the error names it.
+			if hErr := waitSupervisorHealth(ctx, healthURL, statusFile, 60*time.Second); hErr != nil {
 				err = fmt.Errorf("waiting for sandbox /health: %w", hErr)
 				return err
 			}
@@ -1058,26 +1072,61 @@ func syncAgentRole(sessionsHostDir, hostPath string) error {
 	return nil
 }
 
-// waitForHealth polls a /health URL with the supervisor's bearer token until
-// it returns 200 or the deadline passes. Used by cspace up to gate the
-// state=starting → state=ready transition on a real readiness signal: the
-// Bun supervisor process being up and able to serve requests.
+// waitSupervisorHealth polls /health until it returns 200 or budget's
+// patience runs out — but the patience budget is phase-aware, not a hard
+// ceiling. Used by cspace up to gate the state=starting → state=ready
+// transition on a real readiness signal: the Bun supervisor process being up
+// and able to serve requests.
+//
+// statusPath is the HOST-side path to <sessionsHostDir>/cspace-init.status
+// (bind-mounted into the sandbox at /sessions/cspace-init.status, where
+// cspace-entrypoint.sh and cspace-install-plugins.sh write single-word boot
+// phases). Each poll also reads statusPath, best-effort. While its content
+// CHANGES between polls — visible progress, even though this particular
+// health check hasn't succeeded yet — the budget resets from that moment.
+// Only once budget elapses with no phase change does this give up, and the
+// resulting error names the last-seen phase so the console blames the
+// actual bottleneck instead of reporting a blind timeout. See cs-finding
+// 2026-07-19-plugins-marketplace-add-can-stall-boot-past-health-wait: an
+// unbounded `claude plugins marketplace add` held the "plugins" phase for
+// minutes on a slow GitHub fetch while the sandbox went on to boot fine —
+// `cspace up` reported a false "/health did not respond" failure because
+// the old fixed-budget wait couldn't distinguish "stalled" from "still
+// working". When no status file is ever seen (or it's empty throughout),
+// the error falls back to the plain timeout message.
+//
+// healthURL may carry the supervisor's bearer token as a "token" query
+// parameter (e.g. "http://ip:port/health?token=..."); when present it's
+// sent as an Authorization: Bearer header, since the supervisor requires
+// auth on every route including /health. Keeping the token folded into the
+// URL string — rather than a separate parameter — lets tests exercise this
+// function against a bare httptest.Server URL that expects no auth at all.
 //
 // The 1s per-request timeout keeps the loop responsive on transient network
 // blips during boot. ctx cancellation short-circuits the poll cleanly.
-func waitForHealth(ctx context.Context, url, token string, max time.Duration) error {
-	deadline := time.Now().Add(max)
+func waitSupervisorHealth(ctx context.Context, healthURL, statusPath string, budget time.Duration) error {
 	client := &http.Client{Timeout: 1 * time.Second}
-	for time.Now().Before(deadline) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			return err
+	authHeader := ""
+	if u, uerr := url.Parse(healthURL); uerr == nil {
+		if token := u.Query().Get("token"); token != "" {
+			authHeader = "Bearer " + token
 		}
-		if token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	deadline := time.Now().Add(budget)
+	var lastPhase string
+	sawStatus := false
+
+	for {
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		if reqErr != nil {
+			return reqErr
 		}
-		resp, err := client.Do(req)
-		if err == nil {
+		if authHeader != "" {
+			req.Header.Set("Authorization", authHeader)
+		}
+		resp, doErr := client.Do(req)
+		if doErr == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				return nil
@@ -1086,13 +1135,28 @@ func waitForHealth(ctx context.Context, url, token string, max time.Duration) er
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+
+		if data, readErr := os.ReadFile(statusPath); readErr == nil {
+			sawStatus = true
+			if phase := strings.TrimSpace(string(data)); phase != lastPhase {
+				lastPhase = phase
+				deadline = time.Now().Add(budget)
+			}
+		}
+
+		if time.Now().After(deadline) {
+			if sawStatus && lastPhase != "" {
+				return fmt.Errorf("sandbox stuck in %q phase after %s (see /sessions/cspace-init.status in the sandbox)", lastPhase, budget)
+			}
+			return fmt.Errorf("/health did not respond in %s", budget)
+		}
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
-	return fmt.Errorf("/health did not respond in %s", max)
 }
 
 // pollInitStatus watches the entrypoint's status file and emits
