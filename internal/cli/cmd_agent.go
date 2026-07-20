@@ -69,12 +69,13 @@ func newAgentInterruptCmd() *cobra.Command {
 // agentStatusResponse mirrors GET /status's success body
 // (lib/agent-supervisor-bun/src/main.ts).
 type agentStatusResponse struct {
-	OK            bool   `json:"ok"`
-	Session       string `json:"session"`
-	State         string `json:"state"`
-	LastEventTs   string `json:"lastEventTs"`
-	LastEventType string `json:"lastEventType"`
-	QueueDepth    int    `json:"queueDepth"`
+	OK               bool   `json:"ok"`
+	Session          string `json:"session"`
+	State            string `json:"state"`
+	LastEventTs      string `json:"lastEventTs"`
+	LastEventType    string `json:"lastEventType"`
+	LastEventSubtype string `json:"lastEventSubtype"`
+	QueueDepth       int    `json:"queueDepth"`
 }
 
 // runAgentStatus resolves the sandbox's control URL + token (resolveEntry,
@@ -109,11 +110,12 @@ func runAgentStatus(ctx context.Context, out io.Writer, project, sandbox string)
 		return fmt.Errorf("decode status response: %w", err)
 	}
 
-	_, _ = fmt.Fprintf(out, "session:       %s\n", status.Session)
-	_, _ = fmt.Fprintf(out, "state:         %s\n", status.State)
-	_, _ = fmt.Fprintf(out, "lastEventTs:   %s\n", status.LastEventTs)
-	_, _ = fmt.Fprintf(out, "lastEventType: %s\n", status.LastEventType)
-	_, _ = fmt.Fprintf(out, "queueDepth:    %d\n", status.QueueDepth)
+	_, _ = fmt.Fprintf(out, "session:          %s\n", status.Session)
+	_, _ = fmt.Fprintf(out, "state:            %s\n", status.State)
+	_, _ = fmt.Fprintf(out, "lastEventTs:      %s\n", status.LastEventTs)
+	_, _ = fmt.Fprintf(out, "lastEventType:    %s\n", status.LastEventType)
+	_, _ = fmt.Fprintf(out, "lastEventSubtype: %s\n", status.LastEventSubtype)
+	_, _ = fmt.Fprintf(out, "queueDepth:       %d\n", status.QueueDepth)
 	return nil
 }
 

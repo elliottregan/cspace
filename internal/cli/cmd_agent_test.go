@@ -28,12 +28,13 @@ func TestRunAgentStatusHostReadsLocalRegistry(t *testing.T) {
 		gotPath = req.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ok":            true,
-			"session":       "primary",
-			"state":         "working",
-			"lastEventTs":   "2026-07-19T00:00:00.000Z",
-			"lastEventType": "assistant",
-			"queueDepth":    2,
+			"ok":               true,
+			"session":          "primary",
+			"state":            "working",
+			"lastEventTs":      "2026-07-19T00:00:00.000Z",
+			"lastEventType":    "system",
+			"lastEventSubtype": "init",
+			"queueDepth":       2,
 		})
 	}))
 	t.Cleanup(srv.Close)
@@ -69,11 +70,12 @@ func TestRunAgentStatusHostReadsLocalRegistry(t *testing.T) {
 
 	s := out.String()
 	for _, want := range []string{
-		"session:       primary",
-		"state:         working",
-		"lastEventTs:   2026-07-19T00:00:00.000Z",
-		"lastEventType: assistant",
-		"queueDepth:    2",
+		"session:          primary",
+		"state:            working",
+		"lastEventTs:      2026-07-19T00:00:00.000Z",
+		"lastEventType:    system",
+		"lastEventSubtype: init",
+		"queueDepth:       2",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("output missing %q; got:\n%s", want, s)

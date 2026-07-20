@@ -45,6 +45,7 @@ const prompts = new PromptStream();
 let currentQuery: Query | undefined;
 let lastEventTs: string | undefined;
 let lastEventType: string | undefined;
+let lastEventSubtype: string | undefined;
 
 // Backstop for errors that escape runAgent() itself (e.g. logEvent()
 // throwing mid-handler) rather than the SDK call it supervises. runAgent's
@@ -104,6 +105,7 @@ runAgent({
         logEvent("sdk-event", event);
         lastEventTs = new Date().toISOString();
         lastEventType = event.type;
+        lastEventSubtype = "subtype" in event ? event.subtype : undefined;
       },
       CLAUDE_PATH,
       resume,
@@ -161,9 +163,10 @@ const server = Bun.serve({
       return Response.json({
         ok: true,
         session: SESSION_ID,
-        state: deriveState(lastEventType),
+        state: deriveState(lastEventType, lastEventSubtype),
         lastEventTs,
         lastEventType,
+        lastEventSubtype,
         queueDepth: prompts.depth(),
       });
     }

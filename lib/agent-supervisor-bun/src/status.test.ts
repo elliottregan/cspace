@@ -18,7 +18,19 @@ describe("deriveState", () => {
     expect(deriveState("user")).toBe("working");
   });
 
-  test("a system event (init/status, not a terminal marker) -> working", () => {
+  test("a system/init event (session start, no turn in flight) -> idle", () => {
+    expect(deriveState("system", "init")).toBe("idle");
+  });
+
+  test("a system/api_retry event (mid-turn API retry) -> working", () => {
+    expect(deriveState("system", "api_retry")).toBe("working");
+  });
+
+  test("a system/compact_boundary event (mid-turn compaction) -> working", () => {
+    expect(deriveState("system", "compact_boundary")).toBe("working");
+  });
+
+  test("a system event with no subtype recorded -> working", () => {
     expect(deriveState("system")).toBe("working");
   });
 
