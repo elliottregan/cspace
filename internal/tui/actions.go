@@ -23,3 +23,20 @@ type actionResultMsg struct {
 	label string
 	err   error
 }
+
+// Result builds the message an Actor returns to report an outcome. label is a
+// short verb; err is nil on success. Exported so out-of-package Actor
+// implementations (internal/cli) can construct the model's result message.
+func Result(label string, err error) tea.Msg { return actionResultMsg{label: label, err: err} }
+
+// ResultLabel/ResultErr expose an actionResultMsg for out-of-package tests.
+func ResultLabel(m tea.Msg) (string, bool) {
+	r, ok := m.(actionResultMsg)
+	return r.label, ok
+}
+func ResultErr(m tea.Msg) error {
+	if r, ok := m.(actionResultMsg); ok {
+		return r.err
+	}
+	return nil
+}
