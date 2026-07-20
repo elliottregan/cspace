@@ -32,7 +32,7 @@ const (
 	PhaseDaemon                      // ensureRegistryDaemon
 	PhaseClone                       // provisionClone
 	PhaseBrowserSidecar              // startBrowserSidecar (default ON; skipped with --no-browser, customizations.cspace.browser=false, or project-supplied CSPACE_BROWSER_CDP_URL)
-	PhaseSidecars                    // orchestrator.Up — compose sidecars (convex-backend, etc.)
+	PhaseSidecars                    // sidecars.Up — compose sidecars (convex-backend, etc.)
 	PhaseBoot                        // substrate.Run + waitForIP for the workspace
 	PhasePlugins                     // entrypoint installing claude plugins
 	PhaseSupervisor                  // waitForHealth

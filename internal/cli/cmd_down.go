@@ -133,7 +133,7 @@ Without it, exactly one <name> argument is required.`,
 	return cmd
 }
 
-// substrateDowner is a minimal substrate adapter for orchestrator.Down that only stops containers.
+// substrateDowner is a minimal substrate adapter for sidecars.Down that only stops containers.
 type substrateDowner struct {
 	adapter *applecontainer.Adapter
 }

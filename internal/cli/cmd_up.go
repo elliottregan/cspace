@@ -688,7 +688,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 
 			// Apply tmpfs mounts and named volumes declared on the workspace's
 			// own compose service (e.g. node_modules tmpfs, shared pnpm-store
-			// volume) to the workspace sandbox. orchestrator.Up handles these
+			// volume) to the workspace sandbox. sidecars.Up handles these
 			// for sidecars, but the workspace is spawned here.
 			if devcontainerPlan != nil && devcontainerPlan.Compose != nil {
 				if wsSvc, ok := devcontainerPlan.Compose.Services[devcontainerPlan.Service]; ok && wsSvc != nil {
@@ -1635,7 +1635,7 @@ func writeExtractedEnv(sessionsHostDir string, env map[string]string) error {
 	return os.WriteFile(dst, []byte(b.String()), 0o600)
 }
 
-// substrateRunner adapts *applecontainer.Adapter to the orchestrator.Substrate
+// substrateRunner adapts *applecontainer.Adapter to the sidecars.Substrate
 // interface. It bridges the orchestrator's ServiceSpec (compose-oriented) to
 // the substrate's RunSpec (sandbox-oriented). Sidecars use their own image's
 // entrypoint.
