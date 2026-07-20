@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { PromptStream } from "./prompt-stream";
 import { runClaude } from "./claude-runner";
 import { createEventLogger, resumeSessionId } from "./event-log";
+import { resolveRole } from "./role";
 import { runAgent } from "./run-agent";
 
 const SESSION_ID = "primary";
@@ -64,6 +65,21 @@ if (resumeID) {
   console.log(`cspace-supervisor: resuming session ${resumeID}`);
 }
 
+// Agent config surface (spec §2). Role: appended to the system prompt, never
+// replaces it. Model: the SDK `model` option when non-empty. Both are captured
+// here and threaded through runAgent's closure so they also reach the
+// fresh-session retry (run-agent.ts).
+const role = resolveRole();
+if (role) {
+  logEvent("agent-role", { bytes: role.length });
+  console.log(`cspace-supervisor: agent role loaded (${role.length} bytes)`);
+}
+const model = process.env.CSPACE_AGENT_MODEL || undefined;
+if (model) {
+  logEvent("agent-model", { model });
+  console.log(`cspace-supervisor: agent model = ${model}`);
+}
+
 runAgent({
   runClaude: (resume) =>
     runClaude(
@@ -74,6 +90,8 @@ runAgent({
       },
       CLAUDE_PATH,
       resume,
+      role,
+      model,
     ),
   resumeId: resumeID,
   log,

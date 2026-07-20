@@ -297,6 +297,77 @@ func TestWriteExtractedEnv(t *testing.T) {
 	}
 }
 
+// TestUpRoleFlagWritesSessionRoleFile verifies writeAgentRole copies the
+// host role file's content to <sessionsDir>/agent-role.md, and that a missing
+// source file fails with a clear error (so `cspace up --role` fails fast,
+// before any provisioning).
+func TestUpRoleFlagWritesSessionRoleFile(t *testing.T) {
+	t.Run("writes the host role file content to agent-role.md", func(t *testing.T) {
+		src := t.TempDir()
+		sessions := t.TempDir()
+		hostRole := filepath.Join(src, "my-role.md")
+		want := "You are the release captain.\nBe terse.\n"
+		if err := os.WriteFile(hostRole, []byte(want), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := writeAgentRole(sessions, hostRole); err != nil {
+			t.Fatalf("writeAgentRole: %v", err)
+		}
+
+		got, err := os.ReadFile(filepath.Join(sessions, "agent-role.md"))
+		if err != nil {
+			t.Fatalf("read agent-role.md: %v", err)
+		}
+		if string(got) != want {
+			t.Errorf("agent-role.md content = %q, want %q", string(got), want)
+		}
+	})
+
+	t.Run("missing source file returns a clear error naming the path", func(t *testing.T) {
+		sessions := t.TempDir()
+		missing := filepath.Join(t.TempDir(), "nope.md")
+
+		err := writeAgentRole(sessions, missing)
+		if err == nil {
+			t.Fatal("expected an error for a missing role file, got nil")
+		}
+		if !strings.Contains(err.Error(), missing) {
+			t.Errorf("error should name the missing path %q; got: %v", missing, err)
+		}
+		// The dest file must not exist when the source read failed.
+		if _, statErr := os.Stat(filepath.Join(sessions, "agent-role.md")); statErr == nil {
+			t.Error("agent-role.md should not be written when the source is unreadable")
+		}
+	})
+}
+
+// TestAgentModelEnvFromConfigAndFlag verifies the model precedence the
+// supervisor is handed: the --model flag wins over .cspace.json agent.model,
+// and both empty resolves to empty (so no CSPACE_AGENT_MODEL is set →
+// byte-identical query options to the pre-config-surface baseline).
+func TestAgentModelEnvFromConfigAndFlag(t *testing.T) {
+	cases := []struct {
+		name      string
+		flagModel string
+		cfgModel  string
+		want      string
+	}{
+		{"flag wins over config", "claude-opus-4-8", "claude-sonnet-4-6", "claude-opus-4-8"},
+		{"config used when flag empty", "", "claude-sonnet-4-6", "claude-sonnet-4-6"},
+		{"flag used when config empty", "claude-opus-4-8", "", "claude-opus-4-8"},
+		{"both empty resolves empty", "", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveAgentModel(tc.flagModel, tc.cfgModel); got != tc.want {
+				t.Errorf("resolveAgentModel(%q, %q) = %q, want %q",
+					tc.flagModel, tc.cfgModel, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestMaybeNudgeMissingDnsInstallFiresOnce verifies the dns-install nudge
 // prints on the first call, then stays silent on subsequent calls because
 // the sentinel file gates it.

@@ -43,6 +43,8 @@ func newUpCmd() *cobra.Command {
 	var noOverlay bool
 	var noAttach bool
 	var rebuildImage bool
+	var rolePath string
+	var model string
 	cmd := &cobra.Command{
 		Use:   "up [<name>]",
 		Short: "Launch a sandbox (Apple Container substrate)",
@@ -175,6 +177,28 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", warn)
 			}
 
+			// Sessions host dir (also mounted at /sessions below). Resolved
+			// here — before the overlay and any provisioning — so a bad --role
+			// path fails `up` fast with a clear error on the real terminal,
+			// rather than after cloning the workspace or booting the microVM.
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("user home dir: %w", err)
+			}
+			sessionsHostDir := filepath.Join(home, ".cspace", "sessions", project, name)
+			// Agent role (--role): resolve the host file now and stage its
+			// content at <sessionsHostDir>/agent-role.md, which the sandbox
+			// bind-mounts at /sessions/agent-role.md. The supervisor's
+			// resolveRole() reads it there and appends it to the system prompt.
+			if rolePath != "" {
+				if mkErr := os.MkdirAll(sessionsHostDir, 0o755); mkErr != nil {
+					return fmt.Errorf("create sessions dir: %w", mkErr)
+				}
+				if roleErr := writeAgentRole(sessionsHostDir, rolePath); roleErr != nil {
+					return roleErr
+				}
+			}
+
 			// Boot from here on: route in-flight chatter to a buffer if
 			// the planet overlay is going to run, so bubbletea isn't
 			// fighting other writes for the terminal. Buffer is flushed
@@ -252,6 +276,19 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// already called above before the overlay).
 			for k, v := range loaded {
 				env[k] = v
+			}
+
+			// Agent model: --model wins over .cspace.json agent.model. When
+			// non-empty it's delivered as CSPACE_AGENT_MODEL, which the
+			// supervisor passes to the SDK query's `model` option. Empty
+			// leaves the key unset → the SDK/CLI default model (byte-identical
+			// to the pre-config-surface behavior).
+			cfgModel := ""
+			if cfg != nil {
+				cfgModel = cfg.Agent.Model
+			}
+			if m := resolveAgentModel(model, cfgModel); m != "" {
+				env["CSPACE_AGENT_MODEL"] = m
 			}
 
 			// Devcontainer: load + validate if .devcontainer/devcontainer.json
@@ -566,11 +603,8 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// The first dir is mounted at /sessions; the second at
 			// /home/dev/.claude/projects/-workspace/. The "-workspace" name
 			// is Claude Code's mangled form of the cwd "/workspace".
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return fmt.Errorf("user home dir: %w", err)
-			}
-			sessionsHostDir := filepath.Join(home, ".cspace", "sessions", project, name)
+			// (home / sessionsHostDir were resolved earlier, before the
+			// overlay, so --role could fail fast.)
 			claudeProjectsHostDir := filepath.Join(sessionsHostDir, "claude-projects-workspace")
 			if err := os.MkdirAll(claudeProjectsHostDir, 0o755); err != nil {
 				return fmt.Errorf("create sessions dir: %w", err)
@@ -965,7 +999,40 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 		"don't drop into an interactive `claude` session after the sandbox is ready (auto-disabled when stdout is not a TTY)")
 	cmd.Flags().BoolVar(&rebuildImage, "rebuild", false,
 		"rebuild cspace:latest before launching if it was built by a different cspace version (otherwise you're prompted when the image is stale)")
+	cmd.Flags().StringVar(&rolePath, "role", "",
+		"host path to a role file whose content is appended to the agent's system prompt (staged at the sandbox's /sessions/agent-role.md; overrides the committed .cspace/agent.md convention). Read at up-time — a bad path fails before provisioning")
+	cmd.Flags().StringVar(&model, "model", "",
+		"Claude model the agent runs on, e.g. claude-opus-4-8 (overrides .cspace.json agent.model; empty uses the SDK/CLI default)")
 	return cmd
+}
+
+// resolveAgentModel returns the model the supervisor should run the agent on:
+// the --model flag wins over .cspace.json agent.model. Empty means "SDK/CLI
+// default" — the caller then leaves CSPACE_AGENT_MODEL unset, keeping the
+// supervisor's query options byte-identical to the pre-config-surface baseline.
+func resolveAgentModel(flagModel, cfgModel string) string {
+	if flagModel != "" {
+		return flagModel
+	}
+	return cfgModel
+}
+
+// writeAgentRole reads the role file at hostPath and stages its content at
+// <sessionsHostDir>/agent-role.md, which the sandbox bind-mounts at
+// /sessions/agent-role.md. The supervisor's resolveRole() reads it there and
+// appends it to the agent's system prompt. Called only for `cspace up --role`;
+// an unreadable source returns an error (naming the path) so `up` fails fast,
+// before any provisioning, and the destination is left unwritten.
+func writeAgentRole(sessionsHostDir, hostPath string) error {
+	content, err := os.ReadFile(hostPath)
+	if err != nil {
+		return fmt.Errorf("read --role file %q: %w", hostPath, err)
+	}
+	dst := filepath.Join(sessionsHostDir, "agent-role.md")
+	if err := os.WriteFile(dst, content, 0o644); err != nil {
+		return fmt.Errorf("write agent role to %q: %w", dst, err)
+	}
+	return nil
 }
 
 // waitForHealth polls a /health URL with the supervisor's bearer token until

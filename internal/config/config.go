@@ -33,6 +33,7 @@ type Config struct {
 	Services   string                 `json:"services"`
 	Resources  ResourcesConfig        `json:"resources,omitempty"`
 	Browser    BrowserConfig          `json:"browser,omitempty"`
+	Agent      AgentConfig            `json:"agent,omitempty"`
 
 	// ServiceURLs declares Traefik-routed project services whose URLs cspace
 	// should inject into the main container as env vars. Key is the subdomain
@@ -78,6 +79,16 @@ type FirewallConfig struct {
 type PluginsConfig struct {
 	Enabled bool     `json:"enabled"`
 	Install []string `json:"install"`
+}
+
+// AgentConfig configures the general-agent supervisor. This is the NEW,
+// consumed agent block (distinct from the dead specialized-agent `agent`
+// config removed in the same effort). Model selects the Claude model the
+// headless agent runs on; empty means the SDK/CLI default (byte-identical to
+// the pre-config-surface behavior). Delivered to the supervisor as
+// CSPACE_AGENT_MODEL and passed to the SDK query's `model` option when set.
+type AgentConfig struct {
+	Model string `json:"model,omitempty"`
 }
 
 // BrowserConfig controls the cspace browser sidecar topology. Shared is a

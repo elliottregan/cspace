@@ -28,7 +28,17 @@ export async function runClaude(
   onEvent: EventSink,
   pathToClaudeCodeExecutable?: string,
   resumeSessionID?: string,
+  role?: string,
+  model?: string,
 ): Promise<void> {
+  // Append the role to Claude Code's own system prompt via the preset+append
+  // form — NEVER replace it, so tool behavior and safety framing stay intact.
+  // Built once and reused across the fresh-session retry (run-agent.ts), which
+  // re-invokes this function with the same captured role/model.
+  const systemPrompt = role
+    ? ({ type: "preset", preset: "claude_code", append: role } as const)
+    : undefined;
+
   const stream = query({
     prompt: toUserMessages(prompts),
     options: {
@@ -38,6 +48,19 @@ export async function runClaude(
       // (lib/agent-supervisor/args.mjs) and is required for the agent to
       // actually USE its tools (Bash, Read, Write, Edit, etc.).
       permissionMode: "bypassPermissions",
+      // Load project-level settings (CLAUDE.md, .claude/settings.json) from
+      // cwd so the headless agent sees the same project instructions an
+      // interactive session does. Deliberately always-on (spec §2): this is
+      // the ONE query-option difference from the pre-config-surface baseline.
+      // 'project' is the minimal source that pulls in /workspace/CLAUDE.md.
+      settingSources: ["project"],
+      // Role file (cspace up --role or committed .cspace/agent.md), resolved
+      // by main.ts. Omitted entirely when no role is configured, keeping the
+      // options byte-identical to the baseline aside from settingSources.
+      ...(systemPrompt ? { systemPrompt } : {}),
+      // Model from CSPACE_AGENT_MODEL (.cspace.json agent.model / --model).
+      // Omitted when empty so the SDK/CLI default model is used.
+      ...(model ? { model } : {}),
       // Resume a prior session when main.ts found one in events.ndjson.
       // Restart-loop respawn, fresh cspace up, and cspace down +
       // cspace up cycles all hit this path uniformly — the supervisor
