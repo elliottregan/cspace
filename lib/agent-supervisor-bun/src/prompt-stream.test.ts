@@ -54,4 +54,35 @@ describe("PromptStream", () => {
     ps.close();
     expect(() => ps.push("late")).toThrow("PromptStream is closed");
   });
+
+  test("detach drops a dead consumer's waiter without resolving it; queued turns still reach the new consumer", async () => {
+    const ps = new PromptStream();
+
+    // Consumer A registers a waiter (queue is empty, so next() suspends).
+    const itA = ps[Symbol.asyncIterator]();
+    let aSettled = false;
+    const pendingA = itA.next().then((r) => {
+      aSettled = true;
+      return r;
+    });
+
+    // The old session dies; main.ts detaches before handing the stream to
+    // a fresh consumer.
+    ps.detach();
+
+    // Consumer B starts fresh and should receive newly pushed turns.
+    const itB = ps[Symbol.asyncIterator]();
+    const pendingB = itB.next();
+    ps.push("delivered-to-b");
+    const resultB = await pendingB;
+
+    expect(resultB).toEqual({ value: "delivered-to-b", done: false });
+
+    // Give the microtask queue a turn — A's promise must NOT have resolved.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(aSettled).toBe(false);
+
+    ps.close();
+    void pendingA; // never resolves; left pending intentionally.
+  });
 });

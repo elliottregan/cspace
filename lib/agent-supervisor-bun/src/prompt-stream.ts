@@ -20,6 +20,17 @@ export class PromptStream implements AsyncIterable<string> {
     this.waiters.length = 0;
   }
 
+  // detach drops any waiters registered by the current consumer WITHOUT
+  // resolving them — a dead consumer's next() promise simply never fires.
+  // Unlike close(), the stream itself stays open: queued-but-undelivered
+  // turns are preserved for whichever consumer starts iterating next
+  // (e.g. main.ts's fresh-session retry after a resume failure). Resolving
+  // those waiters instead (even with done:true) would incorrectly signal
+  // end-of-stream to an iterator that isn't actually finished with.
+  detach(): void {
+    this.waiters.length = 0;
+  }
+
   [Symbol.asyncIterator](): AsyncIterator<string> {
     return {
       next: (): Promise<IteratorResult<string>> => {

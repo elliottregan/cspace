@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { PromptStream } from "./prompt-stream";
 import { runClaude } from "./claude-runner";
 import { createEventLogger, resumeSessionId } from "./event-log";
+import { runAgent } from "./run-agent";
 
 const SESSION_ID = "primary";
 const SESSIONS_DIR = "/sessions";
@@ -29,59 +30,56 @@ const logEvent = createEventLogger({ path: eventLogPath, session: SESSION_ID });
 
 const prompts = new PromptStream();
 
+// Backstop for errors that escape runAgent() itself (e.g. logEvent()
+// throwing mid-handler) rather than the SDK call it supervises. runAgent's
+// own log/exit contract should make this unreachable in practice; if even
+// this throws, Bun's unhandled-rejection default still exits non-zero, so
+// the restart-loop wrapper respawns either way.
 function fatalSdkError(err: unknown): never {
-  logEvent("sdk-error", { error: String(err) });
-  console.error(`cspace-supervisor: fatal: SDK stream died: ${String(err)}`);
+  console.error(`cspace-supervisor: fatal: unexpected supervisor error: ${String(err)}`);
   process.exit(1);
 }
 
-// Liveness contract (spec §3, cs-finding 2026-07-16-supervisor-silent-death-
-// modes-and-fail-open-auth): a dead SDK stream must kill the process so the
-// restart-loop wrapper respawns a live agent — never log-and-linger behind a
-// healthy-looking /health. A rejection while resuming gets ONE retry with
-// resume unset (fresh session) so a stale session id can't wedge every
-// future restart. The retry deliberately does NOT re-scan events.ndjson —
-// that could pick up the same (or another) poisoned id and re-resume.
-async function runAgent(): Promise<void> {
-  const resumeID = resumeSessionId(eventLogPath);
-  if (resumeID) {
-    logEvent("supervisor-resume", { sessionId: resumeID });
-    console.log(`cspace-supervisor: resuming session ${resumeID}`);
-  }
-  try {
-    await runClaude(
-      prompts,
-      WORKSPACE,
-      (event) => {
-        logEvent("sdk-event", event);
-      },
-      CLAUDE_PATH,
-      resumeID,
-    );
-    return;
-  } catch (err) {
-    if (!resumeID) fatalSdkError(err);
-    logEvent("resume-failed", { sessionId: resumeID, error: String(err) });
+// console-visible companion to logEvent — see run-agent.ts for the actual
+// liveness contract (spec §3, cs-finding 2026-07-16-supervisor-silent-death-
+// modes-and-fail-open-auth) this drives.
+function log(kind: string, data: unknown): void {
+  logEvent(kind, data);
+  if (kind === "resume-failed") {
+    const { sessionId, error } = data as { sessionId: string; error: string };
     console.error(
-      `cspace-supervisor: resume of session ${resumeID} failed (${String(err)}); retrying with a fresh session`,
+      `cspace-supervisor: resume of session ${sessionId} failed (${error}); retrying with a fresh session`,
     );
-  }
-  try {
-    await runClaude(
-      prompts,
-      WORKSPACE,
-      (event) => {
-        logEvent("sdk-event", event);
-      },
-      CLAUDE_PATH,
-      undefined,
-    );
-  } catch (err) {
-    fatalSdkError(err);
+  } else if (kind === "sdk-error") {
+    const { error } = data as { error: string };
+    console.error(`cspace-supervisor: fatal: SDK stream died: ${error}`);
+  } else if (kind === "sdk-ended") {
+    console.error("cspace-supervisor: fatal: SDK stream ended without error (unexpected); exiting to respawn");
   }
 }
 
-runAgent().catch(fatalSdkError);
+const resumeID = resumeSessionId(eventLogPath);
+if (resumeID) {
+  logEvent("supervisor-resume", { sessionId: resumeID });
+  console.log(`cspace-supervisor: resuming session ${resumeID}`);
+}
+
+runAgent({
+  runClaude: (resume) =>
+    runClaude(
+      prompts,
+      WORKSPACE,
+      (event) => {
+        logEvent("sdk-event", event);
+      },
+      CLAUDE_PATH,
+      resume,
+    ),
+  resumeId: resumeID,
+  log,
+  exit: process.exit,
+  detach: () => prompts.detach(),
+}).catch(fatalSdkError);
 
 const server = Bun.serve({
   port: CONTROL_PORT,
