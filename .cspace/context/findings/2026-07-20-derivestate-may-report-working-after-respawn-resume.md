@@ -2,7 +2,7 @@
 title: deriveState may report "working" forever on an idle agent after a respawn-resume
 date: 2026-07-20
 kind: finding
-status: open
+status: resolved
 category: bug
 tags: supervisor, status, steering, resume
 ---
@@ -26,3 +26,13 @@ just-booted idle agent) and a kill-9 respawn-resume (same readings immediately
 after `supervisor-resume`). The state self-corrects after the first completed
 turn (`result` → `idle`). Fix as proposed: classify `system` events (at least
 subtype `init`) as idle markers in `deriveState`.
+
+### 2026-07-20T06:40:00Z — @agent — status: resolved
+Fixed in d1d4a1d. `deriveState` now takes the system-event subtype and
+classifies `system`/`init` (session start — fresh boot or respawn-resume,
+per sdk.d.ts SDKSystemMessage) as idle; mid-turn system subtypes
+(`api_retry`, `compact_boundary`) and subtype-less system events still read
+working. main.ts tracks `lastEventSubtype`, feeds it to deriveState, and
+reports it in GET /status; `cspace agent status` prints it. Takes effect in
+sandboxes on the next `cspace image build` — existing containers keep the
+old supervisor until recreated.
