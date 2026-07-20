@@ -21,3 +21,10 @@ The sandbox env map is assembled by ~8 sequential merge blocks inside `cmd_up.go
 ## Updates
 ### 2026-07-17T03:42:21Z — @agent — status: open
 filed from the 2026-07-16 hardening survey
+
+### 2026-07-20T05:30:00Z — @agent — status: open
+Scope grew: the general-agent branch added `CSPACE_AGENT_MODEL` (cmd_up.go, set
+before the compose-env/containerEnv/`--env` merges), joining the comment-ordered
+key set — a project env file declaring `CSPACE_AGENT_MODEL` silently clobbers
+`--model`. The branch did not worsen credential ordering, but the resolver
+extraction this finding proposes should include this key when it lands.

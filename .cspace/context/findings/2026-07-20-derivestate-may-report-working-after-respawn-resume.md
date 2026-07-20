@@ -1,0 +1,19 @@
+---
+title: deriveState may report "working" forever on an idle agent after a respawn-resume
+date: 2026-07-20
+kind: finding
+status: open
+category: bug
+tags: supervisor, status, steering, resume
+---
+
+## Summary
+`deriveState` (lib/agent-supervisor-bun/src/status.ts) treats only `undefined` and `"result"` as idle. Suspected gap (flagged by the final whole-branch review, not yet verified live): after a supervisor respawn with resume, the SDK emits a `system`/`init` event before any user prompt — `lastEventType` becomes `"system"`, so an agent that is actually idle reports `working` until its first real `result`. A coordinator polling `cspace agent status` for idle would wait forever.
+
+## Details
+- Verification plan: in a live sandbox, kill -9 the supervisor, let the loop respawn+resume, then `cspace agent status` before sending anything — `working` confirms the bug.
+- Fix direction if confirmed: classify `system` events (at least subtype `init`) as idle markers in `deriveState`; keep everything else working.
+
+## Updates
+### 2026-07-20T05:30:00Z — @agent — status: open
+filed from the general-agent branch's final whole-branch review; to be verified during the rc.39 live check
