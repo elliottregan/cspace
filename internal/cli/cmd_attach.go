@@ -45,9 +45,9 @@ hands-on work.`,
 // flow uninterrupted — there's no Go process between the terminal and
 // the `container exec` child to trap them.
 func attachInteractive(containerName string) error {
-	bin, err := exec.LookPath("container")
+	bin, argv, err := attachArgs(containerName)
 	if err != nil {
-		return fmt.Errorf("apple `container` CLI not on PATH: %w", err)
+		return err
 	}
 	// Clear the terminal before claude takes over so the user gets a
 	// clean screen instead of opening claude on top of their pre-
@@ -57,15 +57,25 @@ func attachInteractive(containerName string) error {
 	if isStdoutTTY() {
 		_, _ = os.Stdout.WriteString("\033c")
 	}
-	// --dangerously-skip-permissions matches the v0 default: sandboxes
-	// are isolated, so the per-tool confirmation prompts that protect
-	// host-shell users just get in the way. The supervisor's
-	// non-interactive runner already passes bypassPermissions; this
-	// makes the interactive path consistent.
-	args := []string{
+	return syscall.Exec(bin, argv, os.Environ())
+}
+
+// attachArgs resolves the container binary and builds the exec argv shared by
+// both attach paths (CLI syscall.Exec and TUI tea.ExecProcess), so they stay
+// identical. argv[0] is the literal "container" per exec convention.
+//
+// --dangerously-skip-permissions matches the v0 default: sandboxes are
+// isolated, so the per-tool confirmation prompts that protect host-shell
+// users just get in the way. The supervisor's non-interactive runner already
+// passes bypassPermissions; this makes the interactive path consistent.
+func attachArgs(containerName string) (bin string, argv []string, err error) {
+	bin, err = exec.LookPath("container")
+	if err != nil {
+		return "", nil, fmt.Errorf("apple `container` CLI not on PATH: %w", err)
+	}
+	argv = []string{
 		"container", "exec", "-it", containerName,
 		"claude", "--dangerously-skip-permissions",
 	}
-	env := os.Environ()
-	return syscall.Exec(bin, args, env)
+	return bin, argv, nil
 }

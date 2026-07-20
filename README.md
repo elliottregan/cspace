@@ -34,6 +34,7 @@ cspace ssh <name>                   Shell into instance
 cspace list                         List running instances
 cspace down <name>                  Destroy instance
 cspace down --all                   Destroy all project instances
+cspace tui                          Full-screen dashboard of all containers
 cspace self-update                  Update to latest version
 ```
 

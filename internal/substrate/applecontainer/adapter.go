@@ -29,6 +29,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/elliottregan/cspace/internal/substrate"
 )
@@ -441,6 +442,97 @@ func (a *Adapter) IP(ctx context.Context, name string) (string, error) {
 		return n.IPv4Address, nil
 	}
 	return "", fmt.Errorf("container %s has no IPv4 address", name)
+}
+
+// ContainerSummary is one row of `container ls --all --format json`, narrowed
+// to the fields the TUI renders. See adapter.go's package doc for the version
+// cspace tests against; a shape change gives the same drift error as IP().
+type ContainerSummary struct {
+	Name    string    // configuration.id
+	Image   string    // configuration.image.reference
+	State   string    // top-level status: "running" | "stopped" | ...
+	IP      string    // networks[0].ipv4Address, CIDR suffix stripped, "" if none
+	CPUs    int       // configuration.resources.cpus
+	MemoryB int64     // configuration.resources.memoryInBytes
+	Started time.Time // startedDate (CFAbsoluteTime) converted to wall time
+}
+
+// listRecord mirrors the nested `container ls --format json` shape.
+type listRecord struct {
+	StartedDate float64 `json:"startedDate"`
+	Status      string  `json:"status"`
+	Networks    []struct {
+		IPv4Address string `json:"ipv4Address"`
+	} `json:"networks"`
+	Configuration struct {
+		ID    string `json:"id"`
+		Image struct {
+			Reference string `json:"reference"`
+		} `json:"image"`
+		Resources struct {
+			CPUs        int   `json:"cpus"`
+			MemoryBytes int64 `json:"memoryInBytes"`
+		} `json:"resources"`
+	} `json:"configuration"`
+}
+
+// cfAbsoluteEpochOffset is the seconds between the Unix epoch (1970-01-01) and
+// the CoreFoundation absolute-time epoch (2001-01-01), both UTC.
+const cfAbsoluteEpochOffset = 978307200
+
+// cfAbsoluteToTime converts an Apple `startedDate` (CFAbsoluteTime, seconds
+// since 2001-01-01 UTC) to a Go time.Time.
+func cfAbsoluteToTime(f float64) time.Time {
+	sec := int64(f) + cfAbsoluteEpochOffset
+	nsec := int64((f - float64(int64(f))) * 1e9)
+	return time.Unix(sec, nsec)
+}
+
+// parseContainerList turns `container ls --format json` output into summaries.
+// Split out from List so it can be unit-tested with canned JSON, no CLI.
+func parseContainerList(jsonOutput string) ([]ContainerSummary, error) {
+	var records []listRecord
+	if err := json.Unmarshal([]byte(jsonOutput), &records); err != nil {
+		return nil, fmt.Errorf("parse `container ls --all --format json` output: %w "+
+			"(the Apple Container CLI's JSON shape may have changed; cspace tested "+
+			"with %s.x — run `container --version` and file an issue at "+
+			"https://github.com/elliottregan/cspace/issues if this version differs)",
+			err, supportedMinorVersion)
+	}
+	out := make([]ContainerSummary, 0, len(records))
+	for _, r := range records {
+		ip := ""
+		if len(r.Networks) > 0 {
+			ip = r.Networks[0].IPv4Address
+			if i := strings.IndexByte(ip, '/'); i >= 0 {
+				ip = ip[:i]
+			}
+		}
+		out = append(out, ContainerSummary{
+			Name:    r.Configuration.ID,
+			Image:   r.Configuration.Image.Reference,
+			State:   r.Status,
+			IP:      ip,
+			CPUs:    r.Configuration.Resources.CPUs,
+			MemoryB: r.Configuration.Resources.MemoryBytes,
+			Started: cfAbsoluteToTime(r.StartedDate),
+		})
+	}
+	return out, nil
+}
+
+// List returns every container the CLI reports (all states). The caller filters
+// to cspace-* / buildkit. Mirrors IP()'s shell-out + JSON-parse pattern.
+func (a *Adapter) List(ctx context.Context) ([]ContainerSummary, error) {
+	cmd := exec.CommandContext(ctx, "container", "ls", "--all", "--format", "json")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("container ls --all --format json: %w (stderr: %s)",
+			err, strings.TrimSpace(stderr.String()))
+	}
+	return parseContainerList(stdout.String())
 }
 
 // randSuffix returns a short hex suffix for unique test names.
