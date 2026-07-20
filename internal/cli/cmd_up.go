@@ -11,7 +11,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -902,11 +901,11 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// and able to serve cspace send. Only then do we flip the entry
 			// to state=ready.
 			rep.Phase(overlay.PhaseSupervisor)
-			// Token rides along in the URL (not a separate parameter) so
-			// waitSupervisorHealth stays testable against a bare
-			// httptest.Server URL with no auth of its own — see its doc
-			// comment.
-			healthURL := fmt.Sprintf("%s/health?token=%s", ctlURL, url.QueryEscape(token))
+			// token rides as a separate parameter, sent as an Authorization:
+			// Bearer header by waitSupervisorHealth — never folded into the
+			// URL, so it can't leak via logs or the timeout error text (see
+			// waitSupervisorHealth's doc comment).
+			healthURL := fmt.Sprintf("%s/health", ctlURL)
 			// 60s rather than 10s: the entrypoint installs Claude Code
 			// plugins declared in /workspace/.claude/settings.json
 			// before exec'ing the supervisor. A project with a dozen
@@ -923,7 +922,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// doesn't trip a false "/health did not respond" failure while
 			// the sandbox is actually still working — only a genuinely
 			// stuck phase does, and the error names it.
-			if hErr := waitSupervisorHealth(ctx, healthURL, statusFile, 60*time.Second); hErr != nil {
+			if hErr := waitSupervisorHealth(ctx, healthURL, token, statusFile, 60*time.Second); hErr != nil {
 				err = fmt.Errorf("waiting for sandbox /health: %w", hErr)
 				return err
 			}
@@ -1095,23 +1094,19 @@ func syncAgentRole(sessionsHostDir, hostPath string) error {
 // working". When no status file is ever seen (or it's empty throughout),
 // the error falls back to the plain timeout message.
 //
-// healthURL may carry the supervisor's bearer token as a "token" query
-// parameter (e.g. "http://ip:port/health?token=..."); when present it's
-// sent as an Authorization: Bearer header, since the supervisor requires
-// auth on every route including /health. Keeping the token folded into the
-// URL string — rather than a separate parameter — lets tests exercise this
-// function against a bare httptest.Server URL that expects no auth at all.
+// token is the supervisor's control-port bearer token. When non-empty it is
+// sent as an `Authorization: Bearer <token>` HEADER on every poll — the
+// supervisor (lib/agent-supervisor-bun/src/main.ts) checks only that header
+// on every route including /health, so a query-string token would never
+// authenticate and every real boot's health poll would 401 forever. token is
+// a separate parameter (never folded into healthURL) so it can't leak into
+// logs, proxy access logs, or error text; empty means "send no auth header"
+// (used by tests against a bare httptest.Server with no auth of its own).
 //
 // The 1s per-request timeout keeps the loop responsive on transient network
 // blips during boot. ctx cancellation short-circuits the poll cleanly.
-func waitSupervisorHealth(ctx context.Context, healthURL, statusPath string, budget time.Duration) error {
+func waitSupervisorHealth(ctx context.Context, healthURL, token, statusPath string, budget time.Duration) error {
 	client := &http.Client{Timeout: 1 * time.Second}
-	authHeader := ""
-	if u, uerr := url.Parse(healthURL); uerr == nil {
-		if token := u.Query().Get("token"); token != "" {
-			authHeader = "Bearer " + token
-		}
-	}
 
 	deadline := time.Now().Add(budget)
 	var lastPhase string
@@ -1122,8 +1117,8 @@ func waitSupervisorHealth(ctx context.Context, healthURL, statusPath string, bud
 		if reqErr != nil {
 			return reqErr
 		}
-		if authHeader != "" {
-			req.Header.Set("Authorization", authHeader)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
 		}
 		resp, doErr := client.Do(req)
 		if doErr == nil {

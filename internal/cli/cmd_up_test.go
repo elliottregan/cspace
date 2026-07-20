@@ -520,7 +520,7 @@ func TestWaitSupervisorHealthHealthyReturnsQuickly(t *testing.T) {
 	statusPath := filepath.Join(t.TempDir(), "cspace-init.status")
 
 	start := time.Now()
-	err := waitSupervisorHealth(context.Background(), srv.URL+"/health", statusPath, 5*time.Second)
+	err := waitSupervisorHealth(context.Background(), srv.URL+"/health", "", statusPath, 5*time.Second)
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -528,6 +528,53 @@ func TestWaitSupervisorHealthHealthyReturnsQuickly(t *testing.T) {
 	}
 	if elapsed > 1*time.Second {
 		t.Errorf("expected a healthy endpoint to return quickly, took %s", elapsed)
+	}
+}
+
+// TestWaitSupervisorHealthSendsBearerToken covers the real auth contract the
+// supervisor enforces (lib/agent-supervisor-bun/src/main.ts): every route,
+// including /health, requires an `Authorization: Bearer <token>` HEADER — a
+// query-string token authenticates nothing there. A regression here (e.g.
+// reverting to folding the token into the URL instead of setting the header)
+// means every real boot's health poll 401s forever and `cspace up` always
+// times out waiting for a supervisor that is actually already up.
+func TestWaitSupervisorHealthSendsBearerToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer tok123" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	statusPath := filepath.Join(t.TempDir(), "cspace-init.status")
+
+	err := waitSupervisorHealth(context.Background(), srv.URL+"/health", "tok123", statusPath, 5*time.Second)
+	if err != nil {
+		t.Fatalf("waitSupervisorHealth: unexpected error: %v", err)
+	}
+}
+
+// TestWaitSupervisorHealthTimeoutErrorOmitsToken covers the security
+// requirement that the bearer token never rides in a URL or error string
+// that could end up in logs: even with a real token in play, the returned
+// timeout error text must not contain it.
+func TestWaitSupervisorHealthTimeoutErrorOmitsToken(t *testing.T) {
+	const token = "super-secret-token-xyz"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	statusPath := filepath.Join(t.TempDir(), "cspace-init.status") // never written
+
+	err := waitSupervisorHealth(context.Background(), srv.URL+"/health", token, statusPath, 200*time.Millisecond)
+	if err == nil {
+		t.Fatal("waitSupervisorHealth: expected an error, got nil")
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Errorf("expected timeout error not to contain the bearer token, got: %v", err)
 	}
 }
 
@@ -546,7 +593,7 @@ func TestWaitSupervisorHealthErrorNamesStuckPhase(t *testing.T) {
 		t.Fatalf("write status file: %v", err)
 	}
 
-	err := waitSupervisorHealth(context.Background(), srv.URL+"/health", statusPath, 300*time.Millisecond)
+	err := waitSupervisorHealth(context.Background(), srv.URL+"/health", "", statusPath, 300*time.Millisecond)
 	if err == nil {
 		t.Fatal("waitSupervisorHealth: expected an error, got nil")
 	}
@@ -590,7 +637,7 @@ func TestWaitSupervisorHealthExtendsBudgetOnPhaseProgress(t *testing.T) {
 	}()
 
 	start := time.Now()
-	err := waitSupervisorHealth(ctx, srv.URL+"/health", statusPath, budget)
+	err := waitSupervisorHealth(ctx, srv.URL+"/health", "", statusPath, budget)
 	elapsed := time.Since(start)
 
 	if elapsed <= 2*budget {
@@ -616,7 +663,7 @@ func TestWaitSupervisorHealthNoStatusFilePlainTimeout(t *testing.T) {
 
 	statusPath := filepath.Join(t.TempDir(), "cspace-init.status") // never written
 
-	err := waitSupervisorHealth(context.Background(), srv.URL+"/health", statusPath, 200*time.Millisecond)
+	err := waitSupervisorHealth(context.Background(), srv.URL+"/health", "", statusPath, 200*time.Millisecond)
 	if err == nil {
 		t.Fatal("waitSupervisorHealth: expected an error, got nil")
 	}
