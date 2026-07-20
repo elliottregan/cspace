@@ -58,6 +58,21 @@ func stateGlyph(r Row) string {
 	}
 }
 
+// stateLabel is the short status word a row prints, derived from its State so a
+// stopped/degraded sidecar, browser, or system container is not mislabeled.
+func stateLabel(r Row) string {
+	switch r.State {
+	case StateRunning:
+		return "running"
+	case StateDegraded:
+		return "degraded"
+	case StateBooting:
+		return "booting"
+	default:
+		return "stopped"
+	}
+}
+
 func (m Model) View() string {
 	if m.width == 0 {
 		return "loading…"
@@ -139,13 +154,13 @@ func renderRow(r Row) string {
 			stateGlyph(r), r.Name, agent, r.IP, formatMemory(r.MemoryB), formatUptime(r.Uptime))
 	case RowSidecar:
 		return styleDim.Render(fmt.Sprintf("  ├ %-16s %-9s %-15s %s",
-			r.Name, "running", r.IP, formatMemory(r.MemoryB)))
+			r.Name, stateLabel(r), r.IP, formatMemory(r.MemoryB)))
 	case RowBrowser:
 		return fmt.Sprintf("%s %-16s %-9s %-15s %s",
-			stateGlyph(r), r.Name, "running", r.IP, formatMemory(r.MemoryB))
+			stateGlyph(r), r.Name, stateLabel(r), r.IP, formatMemory(r.MemoryB))
 	case RowSystem:
 		return styleDim.Render(fmt.Sprintf("  %-18s %-9s %-15s %s",
-			r.Name, "running", r.IP, formatMemory(r.MemoryB)))
+			r.Name, stateLabel(r), r.IP, formatMemory(r.MemoryB)))
 	}
 	return r.Name
 }

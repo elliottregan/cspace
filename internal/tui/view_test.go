@@ -138,3 +138,21 @@ func TestViewStaleBanner(t *testing.T) {
 		t.Errorf("stale snapshot should render an 'as of' marker; got:\n%s", out)
 	}
 }
+
+// A stopped sidecar/browser/system row must not print the literal "running";
+// its status word is derived from the row's State.
+func TestRenderRowStatusWordFollowsState(t *testing.T) {
+	for _, kind := range []RowKind{RowSidecar, RowBrowser, RowSystem} {
+		stopped := renderRow(Row{Kind: kind, Name: "x", State: StateStopped})
+		if strings.Contains(stopped, "running") {
+			t.Errorf("kind %v stopped row should not be labeled 'running'; got: %q", kind, stopped)
+		}
+		if !strings.Contains(stopped, "stopped") {
+			t.Errorf("kind %v stopped row should render 'stopped'; got: %q", kind, stopped)
+		}
+		running := renderRow(Row{Kind: kind, Name: "x", State: StateRunning})
+		if !strings.Contains(running, "running") {
+			t.Errorf("kind %v running row should render 'running'; got: %q", kind, running)
+		}
+	}
+}
