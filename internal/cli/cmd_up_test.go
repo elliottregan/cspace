@@ -713,3 +713,54 @@ func TestWaitSupervisorHealthNoStatusFilePlainTimeout(t *testing.T) {
 		t.Errorf("expected no phase claim when no status file was ever seen, got: %v", err)
 	}
 }
+
+// TestWaitSupervisorHealthCtxCancelNamesPhase covers the pathological case
+// the outer RunE deadline could produce before this fix: cmd_up.go's RunE
+// wraps a 4-minute context.WithTimeout around the whole boot, and the
+// supervisor-wait call site used to pass that same ctx straight through to
+// waitSupervisorHealth. Worst case under the bounded plugin install
+// (run_bounded: 120s + retry 120s + 10s kill grace ~= 250s) plus clone/boot
+// time exceeds 240s, so the OUTER ctx could expire before
+// waitSupervisorHealth's own phase-aware budget ever got a chance to give
+// up on its own terms — and the ctx-cancel path returned a bare ctx.Err(),
+// which prints as an opaque "context deadline exceeded" with no clue which
+// phase the sandbox was stuck in. This is the exact blind-failure shape cs-
+// finding 2026-07-19-plugins-marketplace-add-can-stall-boot-past-health-wait
+// was supposed to have fixed.
+//
+// Regardless of which ctx waitSupervisorHealth is handed, if it dies while
+// a phase was already observed, the error must name that phase. This test
+// uses an already-expired ctx (simulating the outer deadline firing) with a
+// generous budget (so the stuck-phase-after-budget path can't be what fires
+// instead) and a status file already on disk.
+func TestWaitSupervisorHealthCtxCancelNamesPhase(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	statusPath := filepath.Join(t.TempDir(), "cspace-init.status")
+	if err := os.WriteFile(statusPath, []byte("plugins"), 0o644); err != nil {
+		t.Fatalf("write status file: %v", err)
+	}
+
+	// A ctx that's already expired before waitSupervisorHealth is even
+	// called — standing in for the outer 4-minute RunE deadline firing
+	// mid-wait.
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+	defer cancel()
+	time.Sleep(1 * time.Millisecond) // guarantee ctx is expired
+
+	// A budget long enough that, absent the ctx expiry, the stuck-phase
+	// timeout path wouldn't have fired on its own within this test.
+	err := waitSupervisorHealth(ctx, srv.URL+"/health", "", statusPath, 10*time.Second)
+	if err == nil {
+		t.Fatal("waitSupervisorHealth: expected an error, got nil")
+	}
+	if !strings.Contains(err.Error(), `"plugins"`) {
+		t.Errorf("expected the ctx-cancel error to name the observed phase %q, got: %v", "plugins", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected the phase-naming error to still satisfy errors.Is(context.DeadlineExceeded), got: %v", err)
+	}
+}

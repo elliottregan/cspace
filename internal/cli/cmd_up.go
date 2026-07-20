@@ -922,7 +922,30 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// doesn't trip a false "/health did not respond" failure while
 			// the sandbox is actually still working — only a genuinely
 			// stuck phase does, and the error names it.
-			if hErr := waitSupervisorHealth(ctx, healthURL, token, statusFile, 60*time.Second); hErr != nil {
+			// Deliberately passing `parent` here, NOT `ctx`: `ctx` is
+			// wrapped in the RunE-wide 4-minute context.WithTimeout above,
+			// sized to cap the heaviest cold path (browser sidecar + clone
+			// + plugin install + /health). But the bounded plugin install
+			// alone can legitimately run ~250s (run_bounded's 120s + a
+			// 120s retry + a 10s kill grace), and clone/boot time on top of
+			// that can exceed the 4-minute ceiling WHILE
+			// waitSupervisorHealth's own phase-aware budget is still
+			// legitimately extending on visible progress. If this call
+			// inherited `ctx`, the outer deadline would fire first and cut
+			// off the phase-aware wait with a bare ctx.Err() — replaying
+			// the exact blind-timeout incident cs-finding
+			// 2026-07-19-plugins-marketplace-add-can-stall-boot-past-health-wait
+			// documented as resolved. `parent` is the un-deadlined context
+			// this RunE started from (declared above; cmd.Context(), or
+			// Background() if nil), so waitSupervisorHealth's internal
+			// budget becomes the sole timeout authority for this segment —
+			// Ctrl-C / process-wide cancellation still propagates through
+			// parent. The 4-minute `ctx` continues to bound every other
+			// step in this RunE (container health checks, image
+			// resolution, sidecar startup, substrate run, IP acquisition,
+			// sidecar orchestration, and the friendly-hostname verification
+			// after this call) — only this call site changes.
+			if hErr := waitSupervisorHealth(parent, healthURL, token, statusFile, 60*time.Second); hErr != nil {
 				err = fmt.Errorf("waiting for sandbox /health: %w", hErr)
 				return err
 			}
@@ -1094,6 +1117,18 @@ func syncAgentRole(sessionsHostDir, hostPath string) error {
 // working". When no status file is ever seen (or it's empty throughout),
 // the error falls back to the plain timeout message.
 //
+// The same phase-naming applies when ctx itself is cancelled or expires
+// (as opposed to this function's own budget elapsing) while a phase was
+// already observed: the returned error wraps ctx.Err() with "sandbox stuck
+// in %q phase", not a bare ctx.Err(). A bare context-deadline error told the
+// console nothing about what stalled — see cmd_up's RunE, which now derives
+// this call's ctx from the ORIGINAL parent context rather than the RunE-wide
+// 4-minute deadline specifically so this function's own phase-aware budget
+// is the timeout authority here; but any caller's ctx can still expire
+// (process-wide cancellation, Ctrl-C, a future caller with its own
+// deadline), so the ctx-cancel path must carry the same phase evidence as
+// the budget-elapsed path. No phase ever observed keeps the bare ctx.Err().
+//
 // token is the supervisor's control-port bearer token. When non-empty it is
 // sent as an `Authorization: Bearer <token>` HEADER on every poll — the
 // supervisor (lib/agent-supervisor-bun/src/main.ts) checks only that header
@@ -1127,16 +1162,23 @@ func waitSupervisorHealth(ctx context.Context, healthURL, token, statusPath stri
 				return nil
 			}
 		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
 
+		// Read the status file BEFORE checking ctx.Err(): an already-expired
+		// or pre-cancelled ctx (the outer-deadline scenario) must still get a
+		// chance to observe a phase that's sitting on disk before the
+		// ctx-cancel branch below decides what error to return — otherwise a
+		// single-iteration cancel would bail with a bare ctx.Err() even
+		// though the phase was right there to name.
 		if data, readErr := os.ReadFile(statusPath); readErr == nil {
 			sawStatus = true
 			if phase := strings.TrimSpace(string(data)); phase != lastPhase {
 				lastPhase = phase
 				deadline = time.Now().Add(budget)
 			}
+		}
+
+		if ctx.Err() != nil {
+			return wrapPhaseErr(ctx.Err(), sawStatus, lastPhase)
 		}
 
 		if time.Now().After(deadline) {
@@ -1148,10 +1190,21 @@ func waitSupervisorHealth(ctx context.Context, healthURL, token, statusPath stri
 
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return wrapPhaseErr(ctx.Err(), sawStatus, lastPhase)
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
+}
+
+// wrapPhaseErr names the last-observed boot phase on a ctx-cancel/deadline
+// error, mirroring the budget-elapsed error text in waitSupervisorHealth so
+// both exit paths blame the same evidence. No phase ever seen returns err
+// unchanged (today's bare ctx.Err() behavior) — there's nothing to name.
+func wrapPhaseErr(err error, sawStatus bool, lastPhase string) error {
+	if sawStatus && lastPhase != "" {
+		return fmt.Errorf("sandbox stuck in %q phase: %w", lastPhase, err)
+	}
+	return err
 }
 
 // pollInitStatus watches the entrypoint's status file and emits

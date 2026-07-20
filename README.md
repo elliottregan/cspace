@@ -60,9 +60,9 @@ Host machine
 
 Instances auto-assign planet names (mercury, venus, earth...) with deterministic port mappings. Each instance gets its own workspace, Claude Code installation, and network firewall that restricts egress to an allowlist (GitHub, npm, Anthropic, and your custom domains).
 
-Running `cspace issue 42` launches an autonomous agent that explores the codebase, designs and implements a solution, runs your verification commands, and opens a PR.
+Each sandbox runs a general Claude agent that you steer directly: `cspace send <name> "<text>"` injects a new turn, and `cspace agent status|interrupt <name>` reports or stops an in-flight task. Give a sandbox a standing role via a committed `.cspace/agent.md` (or a one-off `cspace up --role <file>` override) instead of a fixed playbook.
 
-More: [architecture overview](https://cspace-cli.netlify.app/architecture/architecture-overview/) | [autonomous agent workflow](https://cspace-cli.netlify.app/architecture/autonomous-agent-workflow/) | [multi-agent coordination](https://cspace-cli.netlify.app/architecture/multi-agent-coordination/)
+More: [architecture overview](https://cspace-cli.netlify.app/architecture/architecture-overview/)
 
 ## Configuration
 
@@ -116,7 +116,7 @@ cspace rebuild
 - `internal/provision/` — Container provisioning (git bundle, compose up, workspace init)
 - `lib/agent-supervisor/` — Node.js agent supervisor (wraps Claude Agent SDK)
 - `lib/scripts/` — Container-side init scripts (firewall, plugins, workspace)
-- `lib/agents/` — Agent playbooks (implementer, coordinator)
+- `.cspace/agent.md` — optional per-project role file appended to the general agent's system prompt (override per sandbox via `cspace up --role <file>`)
 - `lib/templates/` — Dockerfile, docker-compose files
 
 ### Adding a CLI Command
