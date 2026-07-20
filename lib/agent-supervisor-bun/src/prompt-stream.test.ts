@@ -27,4 +27,31 @@ describe("PromptStream", () => {
     expect(result.value).toBe("delayed");
     ps.close();
   });
+
+  test("close resolves pending waiters with done", async () => {
+    const ps = new PromptStream();
+    const it = ps[Symbol.asyncIterator]();
+    const pending = it.next();
+
+    ps.close();
+    const result = await pending;
+
+    expect(result.done).toBe(true);
+  });
+
+  test("close drains queued turns before signalling done", async () => {
+    const ps = new PromptStream();
+    ps.push("queued");
+    ps.close();
+
+    const it = ps[Symbol.asyncIterator]();
+    expect(await it.next()).toEqual({ value: "queued", done: false });
+    expect((await it.next()).done).toBe(true);
+  });
+
+  test("push after close throws", () => {
+    const ps = new PromptStream();
+    ps.close();
+    expect(() => ps.push("late")).toThrow("PromptStream is closed");
+  });
 });

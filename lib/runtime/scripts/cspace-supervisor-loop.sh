@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # Restart loop around cspace-supervisor. If the supervisor exits with code 0
-# (clean shutdown — typically triggered by container stop), the loop exits
-# and the container shuts down. Signal-killed exits (SIGTERM=143, SIGKILL=137)
-# also indicate intentional shutdown — the container is being stopped, so
-# don't respawn. On any other non-zero exit (crash, OOM, panic), the wrapper
+# (clean shutdown — typically triggered by container stop) or 143 (SIGTERM,
+# container stop), the loop exits and the container shuts down. On any other
+# non-zero exit (crash, OOM SIGKILL, panic, sdk-error exit), the wrapper
 # logs the failure and respawns after a brief backoff.
 #
-# Resume continuity: the supervisor reads CSPACE_RESUME_SESSION_ID from env
-# at startup. cspace up injects this value once at sandbox-create time;
-# it persists across restarts inside the container. So the new supervisor
-# picks up the same Claude conversation thread without external glue.
+# Resume continuity: at startup the supervisor scans its own event log
+# (/sessions/primary/events.ndjson, on a host bind mount) for the last SDK
+# init session id and resumes it. So a respawned supervisor picks up the
+# same Claude conversation thread without external glue.
 #
 # This wrapper is invoked by /usr/local/bin/cspace-entrypoint.sh via exec.
 
@@ -24,9 +23,10 @@ while true; do
     "$SUPERVISOR"
     code=$?
 
-    # Treat clean exit and signal-killed exits as intentional shutdown.
-    # 143 = 128 + 15 (SIGTERM), 137 = 128 + 9 (SIGKILL).
-    if [ "$code" = "0" ] || [ "$code" = "143" ] || [ "$code" = "137" ]; then
+    # Treat clean exit and SIGTERM (143 = 128 + 15) as intentional shutdown.
+    # 137 (SIGKILL) is NOT clean — it's how the OOM killer reaps the supervisor
+    # and must respawn (cs-finding 2026-07-16-supervisor-silent-death-modes-and-fail-open-auth).
+    if [ "$code" = "0" ] || [ "$code" = "143" ]; then
         echo "[supervisor-loop] supervisor exited cleanly (code=$code); shutting down container"
         break
     fi
