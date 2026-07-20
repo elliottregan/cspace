@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/elliottregan/cspace/internal/devcontainer"
-	"github.com/elliottregan/cspace/internal/orchestrator"
 	"github.com/elliottregan/cspace/internal/registry"
+	"github.com/elliottregan/cspace/internal/sidecars"
 	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
 	"github.com/spf13/cobra"
 )
@@ -138,7 +138,7 @@ type substrateDowner struct {
 	adapter *applecontainer.Adapter
 }
 
-func (s *substrateDowner) Run(ctx context.Context, spec orchestrator.ServiceSpec) (string, error) {
+func (s *substrateDowner) Run(ctx context.Context, spec sidecars.ServiceSpec) (string, error) {
 	return "", fmt.Errorf("not implemented")
 }
 
@@ -198,7 +198,7 @@ func teardownSandbox(
 	if dcPath != "" {
 		if c, err := devcontainer.Load(dcPath); err == nil {
 			if plan, err := devcontainer.Merge(c, filepath.Dir(dcPath)); err == nil {
-				orch := &orchestrator.Orchestration{
+				orch := &sidecars.Orchestration{
 					Sandbox:   name,
 					Project:   project,
 					Plan:      plan,

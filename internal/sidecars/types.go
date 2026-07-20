@@ -1,9 +1,9 @@
-// Package orchestrator manages the lifecycle of compose-defined sidecar
+// Package sidecars manages the lifecycle of compose-defined sidecar
 // services running as Apple Container microVMs alongside the main
 // sandbox. It handles spawn ordering (depends_on), healthcheck waits,
 // /etc/hosts injection for bare-name DNS, credential extraction, and
 // teardown.
-package orchestrator
+package sidecars
 
 import (
 	"context"

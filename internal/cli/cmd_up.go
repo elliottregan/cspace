@@ -19,11 +19,11 @@ import (
 
 	"github.com/elliottregan/cspace/internal/config"
 	"github.com/elliottregan/cspace/internal/devcontainer"
-	"github.com/elliottregan/cspace/internal/orchestrator"
 	"github.com/elliottregan/cspace/internal/overlay"
 	"github.com/elliottregan/cspace/internal/planets"
 	"github.com/elliottregan/cspace/internal/registry"
 	"github.com/elliottregan/cspace/internal/secrets"
+	"github.com/elliottregan/cspace/internal/sidecars"
 	"github.com/elliottregan/cspace/internal/substrate"
 	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
 	"github.com/spf13/cobra"
@@ -706,7 +706,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 							external = nv.External
 							externalName = nv.Name
 						}
-						rv, vErr := orchestrator.ResolveVolume(v, project, name, composeDir, external, externalName)
+						rv, vErr := sidecars.ResolveVolume(v, project, name, composeDir, external, externalName)
 						if vErr != nil {
 							return fmt.Errorf("resolve workspace volume %q: %w", v.Target, vErr)
 						}
@@ -789,10 +789,10 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// /etc/hosts, extract credentials. Only runs when
 			// devcontainer.json is present with a dockerComposeFile.
 			// Sidecars are torn down on any subsequent error.
-			var orch *orchestrator.Orchestration
+			var orch *sidecars.Orchestration
 			if devcontainerPlan != nil && devcontainerPlan.Compose != nil {
 				rep.Phase(overlay.PhaseSidecars)
-				orch = &orchestrator.Orchestration{
+				orch = &sidecars.Orchestration{
 					Sandbox:   name,
 					Project:   project,
 					Plan:      devcontainerPlan,
@@ -1444,7 +1444,7 @@ func resolveSandboxImage(ctx context.Context, plan *devcontainer.Plan, defaultIm
 	}
 	// 3. Build via Apple Container.
 	if plan.Devcontainer != nil && (plan.Devcontainer.DockerFile != "" || plan.Devcontainer.Build != nil) {
-		tag, err := orchestrator.BuildProjectImage(ctx, plan)
+		tag, err := sidecars.BuildProjectImage(ctx, plan)
 		if err == nil && tag != "" {
 			return tag
 		}
@@ -1643,7 +1643,7 @@ type substrateRunner struct {
 	adapter *applecontainer.Adapter
 }
 
-func (s *substrateRunner) Run(ctx context.Context, spec orchestrator.ServiceSpec) (string, error) {
+func (s *substrateRunner) Run(ctx context.Context, spec sidecars.ServiceSpec) (string, error) {
 	rspec := substrate.RunSpec{
 		Name:    spec.Name,
 		Image:   spec.Image,
