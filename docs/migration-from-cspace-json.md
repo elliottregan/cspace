@@ -2,7 +2,7 @@
 
 cspace v1.0 adopts the [devcontainer.json](https://containers.dev/) spec
 for project orchestration. The `.cspace.json` file remains for cspace-only
-concerns (firewall, plugins, advisors, agent label, Claude model). Several
+concerns (firewall, plugins, agent model). Several
 formerly-cspace-only fields are now better expressed via devcontainer.json
 or compose. When both files set the same field, devcontainer.json wins
 and cspace warns about the duplication.
@@ -21,11 +21,8 @@ and cspace warns about the duplication.
 
 - `firewall` — cspace-only allowlist mechanic.
 - `plugins` — Claude plugin install list.
-- `advisors` — long-running advisor agents.
-- `agent.issue_label` — the GitHub label cspace's agent loop watches.
-- `claude.model`, `claude.effort`, `claude.coordinatorModel` — agent runtime settings.
+- `agent.model` — the Claude model the in-sandbox agent runs on (also settable via `cspace up --model`).
 - `mcpServers` — MCP server registration.
-- `verify.all`, `verify.e2e` — verification commands.
 - `customizations.cspace.*` — when set in devcontainer.json, these can also live there. The two are merged, with devcontainer's values winning.
 
 ## Migration example: resume-redux
@@ -59,8 +56,7 @@ After — `.devcontainer/devcontainer.json` + a slimmer `.cspace.json`:
 // .cspace.json (cspace-only concerns)
 {
   "project": {"name": "resume-redux"},
-  "firewall": {"enabled": true, "domains": []},
-  "agent": {"issue_label": "ready"}
+  "firewall": {"enabled": true, "domains": []}
 }
 ```
 

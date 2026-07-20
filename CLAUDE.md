@@ -6,12 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **cspace** is a CLI for managing isolated Claude Code sandboxes on macOS, built on Apple Container (lightweight microVMs driven by the `container` CLI). `cspace up` provisions a sandbox with its own git clone of the project, seeds Claude Code inside it, wires per-sandbox DNS (`<sandbox>.<project>.cspace.test`), and shares one ref-counted browser sidecar per project (Chromium CDP on :9222 for browser MCP, a Playwright run-server on :3000 for e2e). The CLI is Go (Cobra); the optional in-sandbox agent supervisor is Bun/TypeScript.
 
-**Trust this file and the code over older docs.** This file was rewritten 2026-07-16 to match the code. Design docs under `docs/superpowers/specs/` describe components that were removed or never shipped in their described form — a Node ESM supervisor with a Unix control socket, agent playbooks (`lib/agents/`), advisor agents, coordinator orchestration, and the `cspace-context` MCP server (the root `.mcp.json` still registers `cspace context-server`, but no such command exists). Known-but-unfixed problems are tracked as findings in `.cspace/context/findings/` — check there before "discovering" a bug, and log new ones there.
+**Trust this file and the code over older docs.** This file was rewritten 2026-07-16 to match the code. Design docs under `docs/superpowers/specs/` describe components that were removed or never shipped in their described form — a Node ESM supervisor with a Unix control socket, agent playbooks (`lib/agents/`), advisor agents, coordinator orchestration, and the `cspace-context` MCP server (the root `.mcp.json` that once registered `cspace context-server` was deleted; no such command was ever implemented). Known-but-unfixed problems are tracked as findings in `.cspace/context/findings/` — check there before "discovering" a bug, and log new ones there.
 
 ## Commands
 
 - `cspace up [name]`, `cspace down`, `cspace attach`, `cspace ports` — sandbox lifecycle
 - `cspace send <instance> <text>` — inject a user turn into a sandbox's supervisor via its HTTP control port
+- `cspace agent status <sandbox>` — print the sandbox agent's steering status (session, working/idle state, queue depth, last event)
+- `cspace agent interrupt <sandbox>` — cancel a sandbox agent's in-flight task
 - `cspace keychain init|status` — store/inspect credentials in the macOS Keychain
 - `cspace image build` — rebuild the sandbox image (uses the repo's `lib/` when run from a cspace checkout, embedded assets otherwise)
 - `cspace daemon …`, `cspace dns …`, `cspace registry …`, `cspace doctor` — host daemon, resolver install, registry inspection, diagnostics
@@ -43,7 +45,7 @@ Entry point is `cmd/cspace/main.go` → `cli.Execute()`. Commands are `newXxxCmd
 - **secrets** — credential resolution, macOS Keychain access, host auto-discovery (see Credentials below)
 - **registry** — the sandbox registry persisted/served by the daemon
 - **substrate/applecontainer** — wrapper around the Apple Container `container` CLI (run/stop/inspect/build)
-- **orchestrator** — multi-service lifecycle for sidecars: compose-plan execution, healthchecks, `/etc/hosts` injection
+- **sidecars** — multi-service lifecycle: compose-plan execution, healthchecks, `/etc/hosts` injection
 - **compose/v2**, **devcontainer** — parse a project's `dockerComposeFile`/`devcontainer.json` and merge them into the sandbox plan
 - **overlay** — the `cspace up` TUI overlay
 - **planets** — instance naming/port data (`planets.json`); **sandboxmode** — in-sandbox detection via `CSPACE_*` env; **features** — optional runtime feature installers; **assets** — the `go:embed` FS
@@ -54,7 +56,11 @@ One background process per host, auto-spawned by `cspace up` (detached with `Set
 
 ### Agent supervisor (`lib/agent-supervisor-bun/`)
 
-Bun/TypeScript, compiled to a single binary by `build.ts` during image build. Wraps `@anthropic-ai/claude-agent-sdk`'s `query()` with an async prompt queue so user turns can be injected mid-session. Control is HTTP on `CSPACE_CONTROL_PORT` (default 6201) with bearer-token auth (`CSPACE_CONTROL_TOKEN`): `POST /send` injects a turn, `GET /health` reports the session. Events append to `/sessions/primary/events.ndjson`; on restart the supervisor resumes the last session id found in that log. `lib/runtime/scripts/cspace-supervisor-loop.sh` restarts it, treating exit codes 0/143/137 as clean shutdown. **Status note:** this layer is lightly used and is a candidate for removal; see the supervisor finding before investing work here.
+Bun/TypeScript, compiled to a single binary by `build.ts` during image build. This is cspace's general-purpose in-sandbox agent: it wraps `@anthropic-ai/claude-agent-sdk`'s `query()` with an async prompt queue so user turns can be injected mid-session, always with `settingSources: ["project"]` so the headless agent picks up the workspace's own `CLAUDE.md`/`.claude/settings.json` like an interactive session would.
+
+- **Config surface**: a role — text appended to (never replacing) the system prompt — resolves from `/sessions/agent-role.md` (staged by `cspace up --role <host-path>`, cleared on a subsequent `up` with no `--role`) or, failing that, the committed `/workspace/.cspace/agent.md` convention. Model comes from `CSPACE_AGENT_MODEL`, set from `cspace up --model` or `.cspace.json`'s `agent.model` (`--model` wins); empty leaves the SDK/CLI default model in effect.
+- **Control surface**: HTTP on `CSPACE_CONTROL_PORT` (default 6201), bearer-token auth (`CSPACE_CONTROL_TOKEN`) enforced on every route. `POST /send` injects a turn (`cspace send <sandbox> <text>`); `POST /interrupt` cancels the in-flight SDK query (`cspace agent interrupt <sandbox>`, 409 when there's no active task); `GET /status` reports session, `working`/`idle` state, last event, and queue depth (`cspace agent status <sandbox>`); `GET /health` reports liveness (polled by `cspace up`'s boot wait). The supervisor refuses to start at all if `CSPACE_CONTROL_TOKEN` is empty rather than serve unauthenticated on `0.0.0.0`.
+- **Liveness**: any terminal outcome of the SDK stream — it throwing, or its async iterator simply ending — makes the supervisor `exit(1)` so `lib/runtime/scripts/cspace-supervisor-loop.sh` respawns it; the process never lingers serving `/health` with a dead agent behind it. If a resumed session fails to start, it retries once with a fresh session (never re-resolving the poisoned resume id) before exiting either way. The loop treats only exit codes `0` and `143` (clean shutdown/SIGTERM) as intentional; `137` (SIGKILL, e.g. the OOM killer) now respawns instead of being mistaken for clean shutdown. Events append to `/sessions/primary/events.ndjson`, single-generation-rotating to `events.ndjson.1` at 10MiB; on (re)start the supervisor resumes the last session id found in the current (unrotated) generation of that log, falling back to a fresh session if it's gone.
 
 ### Sandbox runtime (`lib/`)
 
@@ -109,7 +115,7 @@ The shared per-project sidecar (`cspace-<project>-browser`) has a stable DNS nam
 
 - **There is no firewall.** The `firewall.*` config is parsed and merged but no egress filtering is implemented — deliberately tabled for now (agents benefit from web access); see the firewall finding. Never describe sandboxes as network-restricted.
 - The entrypoint's inbound DNAT forwards all vmnet TCP to loopback, so "loopback-only" services in a sandbox are reachable by its vmnet peers.
-- The supervisor control port binds 0.0.0.0 with bearer-token auth; the check is skipped if the token is empty (production always sets one).
+- The supervisor control port binds 0.0.0.0 with bearer-token auth enforced on every route; the supervisor now fails closed (refuses to start) rather than serve unauthenticated if `CSPACE_CONTROL_TOKEN` is empty (production always sets one).
 
 ## Commit Style
 

@@ -2,7 +2,7 @@
 title: "supervisor: swallowed stream death, resume poisoning, fail-open auth, OOM treated as clean exit"
 date: 2026-07-16
 kind: finding
-status: acknowledged
+status: resolved
 category: bug
 tags: supervisor, bun, liveness, auth, oom, deferred, removal-candidate
 ---
@@ -23,3 +23,16 @@ Lower priority: unbounded synchronous `appendFileSync` event log with no rotatio
 ## Updates
 ### 2026-07-17T03:42:21Z — @agent — status: acknowledged
 filed from the 2026-07-16 hardening survey; deferred pending a remove-vs-keep decision on the whole supervisor layer
+
+### 2026-07-20T04:47:30Z — @agent — status: resolved
+The remove-vs-harden decision landed on harden-and-generalize: the supervisor is now cspace's general-purpose in-sandbox agent (`docs/superpowers/specs/2026-07-19-general-agent-supervisor-design.md`), not a removal candidate. All four defects and the log-rotation item from "Lower priority" are fixed:
+
+1. **Swallowed stream death** — `lib/agent-supervisor-bun/src/run-agent.ts`'s `runAgent()` (lines 24-67) now calls `exit(1)` on every terminal outcome of `runClaude()` (throw, or the async iterator simply ending), wired from `lib/agent-supervisor-bun/src/main.ts:98-122`. The process no longer lingers serving `/health` with a dead agent behind it — `cspace-supervisor-loop.sh` respawns it.
+2. **Resume poisoning** — `run-agent.ts:30-56`: a first-attempt failure with a `resumeId` logs `resume-failed`, detaches the dead consumer's `PromptStream` waiter (`prompt-stream.ts:30-32`'s `detach()`) so it isn't accidentally resolved by a `/send` meant for the retry, then retries exactly once with a literal fresh session (`runClaude(undefined)` — never re-reads the poisoned id from `events.ndjson`).
+3. **Fail-open auth** — `lib/agent-supervisor-bun/src/main.ts:23-28`: the supervisor now refuses to start (`process.exit(1)`) if `CSPACE_CONTROL_TOKEN` is empty, checked before `Bun.serve` binds `0.0.0.0`. `cmd_up.go` always injects a token, so this only trips on broken provisioning.
+4. **OOM masquerades as shutdown** — `lib/runtime/scripts/cspace-supervisor-loop.sh:29`: only exit codes `0` and `143` are treated as clean shutdown now; `137` (SIGKILL/OOM) falls through to the respawn branch.
+5. (Lower priority, also fixed) **Unbounded event log** — `lib/agent-supervisor-bun/src/event-log.ts`'s `createEventLogger()` rotates to a single `events.ndjson.1` generation at 10MiB; `resumeSessionId()` scans only the current (unrotated) generation, so a resume id lost to rotation degrades to a fresh session rather than wedging.
+
+Not addressed (still unbounded, not worth gating this resolution on): the prompt queue in `prompt-stream.ts` has no depth cap and still acks `{ok:true}` after `/send` regardless of consumer liveness.
+
+CLAUDE.md's "Agent supervisor" section was rewritten to describe this as the general agent and drop the removal-candidate status note.
