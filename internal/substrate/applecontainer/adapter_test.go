@@ -250,6 +250,35 @@ func TestParseInspectIPv4(t *testing.T) {
 	}
 }
 
+// TestParseNetworkGateway exercises the Apple Container 1.1.x `container
+// network inspect` shape, where the gateway sits at status.ipv4Gateway.
+func TestParseNetworkGateway(t *testing.T) {
+	const fixture = `[{"id":"default",
+	  "configuration":{"mode":"nat","name":"default"},
+	  "status":{"ipv4Gateway":"192.168.65.1","ipv4Subnet":"192.168.65.0/24"}}]`
+	gw, err := ParseNetworkGateway([]byte(fixture))
+	if err != nil {
+		t.Fatalf("ParseNetworkGateway: %v", err)
+	}
+	if gw != "192.168.65.1" {
+		t.Errorf("gw = %q, want 192.168.65.1", gw)
+	}
+
+	// A flat/legacy shape without status.ipv4Gateway yields "" (not an error),
+	// so callers fall back rather than crash.
+	if gw, err := ParseNetworkGateway([]byte(`[{"id":"default","gateway":"192.168.64.1"}]`)); err != nil || gw != "" {
+		t.Errorf("flat shape: gw=%q err=%v, want \"\" nil", gw, err)
+	}
+
+	// No records → ("", nil); malformed → error.
+	if gw, err := ParseNetworkGateway([]byte(`[]`)); err != nil || gw != "" {
+		t.Errorf("empty: gw=%q err=%v", gw, err)
+	}
+	if _, err := ParseNetworkGateway([]byte(`{not json`)); err == nil {
+		t.Error("want error for malformed JSON, got nil")
+	}
+}
+
 func TestParseContainerListEmpty(t *testing.T) {
 	got, err := parseContainerList(`[]`)
 	if err != nil {

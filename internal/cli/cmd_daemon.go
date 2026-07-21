@@ -27,37 +27,32 @@ const (
 	// CSPACE_REGISTRY_URL into sandboxes so they can resolve siblings.
 	daemonHTTPPort = "6280"
 
-	// daemonDNSListenAddr: 127.0.0.1:5354 rather than the mDNS-conventional
-	// :5353, because macOS mDNSResponder owns UDP/5353 wildcard and we can't
-	// share it. 5354 is the well-known "alt-mdns" port and is unclaimed on
-	// macOS. `cspace dns install` writes /etc/resolver/cspace.test with
-	// `port 5354` to match.
-	daemonDNSListenAddr = "127.0.0.1:5354"
-	// daemonDNSGatewayAddr exposes the same DNS handler on the Apple
-	// Container vmnet gateway IP so containers can resolve sibling
-	// hostnames the same way the host does. Bind is best-effort —
-	// failure (e.g. running outside Apple Container) logs a warning
-	// and the host-only loopback path keeps working.
-	daemonDNSGatewayAddr = "192.168.64.1:5354"
-	daemonDNSDomain      = "cspace.test." // trailing dot is canonical
-	daemonDNSTTL         = 5              // seconds; sandbox IPs change across restarts
+	// daemonDNSListenAddr: 0.0.0.0:5354 (all interfaces) rather than the
+	// mDNS-conventional :5353, because macOS mDNSResponder owns UDP/5353
+	// wildcard and we can't share it. 5354 is the well-known "alt-mdns" port
+	// and is unclaimed on macOS. `cspace dns install` writes
+	// /etc/resolver/cspace.test with `port 5354` to match. Binding all
+	// interfaces (like the registry HTTP below) makes the handler reachable
+	// both on host loopback AND at the Apple Container vmnet gateway that
+	// sandboxes query — without hardcoding the gateway IP, which Apple moved
+	// 192.168.64.1 -> 192.168.65.1 at the 1.0 boundary. The DNS handler only
+	// answers *.cspace.test (NXDOMAIN otherwise), so it isn't an open resolver.
+	daemonDNSListenAddr = "0.0.0.0:5354"
+	daemonDNSDomain     = "cspace.test." // trailing dot is canonical
+	daemonDNSTTL        = 5              // seconds; sandbox IPs change across restarts
 
 	// daemonIdleDefault is the idle-shutdown threshold when
 	// CSPACE_REGISTRY_DAEMON_IDLE is unset.
 	daemonIdleDefault = 30 * time.Minute
 )
 
-// daemonDNSAddrs returns the DNS listen/gateway addresses, allowing tests to
-// override the well-known defaults via env so they don't collide with a
-// developer's real daemon.
-func daemonDNSAddrs() (listen, gateway string) {
+// daemonDNSAddr returns the DNS listen address, allowing tests to override the
+// well-known default via env so they don't collide with a developer's real
+// daemon.
+func daemonDNSAddr() (listen string) {
 	listen = daemonDNSListenAddr
 	if v := os.Getenv("CSPACE_DAEMON_DNS_ADDR"); v != "" {
 		listen = v
-	}
-	gateway = daemonDNSGatewayAddr
-	if v := os.Getenv("CSPACE_DAEMON_GATEWAY_ADDR"); v != "" {
-		gateway = v
 	}
 	return
 }
@@ -234,14 +229,17 @@ func runDaemonServe() error {
 	// (cspace up's ensureRegistryDaemon, which tails ~/.cspace/daemon.log on
 	// timeout) can surface the real error.
 	dh := daemonDNSHandler(r, &lastActivity)
-	listenAddr, gatewayAddr := daemonDNSAddrs()
+	listenAddr := daemonDNSAddr()
 	dnsPort := listenAddr
 	if i := strings.LastIndex(listenAddr, ":"); i >= 0 {
 		dnsPort = listenAddr[i+1:]
 	}
-	// Loopback bind is fatal — it's how the host's /etc/resolver/
-	// cspace.test routes name lookups. Without it, friendly URLs
-	// don't work from the host browser at all.
+	// Single bind on 0.0.0.0:5354 (all interfaces) is fatal — it's how the
+	// host's /etc/resolver/cspace.test routes name lookups AND how sandboxes
+	// reach the handler at the vmnet gateway. Binding the wildcard means the
+	// vmnet gateway (whatever subnet Apple picks — .64 or .65) is served the
+	// moment its bridge appears, with no startup race and no hardcoded gateway
+	// IP to retry against.
 	go func() {
 		server := &dns.Server{Addr: listenAddr, Net: "udp", Handler: dh}
 		log.Printf("cspace daemon: DNS listening on %s/udp", listenAddr)
@@ -262,32 +260,6 @@ func runDaemonServe() error {
 			log.Printf("       common culprits: another cspace daemon process holding the port")
 			log.Printf("       cspace daemon cannot serve DNS without TCP; exiting")
 			os.Exit(1)
-		}
-	}()
-	// Gateway bind — best-effort WITH RETRY. The vmnet bridge that owns
-	// 192.168.64.1 doesn't exist until the first container boots, and the
-	// daemon is spawned by `cspace up` BEFORE that — so the initial bind
-	// loses a startup race. Retry until it binds so in-container
-	// *.cspace.test resolution (which the shared browser sidecar depends on)
-	// comes up shortly after the first sandbox starts. The host-loopback
-	// listener above is unaffected.
-	go func() {
-		for {
-			server := &dns.Server{Addr: gatewayAddr, Net: "udp", Handler: dh}
-			log.Printf("cspace daemon: DNS listening on %s/udp (containers)", gatewayAddr)
-			err := server.ListenAndServe()
-			log.Printf("WARN: cspace daemon DNS UDP bind on %s failed: %v; retrying in 3s "+
-				"(in-container *.cspace.test lookups NXDOMAIN until this binds)", gatewayAddr, err)
-			time.Sleep(3 * time.Second)
-		}
-	}()
-	go func() {
-		for {
-			server := &dns.Server{Addr: gatewayAddr, Net: "tcp", Handler: dh}
-			if err := server.ListenAndServe(); err != nil {
-				log.Printf("WARN: cspace daemon DNS TCP bind on %s failed: %v; retrying in 3s", gatewayAddr, err)
-			}
-			time.Sleep(3 * time.Second)
 		}
 	}()
 
@@ -625,7 +597,7 @@ func stopRegistryDaemon() error {
 		}
 		return fmt.Errorf("pkill: %w (%s)", err, out)
 	}
-	listen, _ := daemonDNSAddrs()
+	listen := daemonDNSAddr()
 	waitPortFree(daemonHTTPAddr(), 3*time.Second)
 	waitPortFree(listen, 3*time.Second)
 	return nil

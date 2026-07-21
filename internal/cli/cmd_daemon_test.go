@@ -182,16 +182,14 @@ func TestStopRegistryDaemonKillsMatchingProcessAndFreesPorts(t *testing.T) {
 	// with a developer's real one (6280/5354) or with
 	// TestDaemonSurvivesSpawnerExit's ports (6299/15354/15355).
 	const (
-		httpPort    = "6295"
-		dnsAddr     = "127.0.0.1:15364"
-		gatewayAddr = "127.0.0.1:15365"
+		httpPort = "6295"
+		dnsAddr  = "127.0.0.1:15364"
 	)
 
 	env := append(os.Environ(),
 		"HOME="+home,
 		"CSPACE_REGISTRY_DAEMON_PORT="+httpPort,
 		"CSPACE_DAEMON_DNS_ADDR="+dnsAddr,
-		"CSPACE_DAEMON_GATEWAY_ADDR="+gatewayAddr,
 		"CSPACE_REGISTRY_DAEMON_IDLE=1h",
 	)
 	spawner := exec.Command(bin, "daemon", "serve")
@@ -223,7 +221,6 @@ func TestStopRegistryDaemonKillsMatchingProcessAndFreesPorts(t *testing.T) {
 	// not the spawned daemon) at the same addrs the spawned daemon bound.
 	t.Setenv("CSPACE_REGISTRY_DAEMON_PORT", httpPort)
 	t.Setenv("CSPACE_DAEMON_DNS_ADDR", dnsAddr)
-	t.Setenv("CSPACE_DAEMON_GATEWAY_ADDR", gatewayAddr)
 
 	if err := stopRegistryDaemon(); err != nil {
 		t.Fatalf("stopRegistryDaemon() = %v, want nil", err)

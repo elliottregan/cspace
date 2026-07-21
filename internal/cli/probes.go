@@ -206,13 +206,15 @@ func probeDnsAt(addr, label string, failIsWarn bool) ProbeCheck {
 	}
 }
 
-// probeGatewayDNS checks the container-facing gateway DNS listener
-// (192.168.64.1:5354) that sandboxes query from inside their devcontainer.
-// Unlike the loopback listener, this address is only bound once at least
-// one sandbox has booted and claimed a vmnet gateway IP, so a failure here
-// always degrades to Warn, never Fail.
+// probeGatewayDNS checks the container-facing DNS listener at the vmnet
+// gateway that sandboxes query from inside their devcontainer. The daemon
+// binds the handler on 0.0.0.0:5354, but the gateway IP itself (derived from
+// `container network inspect default`, which Apple moved 192.168.64.1 ->
+// 192.168.65.1 at 1.0) only exists once the vmnet bridge is up — i.e. after at
+// least one container has booted — so a failure here always degrades to Warn.
 func probeGatewayDNS() ProbeCheck {
-	return probeDnsAt("192.168.64.1:"+dnsLocalPort, "container-facing DNS (gateway)", true /*failIsWarn*/)
+	gw := resolveHostGateway(context.Background())
+	return probeDnsAt(gw+":"+dnsLocalPort, "container-facing DNS (gateway)", true /*failIsWarn*/)
 }
 
 // probeInContainerDNS fulfils the "in-container resolution" half of the

@@ -469,6 +469,57 @@ func ParseInspectIPv4(out []byte) (string, error) {
 	return "", nil
 }
 
+// networkRecord matches `container network inspect <name>` output. On 1.1.x the
+// gateway/subnet sit under status (e.g. status.ipv4Gateway "192.168.65.1").
+type networkRecord struct {
+	Status struct {
+		IPv4Gateway string `json:"ipv4Gateway"`
+		IPv4Subnet  string `json:"ipv4Subnet"`
+	} `json:"status"`
+}
+
+// ParseNetworkGateway extracts the IPv4 gateway of the first network from
+// `container network inspect` JSON. Returns ("", nil) when the output has no
+// records or no gateway; only malformed JSON yields a non-nil error.
+func ParseNetworkGateway(out []byte) (string, error) {
+	var records []networkRecord
+	if err := json.Unmarshal(out, &records); err != nil {
+		return "", err
+	}
+	if len(records) == 0 {
+		return "", nil
+	}
+	return records[0].Status.IPv4Gateway, nil
+}
+
+// NetworkGateway returns the IPv4 gateway of the named container network — the
+// vmnet gateway the host serves cspace DNS/registry on, which sandboxes reach
+// as their default route. Apple Container moved this from 192.168.64.1 to
+// 192.168.65.1 at the 1.0 boundary, so it must be discovered, not hardcoded.
+// An empty network name defaults to "default".
+func (a *Adapter) NetworkGateway(ctx context.Context, network string) (string, error) {
+	if network == "" {
+		network = "default"
+	}
+	cmd := exec.CommandContext(ctx, "container", "network", "inspect", network)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("container network inspect %s: %w (stderr: %s)",
+			network, err, strings.TrimSpace(stderr.String()))
+	}
+	gw, err := ParseNetworkGateway(stdout.Bytes())
+	if err != nil {
+		return "", fmt.Errorf("parse `container network inspect %s` output: %w "+
+			"(cspace tested with %s.x)", network, err, supportedMinorVersion)
+	}
+	if gw == "" {
+		return "", fmt.Errorf("container network %s has no IPv4 gateway", network)
+	}
+	return gw, nil
+}
+
 // ContainerSummary is one row of `container ls --all --format json`, narrowed
 // to the fields the TUI renders. See adapter.go's package doc for the version
 // cspace tests against; a shape change gives the same drift error as IP().

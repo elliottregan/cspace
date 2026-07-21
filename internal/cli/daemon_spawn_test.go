@@ -51,8 +51,7 @@ func TestDaemonSurvivesSpawnerExit(t *testing.T) {
 	env := append(os.Environ(),
 		"HOME="+home,
 		"CSPACE_REGISTRY_DAEMON_PORT=6299",
-		"CSPACE_DAEMON_DNS_ADDR=127.0.0.1:15354",
-		"CSPACE_DAEMON_GATEWAY_ADDR=127.0.0.1:15355", // loopback stand-in; gateway bind is best-effort
+		"CSPACE_DAEMON_DNS_ADDR=127.0.0.1:15354", // loopback stand-in for the 0.0.0.0 bind
 		"CSPACE_REGISTRY_DAEMON_IDLE=1h",
 	)
 	// Spawner: start the daemon detached exactly like ensureRegistryDaemon, then exit.

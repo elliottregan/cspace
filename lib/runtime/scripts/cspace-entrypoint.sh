@@ -150,8 +150,10 @@ git config --global tag.gpgsign false
 # future runtime stripped them, sandboxes would just lose this
 # convenience and need --host=0.0.0.0 in the dev server.
 # Start dnsmasq forwarder so hostname resolution inside the sandbox
-# matches the host. *.cspace.test queries → cspace daemon on the
-# gateway (192.168.64.1:5354). Everything else → public resolvers.
+# matches the host. *.cspace.test queries → cspace daemon on the vmnet
+# gateway; everything else → public resolvers. The gateway is self-
+# derived from this sandbox's own default route (Apple Container moved
+# it 192.168.64.1 -> 192.168.65.1 at 1.0, so it must not be hardcoded).
 # /etc/resolv.conf points at 127.0.0.1 so glibc's nss-dns sees a
 # standard :53 nameserver and the port-mapping detail stays internal.
 #
@@ -162,13 +164,17 @@ git config --global tag.gpgsign false
 # /var/log/dnsmasq.log if it exists.
 DNSMASQ=/usr/sbin/dnsmasq
 if [ -x "$DNSMASQ" ]; then
-    sudo install -m 0644 /dev/stdin /etc/dnsmasq.d/cspace.conf <<'EOF'
+    # Self-derive the vmnet gateway (the cspace daemon serves *.cspace.test
+    # DNS there, bound on 0.0.0.0:5354). Falls back to the pre-1.0 default.
+    CSPACE_GW=$(ip -o route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="via") print $(i+1)}')
+    CSPACE_GW=${CSPACE_GW:-192.168.64.1}
+    sudo install -m 0644 /dev/stdin /etc/dnsmasq.d/cspace.conf <<EOF
 listen-address=127.0.0.1
 port=53
 no-resolv
 no-hosts
 bind-interfaces
-server=/cspace.test/192.168.64.1#5354
+server=/cspace.test/${CSPACE_GW}#5354
 server=1.1.1.1
 server=8.8.8.8
 EOF

@@ -17,7 +17,7 @@ import (
 // shared browser under e2e load (cs-finding
 // 2026-07-17-browser-sidecar-runs-on-default-1gib-and-ooms-under-e2e-load).
 func TestBrowserSidecarRunArgsSetsResourceCaps(t *testing.T) {
-	args := browserSidecarRunArgs("cspace-resume-redux-browser", "1.60.0")
+	args := browserSidecarRunArgs("cspace-resume-redux-browser", "1.60.0", "192.168.65.1")
 
 	imageIdx := slices.Index(args, browserImage("1.60.0"))
 	if imageIdx < 0 {
@@ -417,7 +417,7 @@ func TestRestartBrowserSidecarMissingContainer(t *testing.T) {
 	}
 
 	calls := fake.snapshot()
-	wantRun := append([]string{"container"}, browserSidecarRunArgs("cspace-demo-browser", "1.61.0")...)
+	wantRun := append([]string{"container"}, browserSidecarRunArgs("cspace-demo-browser", "1.61.0", "192.168.65.1")...)
 	if !hasCall(calls, func(c []string) bool { return slices.Equal(c, wantRun) }) {
 		t.Errorf("expected recreate via run argv %v; calls: %v", wantRun, calls)
 	}

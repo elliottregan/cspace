@@ -177,7 +177,7 @@ func restartBrowserSidecar(ctx context.Context, project, plVersion string) (*Bro
 	case !exists:
 		// 3a. Gone entirely (an agent `rm`'d / "shut it down"). Recreate; the
 		//     `run -d` argv both creates and starts it, so no separate start.
-		args := browserSidecarRunArgs(name, plVersion)
+		args := browserSidecarRunArgs(name, plVersion, resolveHostGateway(ctx))
 		if out, err := browserExecCmd(ctx, "container", args...); err != nil {
 			return nil, fmt.Errorf("recreate browser sidecar %s: %w (%s)", name, err, strings.TrimSpace(out))
 		}
@@ -342,9 +342,10 @@ const (
 	browserSidecarMemoryMiB = 4096
 )
 
-// browserSidecarRunArgs builds the full `container run` argv for the
-// sidecar. Pure so tests can assert on the invocation shape.
-func browserSidecarRunArgs(containerName, plVersion string) []string {
+// browserSidecarRunArgs builds the full `container run` argv for the sidecar.
+// gateway is the vmnet gateway the cspace daemon serves DNS on, baked into the
+// sidecar's dnsmasq forwarder. Pure so tests can assert on the invocation shape.
+func browserSidecarRunArgs(containerName, plVersion, gateway string) []string {
 	return []string{
 		"run", "-d",
 		"--name", containerName,
@@ -364,16 +365,19 @@ func browserSidecarRunArgs(containerName, plVersion string) []string {
 			//    way the cspace sandbox does — chrome can navigate
 			//    to friendly URLs from playwright-mcp).
 			"apt-get update -qq && apt-get install -y -qq socat dnsmasq >/dev/null 2>&1; " +
-			// 2) Configure dnsmasq forwarder. Forward .cspace.test
-			//    to the cspace daemon on the gateway, fall through to
-			//    public resolvers for everything else.
+			// 2) Configure dnsmasq forwarder. Forward .cspace.test to the
+			//    cspace daemon on the host-derived vmnet gateway (Apple
+			//    Container moved it 192.168.64.1 -> 192.168.65.1 at 1.0, so
+			//    it's passed in, not hardcoded — the playwright image has no
+			//    reliable `ip` to self-derive with), fall through to public
+			//    resolvers for everything else.
 			"cat > /etc/dnsmasq.d/cspace.conf <<'CFG'\n" +
 			"listen-address=127.0.0.1\n" +
 			"port=53\n" +
 			"no-resolv\n" +
 			"no-hosts\n" +
 			"bind-interfaces\n" +
-			"server=/cspace.test/192.168.64.1#5354\n" +
+			"server=/cspace.test/" + gateway + "#5354\n" +
 			"server=1.1.1.1\n" +
 			"server=8.8.8.8\n" +
 			"CFG\n" +
@@ -421,7 +425,7 @@ func runBrowserSidecar(ctx context.Context, containerName, plVersion string) (*B
 	if plVersion == "" {
 		plVersion = defaultPlaywrightVersion
 	}
-	args := browserSidecarRunArgs(containerName, plVersion)
+	args := browserSidecarRunArgs(containerName, plVersion, resolveHostGateway(ctx))
 	cmd := exec.CommandContext(ctx, "container", args...)
 	if out, runErr := cmd.CombinedOutput(); runErr != nil {
 		return nil, fmt.Errorf("start browser sidecar: %w (%s)", runErr, strings.TrimSpace(string(out)))

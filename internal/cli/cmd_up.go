@@ -253,14 +253,19 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 
 			token := randHex(16)
 
+			// Discover the vmnet gateway the daemon is reachable at (Apple
+			// Container moved it 192.168.64.1 -> 192.168.65.1 at 1.0) rather
+			// than hardcoding it, so the in-sandbox registry URL points at the
+			// live gateway. The sandbox's own DNS forwarder self-derives the
+			// same value from its default route (see cspace-entrypoint.sh).
+			gateway := resolveHostGateway(ctx)
 			env := map[string]string{
 				"CSPACE_CONTROL_PORT":  fmt.Sprintf("%d", supervisorPort),
 				"CSPACE_CONTROL_TOKEN": token,
 				"CSPACE_PROJECT":       project,
 				"CSPACE_SANDBOX_NAME":  name,
 				"CSPACE_CLAUDE_PATH":   "/usr/local/bin/claude",
-				"CSPACE_REGISTRY_URL":  "http://192.168.64.1:6280",
-				"CSPACE_HOST_GATEWAY":  "192.168.64.1",
+				"CSPACE_REGISTRY_URL":  fmt.Sprintf("http://%s:%s", gateway, daemonHTTPPort),
 			}
 			// Always set, independent of the browser sidecar: agents/docs
 			// point at this var as THE address to reach the workspace from
