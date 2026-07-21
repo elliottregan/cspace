@@ -1,13 +1,16 @@
 // Package applecontainer implements substrate.Substrate against Apple's
 // `container` CLI (github.com/apple/container).
 //
-// VERSION COUPLING: tested against 0.12.x. The CLI is pre-1.0 with active
-// development; expect occasional breakage. Known quirks:
+// VERSION COUPLING: tested against 1.1.x. The JSON shape changed at the 1.0
+// boundary — runtime state (state word, startedDate, networks) that 0.12.x
+// emitted flat now nests under a `status` object in both `container inspect`
+// and `container ls --format json` (see inspectRecord / listRecord). Known
+// quirks:
 //
 //   - `container inspect` does NOT support a --format flag. We parse JSON.
-//   - `container inspect` of a missing container exits 0 with body "[]"
-//     (NOT non-zero) on 0.12.x — the registry-prune `containerExists`
-//     helper handles this defensively.
+//   - `container inspect` of a missing container exits non-zero on 1.x
+//     ("Error: container not found"); 0.12.x instead exited 0 with body
+//     "[]". The registry-prune `containerExists` helper handles both.
 //   - The DNS port 5353/udp conflicts with macOS's mDNSResponder, so the
 //     daemon binds on 5354 (see internal/cli/cmd_daemon.go).
 //   - `container system kernel set --recommended` must be run by hand on
@@ -39,7 +42,7 @@ import (
 // (non-fatal) at cspace up time. Bumping this is a deliberate act: verify
 // the JSON shape of `container inspect` and the other quirks listed in the
 // package doc still hold.
-const supportedMinorVersion = "0.12"
+const supportedMinorVersion = "1.1"
 
 // SupportedMinorVersion returns the Apple Container CLI MAJOR.MINOR version
 // cspace has been tested against. Exposed as a function (rather than the raw
@@ -396,14 +399,16 @@ func (a *Adapter) RemoveVolume(ctx context.Context, name string) error {
 	return nil
 }
 
-// inspectRecord matches the JSON shape returned by `container inspect`.
-// The CLI returns a single-element array; the IPv4 address sits at
-// networks[].ipv4Address as "<addr>/<cidr>" (e.g. "192.168.64.13/24").
+// inspectRecord matches the JSON shape returned by `container inspect`. The
+// CLI returns a single-element array; on 1.1.x the IPv4 address sits at
+// status.networks[].ipv4Address as "<addr>/<cidr>" (e.g. "192.168.64.13/24").
 type inspectRecord struct {
-	Networks []struct {
-		IPv4Address string `json:"ipv4Address"`
-		Network     string `json:"network"`
-	} `json:"networks"`
+	Status struct {
+		Networks []struct {
+			IPv4Address string `json:"ipv4Address"`
+			Network     string `json:"network"`
+		} `json:"networks"`
+	} `json:"status"`
 }
 
 // IP returns the container's IPv4 address (CIDR suffix stripped). Apple's
@@ -420,28 +425,48 @@ func (a *Adapter) IP(ctx context.Context, name string) (string, error) {
 			name, err, stderr.String())
 	}
 
-	var records []inspectRecord
-	if err := json.Unmarshal(stdout.Bytes(), &records); err != nil {
+	ip, err := ParseInspectIPv4(stdout.Bytes())
+	if err != nil {
 		return "", fmt.Errorf("parse `container inspect %s` output: %w "+
 			"(the Apple Container CLI's JSON shape may have changed; "+
 			"cspace tested with %s.x — run `container --version` and file "+
 			"an issue at https://github.com/elliottregan/cspace/issues if "+
 			"this version differs)", name, err, supportedMinorVersion)
 	}
+	if ip == "" {
+		return "", fmt.Errorf("container %s has no IPv4 address", name)
+	}
+	return ip, nil
+}
+
+// stripCIDR turns "192.168.64.13/24" into "192.168.64.13"; a bare address is
+// returned unchanged.
+func stripCIDR(addr string) string {
+	if i := strings.IndexByte(addr, '/'); i >= 0 {
+		return addr[:i]
+	}
+	return addr
+}
+
+// ParseInspectIPv4 extracts the first non-empty IPv4 address (CIDR suffix
+// stripped) from `container inspect` JSON output. Returns ("", nil) when the
+// output has no records or no IPv4 address (a container not up yet, or gone);
+// only malformed JSON yields a non-nil error. Shared by Adapter.IP and the
+// daemon's sidecar DNS resolver so the inspect shape lives in one place.
+func ParseInspectIPv4(out []byte) (string, error) {
+	var records []inspectRecord
+	if err := json.Unmarshal(out, &records); err != nil {
+		return "", err
+	}
 	if len(records) == 0 {
-		return "", fmt.Errorf("container inspect %s: no records returned", name)
+		return "", nil
 	}
-	for _, n := range records[0].Networks {
-		if n.IPv4Address == "" {
-			continue
+	for _, n := range records[0].Status.Networks {
+		if n.IPv4Address != "" {
+			return stripCIDR(n.IPv4Address), nil
 		}
-		// Strip CIDR suffix: "192.168.64.13/24" -> "192.168.64.13".
-		if i := strings.IndexByte(n.IPv4Address, '/'); i >= 0 {
-			return n.IPv4Address[:i], nil
-		}
-		return n.IPv4Address, nil
 	}
-	return "", fmt.Errorf("container %s has no IPv4 address", name)
+	return "", nil
 }
 
 // ContainerSummary is one row of `container ls --all --format json`, narrowed
@@ -450,20 +475,18 @@ func (a *Adapter) IP(ctx context.Context, name string) (string, error) {
 type ContainerSummary struct {
 	Name    string    // configuration.id
 	Image   string    // configuration.image.reference
-	State   string    // top-level status: "running" | "stopped" | ...
-	IP      string    // networks[0].ipv4Address, CIDR suffix stripped, "" if none
+	State   string    // status.state: "running" | "stopped" | ...
+	IP      string    // status.networks[0].ipv4Address, CIDR suffix stripped, "" if none
 	CPUs    int       // configuration.resources.cpus
 	MemoryB int64     // configuration.resources.memoryInBytes
-	Started time.Time // startedDate (CFAbsoluteTime) converted to wall time
+	Started time.Time // status.startedDate (RFC3339) parsed to wall time; zero if absent
 }
 
-// listRecord mirrors the nested `container ls --format json` shape.
+// listRecord mirrors the `container ls --all --format json` shape. On 1.1.x
+// the runtime state (state word, startedDate, networks) is nested under a
+// `status` object; only `configuration` stays flat. See IP()/ParseInspectIPv4
+// for the matching inspect shape.
 type listRecord struct {
-	StartedDate float64 `json:"startedDate"`
-	Status      string  `json:"status"`
-	Networks    []struct {
-		IPv4Address string `json:"ipv4Address"`
-	} `json:"networks"`
 	Configuration struct {
 		ID    string `json:"id"`
 		Image struct {
@@ -474,18 +497,13 @@ type listRecord struct {
 			MemoryBytes int64 `json:"memoryInBytes"`
 		} `json:"resources"`
 	} `json:"configuration"`
-}
-
-// cfAbsoluteEpochOffset is the seconds between the Unix epoch (1970-01-01) and
-// the CoreFoundation absolute-time epoch (2001-01-01), both UTC.
-const cfAbsoluteEpochOffset = 978307200
-
-// cfAbsoluteToTime converts an Apple `startedDate` (CFAbsoluteTime, seconds
-// since 2001-01-01 UTC) to a Go time.Time.
-func cfAbsoluteToTime(f float64) time.Time {
-	sec := int64(f) + cfAbsoluteEpochOffset
-	nsec := int64((f - float64(int64(f))) * 1e9)
-	return time.Unix(sec, nsec)
+	Status struct {
+		State       string `json:"state"`
+		StartedDate string `json:"startedDate"` // RFC3339, e.g. "2026-07-21T02:32:47Z"
+		Networks    []struct {
+			IPv4Address string `json:"ipv4Address"`
+		} `json:"networks"`
+	} `json:"status"`
 }
 
 // parseContainerList turns `container ls --format json` output into summaries.
@@ -502,20 +520,25 @@ func parseContainerList(jsonOutput string) ([]ContainerSummary, error) {
 	out := make([]ContainerSummary, 0, len(records))
 	for _, r := range records {
 		ip := ""
-		if len(r.Networks) > 0 {
-			ip = r.Networks[0].IPv4Address
-			if i := strings.IndexByte(ip, '/'); i >= 0 {
-				ip = ip[:i]
+		if len(r.Status.Networks) > 0 {
+			ip = stripCIDR(r.Status.Networks[0].IPv4Address)
+		}
+		// A missing or unparseable startedDate (e.g. a stopped container)
+		// leaves Started as the zero time rather than failing the whole list.
+		var started time.Time
+		if s := r.Status.StartedDate; s != "" {
+			if t, err := time.Parse(time.RFC3339, s); err == nil {
+				started = t
 			}
 		}
 		out = append(out, ContainerSummary{
 			Name:    r.Configuration.ID,
 			Image:   r.Configuration.Image.Reference,
-			State:   r.Status,
+			State:   r.Status.State,
 			IP:      ip,
 			CPUs:    r.Configuration.Resources.CPUs,
 			MemoryB: r.Configuration.Resources.MemoryBytes,
-			Started: cfAbsoluteToTime(r.StartedDate),
+			Started: started,
 		})
 	}
 	return out, nil

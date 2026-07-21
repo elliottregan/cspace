@@ -259,10 +259,15 @@ func fakeInspectJSON(status string) string {
 	if status == "missing" {
 		return "[]"
 	}
-	// Carries the version label (so sidecarVersion, routed through the seam,
-	// reads a value) plus the status field containerStateRunning parses.
-	return `[{"status":"` + status + `","cspace.playwright-version":"1.59.0",` +
-		`"networks":[{"ipv4Address":"192.0.2.7/24"}]}]`
+	// Apple Container 1.1.x inspect shape: runtime state (state word,
+	// networks) nests under `status`; the version label sits under
+	// configuration.labels. Covers the fields the three seam-routed parsers
+	// read — containerStateRunning (status.state), waitForBrowserIP
+	// (status.networks[].ipv4Address), sidecarVersion (the label marker).
+	return `[{"id":"sidecar",` +
+		`"configuration":{"labels":{"cspace.playwright-version":"1.59.0"}},` +
+		`"status":{"state":"` + status + `",` +
+		`"networks":[{"ipv4Address":"192.0.2.7/24"}]}}]`
 }
 
 func swapBrowserExec(t *testing.T, fn func(context.Context, string, ...string) (string, error)) {
@@ -476,6 +481,21 @@ func TestContainerStateRunning(t *testing.T) {
 	}
 }
 
+// TestWaitForBrowserIP verifies the poller extracts the sidecar's IPv4 from
+// the 1.1.x inspect shape (status.networks[].ipv4Address, CIDR stripped).
+func TestWaitForBrowserIP(t *testing.T) {
+	swapBrowserExec(t, func(_ context.Context, _ string, _ ...string) (string, error) {
+		return fakeInspectJSON("running"), nil
+	})
+	ip, err := waitForBrowserIP(context.Background(), "cspace-demo-browser", 2*time.Second)
+	if err != nil {
+		t.Fatalf("waitForBrowserIP: %v", err)
+	}
+	if ip != "192.0.2.7" {
+		t.Errorf("ip = %q, want 192.0.2.7", ip)
+	}
+}
+
 // TestVerifyBrowserFnDefault exercises the default verification composition:
 // IP acquisition first (failure surfaces as an IP error), and on a good IP the
 // CDP/WS URLs are constructed from it before the CDP probe runs.
@@ -500,7 +520,7 @@ func TestVerifyBrowserFnDefault(t *testing.T) {
 		swapBrowserExec(t, func(_ context.Context, _ string, _ ...string) (string, error) {
 			// 192.0.2.0/24 is TEST-NET-1 (RFC 5737): guaranteed unroutable so
 			// the CDP probe fails fast without touching any real service.
-			return `[{"networks":[{"ipv4Address":"192.0.2.1/24"}]}]`, nil
+			return `[{"status":{"networks":[{"ipv4Address":"192.0.2.1/24"}]}}]`, nil
 		})
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		defer cancel()

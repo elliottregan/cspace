@@ -1,12 +1,11 @@
 package cli
 
 import (
-	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os/exec"
-	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -56,25 +55,30 @@ func newRegistryPruneCmd() *cobra.Command {
 
 // containerExists reports whether a container with the given name exists.
 //
-// Apple Container's `container inspect <name>` exits 0 even when the container
-// is missing — it just prints `[]`. So we check both: non-zero exit OR empty
-// JSON array means "dead". Any other shape (a populated array) means alive.
+// A missing container makes `container inspect <name>` exit non-zero on 1.x
+// ("Error: container not found"); 0.12.x instead exited 0 with body "[]". We
+// handle both: non-zero exit OR empty JSON array means "dead". Any other
+// shape (a populated array) means alive.
 func containerExists(ctx context.Context, name string) bool {
 	cmd := exec.CommandContext(ctx, "container", "inspect", name)
 	out, err := cmd.Output()
 	if err != nil {
 		return false
 	}
-	trimmed := bytes.TrimSpace(out)
-	if len(trimmed) == 0 {
+	return inspectHasRecords(out)
+}
+
+// inspectHasRecords reports whether `container inspect` output contains at
+// least one record. It JSON-parses the array rather than byte-prefix matching:
+// 1.1.x pretty-prints the output ("[\n  {\n ..."), so a "[{" prefix check would
+// wrongly report an existing container as missing, and a bare leading "{" would
+// wrongly accept malformed output.
+func inspectHasRecords(out []byte) bool {
+	var records []json.RawMessage
+	if err := json.Unmarshal(out, &records); err != nil {
 		return false
 	}
-	// "[]" (with optional internal whitespace) means no matching containers.
-	if bytes.Equal(trimmed, []byte("[]")) {
-		return false
-	}
-	// Defensive: any JSON array starting with "[{" indicates at least one entry.
-	return strings.HasPrefix(string(trimmed), "[{") || trimmed[0] == '{'
+	return len(records) > 0
 }
 
 // containerNameForEntry constructs the canonical sandbox container name from

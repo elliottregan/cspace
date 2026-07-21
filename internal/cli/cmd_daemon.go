@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/elliottregan/cspace/internal/registry"
+	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
 	"github.com/miekg/dns"
 	"github.com/spf13/cobra"
 )
@@ -653,28 +654,16 @@ func waitPortFree(addr string, d time.Duration) {
 func lookupSidecarIPCtx(ctx context.Context, name string) (string, error) {
 	out, err := exec.CommandContext(ctx, "container", "inspect", name).Output()
 	if err != nil {
-		// Apple Container exits non-zero only on transport-level error;
-		// missing containers come back as exit 0 with body "[]". Treat
-		// any error here as "no answer" rather than DNS server failure.
+		// A missing container exits non-zero on 1.x (it returned exit 0
+		// with body "[]" on 0.12.x); either way, treat any error here as
+		// "no answer" rather than DNS server failure.
 		return "", nil
 	}
-	var records []struct {
-		Networks []struct {
-			IPv4Address string `json:"ipv4Address"`
-		} `json:"networks"`
-	}
-	if err := json.Unmarshal(out, &records); err != nil {
-		return "", err
-	}
-	if len(records) == 0 || len(records[0].Networks) == 0 {
-		return "", nil
-	}
-	addr := records[0].Networks[0].IPv4Address
-	// Strip the CIDR suffix (e.g. "192.168.64.245/24" -> "192.168.64.245").
-	if i := strings.IndexByte(addr, '/'); i > 0 {
-		addr = addr[:i]
-	}
-	return addr, nil
+	// The 1.1.x inspect shape (ipv4 nested under status.networks) lives in
+	// applecontainer.ParseInspectIPv4, shared with Adapter.IP so the shape is
+	// encoded once. It returns ("", nil) for a container with no IPv4 yet or
+	// gone, and a non-nil error only on malformed JSON.
+	return applecontainer.ParseInspectIPv4(out)
 }
 
 // lookupSidecarIP resolves a sidecar container's IP for the DNS handler's

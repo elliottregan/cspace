@@ -16,6 +16,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
 )
 
 // browserExecCmd is the package seam through which the restart ladder issues
@@ -87,11 +89,11 @@ func remainingBudget(ctx context.Context, fallback time.Duration) time.Duration 
 }
 
 // containerStateRunning inspects the named container through browserExecCmd and
-// reports whether it is currently running and whether it exists at all. Apple
-// Container's `container inspect` exits 0 with body "[]" for a missing
-// container, so both an empty/"[]" body and an inspect error map to
-// exists=false. A populated record's top-level "status" field (value "running"
-// / "stopped") drives the running bool.
+// reports whether it is currently running and whether it exists at all. A
+// missing container makes `container inspect` exit non-zero on 1.x (it printed
+// exit-0 body "[]" on 0.12.x); an inspect error, an empty body, and "[]" all
+// map to exists=false. A populated record's status.state ("running" /
+// "stopped") drives the running bool.
 func containerStateRunning(ctx context.Context, name string) (running, exists bool) {
 	out, err := browserExecCmd(ctx, "container", "inspect", name)
 	if err != nil {
@@ -102,12 +104,14 @@ func containerStateRunning(ctx context.Context, name string) (running, exists bo
 		return false, false
 	}
 	var records []struct {
-		Status string `json:"status"`
+		Status struct {
+			State string `json:"state"`
+		} `json:"status"`
 	}
 	if json.Unmarshal([]byte(trimmed), &records) != nil || len(records) == 0 {
 		return false, false
 	}
-	return strings.EqualFold(records[0].Status, "running"), true
+	return strings.EqualFold(records[0].Status.State, "running"), true
 }
 
 // resolveBrowserSplitBrain recovers a sidecar whose substrate state has
@@ -518,20 +522,10 @@ func waitForBrowserIP(ctx context.Context, name string, max time.Duration) (stri
 	for time.Now().Before(deadline) {
 		out, err := browserExecCmd(ctx, "container", "inspect", name)
 		if err == nil {
-			var records []struct {
-				Networks []struct {
-					IPv4Address string `json:"ipv4Address"`
-				} `json:"networks"`
-			}
-			if json.Unmarshal([]byte(out), &records) == nil && len(records) > 0 {
-				for _, n := range records[0].Networks {
-					if n.IPv4Address != "" {
-						if i := strings.IndexByte(n.IPv4Address, '/'); i >= 0 {
-							return n.IPv4Address[:i], nil
-						}
-						return n.IPv4Address, nil
-					}
-				}
+			// Shared 1.1.x-aware inspect parser (ipv4 under status.networks);
+			// returns "" until the sidecar has an address.
+			if ip, perr := applecontainer.ParseInspectIPv4([]byte(out)); perr == nil && ip != "" {
+				return ip, nil
 			}
 		}
 		select {

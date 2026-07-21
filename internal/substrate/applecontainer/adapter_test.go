@@ -168,18 +168,23 @@ func TestIP(t *testing.T) {
 	}
 }
 
+// TestParseContainerList exercises the Apple Container 1.1.x `container ls
+// --all --format json` shape: runtime state (state, startedDate, networks)
+// is nested under a `status` object, and startedDate is an RFC3339 string
+// rather than the flat CFAbsoluteTime float 0.12.x emitted.
 func TestParseContainerList(t *testing.T) {
 	const fixture = `[
-	  {"startedDate":806197425.667992,"status":"running",
-	   "networks":[{"ipv4Address":"192.168.64.108/24","network":"default"}],
+	  {"id":"cspace-demo-mercury",
 	   "configuration":{"id":"cspace-demo-mercury",
 	     "image":{"reference":"cspace:latest"},
-	     "resources":{"cpus":4,"memoryInBytes":17179869184}}},
-	  {"startedDate":805346161.290075,"status":"stopped",
-	   "networks":[],
+	     "resources":{"cpus":4,"memoryInBytes":17179869184}},
+	   "status":{"state":"running","startedDate":"2026-07-21T02:32:47Z",
+	     "networks":[{"ipv4Address":"192.168.64.108/24","network":"default"}]}},
+	  {"id":"buildkit",
 	   "configuration":{"id":"buildkit",
 	     "image":{"reference":"ghcr.io/apple/builder:0.12.0"},
-	     "resources":{"cpus":2,"memoryInBytes":2147483648}}}
+	     "resources":{"cpus":2,"memoryInBytes":2147483648}},
+	   "status":{"state":"stopped","networks":[]}}
 	]`
 	got, err := parseContainerList(fixture)
 	if err != nil {
@@ -195,12 +200,53 @@ func TestParseContainerList(t *testing.T) {
 	if m.CPUs != 4 || m.MemoryB != 17179869184 || m.Image != "cspace:latest" {
 		t.Errorf("record0 fields = %+v", m)
 	}
-	// startedDate 806197425.667992 CFAbsoluteTime -> Unix 1784504625.667992
-	if want := int64(1784504625); m.Started.Unix() != want {
-		t.Errorf("Started.Unix() = %d, want %d", m.Started.Unix(), want)
+	if want := "2026-07-21T02:32:47Z"; m.Started.UTC().Format(time.RFC3339) != want {
+		t.Errorf("Started = %s, want %s", m.Started.UTC().Format(time.RFC3339), want)
 	}
 	if got[1].IP != "" {
 		t.Errorf("record1 (no networks) IP = %q, want empty", got[1].IP)
+	}
+	if got[1].State != "stopped" {
+		t.Errorf("record1 State = %q, want stopped", got[1].State)
+	}
+	// A record whose status omits startedDate must parse to the zero time,
+	// not error the whole list.
+	if !got[1].Started.IsZero() {
+		t.Errorf("record1 Started = %v, want zero time", got[1].Started)
+	}
+}
+
+// TestParseInspectIPv4 exercises the Apple Container 1.1.x `container inspect`
+// shape, where networks (and thus ipv4Address) are nested under a `status`
+// object. Guards both Adapter.IP and the daemon's sidecar DNS resolver, which
+// share this parser.
+func TestParseInspectIPv4(t *testing.T) {
+	const running = `[{"id":"cspace-demo-mercury",
+	  "configuration":{"id":"cspace-demo-mercury"},
+	  "status":{"state":"running",
+	    "networks":[{"ipv4Address":"192.168.64.13/24","network":"default"}]}}]`
+	ip, err := ParseInspectIPv4([]byte(running))
+	if err != nil {
+		t.Fatalf("ParseInspectIPv4: %v", err)
+	}
+	if ip != "192.168.64.13" {
+		t.Errorf("ip = %q, want 192.168.64.13", ip)
+	}
+
+	// No records (missing/gone container): ("", nil), not an error.
+	if ip, err := ParseInspectIPv4([]byte(`[]`)); err != nil || ip != "" {
+		t.Errorf("empty: ip=%q err=%v, want \"\" nil", ip, err)
+	}
+
+	// Record present but no IPv4 yet (container still coming up): ("", nil).
+	const noIP = `[{"id":"x","status":{"state":"running","networks":[]}}]`
+	if ip, err := ParseInspectIPv4([]byte(noIP)); err != nil || ip != "" {
+		t.Errorf("noIP: ip=%q err=%v, want \"\" nil", ip, err)
+	}
+
+	// Malformed JSON is the only error case.
+	if _, err := ParseInspectIPv4([]byte(`{not json`)); err == nil {
+		t.Error("want error for malformed JSON, got nil")
 	}
 }
 
