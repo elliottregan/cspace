@@ -1,6 +1,6 @@
 # cspace
 
-Portable CLI for managing isolated Claude Code devcontainer instances. Spin up multiple independent development environments, each with their own workspace, browser sidecars, and network firewall — then run autonomous Claude agents against GitHub issues.
+Portable CLI for managing isolated Claude Code devcontainer instances. Spin up multiple independent development environments, each with their own workspace and browser sidecars — then run autonomous Claude agents against GitHub issues.
 
 **[Full documentation](https://cspace-cli.netlify.app/)**
 
@@ -49,7 +49,7 @@ Host machine
 │   ├── Playwright run-server
 │   └── Chromium CDP sidecar
 ├── Instance: mercury
-│   ├── devcontainer (Claude Code, SSH, firewall)
+│   ├── devcontainer (Claude Code, SSH, agent supervisor)
 │   ├── project services (.cspace/docker-compose.yml)
 │   └── isolated volumes
 ├── Instance: venus
@@ -59,7 +59,7 @@ Host machine
     └── session logs
 ```
 
-Instances auto-assign planet names (mercury, venus, earth...) with deterministic port mappings. Each instance gets its own workspace, Claude Code installation, and network firewall that restricts egress to an allowlist (GitHub, npm, Anthropic, and your custom domains).
+Instances auto-assign planet names (mercury, venus, earth...) with deterministic port mappings. Each instance gets its own workspace and Claude Code installation. Note that sandboxes are **not** network-restricted: `firewall.*` config is parsed and merged, but no egress filtering is implemented today.
 
 Each sandbox runs a general Claude agent that you steer directly: `cspace send <name> "<text>"` injects a new turn, and `cspace agent status|interrupt <name>` reports or stops an in-flight task. Give a sandbox a standing role via a committed `.cspace/agent.md` (or a one-off `cspace up --role <file>` override) instead of a fixed playbook.
 
@@ -73,11 +73,13 @@ Project config lives in `.cspace.json` (committed) with optional `.cspace.local.
 {
   "project": { "name": "my-project", "repo": "owner/my-project" },
   "container": { "ports": { "3000": "dev server" } },
-  "firewall": { "domains": ["api.example.com"] },
-  "claude": { "model": "claude-opus-4-7[1m]" },
-  "verify": { "all": "npm run lint && npm run test" }
+  "agent": { "model": "claude-opus-4-8" }
 }
 ```
+
+`agent.model` sets the model the in-sandbox agent runs on; `cspace up --model` overrides it per invocation. Leaving it empty (the default) sets no model at all, so the Claude Code CLI's own default applies.
+
+Note that `DeepMerge` replaces arrays wholesale rather than appending — setting a list key in `.cspace.json` discards the corresponding default list.
 
 Override built-in templates (Dockerfile, agent prompts, compose files) by placing files in `.cspace/`. Run `cspace init --full` to copy all templates for customization.
 
@@ -113,10 +115,11 @@ cspace rebuild
 - `cmd/cspace/` — CLI entry point
 - `internal/cli/` — Cobra commands
 - `internal/config/` — Three-layer config merging (defaults → `.cspace.json` → `.cspace.local.json`)
-- `internal/supervisor/` — Agent supervisor launcher and NDJSON stream processing
-- `internal/provision/` — Container provisioning (git bundle, compose up, workspace init)
-- `lib/agent-supervisor/` — Node.js agent supervisor (wraps Claude Agent SDK)
-- `lib/scripts/` — Container-side init scripts (firewall, plugins, workspace)
+- `internal/substrate/` — Wrapper around the Apple Container `container` CLI (run/stop/inspect/build)
+- `internal/sidecars/` — Multi-service lifecycle: compose-plan execution, healthchecks, `/etc/hosts` injection
+- `internal/registry/` — Sandbox registry persisted and served by the host daemon
+- `lib/agent-supervisor-bun/` — Bun/TypeScript agent supervisor (wraps Claude Agent SDK)
+- `lib/runtime/scripts/` — Container-side init scripts (entrypoint, plugins, supervisor loop)
 - `.cspace/agent.md` — optional per-project role file appended to the general agent's system prompt (override per sandbox via `cspace up --role <file>`)
 - `lib/templates/` — Dockerfile, docker-compose files
 
