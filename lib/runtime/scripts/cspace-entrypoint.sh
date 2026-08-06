@@ -193,16 +193,48 @@ fi
 
 IPTABLES=/usr/sbin/iptables
 SYSCTL=/usr/sbin/sysctl
+RELAY=/usr/local/bin/cspace-inbound-relay.mjs
 if [ -x "$IPTABLES" ] && [ -x "$SYSCTL" ]; then
     # Pick the primary external interface (eth0 on Apple Container).
     ext_if=$(ip -o route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}')
     if [ -n "$ext_if" ]; then
         sudo "$SYSCTL" -w "net.ipv4.conf.${ext_if}.route_localnet=1" >/dev/null 2>&1 || true
         sudo "$SYSCTL" -w "net.ipv4.conf.all.route_localnet=1" >/dev/null 2>&1 || true
-        # Idempotency: check whether the rule already exists before
-        # appending — useful if the entrypoint is re-run for any reason.
-        if ! sudo "$IPTABLES" -t nat -C PREROUTING -i "$ext_if" -p tcp -j DNAT --to-destination 127.0.0.1 2>/dev/null; then
-            sudo "$IPTABLES" -t nat -A PREROUTING -i "$ext_if" -p tcp -j DNAT --to-destination 127.0.0.1 2>/dev/null || true
+
+        # VERIFY the sysctl actually took — do not assume. Apple Container
+        # 1.2.0 mounts /proc/sys read-only, so the writes above fail while
+        # the DNAT below still installs successfully. That combination is
+        # worse than doing nothing: every inbound TCP packet gets rewritten
+        # to 127.0.0.1 and then dropped by the martian filter, which
+        # blackholes the supervisor's own control port and hangs `cspace up`
+        # for 60s with a symptom that points nowhere near the cause.
+        # (cs-finding 2026-08-06-apple-container-1-2-mounts-proc-sys-read-only-breaking-inbound-dnat)
+        rl=$(cat "/proc/sys/net/ipv4/conf/${ext_if}/route_localnet" 2>/dev/null || echo 0)
+        if [ "$rl" = "1" ]; then
+            # Idempotency: check whether the rule already exists before
+            # appending — useful if the entrypoint is re-run for any reason.
+            if ! sudo "$IPTABLES" -t nat -C PREROUTING -i "$ext_if" -p tcp -j DNAT --to-destination 127.0.0.1 2>/dev/null; then
+                sudo "$IPTABLES" -t nat -A PREROUTING -i "$ext_if" -p tcp -j DNAT --to-destination 127.0.0.1 2>/dev/null || true
+            fi
+        else
+            # route_localnet is unavailable (read-only /proc/sys). Remove any
+            # stale DNAT rule a previous boot may have left behind, then fall
+            # back to the userspace relay, which needs neither sysctl nor
+            # netfilter. Same outcome — loopback-bound dev servers reachable
+            # from outside with no project-side config — at the cost of a
+            # short discovery delay.
+            sudo "$IPTABLES" -t nat -D PREROUTING -i "$ext_if" -p tcp -j DNAT --to-destination 127.0.0.1 2>/dev/null || true
+            if command -v node >/dev/null 2>&1 && [ -f "$RELAY" ]; then
+                echo "[entrypoint] route_localnet unavailable; using userspace inbound relay"
+                (
+                    while true; do
+                        node "$RELAY" >> /tmp/cspace-inbound-relay.log 2>&1
+                        sleep 1
+                    done
+                ) &
+            else
+                echo "[entrypoint] WARNING: route_localnet unavailable and no node/relay; services must bind 0.0.0.0 to be reachable"
+            fi
         fi
     fi
 fi

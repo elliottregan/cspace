@@ -154,6 +154,7 @@ USER root
 COPY lib/runtime/scripts/cspace-entrypoint.sh /usr/local/bin/cspace-entrypoint.sh
 COPY lib/runtime/scripts/cspace-supervisor-loop.sh /usr/local/bin/cspace-supervisor-loop.sh
 COPY lib/runtime/scripts/cspace-install-plugins.sh /usr/local/bin/cspace-install-plugins.sh
+COPY lib/runtime/scripts/cspace-inbound-relay.mjs /usr/local/bin/cspace-inbound-relay.mjs
 COPY lib/runtime/scripts/statusline.sh /usr/local/bin/cspace-statusline.sh
 RUN chmod +x /usr/local/bin/cspace-entrypoint.sh \
             /usr/local/bin/cspace-supervisor-loop.sh \

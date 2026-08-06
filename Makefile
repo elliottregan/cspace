@@ -24,6 +24,7 @@ sync-embedded:
 	@cp lib/templates/Dockerfile internal/assets/embedded/templates/
 	@cp lib/runtime/scripts/*.sh internal/assets/embedded/runtime/scripts/
 	@rm -f internal/assets/embedded/runtime/scripts/*.test.sh
+	@cp lib/runtime/scripts/*.mjs internal/assets/embedded/runtime/scripts/
 	@cp lib/runtime/features/*.sh internal/assets/embedded/runtime/features/
 	@cp lib/agent-supervisor-bun/package.json \
 	    lib/agent-supervisor-bun/bun.lock \
