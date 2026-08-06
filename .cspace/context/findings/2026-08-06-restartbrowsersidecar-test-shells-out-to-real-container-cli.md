@@ -2,7 +2,7 @@
 title: TestRestartBrowserSidecarMissingContainer is non-hermetic — depends on the host's live vmnet gateway
 date: 2026-08-06
 kind: finding
-status: open
+status: resolved
 category: bug
 tags: tests, browser-sidecar, gateway, applecontainer, hermeticity
 ---
@@ -23,3 +23,19 @@ tags: tests, browser-sidecar, gateway, applecontainer, hermeticity
 ## Updates
 ### 2026-08-06 — @agent — status: open
 Filed after hitting the failure while verifying an unrelated docs-site removal. Not fixed: out of scope for that change, and the fix is a deliberate API choice (parameter vs. injectable field) better made by someone with context on the substrate seam conventions.
+
+### 2026-08-06 — @agent — status: resolved
+Resolved with the injectable-field option, matching the `browserExecCmd` /
+`verifyBrowserFn` convention already in `internal/cli/browser.go` rather than
+threading a new parameter through the ladder. Added `resolveHostGatewayFn`
+(`internal/cli/gateway.go`) defaulting to the real `resolveHostGateway`; both
+sidecar-creation sites in `browser.go` now call through it, and
+`browser_test.go` gained a `swapGateway` helper used by
+`TestRestartBrowserSidecarMissingContainer` to pin `192.168.65.1`. `make check`
+is green on a machine with no Apple Container apiserver running.
+
+Two notes for anyone reading this later. The recreate branch is the *only*
+ladder path that resolves the gateway, so the other `restartBrowserSidecar`
+tests never needed pinning. And the suspicion that these calls explained the
+~24s `internal/cli` runtime was wrong — measured before and after, it is
+unchanged at ~24.5s, so the slow test is something else and still unidentified.

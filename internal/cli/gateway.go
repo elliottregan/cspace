@@ -26,3 +26,12 @@ func resolveHostGateway(ctx context.Context) string {
 	}
 	return legacyVmnetGateway
 }
+
+// resolveHostGatewayFn indirects resolveHostGateway so tests can pin a gateway
+// instead of reaching the live `container` CLI. This call escapes the
+// browserExecCmd seam (it goes through the applecontainer adapter, not that
+// func var), so without this indirection a test asserting on sidecar argv
+// silently depends on the host: it reads the real vmnet gateway when Apple
+// Container is running and legacyVmnetGateway when it isn't. Production code
+// leaves this at the real implementation; browser_test.go swaps it.
+var resolveHostGatewayFn = resolveHostGateway

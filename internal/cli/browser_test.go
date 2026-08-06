@@ -284,6 +284,17 @@ func swapVerifyBrowser(t *testing.T, fn func(context.Context, *BrowserSidecar) e
 	t.Cleanup(func() { verifyBrowserFn = orig })
 }
 
+// swapGateway pins the vmnet gateway for tests that assert on sidecar argv.
+// The real resolveHostGateway shells out to the `container` CLI, which is not
+// covered by swapBrowserExec — so a test that skips this reads host state and
+// passes only on a machine running the expected Apple Container version.
+func swapGateway(t *testing.T, gw string) {
+	t.Helper()
+	orig := resolveHostGatewayFn
+	resolveHostGatewayFn = func(context.Context) string { return gw }
+	t.Cleanup(func() { resolveHostGatewayFn = orig })
+}
+
 func hasCall(calls [][]string, pred func([]string) bool) bool {
 	for _, c := range calls {
 		if pred(c) {
@@ -411,6 +422,9 @@ func TestRestartBrowserSidecarMissingContainer(t *testing.T) {
 	fake := &scriptedExec{inspectSt: []string{"missing"}}
 	swapBrowserExec(t, fake.fn)
 	swapVerifyBrowser(t, func(_ context.Context, _ *BrowserSidecar) error { return nil })
+	// The recreate branch is the only ladder path that resolves the gateway;
+	// pin it so the expected argv below doesn't depend on the host's vmnet.
+	swapGateway(t, "192.168.65.1")
 
 	if _, err := restartBrowserSidecar(context.Background(), "demo", "1.61.0"); err != nil {
 		t.Fatalf("restartBrowserSidecar: %v", err)

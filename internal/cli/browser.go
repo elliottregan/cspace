@@ -177,7 +177,7 @@ func restartBrowserSidecar(ctx context.Context, project, plVersion string) (*Bro
 	case !exists:
 		// 3a. Gone entirely (an agent `rm`'d / "shut it down"). Recreate; the
 		//     `run -d` argv both creates and starts it, so no separate start.
-		args := browserSidecarRunArgs(name, plVersion, resolveHostGateway(ctx))
+		args := browserSidecarRunArgs(name, plVersion, resolveHostGatewayFn(ctx))
 		if out, err := browserExecCmd(ctx, "container", args...); err != nil {
 			return nil, fmt.Errorf("recreate browser sidecar %s: %w (%s)", name, err, strings.TrimSpace(out))
 		}
@@ -425,7 +425,7 @@ func runBrowserSidecar(ctx context.Context, containerName, plVersion string) (*B
 	if plVersion == "" {
 		plVersion = defaultPlaywrightVersion
 	}
-	args := browserSidecarRunArgs(containerName, plVersion, resolveHostGateway(ctx))
+	args := browserSidecarRunArgs(containerName, plVersion, resolveHostGatewayFn(ctx))
 	cmd := exec.CommandContext(ctx, "container", args...)
 	if out, runErr := cmd.CombinedOutput(); runErr != nil {
 		return nil, fmt.Errorf("start browser sidecar: %w (%s)", runErr, strings.TrimSpace(string(out)))
