@@ -8,6 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Trust this file and the code over older docs.** This file was rewritten 2026-07-16 to match the code. Design docs under `docs/superpowers/specs/` describe components that were removed or never shipped in their described form — a Node ESM supervisor with a Unix control socket, agent playbooks (`lib/agents/`), advisor agents, coordinator orchestration, and the `cspace-context` MCP server (the root `.mcp.json` that once registered `cspace context-server` was deleted; no such command was ever implemented). Known-but-unfixed problems are tracked as findings in `.cspace/context/findings/` — check there before "discovering" a bug, and log new ones there.
 
+**`docs/` is plain markdown, not a site.** The Astro/Starlight docs site that used to live there (`docs/src/`, `astro.config.mjs`, `netlify.toml`, and 7 npm dependencies) was removed on 2026-08-06 — it was unmaintained and several pages documented components that were never shipped. It is deliberately gone; don't reintroduce a docs-site build. What remains is reference markdown that Go code names in user-facing warnings and comments — `devcontainer-subset.md`, `env-cspace.md`, `image-dependencies.md`, `migration-from-cspace-json.md` (plus `superpowers/` design history and `fixtures/`). Renaming or deleting one of those four means updating its reference in `internal/` (e.g. `internal/compose/v2/subset.go`, `internal/devcontainer/validate.go`, `internal/cli/cmd_up.go`).
+
 ## Commands
 
 - `cspace up [name]`, `cspace down`, `cspace attach`, `cspace ports` — sandbox lifecycle
@@ -32,7 +34,11 @@ make check        # fmt-check + vet + lint + test
 cspace image build  # rebuild the sandbox image after Dockerfile/scripts changes
 
 cd lib/agent-supervisor-bun && bun install   # supervisor deps (Bun, not pnpm)
+bun test                                     # supervisor tests
+bun run typecheck                            # supervisor typecheck — NOT run by test or build
 ```
+
+**Typecheck the supervisor after any SDK bump.** `bun test` and `bun build.ts` both use Bun's transpiler, which strips types without checking them — so the supervisor can compile and pass all 45 tests with broken types. Its tests deliberately type the SDK query handle structurally (`routes.ts`) so they run without a real SDK, which means an upstream signature change is invisible to them. `bun run typecheck` (`tsc --noEmit`) is the only thing that catches it; `@anthropic-ai/claude-agent-sdk` 0.3.x widening `Query.interrupt()`'s resolved value was caught exactly this way and nothing else flagged it. It is not wired into `make check`, which covers the Go side only — run it by hand after touching the supervisor or its deps.
 
 **Always build via `make`** (or run `make sync-embedded` first). `internal/assets/embedded/` is gitignored and populated from `lib/` by `make sync-embedded`; a bare `go build`/`go install` on a clean checkout embeds an empty asset tree and fails only at runtime.
 

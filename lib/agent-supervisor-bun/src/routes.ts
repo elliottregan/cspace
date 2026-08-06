@@ -15,8 +15,15 @@ export interface RouteResult {
 // a rejecting interrupt means the task is effectively gone, so that case is
 // folded into the same 409 "no active task" semantics as the no-handle case,
 // rather than letting the rejection escape to Bun's generic 500.
+//
+// The handle is typed structurally (not as the SDK's `Query`) so this module
+// stays testable without constructing a real SDK query. `Promise<unknown>`
+// rather than `Promise<void>` because the SDK widened interrupt()'s resolved
+// value in 0.3.x (now SDKControlInterruptResponse | undefined); we await it
+// purely for the rejection and never read the value, so the widest type that
+// still accepts every shape is the correct constraint here.
 export async function handleInterrupt(
-  q: { interrupt(): Promise<void> } | undefined,
+  q: { interrupt(): Promise<unknown> } | undefined,
 ): Promise<RouteResult> {
   if (!q) {
     return { status: 409, body: { ok: false, error: "no active task" } };
