@@ -1,11 +1,14 @@
 // Package applecontainer implements substrate.Substrate against Apple's
 // `container` CLI (github.com/apple/container).
 //
-// VERSION COUPLING: tested against 1.1.x. The JSON shape changed at the 1.0
+// VERSION COUPLING: tested against 1.2.x. The JSON shape changed at the 1.0
 // boundary — runtime state (state word, startedDate, networks) that 0.12.x
 // emitted flat now nests under a `status` object in both `container inspect`
-// and `container ls --format json` (see inspectRecord / listRecord). Known
-// quirks:
+// and `container ls --format json` (see inspectRecord / listRecord). That
+// shape is unchanged in 1.2.x; the 1.1 -> 1.2 bump was verified by hand
+// against a live 1.2.0 install (inspect's status.networks[].ipv4Address,
+// network inspect's status.ipv4Gateway, ls's nested status, and system
+// status's FIELD/VALUE table all still parse). Known quirks:
 //
 //   - `container inspect` does NOT support a --format flag. We parse JSON.
 //   - `container inspect` of a missing container exits non-zero on 1.x
@@ -15,6 +18,15 @@
 //     daemon binds on 5354 (see internal/cli/cmd_daemon.go).
 //   - `container system kernel set --recommended` must be run by hand on
 //     fresh installs (the apiserver's first start tries to read stdin).
+//   - 1.2.x mounts /proc/sys READ-ONLY inside containers, so in-sandbox
+//     `sysctl -w` fails while netlink-based iptables still works. The
+//     entrypoint's inbound DNAT depends on a sysctl and is gated on it
+//     (cs-finding 2026-08-06-apple-container-1-2-mounts-proc-sys-read-only-
+//     breaking-inbound-dnat).
+//   - The vmnet gateway is NOT a fixed per-version address. A fresh 1.2.0
+//     install allocates 192.168.64.1 — the value the code once called the
+//     "pre-1.0 default" — so it must be discovered, never assumed from the
+//     CLI version (see internal/cli/gateway.go).
 //
 // VersionStatus() reports whether the installed CLI matches the tested
 // minor version. cspace up logs a one-line warning when out of range.
@@ -42,7 +54,7 @@ import (
 // (non-fatal) at cspace up time. Bumping this is a deliberate act: verify
 // the JSON shape of `container inspect` and the other quirks listed in the
 // package doc still hold.
-const supportedMinorVersion = "1.1"
+const supportedMinorVersion = "1.2"
 
 // SupportedMinorVersion returns the Apple Container CLI MAJOR.MINOR version
 // cspace has been tested against. Exposed as a function (rather than the raw
