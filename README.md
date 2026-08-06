@@ -2,8 +2,6 @@
 
 Portable CLI for managing isolated Claude Code devcontainer instances. Spin up multiple independent development environments, each with their own workspace, browser sidecars, and network firewall — then run autonomous Claude agents against GitHub issues.
 
-**[Full documentation](https://cspace-cli.netlify.app/)**
-
 ## Install
 
 ```bash
@@ -11,7 +9,7 @@ curl -fsSL https://raw.githubusercontent.com/elliottregan/cspace/main/install.sh
 source ~/.zshrc  # or restart your shell
 ```
 
-Requires **Docker** with Compose v2 and **jq**. See [prerequisites](https://cspace-cli.netlify.app/getting-started/installation/#prerequisites) for optional dependencies.
+Requires **Docker** with Compose v2 and **jq**.
 
 ## Quick Start
 
@@ -21,8 +19,6 @@ cspace init              # scaffold .cspace.json
 echo 'GH_TOKEN=ghp_...' >> .env   # required for git inside containers
 cspace up                # launch an instance
 ```
-
-See the [quick start guide](https://cspace-cli.netlify.app/getting-started/quick-start/) and [git authentication setup](https://cspace-cli.netlify.app/getting-started/git-authentication/) for details.
 
 ## Usage
 
@@ -38,7 +34,7 @@ cspace tui                          Full-screen dashboard of all containers
 cspace self-update                  Update to latest version
 ```
 
-Full command reference: [CLI docs](https://cspace-cli.netlify.app/cli-reference/overview/)
+Run `cspace <command> --help` for the full reference on any command.
 
 ## How It Works
 
@@ -63,8 +59,6 @@ Instances auto-assign planet names (mercury, venus, earth...) with deterministic
 
 Each sandbox runs a general Claude agent that you steer directly: `cspace send <name> "<text>"` injects a new turn, and `cspace agent status|interrupt <name>` reports or stops an in-flight task. Give a sandbox a standing role via a committed `.cspace/agent.md` (or a one-off `cspace up --role <file>` override) instead of a fixed playbook.
 
-More: [architecture overview](https://cspace-cli.netlify.app/architecture/architecture-overview/)
-
 ## Configuration
 
 Project config lives in `.cspace.json` (committed) with optional `.cspace.local.json` overrides (gitignored):
@@ -81,7 +75,7 @@ Project config lives in `.cspace.json` (committed) with optional `.cspace.local.
 
 Override built-in templates (Dockerfile, agent prompts, compose files) by placing files in `.cspace/`. Run `cspace init --full` to copy all templates for customization.
 
-Full reference: [configuration](https://cspace-cli.netlify.app/configuration/configuration-reference/) | [project services](https://cspace-cli.netlify.app/configuration/project-services/) | [template overrides](https://cspace-cli.netlify.app/configuration/template-overrides/)
+Reference docs live in [`docs/`](./docs): [devcontainer subset](./docs/devcontainer-subset.md) | [env plumbing](./docs/env-cspace.md) | [image dependencies](./docs/image-dependencies.md) | [migrating off `.cspace.json`](./docs/migration-from-cspace-json.md)
 
 ## Development
 
