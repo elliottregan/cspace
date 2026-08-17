@@ -26,20 +26,26 @@ type BakeResult struct {
 // later env_file merge discarded, so a dead PAT reached containers
 // unvalidated while a green preflight said otherwise.
 func (h Host) Bake(res map[string]Resolution, appEnv map[string]string) BakeResult {
-	out := BakeResult{
-		Env:        make(map[string]string, len(appEnv)+len(Keys())),
-		Winners:    make(map[string]Credential),
-		Validities: make(map[string]Validity),
-	}
-	for k, v := range appEnv {
-		if IsOwnedKey(k) {
-			out.Shadowed = append(out.Shadowed, k)
-			continue
-		}
-		out.Env[k] = v
-	}
-	sort.Strings(out.Shadowed)
+	return h.Select(res).Apply(appEnv)
+}
 
+// Selection is the outcome of choosing and verifying credentials, before
+// any project environment is involved.
+//
+// Select and Apply are separate because `cspace up` needs the selection
+// *before* the overlay starts — so the summary line reaches the real
+// terminal rather than being shredded mid-render — but cannot apply it
+// until the compose and devcontainer merges have produced the app env,
+// which happens well after. Splitting them also means verification runs
+// once, not once per phase.
+type Selection struct {
+	Winners    map[string]Credential
+	Validities map[string]Validity
+}
+
+// Select walks each key's candidate stack, verifying as it goes, and
+// applies group policy. It touches no project environment.
+func (h Host) Select(res map[string]Resolution) Selection {
 	picked := make(map[string]Credential)
 	validity := make(map[string]Validity)
 	for _, key := range Keys() {
@@ -51,8 +57,11 @@ func (h Host) Bake(res map[string]Resolution, appEnv map[string]string) BakeResu
 		validity[key] = v
 	}
 
+	out := Selection{
+		Winners:    make(map[string]Credential),
+		Validities: make(map[string]Validity),
+	}
 	for k, c := range ApplyGroupPolicy(picked) {
-		out.Env[k] = c.Value
 		out.Winners[k] = c
 		// Group policy may relabel a credential onto a different key
 		// (Anthropic routing, GitHub mirroring), so carry the validity from
@@ -62,6 +71,28 @@ func (h Host) Bake(res map[string]Resolution, appEnv map[string]string) BakeResu
 		} else if v, ok := validity[k]; ok {
 			out.Validities[k] = v
 		}
+	}
+	return out
+}
+
+// Apply writes the selection over a project's assembled environment.
+func (s Selection) Apply(appEnv map[string]string) BakeResult {
+	out := BakeResult{
+		Env:        make(map[string]string, len(appEnv)+len(Keys())),
+		Winners:    s.Winners,
+		Validities: s.Validities,
+	}
+	for k, v := range appEnv {
+		if IsOwnedKey(k) {
+			out.Shadowed = append(out.Shadowed, k)
+			continue
+		}
+		out.Env[k] = v
+	}
+	sort.Strings(out.Shadowed)
+
+	for k, c := range s.Winners {
+		out.Env[k] = c.Value
 	}
 	return out
 }
