@@ -16,6 +16,7 @@ func TestNewTuiCmdBasics(t *testing.T) {
 	f := cmd.Flags().Lookup("interval")
 	if f == nil {
 		t.Fatal("--interval flag missing")
+		return
 	}
 	if f.DefValue != "2s" {
 		t.Errorf("--interval default = %q, want 2s", f.DefValue)
