@@ -134,7 +134,7 @@ The shared per-project sidecar (`cspace-<project>-browser`) has a stable DNS nam
 
 ## Key patterns
 
-- **Instance naming**: planet names (`mercury`, `venus`, …) with deterministic ports are reserved for the human-facing TUI. Agents spawning sandboxes should use descriptive names (`issue-<n>`, a short task label). Note: explicit names currently bypass collision checks (see finding).
+- **Instance naming**: planet names (`mercury`, `venus`, …) with deterministic ports are reserved for the human-facing TUI. Agents spawning sandboxes should use descriptive names (`issue-<n>`, a short task label). `cspace up` refuses a name a container already holds — auto-naming skips taken names via `pickPlanetName`, and explicit names are checked by `ensureSandboxAvailable` right after the substrate health check, before anything else runs.
 - **Sessions**: per-sandbox at `~/.cspace/sessions/<project>/<sandbox>/` on the host, bind-mounted into the sandbox; wiped by `cspace down`.
 - **Adding a CLI command**: create `newXxxCmd()` in a new file under `internal/cli/`, register it in `root.go`.
 - **Template resolution**: `cspace image build` uses the repo's `lib/templates/Dockerfile` when run from a cspace checkout, otherwise the embedded copy.
