@@ -427,6 +427,22 @@ type inspectRecord struct {
 // `container inspect` does not support a --format flag, so we parse the
 // JSON output. The address is assigned at run time and is not stable across
 // runs of the same sandbox name; callers should snapshot it once at start.
+// InspectRaw returns the raw `container inspect <name>` JSON. Callers that
+// need fields beyond the ones this adapter models — e.g. the container's
+// baked init-process environment, which internal/credentials reads to tell
+// what a running sandbox actually holds — parse it themselves.
+func (a *Adapter) InspectRaw(ctx context.Context, name string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "container", "inspect", name)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("container inspect %s: %w (stderr: %s)",
+			name, err, stderr.String())
+	}
+	return stdout.Bytes(), nil
+}
+
 func (a *Adapter) IP(ctx context.Context, name string) (string, error) {
 	cmd := exec.CommandContext(ctx, "container", "inspect", name)
 	var stdout, stderr bytes.Buffer

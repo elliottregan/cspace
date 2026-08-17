@@ -68,3 +68,28 @@ func TestValidateMinimalOK(t *testing.T) {
 		t.Fatalf("validate: %v", err)
 	}
 }
+
+func TestValidateRejectsExtractCredentialsTargetingCspaceKeys(t *testing.T) {
+	// The entrypoint sources /sessions/extracted.env at runtime, which would
+	// shadow the baked credential after Bake guarantees it cannot be.
+	for _, key := range []string{"GH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"} {
+		c := &Config{}
+		c.Customizations.Cspace.ExtractCredentials = []ExtractCredential{
+			{From: "host", Exec: []string{"echo", "x"}, Env: key},
+		}
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), key) {
+			t.Errorf("Validate() for %s = %v, want an error naming the key", key, err)
+		}
+	}
+}
+
+func TestValidateAllowsExtractCredentialsForAppKeys(t *testing.T) {
+	c := &Config{}
+	c.Customizations.Cspace.ExtractCredentials = []ExtractCredential{
+		{From: "host", Exec: []string{"echo", "x"}, Env: "CONVEX_DEPLOY_KEY"},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil for a non-cspace key", err)
+	}
+}

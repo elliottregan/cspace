@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/elliottregan/cspace/internal/credentials"
 	"github.com/elliottregan/cspace/internal/registry"
 	"github.com/elliottregan/cspace/internal/substrate"
 	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
@@ -394,9 +395,8 @@ func scutilHasCspaceRouting() bool {
 func ProbeAnthropicCredentials(ctx context.Context) ProbeResult {
 	r := ProbeResult{Subsystem: "Anthropic credentials"}
 	projectRoot, userHome := credentialRoots()
-	for _, key := range []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"} {
-		r.Checks = append(r.Checks, credentialProbeCheck(projectRoot, userHome, key))
-	}
+	r.Checks = append(r.Checks, credentialProbeChecks(
+		projectRoot, userHome, []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"})...)
 	return r
 }
 
@@ -404,9 +404,8 @@ func ProbeAnthropicCredentials(ctx context.Context) ProbeResult {
 func ProbeGitHubCredentials(ctx context.Context) ProbeResult {
 	r := ProbeResult{Subsystem: "GitHub credentials"}
 	projectRoot, userHome := credentialRoots()
-	for _, key := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN"} {
-		r.Checks = append(r.Checks, credentialProbeCheck(projectRoot, userHome, key))
-	}
+	r.Checks = append(r.Checks, credentialProbeChecks(
+		projectRoot, userHome, []string{"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN"})...)
 	return r
 }
 
@@ -420,34 +419,153 @@ func credentialRoots() (projectRoot, userHome string) {
 	return projectRoot, userHome
 }
 
-// credentialProbeCheck wraps credentialSource into a ProbeCheck.
+// credentialProbeChecks reports both sides of the credential story: what
+// the host resolves now, and what each running sandbox actually carries.
 //
-//   - "not reachable" => Fail
-//   - auto-discovered Claude Code OAuth (with or without expiry hint) => Warn,
-//     because OAuth expires and may need refresh
-//   - other auto-discovered (gh) => Pass with a note
-//   - explicit project / user file / Keychain => Pass
-func credentialProbeCheck(projectRoot, userHome, key string) ProbeCheck {
-	source, hint := credentialSource(projectRoot, userHome, key)
-	check := ProbeCheck{
-		Title: key + ": " + source,
+// Reporting only the first is what let doctor show a green check while a
+// container held a dead token from an entirely different source. Credentials
+// are baked in at create time and never refreshed, so host resolution
+// describes what a NEW sandbox would get — never what a running one has.
+func credentialProbeChecks(projectRoot, userHome string, keys []string) []ProbeCheck {
+	host := credentials.ProductionHost()
+	project := projectName()
+	resolved, err := host.ResolveErr(project, projectRoot, userHome, nil)
+	if err != nil {
+		return []ProbeCheck{{
+			Status:  ProbeFail,
+			Title:   "credential resolution failed",
+			Details: []string{err.Error()},
+		}}
 	}
-	switch {
-	case source == "not reachable":
-		check.Status = ProbeFail
-		if hint != "" {
-			check.Details = []string{hint}
+	selection := host.Select(resolved)
+
+	var checks []ProbeCheck
+	for _, key := range keys {
+		winner, shipping := selection.Winners[key]
+		if !shipping {
+			if len(resolved[key].Candidates) == 0 {
+				checks = append(checks, ProbeCheck{
+					Status: ProbeFail,
+					Title:  key + ": not reachable",
+					Details: []string{"no credential available; run `cspace keychain init` or set " +
+						key + " in .cspace/secrets.env"},
+				})
+			}
+			continue
 		}
-	case strings.HasPrefix(source, "auto-discovered (Claude Code OAuth)"):
-		check.Status = ProbeWarn
-		if hint != "" {
-			check.Details = []string{hint}
+		check := ProbeCheck{Title: key + ": " + winner.Source.String()}
+		switch {
+		case selection.Validities[key] == credentials.ValidityRejected:
+			check.Status = ProbeFail
+			check.Details = []string{"the provider rejected this credential (401)"}
+		case !winner.ExpiresAt.IsZero():
+			check.Status = ProbeWarn
+			check.Details = []string{fmt.Sprintf(
+				"expires %s; refreshes when host runs `claude`; sandbox may lose auth on long sessions",
+				winner.ExpiresAt.Local().Format("2006-01-02 15:04 MST"))}
+		default:
+			check.Status = ProbePass
 		}
-	default:
-		check.Status = ProbePass
-		// Discard the hint on pass — explicit-source users don't need a note.
+		checks = append(checks, check)
 	}
-	return check
+
+	return checks
+}
+
+// ProbeSandboxCredentials reports what each running sandbox actually carries,
+// as its own subsystem so it appears once rather than under both credential
+// families.
+func ProbeSandboxCredentials(ctx context.Context) ProbeResult {
+	r := ProbeResult{Subsystem: "Sandbox credentials"}
+	projectRoot, userHome := credentialRoots()
+	host := credentials.ProductionHost()
+	project := projectName()
+	resolved, err := host.ResolveErr(project, projectRoot, userHome, nil)
+	if err != nil {
+		r.Checks = append(r.Checks, ProbeCheck{
+			Status:  ProbeFail,
+			Title:   "credential resolution failed",
+			Details: []string{err.Error()},
+		})
+		return r
+	}
+	r.Checks = append(r.Checks, credentialContainerChecks(ctx, project, host.Select(resolved))...)
+	if len(r.Checks) == 0 {
+		r.Checks = append(r.Checks, ProbeCheck{
+			Status: ProbePass,
+			Title:  "no running sandboxes for this project",
+		})
+	}
+	return r
+}
+
+// credentialContainerChecks inspects each registry-tracked sandbox for the
+// project and compares its baked credentials against what the host resolves.
+//
+// Only workspace sandboxes are enumerated. Compose sidecars and the shared
+// browser sidecar legitimately carry different environments, so including
+// them would report every one as DIVERGED.
+func credentialContainerChecks(ctx context.Context, project string, sel credentials.Selection) []ProbeCheck {
+	path, err := registry.DefaultPath()
+	if err != nil {
+		return nil
+	}
+	entries, err := (&registry.Registry{Path: path}).List()
+	if err != nil {
+		return []ProbeCheck{{
+			Status:  ProbeWarn,
+			Title:   "sandbox credentials: unavailable",
+			Details: []string{"could not read the sandbox registry: " + err.Error()},
+		}}
+	}
+
+	a := applecontainer.New()
+	if !a.Available() {
+		return []ProbeCheck{{
+			Status:  ProbeWarn,
+			Title:   "sandbox credentials: unavailable",
+			Details: []string{"apple `container` CLI not on PATH; host resolution reported above"},
+		}}
+	}
+
+	var checks []ProbeCheck
+	for _, e := range entries {
+		if e.Project != project || e.Name == "" {
+			continue
+		}
+		container := fmt.Sprintf("cspace-%s-%s", e.Project, e.Name)
+		raw, err := a.InspectRaw(ctx, container)
+		if err != nil {
+			continue // not running; nothing baked to compare
+		}
+		baked, err := credentials.ParseBakedEnv(raw)
+		if err != nil {
+			checks = append(checks, ProbeCheck{
+				Status:  ProbeWarn,
+				Title:   e.Name + ": baked env unreadable",
+				Details: []string{err.Error()},
+			})
+			continue
+		}
+		diverged := credentials.Diverged(baked, sel.Winners)
+		if len(diverged) == 0 {
+			checks = append(checks, ProbeCheck{
+				Status: ProbePass,
+				Title:  e.Name + ": baked credentials match host resolution",
+			})
+			continue
+		}
+		checks = append(checks, ProbeCheck{
+			Status: ProbeFail,
+			Title:  e.Name + ": DIVERGED from host resolution",
+			Details: []string{
+				"stale keys: " + strings.Join(diverged, ", "),
+				"baked env is immutable for a container's life; " +
+					"`cspace down " + e.Name + " && cspace up " + e.Name + "` to re-bake",
+			},
+		})
+	}
+	return checks
 }
 
 // ProbeSandboxes summarizes the sandbox registry: how many alive, how many

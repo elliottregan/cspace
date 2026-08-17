@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/elliottregan/cspace/internal/credentials"
 	"github.com/elliottregan/cspace/internal/secrets"
 	"github.com/spf13/cobra"
 )
@@ -32,21 +34,80 @@ Subcommands manage layer 3. Layers 1, 2 take precedence; layer 4 is fallback.`,
 }
 
 func newKeychainInitCmd() *cobra.Command {
-	return &cobra.Command{
+	var projectScoped bool
+	var projectNameFlag string
+	c := &cobra.Command{
 		Use:   "init",
 		Short: "Seed cspace credentials into macOS Keychain",
+		Long: "Seed cspace credentials into the macOS Keychain.\n\n" +
+			"With --project, entries are stored as cspace-<project>-<KEY> and outrank\n" +
+			"the global cspace-<KEY> entries for that project only. Use it to give a\n" +
+			"project's sandboxes a narrower token than your personal one — a host\n" +
+			"`gh` login carries repo scope over every repository you can reach.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if runtime.GOOS != "darwin" {
 				_, _ = fmt.Fprintln(cmd.OutOrStdout(),
 					"`cspace keychain init` is macOS-only. On Linux, put credentials in ~/.cspace/secrets.env.")
 				return nil
 			}
-			return runKeychainInit(cmd.OutOrStdout(), os.Stdin)
+			scope := ""
+			if projectScoped {
+				name := projectNameFlag
+				explicit := name != ""
+				if !explicit && cfg != nil {
+					name = cfg.Project.Name
+					// cfg.Project.Name auto-fills from the directory basename,
+					// so only treat it as explicit when .cspace.json set it.
+					explicit = configDeclaresProjectName()
+				}
+				if err := validateProjectScope(name, explicit); err != nil {
+					return err
+				}
+				scope = name
+			}
+			return runKeychainInit(cmd.OutOrStdout(), os.Stdin, scope)
 		},
 	}
+	c.Flags().BoolVar(&projectScoped, "project", false,
+		"store project-scoped entries (cspace-<project>-<KEY>) that outrank the global ones")
+	c.Flags().StringVar(&projectNameFlag, "project-name", "",
+		"explicit project name for --project (defaults to .cspace.json project.name)")
+	return c
 }
 
-func runKeychainInit(out io.Writer, in io.Reader) error {
+// configDeclaresProjectName reports whether .cspace.json actually sets
+// project.name, as opposed to config.Load auto-filling it from the directory
+// basename. A basename-keyed Keychain entry detaches silently when the
+// directory is renamed, dropping resolution to the broader global credential.
+func configDeclaresProjectName() bool {
+	if cfg == nil || cfg.ProjectRoot == "" {
+		return false
+	}
+	raw, err := os.ReadFile(filepath.Join(cfg.ProjectRoot, ".cspace.json"))
+	if err != nil {
+		return false
+	}
+	var probe struct {
+		Project struct {
+			Name string `json:"name"`
+		} `json:"project"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return false
+	}
+	return probe.Project.Name != ""
+}
+
+// keychainService returns the Keychain service name for a key, scoped to a
+// project when scope is non-empty.
+func keychainService(scope, key string) string {
+	if scope == "" {
+		return "cspace-" + key
+	}
+	return "cspace-" + scope + "-" + key
+}
+
+func runKeychainInit(out io.Writer, in io.Reader, scope string) error {
 	reader := bufio.NewReader(in)
 
 	_, _ = fmt.Fprintln(out, "cspace keychain init — store credentials in macOS Keychain")
@@ -57,7 +118,7 @@ func runKeychainInit(out io.Writer, in io.Reader) error {
 
 	// Anthropic credential — strongly recommend an API key (long-lived).
 	{
-		existing, err := secrets.ReadKeychain("cspace-ANTHROPIC_API_KEY")
+		existing, err := secrets.ReadKeychain(keychainService(scope, "ANTHROPIC_API_KEY"))
 		if err != nil {
 			return fmt.Errorf("read keychain cspace-ANTHROPIC_API_KEY: %w", err)
 		}
@@ -96,12 +157,12 @@ func runKeychainInit(out io.Writer, in io.Reader) error {
 		case !strings.HasPrefix(val, "sk-ant-"):
 			_, _ = fmt.Fprintln(out, "  (input does not start with `sk-ant-`; skipping to avoid storing a typo)")
 		case strings.HasPrefix(val, "sk-ant-oat"):
-			if err := secrets.WriteKeychain("cspace-CLAUDE_CODE_OAUTH_TOKEN", val); err != nil {
+			if err := secrets.WriteKeychain(keychainService(scope, "CLAUDE_CODE_OAUTH_TOKEN"), val); err != nil {
 				return fmt.Errorf("write keychain cspace-CLAUDE_CODE_OAUTH_TOKEN: %w", err)
 			}
 			_, _ = fmt.Fprintln(out, "  stored as OAuth token at Keychain service \"cspace-CLAUDE_CODE_OAUTH_TOKEN\".")
 		default:
-			if err := secrets.WriteKeychain("cspace-ANTHROPIC_API_KEY", val); err != nil {
+			if err := secrets.WriteKeychain(keychainService(scope, "ANTHROPIC_API_KEY"), val); err != nil {
 				return fmt.Errorf("write keychain cspace-ANTHROPIC_API_KEY: %w", err)
 			}
 			_, _ = fmt.Fprintln(out, "  stored at Keychain service \"cspace-ANTHROPIC_API_KEY\".")
@@ -111,7 +172,7 @@ func runKeychainInit(out io.Writer, in io.Reader) error {
 
 	// GitHub credential — auto-discovery from gh CLI is fine for most users.
 	{
-		existing, err := secrets.ReadKeychain("cspace-GH_TOKEN")
+		existing, err := secrets.ReadKeychain(keychainService(scope, "GH_TOKEN"))
 		if err != nil {
 			return fmt.Errorf("read keychain cspace-GH_TOKEN: %w", err)
 		}
@@ -139,7 +200,7 @@ func runKeychainInit(out io.Writer, in io.Reader) error {
 		case "":
 			_, _ = fmt.Fprintln(out, "  (skipped)")
 		default:
-			if err := secrets.WriteKeychain("cspace-GH_TOKEN", val); err != nil {
+			if err := secrets.WriteKeychain(keychainService(scope, "GH_TOKEN"), val); err != nil {
 				return fmt.Errorf("write keychain cspace-GH_TOKEN: %w", err)
 			}
 			_, _ = fmt.Fprintln(out, "  stored at Keychain service \"cspace-GH_TOKEN\".")
@@ -180,6 +241,13 @@ func runKeychainStatus(out io.Writer) error {
 		projectRoot = cfg.ProjectRoot
 	}
 
+	host := credentials.ProductionHost()
+	resolved, err := host.ResolveErr(projectName(), projectRoot, userHome, nil)
+	if err != nil {
+		return fmt.Errorf("resolve credentials: %w", err)
+	}
+	selection := host.Select(resolved)
+
 	families := []struct {
 		label   string
 		members []string
@@ -191,10 +259,29 @@ func runKeychainStatus(out io.Writer) error {
 	for _, fam := range families {
 		_, _ = fmt.Fprintf(out, "%s:\n", fam.label)
 		for _, key := range fam.members {
-			source, hint := credentialSource(projectRoot, userHome, key)
-			_, _ = fmt.Fprintf(out, "  %s\n    source: %s\n", key, source)
-			if hint != "" {
-				_, _ = fmt.Fprintf(out, "    note:   %s\n", hint)
+			winner, shipping := selection.Winners[key]
+			if !shipping {
+				_, _ = fmt.Fprintf(out, "  %s\n    source: not shipped\n", key)
+				if len(resolved[key].Candidates) > 0 {
+					// Resolvable but displaced by group policy: the Anthropic
+					// carriers are mutually exclusive, so naming the winner
+					// here prevents the "both carriers auto-discovered" row
+					// that the old parallel implementation could print.
+					_, _ = fmt.Fprintf(out, "    note:   resolvable, but another carrier in this group ships instead\n")
+				}
+				continue
+			}
+			_, _ = fmt.Fprintf(out, "  %s\n    source: %s\n", key, describeSource(winner))
+			if v, ok := selection.Validities[key]; ok && v != credentials.ValidityUnknown {
+				_, _ = fmt.Fprintf(out, "    status: %s\n", v)
+			}
+			if !winner.ExpiresAt.IsZero() {
+				_, _ = fmt.Fprintf(out, "    note:   expires %s; refreshes when host runs `claude`; "+
+					"sandbox may lose auth on long sessions\n",
+					winner.ExpiresAt.Local().Format("2006-01-02 15:04 MST"))
+			}
+			for _, c := range resolved[key].Candidates[1:] {
+				_, _ = fmt.Fprintf(out, "    also:   %s (outranked)\n", describeSource(c))
 			}
 		}
 		_, _ = fmt.Fprintln(out, "")
@@ -202,61 +289,23 @@ func runKeychainStatus(out io.Writer) error {
 	return nil
 }
 
-// credentialSource returns the first reachable source for a key and an
-// optional hint (e.g. "expires soon" for the OAuth fallback). Mirrors the
-// resolution order in secrets.Load() but reports source labels instead of
-// returning the value itself — values are never printed.
-func credentialSource(projectRoot, userHome, key string) (source, hint string) {
-	// Layer 1: project secrets file.
-	if projectRoot != "" {
-		path := filepath.Join(projectRoot, ".cspace", "secrets.env")
-		if hasKey(path, key) {
-			return "project secrets file (" + path + ")", ""
-		}
+// describeSource renders a credential's origin without ever printing a value.
+func describeSource(c credentials.Credential) string {
+	if c.Detail == "" {
+		return c.Source.String()
 	}
-	// Layer 2: user secrets file.
-	if userHome != "" {
-		path := filepath.Join(userHome, ".cspace", "secrets.env")
-		if hasKey(path, key) {
-			return "user secrets file (" + path + ")", ""
-		}
-	}
-	// Layer 3: cspace-<KEY> Keychain entry.
-	val, _ := secrets.ReadKeychain("cspace-" + key)
-	if val != "" {
-		return "macOS Keychain (cspace-" + key + ")", ""
-	}
-	// Layer 4: auto-discovery — only relevant for canonical names.
-	switch key {
-	case "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN":
-		if oauth, expires, _ := secrets.DiscoverClaudeOauthToken(); oauth != "" {
-			hint := "refreshes when host runs `claude`; sandbox may lose auth on long sessions"
-			if !expires.IsZero() {
-				hint = fmt.Sprintf("expires %s; %s",
-					expires.Local().Format("2006-01-02 15:04 MST"), hint)
-			}
-			return "auto-discovered (Claude Code OAuth)", hint
-		}
-	case "GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN":
-		if gh, _ := secrets.DiscoverGhAuthToken(); gh != "" {
-			return "auto-discovered (gh auth token)", ""
-		}
-	}
-	return "not reachable", "no credential available; run `cspace keychain init` or set " + key + " in .cspace/secrets.env"
+	return c.Source.String() + " (" + c.Detail + ")"
 }
 
-// hasKey reports whether the dotenv file at path defines the named key.
-// Returns false when the file is missing or doesn't define the key.
-func hasKey(path, key string) bool {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
+// validateProjectScope guards `cspace keychain init --project`. The project
+// name must be explicit — set in .cspace.json's project.name or passed by
+// flag — never derived from the directory basename, which silently detaches
+// the scoped entry when a folder is renamed and drops resolution to the
+// broader global credential without saying so.
+func validateProjectScope(name string, explicit bool) error {
+	if name == "" || !explicit || name == "default" {
+		return fmt.Errorf("`keychain init --project` needs an explicit project name: " +
+			"set project.name in .cspace.json, or pass --project-name")
 	}
-	prefix := key + "="
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), prefix) {
-			return true
-		}
-	}
-	return false
+	return nil
 }
