@@ -59,46 +59,74 @@ self-hosted backend URL, the workspace host) continue to ride the existing
 
 ## Precedence (stated honestly)
 
-`.env.cspace` only wins **among `env_file` entries** — specifically, it wins
-over `.env` because it's declared later in the `env_file:` list. Beyond that,
-here is the actual merge order `cspace up` applies (later steps overwrite
-earlier ones on key collision — see `internal/cli/cmd_up.go`):
+There are two separate orders, and conflating them is what produced cspace's
+worst credential bug. Non-credential keys merge as they always have; the five
+cspace-owned credential keys do not participate in that merge at all.
 
-1. `.cspace/secrets.env` (cspace-delivered secrets) — merged into the env map
-   first.
-2. Compose service `environment:`, which includes whatever compose-go already
-   resolved from `env_file:` entries — i.e. **`.env` and `.env.cspace`** —
-   merges next, overwriting same-named keys from step 1.
-3. devcontainer.json `containerEnv` merges after that.
-4. `cspace up --env KEY=VALUE` merges after step 3.
+### Non-credential keys
 
-So, highest to lowest (for non-credential keys): **`--env` > devcontainer
-`containerEnv` > compose `env_file` (`.env.cspace` / `.env`) >
-`.cspace/secrets.env`**.
+Later steps overwrite earlier ones (`internal/cli/cmd_up.go`):
 
-**Known issue (credential keys):** several credential passthrough steps
-currently run *after* the `--env` merge — host-shell `ANTHROPIC_API_KEY` /
-`CLAUDE_CODE_OAUTH_TOKEN` / `GH_TOKEN`, the GitHub 401-fallback, and the
-GitHub token family propagation — so for those keys an ambient host value can
-silently override an explicit `--env`. The intended contract is "`--env`
-always wins"; the gap is tracked in
-`.cspace/context/findings/2026-07-16-env-precedence-smeared-env-flag-loses-to-ambient-credentials.md`.
-Until it's fixed, don't rely on `--env` to override a credential that's also
-set in your host shell.
+1. `.cspace/secrets.env` — arbitrary keys a project or user put there
+2. Compose service `environment:`, including whatever compose-go resolved from
+   `env_file:` entries — i.e. **`.env` and `.env.cspace`**
+3. devcontainer.json `containerEnv`
+4. `cspace up --env KEY=VALUE`
 
-**Security caveat:** because `.env.cspace` out-ranks `.cspace/secrets.env` in
-this order, a project that redeclares one of cspace's own secret key names
-(`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`,
-`GITHUB_PERSONAL_ACCESS_TOKEN`) in `.env.cspace` **silently overrides the
-delivered secret** — the sandbox ends up running with whatever `.env.cspace`
-set (often blank or stale) instead of the credential cspace loaded from the
-keychain/secrets file, with no warning. `.env.cspace` must not redeclare
-cspace secret keys.
+Highest to lowest: **`--env` > `containerEnv` > compose `env_file`
+(`.env.cspace` / `.env`) > `.cspace/secrets.env`**. `.env.cspace` wins over
+`.env` because it is declared later in the `env_file:` list.
 
-This ordering is arguably surprising — one might expect a cspace-delivered
-secret to always win over a project's committed override file — and is
-tracked as a possible follow-up. The above is what ships today, not an
-aspiration; don't design around a "secrets always win" assumption.
+### The five cspace-owned credential keys
+
+`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`,
+`GITHUB_PERSONAL_ACCESS_TOKEN` are resolved by `internal/credentials` and
+applied **after** every merge above. Compose `env_file` and `containerEnv` are
+ignored for them, unconditionally. Order, highest first:
+
+1. `--env KEY=VALUE`
+2. Project Keychain — `cspace-<project>-<KEY>`
+3. Global Keychain — `cspace-<KEY>`
+4. Legacy `secrets.env` (project file, then user file)
+5. Ambient host shell
+6. Auto-discovery (`gh auth token`; the host `claude /login` Keychain entry)
+
+`--env` genuinely beats ambient host-shell credentials now, closing the gap
+that `2026-07-16-env-precedence-smeared-env-flag-loses-to-ambient-credentials`
+tracked.
+
+### What this knowingly breaks
+
+Making the rule absolute means three cases regress. This is deliberate — the
+alternative was a fallback rung or a per-project opt-out, both declined in
+favour of a rule with no exceptions.
+
+1. **A project whose `.env` was its only credential source loses it.** No
+   Keychain entry, no `secrets.env`, no host `gh` login → the sandbox
+   previously got a working token via the compose merge and now gets none. The
+   `up` summary line reports the key as unresolved.
+2. **A project pinning a deliberately narrow token gets the broad one.** The
+   remedy is `cspace keychain init --project`, which stores the narrow token as
+   `cspace-<project>-<KEY>` where it outranks the global entry. The summary
+   line names the winning scope, so the substitution is visible.
+3. **A project whose *app code* reads one of the five names gets the user's
+   personal credential.** `ANTHROPIC_API_KEY` and `GITHUB_TOKEN` are not
+   cspace-invented names; an app billing its own Anthropic account from `.env`
+   will instead see the host user's key. **There is no opt-out** — projects in
+   this position must rename their app-facing variable.
+
+A quieter change affects anyone with **both** a `secrets.env` entry and a
+Keychain entry for the same key: the winner flips from file to Keychain.
+`cspace keychain status` shows the new winner.
+
+### Baked env is immutable
+
+Credentials are written into the container at create time and never refreshed.
+No host-side change reaches a running sandbox; `cspace down <name> && cspace up
+<name>` is the only re-bake path. `cspace doctor` reads each running sandbox's
+baked env and reports divergence from current host resolution — host-side
+probing alone cannot see it, which is how a dead token once sat behind a green
+check.
 
 ## Naming caveat
 
