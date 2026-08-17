@@ -193,16 +193,72 @@ fi
 
 IPTABLES=/usr/sbin/iptables
 SYSCTL=/usr/sbin/sysctl
+RELAY=/usr/local/bin/cspace-inbound-relay.mjs
 if [ -x "$IPTABLES" ] && [ -x "$SYSCTL" ]; then
     # Pick the primary external interface (eth0 on Apple Container).
     ext_if=$(ip -o route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}')
     if [ -n "$ext_if" ]; then
         sudo "$SYSCTL" -w "net.ipv4.conf.${ext_if}.route_localnet=1" >/dev/null 2>&1 || true
         sudo "$SYSCTL" -w "net.ipv4.conf.all.route_localnet=1" >/dev/null 2>&1 || true
-        # Idempotency: check whether the rule already exists before
-        # appending — useful if the entrypoint is re-run for any reason.
-        if ! sudo "$IPTABLES" -t nat -C PREROUTING -i "$ext_if" -p tcp -j DNAT --to-destination 127.0.0.1 2>/dev/null; then
-            sudo "$IPTABLES" -t nat -A PREROUTING -i "$ext_if" -p tcp -j DNAT --to-destination 127.0.0.1 2>/dev/null || true
+
+        # VERIFY the sysctl actually took — do not assume. Apple Container
+        # 1.2.0 mounts /proc/sys read-only, so the writes above fail while
+        # the DNAT below still installs successfully. That combination is
+        # worse than doing nothing: every inbound TCP packet gets rewritten
+        # to 127.0.0.1 and then dropped by the martian filter, which
+        # blackholes the supervisor's own control port and hangs `cspace up`
+        # for 60s with a symptom that points nowhere near the cause.
+        # (cs-finding 2026-08-06-apple-container-1-2-mounts-proc-sys-read-only-breaking-inbound-dnat)
+        # The kernel ORs conf/all with conf/<if> (IN_DEV_ORCONF), so either
+        # being 1 is enough — check both rather than assuming the two writes
+        # above always succeed or fail together. They do today, but a
+        # route_localnet arriving preset via conf/all (e.g. a --kernel-arg
+        # sysctl on Container 1.2.0+) would otherwise send us down the
+        # fallback path unnecessarily.
+        rl_if=$(cat "/proc/sys/net/ipv4/conf/${ext_if}/route_localnet" 2>/dev/null || echo 0)
+        rl_all=$(cat /proc/sys/net/ipv4/conf/all/route_localnet 2>/dev/null || echo 0)
+        if [ "$rl_if" = "1" ] || [ "$rl_all" = "1" ]; then
+            # Idempotency: check whether the rule already exists before
+            # appending — useful if the entrypoint is re-run for any reason.
+            if ! sudo "$IPTABLES" -t nat -C PREROUTING -i "$ext_if" -p tcp -j DNAT --to-destination 127.0.0.1 2>/dev/null; then
+                sudo "$IPTABLES" -t nat -A PREROUTING -i "$ext_if" -p tcp -j DNAT --to-destination 127.0.0.1 2>/dev/null || true
+            fi
+        else
+            # route_localnet is unavailable (read-only /proc/sys). Remove any
+            # stale DNAT rule a previous boot may have left behind, then fall
+            # back to the userspace relay, which needs neither sysctl nor
+            # netfilter. Same outcome — loopback-bound dev servers reachable
+            # from outside with no project-side config — at the cost of a
+            # short discovery delay.
+            sudo "$IPTABLES" -t nat -D PREROUTING -i "$ext_if" -p tcp -j DNAT --to-destination 127.0.0.1 2>/dev/null || true
+            if command -v node >/dev/null 2>&1 && [ -f "$RELAY" ]; then
+                echo "[entrypoint] route_localnet unavailable; using userspace inbound relay"
+                # Bind address comes from the interface we already resolved via
+                # `ip route get`, not from the relay re-guessing it: enumerating
+                # non-internal IPv4s picks the first non-`lo` interface, which
+                # with docker-in-docker could be docker0 rather than eth0.
+                CSPACE_RELAY_BIND=$(ip -4 -o addr show dev "$ext_if" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
+                export CSPACE_RELAY_BIND
+                # Idempotency: a re-run must not fork a second supervisor, which
+                # would EADDRINUSE-loop against every port the first one holds.
+                if pgrep -f "cspace-inbound-relay" >/dev/null 2>&1; then
+                    echo "[entrypoint] inbound relay already running; not starting a second"
+                else
+                    (
+                        while true; do
+                            # `|| true` is load-bearing: this subshell inherits
+                            # `set -e` from line 10, so without it the loop would
+                            # terminate on the relay's FIRST nonzero exit and never
+                            # respawn — silently losing inbound reachability with no
+                            # log line. Same reason as the CDP loop below.
+                            node "$RELAY" >> /tmp/cspace-inbound-relay.log 2>&1 || true
+                            sleep 1
+                        done
+                    ) &
+                fi
+            else
+                echo "[entrypoint] WARNING: route_localnet unavailable and no node/relay; services must bind 0.0.0.0 to be reachable"
+            fi
         fi
     fi
 fi
@@ -238,7 +294,10 @@ net.createServer((client) => {
 RELAY
         (
             while true; do
-                node /tmp/cspace-cdp-relay.mjs >> /tmp/cspace-cdp-relay.log 2>&1
+                # `|| true`: this subshell inherits `set -e` (line 10), so a
+                # nonzero relay exit would kill the respawn loop outright and
+                # leave browser MCP silently unable to reach the sidecar.
+                node /tmp/cspace-cdp-relay.mjs >> /tmp/cspace-cdp-relay.log 2>&1 || true
                 sleep 1
             done
         ) &
