@@ -104,6 +104,17 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				return fmt.Errorf("apple container: %w. Run `container system start` and try again", err)
 			}
 
+			// Refuse a name a container already holds, before anything else
+			// runs. This has to precede the early registry write further down
+			// — that write would replace a running sandbox's control token
+			// with one its supervisor has never seen, breaking `send` and
+			// `agent` against a healthy sandbox. Placing it here also means a
+			// doomed boot costs nothing: no daemon spawn, no clone, no
+			// credential resolution.
+			if err := ensureSandboxAvailable(ctx, project, name); err != nil {
+				return err
+			}
+
 			projectRoot := ""
 			if cfg != nil {
 				projectRoot = cfg.ProjectRoot
@@ -1267,6 +1278,39 @@ func validateSandboxName(project, name string) error {
 			project)
 	}
 	return nil
+}
+
+// sandboxContainerExists is a package seam so tests can script container
+// existence without shelling out to the container CLI.
+var sandboxContainerExists = containerExists
+
+// ensureSandboxAvailable fails fast when a container already holds this
+// sandbox's name.
+//
+// `container run -d --name` rejects a duplicate name and the adapter has no
+// adopt path, so such a boot can never succeed — but without this check it
+// fails deep inside the pipeline, *after* the early registry write at the
+// PhaseBoot step. That write replaces the running sandbox's control token
+// with a freshly generated one the running supervisor has never seen, so
+// `cspace send` and `cspace agent` start failing auth against a sandbox that
+// is otherwise perfectly healthy. The token is baked into container env at
+// create time and immutable for the container's life, so there is no way to
+// hand the new token to the old container.
+//
+// Auto-naming already avoids collisions (pickPlanetName skips taken names).
+// An explicitly named sandbox bypassed that entirely, which is the path
+// agents use by convention — descriptive names like issue-142 rather than
+// planet names.
+func ensureSandboxAvailable(ctx context.Context, project, name string) error {
+	containerName := fmt.Sprintf("cspace-%s-%s", project, name)
+	if !sandboxContainerExists(ctx, containerName) {
+		return nil
+	}
+	return fmt.Errorf(
+		"sandbox %s already exists for project %s.\n"+
+			"  attach to it:  cspace attach %s\n"+
+			"  or replace it: cspace down %s && cspace up %s",
+		name, project, name, name, name)
 }
 
 func randHex(n int) string {

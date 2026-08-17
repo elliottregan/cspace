@@ -2,7 +2,7 @@
 title: custom sandbox names bypass collision detection; registry blind-overwrites
 date: 2026-07-16
 kind: finding
-status: open
+status: resolved
 category: bug
 tags: registry, naming, cmd-up
 ---
@@ -17,3 +17,15 @@ tags: registry, naming, cmd-up
 ## Updates
 ### 2026-07-17T03:42:21Z — @agent — status: open
 filed from the 2026-07-16 hardening survey
+
+### 2026-08-17 — @agent — status: resolved
+`ensureSandboxAvailable` (cmd_up.go) rejects a sandbox name a container
+already holds, running immediately after the Apple Container health check.
+validateSandboxName still only guards the reserved "browser" name; the
+collision check is separate because it needs the substrate, and placing it
+right after HealthCheck keeps a doomed boot from costing anything.
+
+Found again while closing
+`2026-08-17-up-against-a-running-container-reregisters-a-fresh-token`, where
+the missing check had a second consequence: the boot got far enough to
+overwrite the running sandbox's control token before failing.
