@@ -134,5 +134,11 @@ func remaining(expiresAt, now time.Time) string {
 	if d < time.Minute {
 		return "under a minute"
 	}
-	return d.Round(time.Minute).String()
+	d = d.Round(time.Minute)
+	h := int(d / time.Hour)
+	m := int((d % time.Hour) / time.Minute)
+	if h == 0 {
+		return fmt.Sprintf("%dm", m)
+	}
+	return fmt.Sprintf("%dh%02dm", h, m)
 }
