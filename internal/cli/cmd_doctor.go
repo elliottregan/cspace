@@ -45,6 +45,7 @@ func runDoctor(ctx context.Context, out io.Writer) error {
 		ProbeDns(ctx),
 		ProbeAnthropicCredentials(ctx),
 		ProbeGitHubCredentials(ctx),
+		ProbeSandboxCredentials(ctx),
 		ProbeSandboxes(ctx),
 	}
 

@@ -2,7 +2,7 @@
 title: env precedence is smeared across cmd_up.go; --env loses to ambient credentials
 date: 2026-07-16
 kind: finding
-status: open
+status: resolved
 category: bug
 tags: env, secrets, precedence, cmd-up, github, hardening
 ---
@@ -28,3 +28,12 @@ before the compose-env/containerEnv/`--env` merges), joining the comment-ordered
 key set — a project env file declaring `CSPACE_AGENT_MODEL` silently clobbers
 `--model`. The branch did not worsen credential ordering, but the resolver
 extraction this finding proposes should include this key when it lands.
+
+### 2026-08-17 — @agent — status: resolved
+Closed by the credential-resolution rewrite. `--env` is now rank 1 of a single
+total precedence order in `internal/credentials`, above project Keychain,
+global Keychain, legacy secrets.env, ambient host shell, and auto-discovery.
+The ad-hoc `os.Getenv` passthroughs that ran after the `--env` merge are gone,
+along with `propagateFamily` and the GitHub 401 fallback that used to re-apply
+values late. Ambient host shell now ranks *below* Keychain as well, so a stale
+export cannot shadow a project-scoped credential.

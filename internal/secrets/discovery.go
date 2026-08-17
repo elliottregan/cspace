@@ -1,3 +1,13 @@
+// Package secrets provides host credential primitives: macOS Keychain reads
+// and writes, and discovery of credentials the host already holds (the gh
+// CLI's token, Claude Code's login blob).
+//
+// It makes no policy decisions. Which credential wins, which env var carries
+// it, and whether it is still valid are all internal/credentials' concerns.
+//
+// SECURITY NOTE: credentials reach the substrate via process env (-e flags),
+// which Apple Container's vminitd logs in full — anyone with `container logs`
+// access on the host can read them.
 package secrets
 
 import (

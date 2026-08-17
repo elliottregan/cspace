@@ -18,11 +18,11 @@ import (
 	"time"
 
 	"github.com/elliottregan/cspace/internal/config"
+	"github.com/elliottregan/cspace/internal/credentials"
 	"github.com/elliottregan/cspace/internal/devcontainer"
 	"github.com/elliottregan/cspace/internal/overlay"
 	"github.com/elliottregan/cspace/internal/planets"
 	"github.com/elliottregan/cspace/internal/registry"
-	"github.com/elliottregan/cspace/internal/secrets"
 	"github.com/elliottregan/cspace/internal/sidecars"
 	"github.com/elliottregan/cspace/internal/substrate"
 	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
@@ -104,77 +104,36 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				return fmt.Errorf("apple container: %w. Run `container system start` and try again", err)
 			}
 
-			// Load secrets and resolve the Anthropic credential carriers
-			// BEFORE the overlay starts so we can surface auth warnings
-			// to the real terminal. The overlay redirects stdout into a
-			// pending buffer (flushed only after boot completes), so any
-			// warnings emitted after overlay.Start would be invisible
-			// until the session had already started.
 			projectRoot := ""
 			if cfg != nil {
 				projectRoot = cfg.ProjectRoot
 			}
-			loaded, err := secrets.Load(projectRoot)
+
+			// Resolve credentials BEFORE the overlay starts. The overlay
+			// redirects stdout into a pending buffer, so anything written
+			// after overlay.Start is shredded mid-render — which is exactly
+			// what happened to the old env_file collision warning. cspace's
+			// resolution no longer depends on the compose env_file merge, so
+			// nothing forces it later than this.
+			credHost := credentials.ProductionHost()
+			resolvedCreds, err := credHost.ResolveErr(
+				project, credentials.EnvFlagCredentials(extraEnv))
 			if err != nil {
-				return fmt.Errorf("load secrets: %w", err)
+				// A miss is not an error; this means the read genuinely
+				// failed, e.g. the keychain is locked. Reporting it as "not
+				// set" would make a locked keychain look empty.
+				return fmt.Errorf("resolve credentials: %w", err)
 			}
-
-			// Build a minimal pre-flight env that mirrors the Anthropic
-			// carrier resolution the main env map performs below, so the
-			// auth warnings see the same credential state the sandbox will.
-			preflightEnv := map[string]string{}
-			for k, v := range loaded {
-				preflightEnv[k] = v
-			}
-			if k := os.Getenv("ANTHROPIC_API_KEY"); k != "" {
-				preflightEnv["ANTHROPIC_API_KEY"] = k
-			}
-			if k := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"); k != "" {
-				preflightEnv["CLAUDE_CODE_OAUTH_TOKEN"] = k
-			}
-			if preflightEnv["ANTHROPIC_API_KEY"] != "" && preflightEnv["CLAUDE_CODE_OAUTH_TOKEN"] != "" {
-				if loaded["CLAUDE_CODE_OAUTH_TOKEN"] != "" && loaded["ANTHROPIC_API_KEY"] == "" {
-					delete(preflightEnv, "ANTHROPIC_API_KEY")
-				} else if loaded["ANTHROPIC_API_KEY"] != "" && loaded["CLAUDE_CODE_OAUTH_TOKEN"] == "" {
-					delete(preflightEnv, "CLAUDE_CODE_OAUTH_TOKEN")
-				} else {
-					delete(preflightEnv, "CLAUDE_CODE_OAUTH_TOKEN")
-				}
-			}
-			// Surface the Anthropic auth state to the real terminal BEFORE
-			// the overlay starts. If auto-discovery found a token but
-			// secrets.Load refused it for being expired (leaving no carrier
-			// in env), show a specific, always-printed "how to fix" hint.
-			// Otherwise fall back to the generic one-time onboarding nudge,
-			// which fires once per user when no credential is reachable.
-			// Sandbox still boots either way.
-			if !warnExpiredAutoDiscoveredAuth(cmd.ErrOrStderr(), preflightEnv) {
-				maybeNudgeMissingAnthropicAuth(cmd.ErrOrStderr(), preflightEnv)
-			}
-
-			// Validate the GitHub credential BEFORE the overlay, mirroring the
-			// Anthropic pre-flight above. A stale GH_TOKEN /
-			// GITHUB_PERSONAL_ACCESS_TOKEN (e.g. leaked in from a project .env
-			// and picked up as a host-shell override below) otherwise shadows
-			// the valid `gh auth token` and silently breaks git/gh in the
-			// sandbox. ghTokenOverride carries a validated fallback down to the
-			// GitHub env assembly so it wins over the shadowing value.
-			ghTokenOverride := ""
-			effectiveGH := loaded["GH_TOKEN"]
-			if effectiveGH == "" {
-				effectiveGH = loaded["GITHUB_TOKEN"]
-			}
-			if effectiveGH == "" {
-				effectiveGH = loaded["GITHUB_PERSONAL_ACCESS_TOKEN"]
-			}
-			if k := os.Getenv("GH_TOKEN"); k != "" {
-				effectiveGH = k
-			}
-			if reconciled, warn := secrets.ReconcileGitHubToken(effectiveGH); warn != "" {
-				if reconciled != effectiveGH {
-					ghTokenOverride = reconciled
-				}
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", warn)
+			// Select (choose + verify) now; Apply once the project's env is
+			// assembled, far below. Selecting here lets the summary print to
+			// the real terminal, and verifies exactly once.
+			credSelection := credHost.Select(resolvedCreds)
+			runway := time.Duration(cfg.Credentials.RunwayWarningHours) * time.Hour
+			credLine, credWarn := credentials.SummaryLine(
+				credSelection.Apply(nil), time.Now(), runway)
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr(), credLine)
+			if credWarn != "" {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", credWarn)
 			}
 
 			// Sessions host dir (also mounted at /sessions below). Resolved
@@ -284,12 +243,6 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				}
 			}
 
-			// Merge loaded secrets into the main env map (secrets.Load was
-			// already called above before the overlay).
-			for k, v := range loaded {
-				env[k] = v
-			}
-
 			// Agent model: --model wins over .cspace.json agent.model. When
 			// non-empty it's delivered as CSPACE_AGENT_MODEL, which the
 			// supervisor passes to the SDK query's `model` option. Empty
@@ -327,18 +280,6 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 						}
 					}
 					sandboxImage = resolveSandboxImage(ctx, plan, "cspace:latest")
-					// Snapshot the cspace-delivered secret values (from
-					// `loaded`, merged into env above) BEFORE the compose
-					// env_file merge below can silently override them. Used
-					// only for the fail-loud warning after the merge — it
-					// never changes which value wins.
-					secretKeys := secrets.SecretKeys()
-					secretValues := map[string]string{}
-					for _, k := range secretKeys {
-						if v, ok := env[k]; ok {
-							secretValues[k] = v
-						}
-					}
 					// Compose service.environment (including any env_file
 					// content compose-go resolved at parse time) merges
 					// FIRST so devcontainer.json containerEnv can override.
@@ -352,19 +293,6 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 								env[k] = v
 							}
 						}
-					}
-					// Fail loud: warn (don't block) if the env_file merge
-					// just above silently overrode a cspace-delivered
-					// secret. This must run BEFORE the containerEnv merge
-					// below, so an intentional devcontainer.json
-					// containerEnv override doesn't get flagged — only
-					// env_file collisions do. See docs/env-cspace.md's
-					// "Precedence (stated honestly)" section: env_file
-					// wins by design, this only makes the footgun loud.
-					for _, key := range envFileSecretCollisions(secretValues, env, secretKeys) {
-						_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
-							"warning: a project env_file (.env / .env.cspace) overrides the cspace-delivered secret %s — the sandbox will use the env_file value, not the credential cspace loaded. Remove %s from your env_file (or rename it) to use the delivered secret.\n",
-							key, key)
 					}
 					// containerEnv merges into env: devcontainer values override
 					// compose env (more specific) and lose to secrets file +
@@ -476,59 +404,14 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				}
 				env[kv[:eq]] = kv[eq+1:]
 			}
-			// Anthropic credentials: pass through ONLY what the user set.
-			// Setting both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN
-			// trips claude CLI's "Auth conflict" warning every session,
-			// and the SDK + CLI both accept either env var as the
-			// carrier. So if the user's secrets file (or host shell) has
-			// CLAUDE_CODE_OAUTH_TOKEN set, we leave ANTHROPIC_API_KEY
-			// unset in the sandbox, and vice versa.
-			if k := os.Getenv("ANTHROPIC_API_KEY"); k != "" {
-				env["ANTHROPIC_API_KEY"] = k
-			}
-			if k := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"); k != "" {
-				env["CLAUDE_CODE_OAUTH_TOKEN"] = k
-			}
-			// If the user explicitly set ANTHROPIC_API_KEY in the secrets
-			// file or host shell, drop CLAUDE_CODE_OAUTH_TOKEN to avoid
-			// the conflict. If only CLAUDE_CODE_OAUTH_TOKEN was set,
-			// drop ANTHROPIC_API_KEY for the same reason.
-			if env["ANTHROPIC_API_KEY"] != "" && env["CLAUDE_CODE_OAUTH_TOKEN"] != "" {
-				// Both are present from auto-discovery + secrets file.
-				// Prefer whichever was set by the user explicitly (host
-				// shell wins, then secrets file). For the common case
-				// where the secrets file set CLAUDE_CODE_OAUTH_TOKEN
-				// and auto-discovery filled ANTHROPIC_API_KEY, drop the
-				// auto-discovered one.
-				if loaded["CLAUDE_CODE_OAUTH_TOKEN"] != "" && loaded["ANTHROPIC_API_KEY"] == "" {
-					delete(env, "ANTHROPIC_API_KEY")
-				} else if loaded["ANTHROPIC_API_KEY"] != "" && loaded["CLAUDE_CODE_OAUTH_TOKEN"] == "" {
-					delete(env, "CLAUDE_CODE_OAUTH_TOKEN")
-				} else {
-					// Default tiebreak: keep ANTHROPIC_API_KEY, drop OAuth
-					// (the SDK and CLI both accept any value format under
-					// ANTHROPIC_API_KEY).
-					delete(env, "CLAUDE_CODE_OAUTH_TOKEN")
-				}
-			}
-
-			// GitHub credential family. gh CLI reads GH_TOKEN; the GitHub MCP
-			// server reads GITHUB_PERSONAL_ACCESS_TOKEN; Actions ambient is
-			// GITHUB_TOKEN. Same value under all three so any tool sees its
-			// expected name. (No conflict warning here, so the dual-write
-			// pattern is safe.)
-			propagateFamily(env, []string{"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN"})
-
-			// Host shell env wins for explicitly-set keys (e.g. one-off override).
-			if k := os.Getenv("GH_TOKEN"); k != "" {
-				env["GH_TOKEN"] = k
-			}
-			// A validated fallback from the GitHub pre-flight wins last of all:
-			// it replaces a token that GitHub definitively rejected (401).
-			if ghTokenOverride != "" {
-				env["GH_TOKEN"] = ghTokenOverride
-			}
-			propagateFamily(env, []string{"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN"})
+			// Credentials are applied LAST, after every app-env merge, and
+			// the five cspace-owned keys are stripped from whatever the
+			// project supplied. That unconditional strip is what makes "a
+			// project env_file cannot shadow a cspace credential" a
+			// guarantee rather than a best effort — and it is why a project
+			// whose .env was its only credential source now boots without
+			// one. Verification runs on the value that actually ships.
+			env = credSelection.Apply(env).Env
 
 			containerName := fmt.Sprintf("cspace-%s-%s", project, name)
 
@@ -1386,28 +1269,6 @@ func validateSandboxName(project, name string) error {
 	return nil
 }
 
-// propagateFamily ensures every name in `family` has the same value as the
-// first non-empty entry. If no entry has a value, the family is left empty.
-//
-// Used to make a single user-supplied credential satisfy all the env-var
-// names different tools look for — e.g. one GH_TOKEN supplies gh CLI, the
-// GitHub MCP server, and any tool that reads GITHUB_TOKEN ambient.
-func propagateFamily(env map[string]string, family []string) {
-	var value string
-	for _, name := range family {
-		if v := env[name]; v != "" {
-			value = v
-			break
-		}
-	}
-	if value == "" {
-		return
-	}
-	for _, name := range family {
-		env[name] = value
-	}
-}
-
 func randHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
@@ -1472,11 +1333,6 @@ func ensureRegistryDaemon() error {
 	return fmt.Errorf("daemon started but not accepting connections within 3s")
 }
 
-// nudgeSentinelName is the per-user marker file that records "the no-auth
-// nudge has already been shown". Lives in ~/.cspace/. Once it exists the
-// nudge stays silent forever — the message has done its job.
-const nudgeSentinelName = ".no-claude-auth-nudge-shown"
-
 // browserDecision is the outcome of resolveBrowserEnabled: whether to start
 // the cspace browser sidecar and, when not, a human-readable reason for the
 // "skipped" log line.
@@ -1534,66 +1390,6 @@ func resolveSharedBrowser(cfgBrowser config.BrowserConfig, noSharedBrowser bool)
 		shared = false
 	}
 	return shared
-}
-
-// discoverClaudeOauth is a seam so tests can stub host OAuth discovery without
-// touching the real macOS Keychain (mirrors the secrets package's pattern).
-var discoverClaudeOauth = secrets.DiscoverClaudeOauthToken
-
-// warnExpiredAutoDiscoveredAuth prints an actionable warning when the only
-// Anthropic credential cspace could find was an auto-discovered Claude Code
-// OAuth token that had already expired — so secrets.Load refused to inject it
-// (see secrets.OAuthExpired) and env carries no Anthropic credential. Returns
-// true if it printed. Unlike the generic onboarding nudge this is shown on
-// every run, because it is an active misconfiguration the user must act on,
-// not a one-time hint. A carrier already present in env short-circuits it,
-// preserving the generic-nudge behavior for the truly-absent case.
-func warnExpiredAutoDiscoveredAuth(out io.Writer, env map[string]string) bool {
-	if env["ANTHROPIC_API_KEY"] != "" || env["CLAUDE_CODE_OAUTH_TOKEN"] != "" {
-		return false
-	}
-	oauth, expires, err := discoverClaudeOauth()
-	if err != nil || oauth == "" || !secrets.OAuthExpired(expires) {
-		return false
-	}
-	agoStr := time.Since(expires).Round(time.Minute).String()
-	if time.Since(expires) < time.Minute {
-		agoStr = "less than a minute"
-	}
-	_, _ = fmt.Fprintf(out, "warning: auto-discovered Claude Code OAuth token expired %s ago (at %s); not injecting it.\n",
-		agoStr, expires.Local().Format("2006-01-02 15:04 MST"))
-	_, _ = fmt.Fprintln(out, "  cspace refuses to inject an expired credential. To fix, do one of:")
-	_, _ = fmt.Fprintln(out, "    - run `cspace keychain init` and paste a long-lived key (sk-ant-api-… or sk-ant-oat-…)  [recommended]")
-	_, _ = fmt.Fprintln(out, "    - or run `claude` on the host to refresh the short-lived token, then `cspace up` again")
-	_, _ = fmt.Fprintln(out, "  The sandbox will still boot, but Claude SDK calls will fail until auth is configured.")
-	return true
-}
-
-// maybeNudgeMissingAnthropicAuth prints a one-time hint when no Anthropic
-// credential is reachable in env. Gated by a sentinel file in ~/.cspace/ so
-// it fires at most once per user. Failure to write the sentinel is swallowed
-// — the nudge already printed and a future re-print is harmless.
-func maybeNudgeMissingAnthropicAuth(out io.Writer, env map[string]string) {
-	if env["ANTHROPIC_API_KEY"] != "" {
-		return
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return
-	}
-	cspaceDir := filepath.Join(home, ".cspace")
-	sentinel := filepath.Join(cspaceDir, nudgeSentinelName)
-	if _, err := os.Stat(sentinel); err == nil {
-		// Already shown.
-		return
-	}
-	_, _ = fmt.Fprintln(out, "note: no Anthropic credential reachable. Run `cspace keychain init` to set one up")
-	_, _ = fmt.Fprintln(out, "      (or set ANTHROPIC_API_KEY in ~/.cspace/secrets.env). Sandbox will boot,")
-	_, _ = fmt.Fprintln(out, "      but Claude SDK calls will fail until auth is configured.")
-	if err := os.MkdirAll(cspaceDir, 0o755); err != nil {
-		return
-	}
-	_ = os.WriteFile(sentinel, []byte("shown\n"), 0o644)
 }
 
 // dnsInstallNudgeSentinel is the per-user marker for "the dns-install nudge

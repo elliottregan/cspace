@@ -560,3 +560,29 @@ func TestConfigBrowserSharedFalse(t *testing.T) {
 		t.Fatalf("browser.shared: got %v, want explicit false", cfg.Browser.Shared)
 	}
 }
+
+func TestCredentialsRunwayDefaultIsSeededInDefaults(t *testing.T) {
+	dir := setupTestProject(t, "", "")
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.Credentials.RunwayWarningHours != 4 {
+		t.Fatalf("RunwayWarningHours = %d, want the seeded default of 4", cfg.Credentials.RunwayWarningHours)
+	}
+}
+
+func TestCredentialsRunwayZeroDisablesEscalation(t *testing.T) {
+	// DeepMerge is a JSON round-trip, so an explicit 0 must survive it —
+	// which is why the default is seeded in defaults.json, not applied in Go.
+	dir := setupTestProject(t, `{"credentials":{"runwayWarningHours":0}}`, "")
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.Credentials.RunwayWarningHours != 0 {
+		t.Fatalf("RunwayWarningHours = %d, want an explicit 0 to survive the merge", cfg.Credentials.RunwayWarningHours)
+	}
+}

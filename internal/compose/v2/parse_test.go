@@ -17,6 +17,7 @@ func TestParseMinimal(t *testing.T) {
 	app := p.Services["app"]
 	if app == nil {
 		t.Fatal("app service missing")
+		return
 	}
 	if app.Image != "node:24-bookworm-slim" {
 		t.Fatalf("image=%q", app.Image)
@@ -44,6 +45,7 @@ func TestParseHealthcheckAndDependsOn(t *testing.T) {
 	dash := p.Services["dashboard"]
 	if dash == nil {
 		t.Fatal("dashboard nil")
+		return
 	}
 	if len(dash.DependsOn) != 1 || dash.DependsOn[0].Name != "backend" || dash.DependsOn[0].Condition != "service_healthy" {
 		t.Fatalf("dashboard depends_on=%+v", dash.DependsOn)

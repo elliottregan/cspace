@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/elliottregan/cspace/internal/credentials"
 )
 
 const subsetDocsLink = "docs/devcontainer-subset.md"
@@ -32,6 +34,14 @@ func (c *Config) Validate() error {
 	for _, ec := range c.Customizations.Cspace.ExtractCredentials {
 		if ec.From == "" || len(ec.Exec) == 0 || ec.Env == "" {
 			return fmt.Errorf("devcontainer.json: extractCredentials entry requires 'from', 'exec', and 'env'")
+		}
+		// The entrypoint sources /sessions/extracted.env at runtime, so an
+		// extraction naming a cspace-owned key would shadow the baked
+		// credential seconds after Bake guarantees it cannot be shadowed.
+		if credentials.IsOwnedKey(ec.Env) {
+			return fmt.Errorf("devcontainer.json: extractCredentials may not target %s — "+
+				"cspace owns that variable and injects it at container create. "+
+				"Store the credential with `cspace keychain init` instead", ec.Env)
 		}
 	}
 	return nil
