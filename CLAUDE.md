@@ -93,9 +93,11 @@ Read the relevant findings at the start of non-trivial work.
 
 ```bash
 for f in .cspace/context/findings/*.md; do
-  awk '/^---$/{n++; next} n==1 && /^status:/{print FILENAME": "$2; exit}' "$f"
-done | grep open
+  awk '/^---$/{n++; next} n==1 && /^status:/{if ($2=="open") print FILENAME; exit}' "$f"
+done
 ```
+
+Match the status field itself, not the whole line — several filenames contain the word "open" (`…fail-open-auth.md`), so piping the output through `grep open` reintroduces the same false positive one layer up.
 
 ## Anthropic credentials
 
