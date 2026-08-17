@@ -502,12 +502,13 @@ established pattern; `Verify` gets an injectable transport.
 
 ## Out of scope
 
-- **Sidecar credential env.** Compose sidecars receive `svc.Environment`
-  verbatim (`sidecars/lifecycle.go:31`), including `env_file` content, so a
-  credential in a project `.env` still reaches every sidecar. `Bake` governs the
-  workspace sandbox only. This is a real residual hole, not an oversight — log
-  it as a finding and address it separately, since it requires deciding what
-  credentials a sidecar legitimately needs.
+- **Sidecar credential env.** `Bake` governs the workspace sandbox only.
+  Measurement showed this is not the hole an earlier revision claimed: sidecar
+  environment is resolved per-service (`sidecars/lifecycle.go:31` passes that
+  service's own `svc.Environment`), cspace injects no credentials into the
+  browser sidecar, and no sidecar in the motivating project carries any cspace
+  credential key. What remains is that a project may declare `env_file:` on its
+  own sidecar service — standard compose behavior, and its author's choice.
 - **`cspace up` against an already-running container.** The run fails on the
   existing name, but the boot has already re-`Register`ed the sandbox with a
   freshly generated control token (`cmd_up.go:795-807`), breaking `cspace send`
@@ -536,7 +537,7 @@ established pattern; `Verify` gets an injectable transport.
 - `ReconcileGitHubToken` validates a value the later `env_file` merge discards
 - `propagateFamily` clobbers an explicitly-set `GITHUB_PERSONAL_ACCESS_TOKEN`
 - `doctor` reports host resolution while claiming to describe sandbox health
-- sidecars receive `env_file` credentials outside any cspace policy (out of
-  scope above)
+- sidecar credential exposure is project-declared, not cspace-injected
+  (investigated and closed; no cspace change warranted)
 - `up` against a running container re-registers a fresh control token, breaking
   `send`/`agent` (out of scope above)
