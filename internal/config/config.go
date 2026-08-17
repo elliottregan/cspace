@@ -25,15 +25,16 @@ var gitRepoRe = regexp.MustCompile(`github\.com[:/](.+)$`)
 
 // Config represents the merged cspace configuration.
 type Config struct {
-	Project    ProjectConfig          `json:"project"`
-	Container  ContainerConfig        `json:"container"`
-	Firewall   FirewallConfig         `json:"firewall"`
-	MCPServers map[string]interface{} `json:"mcpServers,omitempty"`
-	Plugins    PluginsConfig          `json:"plugins"`
-	Services   string                 `json:"services"`
-	Resources  ResourcesConfig        `json:"resources,omitempty"`
-	Browser    BrowserConfig          `json:"browser,omitempty"`
-	Agent      AgentConfig            `json:"agent,omitempty"`
+	Project     ProjectConfig          `json:"project"`
+	Container   ContainerConfig        `json:"container"`
+	Firewall    FirewallConfig         `json:"firewall"`
+	MCPServers  map[string]interface{} `json:"mcpServers,omitempty"`
+	Plugins     PluginsConfig          `json:"plugins"`
+	Services    string                 `json:"services"`
+	Resources   ResourcesConfig        `json:"resources,omitempty"`
+	Browser     BrowserConfig          `json:"browser,omitempty"`
+	Agent       AgentConfig            `json:"agent,omitempty"`
+	Credentials CredentialsConfig      `json:"credentials,omitempty"`
 
 	// ServiceURLs declares Traefik-routed project services whose URLs cspace
 	// should inject into the main container as env vars. Key is the subdomain
@@ -44,6 +45,18 @@ type Config struct {
 
 	// Runtime fields (not from JSON)
 	ProjectRoot string `json:"-"`
+}
+
+// CredentialsConfig tunes credential reporting during `cspace up`.
+//
+// RunwayWarningHours is the remaining-lifetime threshold below which a
+// short-lived credential escalates from the boot summary line to a warning;
+// 0 disables the escalation. The default lives in defaults.json rather than
+// being applied in Go on purpose: DeepMerge is a JSON round-trip, so an
+// absent int and an explicit 0 are indistinguishable here, and 0 is a
+// meaningful setting.
+type CredentialsConfig struct {
+	RunwayWarningHours int `json:"runwayWarningHours"`
 }
 
 // ProjectConfig holds project identification fields.

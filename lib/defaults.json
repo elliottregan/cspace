@@ -34,5 +34,8 @@
   "services": "",
   "agent": {
     "model": ""
+  },
+  "credentials": {
+    "runwayWarningHours": 4
   }
 }
