@@ -89,6 +89,14 @@ Layered planning context, bind-mounted into every sandbox for the project so wri
 
 Read the relevant findings at the start of non-trivial work.
 
+**Check status in the frontmatter, never by grepping.** Because Updates append status history and never rewrite it, every resolved finding keeps its original `status: open` line forever — `grep -l "status: open" findings/` currently returns 22 false positives against 16 genuinely open findings. Read the frontmatter block, or parse it:
+
+```bash
+for f in .cspace/context/findings/*.md; do
+  awk '/^---$/{n++; next} n==1 && /^status:/{print FILENAME": "$2; exit}' "$f"
+done | grep open
+```
+
 ## Anthropic credentials
 
 cspace sandboxes need an Anthropic credential to drive Claude Code. Two token formats are supported, but they **must ride different env vars** — the wrong carrier causes "Invalid API key" errors and a spurious "custom API key" prompt in interactive Claude:
