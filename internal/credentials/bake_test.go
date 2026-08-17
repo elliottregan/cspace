@@ -184,7 +184,7 @@ func TestSelectCarriesValidityThroughMirrorRelabeling(t *testing.T) {
 	}
 	res := map[string]Resolution{
 		KeyGHToken: {Key: KeyGHToken, Candidates: []Credential{
-			{Key: KeyGHToken, Value: "dead", Source: SourceLegacyUserFile},
+			{Key: KeyGHToken, Value: "dead", Source: SourceHostShell},
 		}},
 		KeyGitHubPAT: {Key: KeyGitHubPAT, Candidates: []Credential{
 			{Key: KeyGitHubPAT, Value: "good", Source: SourceEnvFlag},

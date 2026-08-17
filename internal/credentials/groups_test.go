@@ -35,7 +35,7 @@ func TestApplyGroupPolicyRoutesByTokenPrefix(t *testing.T) {
 
 func TestApplyGroupPolicyRoutesAPIKeyOffTheOAuthCarrier(t *testing.T) {
 	in := map[string]Credential{
-		KeyClaudeOAuthToken: {Key: KeyClaudeOAuthToken, Value: "sk-ant-api03-xyz", Source: SourceLegacyUserFile},
+		KeyClaudeOAuthToken: {Key: KeyClaudeOAuthToken, Value: "sk-ant-api03-xyz", Source: SourceHostShell},
 	}
 	out := ApplyGroupPolicy(in)
 	if _, ok := out[KeyClaudeOAuthToken]; ok {
@@ -81,7 +81,7 @@ func TestApplyGroupPolicyMirrorFillsAllThreeNames(t *testing.T) {
 
 func TestApplyGroupPolicyLeavesAppVarsAlone(t *testing.T) {
 	in := map[string]Credential{
-		"RESEND_API_KEY": {Key: "RESEND_API_KEY", Value: "app", Source: SourceLegacyUserFile},
+		"RESEND_API_KEY": {Key: "RESEND_API_KEY", Value: "app", Source: SourceHostShell},
 	}
 	if got := ApplyGroupPolicy(in); got["RESEND_API_KEY"].Value != "app" {
 		t.Fatalf("app vars must pass through, got %+v", got)

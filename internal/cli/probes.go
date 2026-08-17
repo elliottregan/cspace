@@ -394,29 +394,15 @@ func scutilHasCspaceRouting() bool {
 // approaching expiry.
 func ProbeAnthropicCredentials(ctx context.Context) ProbeResult {
 	r := ProbeResult{Subsystem: "Anthropic credentials"}
-	projectRoot, userHome := credentialRoots()
-	r.Checks = append(r.Checks, credentialProbeChecks(
-		projectRoot, userHome, []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"})...)
+	r.Checks = append(r.Checks, credentialProbeChecks([]string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"})...)
 	return r
 }
 
 // ProbeGitHubCredentials reports the source for each GitHub credential alias.
 func ProbeGitHubCredentials(ctx context.Context) ProbeResult {
 	r := ProbeResult{Subsystem: "GitHub credentials"}
-	projectRoot, userHome := credentialRoots()
-	r.Checks = append(r.Checks, credentialProbeChecks(
-		projectRoot, userHome, []string{"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN"})...)
+	r.Checks = append(r.Checks, credentialProbeChecks([]string{"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN"})...)
 	return r
-}
-
-// credentialRoots returns the project root and user home in the same way
-// runKeychainStatus does.
-func credentialRoots() (projectRoot, userHome string) {
-	userHome, _ = os.UserHomeDir()
-	if cfg != nil && cfg.ProjectRoot != "" {
-		projectRoot = cfg.ProjectRoot
-	}
-	return projectRoot, userHome
 }
 
 // credentialProbeChecks reports both sides of the credential story: what
@@ -426,10 +412,10 @@ func credentialRoots() (projectRoot, userHome string) {
 // container held a dead token from an entirely different source. Credentials
 // are baked in at create time and never refreshed, so host resolution
 // describes what a NEW sandbox would get — never what a running one has.
-func credentialProbeChecks(projectRoot, userHome string, keys []string) []ProbeCheck {
+func credentialProbeChecks(keys []string) []ProbeCheck {
 	host := credentials.ProductionHost()
 	project := projectName()
-	resolved, err := host.ResolveErr(project, projectRoot, userHome, nil)
+	resolved, err := host.ResolveErr(project, nil)
 	if err != nil {
 		return []ProbeCheck{{
 			Status:  ProbeFail,
@@ -496,10 +482,9 @@ func credentialProbeChecks(projectRoot, userHome string, keys []string) []ProbeC
 // families.
 func ProbeSandboxCredentials(ctx context.Context) ProbeResult {
 	r := ProbeResult{Subsystem: "Sandbox credentials"}
-	projectRoot, userHome := credentialRoots()
 	host := credentials.ProductionHost()
 	project := projectName()
-	resolved, err := host.ResolveErr(project, projectRoot, userHome, nil)
+	resolved, err := host.ResolveErr(project, nil)
 	if err != nil {
 		r.Checks = append(r.Checks, ProbeCheck{
 			Status:  ProbeFail,

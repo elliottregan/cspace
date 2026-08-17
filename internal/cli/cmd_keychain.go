@@ -24,15 +24,11 @@ func newKeychainCmd() *cobra.Command {
   1. cspace up --env KEY=VALUE
   2. macOS Keychain "cspace-<project>-<KEY>"  — ` + "`cspace keychain init --project`" + `
   3. macOS Keychain "cspace-<KEY>"            — ` + "`cspace keychain init`" + `
-  4. <project>/.cspace/secrets.env, then ~/.cspace/secrets.env  (legacy)
-  5. Ambient host shell
-  6. Auto-discovery from host state — Claude Code OAuth blob, gh auth token
+  4. Ambient host shell
+  5. Auto-discovery from host state — Claude Code OAuth blob, gh auth token
 
-The Keychain is canonical on macOS; the secrets.env layers still work but are
-deprecated there. Off macOS the Keychain is unavailable and secrets.env is the
-supported durable path.
-
-A project's compose env_file and devcontainer containerEnv are IGNORED for the
+The Keychain is the only durable store; there is no credential file. A
+project's compose env_file and devcontainer containerEnv are IGNORED for the
 five cspace-owned keys, so a project .env cannot shadow a cspace credential.
 
 Use --project to give one project's sandboxes a narrower token than your
@@ -58,7 +54,7 @@ func newKeychainInitCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if runtime.GOOS != "darwin" {
 				_, _ = fmt.Fprintln(cmd.OutOrStdout(),
-					"`cspace keychain init` is macOS-only. On Linux, put credentials in ~/.cspace/secrets.env.")
+					"`cspace keychain init` is macOS-only; cspace itself requires macOS (Apple Container).")
 				return nil
 			}
 			scope := ""
@@ -245,15 +241,8 @@ func runKeychainStatus(out io.Writer) error {
 	_, _ = fmt.Fprintln(out, "cspace credential sources (highest precedence first):")
 	_, _ = fmt.Fprintln(out, "")
 
-	// Find the project root (cfg may be nil if not in a project).
-	projectRoot := ""
-	userHome, _ := os.UserHomeDir()
-	if cfg != nil && cfg.ProjectRoot != "" {
-		projectRoot = cfg.ProjectRoot
-	}
-
 	host := credentials.ProductionHost()
-	resolved, err := host.ResolveErr(projectName(), projectRoot, userHome, nil)
+	resolved, err := host.ResolveErr(projectName(), nil)
 	if err != nil {
 		return fmt.Errorf("resolve credentials: %w", err)
 	}

@@ -2,8 +2,6 @@ package credentials
 
 import (
 	"fmt"
-	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -16,9 +14,6 @@ type Host struct {
 	// must return ("", nil); a non-nil error means the read genuinely failed
 	// (e.g. the keychain is locked) and is propagated.
 	ReadKeychain func(service string) (string, error)
-	// ReadSecretsFile parses a dotenv-style secrets.env. A missing file must
-	// return (nil, nil).
-	ReadSecretsFile func(path string) (map[string]string, error)
 	// LookupEnv reads ambient host-shell environment.
 	LookupEnv func(key string) (string, bool)
 	// DiscoverClaude returns the host's Claude Code OAuth access token and
@@ -50,8 +45,8 @@ func expired(expiresAt, now time.Time) bool {
 // Resolve returns the ranked candidate stack for every cspace-owned key,
 // swallowing a keychain read failure. Use ResolveErr where a locked
 // keychain should be surfaced rather than silently treated as empty.
-func (h Host) Resolve(project, projectRoot, userHome string, envFlags map[string]string) map[string]Resolution {
-	out, _ := h.ResolveErr(project, projectRoot, userHome, envFlags)
+func (h Host) Resolve(project string, envFlags map[string]string) map[string]Resolution {
+	out, _ := h.ResolveErr(project, envFlags)
 	return out
 }
 
@@ -62,11 +57,9 @@ func (h Host) Resolve(project, projectRoot, userHome string, envFlags map[string
 // A project's compose env_file and devcontainer containerEnv are absent by
 // construction: they are not sources here, so they cannot shadow anything.
 // That is what makes the guarantee absolute rather than best-effort.
-func (h Host) ResolveErr(project, projectRoot, userHome string, envFlags map[string]string) (map[string]Resolution, error) {
+func (h Host) ResolveErr(project string, envFlags map[string]string) (map[string]Resolution, error) {
 	out := make(map[string]Resolution, len(Keys()))
 
-	projectFile := h.secretsFile(projectRoot)
-	userFile := h.secretsFile(userHome)
 	claudeTok, claudeExp := h.claude()
 	ghTok := h.gh()
 
@@ -94,12 +87,6 @@ func (h Host) ResolveErr(project, projectRoot, userHome string, envFlags map[str
 		globalSvc := "cspace-" + key
 		if v := keychain(globalSvc); v != "" {
 			r.add(key, v, SourceGlobalKeychain, globalSvc, time.Time{})
-		}
-		if v := projectFile[key]; v != "" {
-			r.add(key, v, SourceLegacyProjectFile, filepath.Join(projectRoot, ".cspace", "secrets.env"), time.Time{})
-		}
-		if v := userFile[key]; v != "" {
-			r.add(key, v, SourceLegacyUserFile, filepath.Join(userHome, ".cspace", "secrets.env"), time.Time{})
 		}
 		if h.LookupEnv != nil {
 			if v, ok := h.LookupEnv(key); ok && v != "" {
@@ -147,30 +134,6 @@ func (h Host) readKeychain(service string) (string, error) {
 		return "", nil
 	}
 	return h.ReadKeychain(service)
-}
-
-func (h Host) secretsFile(dir string) map[string]string {
-	if h.ReadSecretsFile == nil || dir == "" {
-		return nil
-	}
-	m, err := h.ReadSecretsFile(filepath.Join(dir, ".cspace", "secrets.env"))
-	if err != nil {
-		return nil
-	}
-	// secrets.env supports `KEY=keychain:<service>` as an indirection, so a
-	// credential can live in the Keychain while the file names it. Resolve
-	// it here or the literal string "keychain:my-pat" ships as the token.
-	for k, v := range m {
-		if service, found := strings.CutPrefix(v, "keychain:"); found {
-			resolved, err := h.readKeychain(service)
-			if err != nil || resolved == "" {
-				delete(m, k)
-				continue
-			}
-			m[k] = resolved
-		}
-	}
-	return m
 }
 
 func (h Host) claude() (string, time.Time) {

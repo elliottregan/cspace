@@ -25,23 +25,19 @@ import "time"
 type Source int
 
 const (
-	SourceEnvFlag           Source = iota // --env KEY=value
-	SourceProjectKeychain                 // cspace-<project>-<KEY>
-	SourceGlobalKeychain                  // cspace-<KEY>
-	SourceLegacyProjectFile               // <project>/.cspace/secrets.env
-	SourceLegacyUserFile                  // ~/.cspace/secrets.env
-	SourceHostShell                       // ambient os.Getenv
-	SourceAutoDiscovered                  // gh auth token / Claude Code-credentials
+	SourceEnvFlag         Source = iota // --env KEY=value
+	SourceProjectKeychain               // cspace-<project>-<KEY>
+	SourceGlobalKeychain                // cspace-<KEY>
+	SourceHostShell                     // ambient os.Getenv
+	SourceAutoDiscovered                // gh auth token / Claude Code-credentials
 )
 
 var sourceLabels = map[Source]string{
-	SourceEnvFlag:           "--env",
-	SourceProjectKeychain:   "keychain:project",
-	SourceGlobalKeychain:    "keychain",
-	SourceLegacyProjectFile: "project secrets.env",
-	SourceLegacyUserFile:    "user secrets.env",
-	SourceHostShell:         "host shell",
-	SourceAutoDiscovered:    "auto-discovered",
+	SourceEnvFlag:         "--env",
+	SourceProjectKeychain: "keychain:project",
+	SourceGlobalKeychain:  "keychain",
+	SourceHostShell:       "host shell",
+	SourceAutoDiscovered:  "auto-discovered",
 }
 
 func (s Source) String() string {

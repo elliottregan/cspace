@@ -23,7 +23,6 @@ import (
 	"github.com/elliottregan/cspace/internal/overlay"
 	"github.com/elliottregan/cspace/internal/planets"
 	"github.com/elliottregan/cspace/internal/registry"
-	"github.com/elliottregan/cspace/internal/secrets"
 	"github.com/elliottregan/cspace/internal/sidecars"
 	"github.com/elliottregan/cspace/internal/substrate"
 	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
@@ -105,17 +104,9 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				return fmt.Errorf("apple container: %w. Run `container system start` and try again", err)
 			}
 
-			// Load non-credential secrets (arbitrary keys a project or user
-			// put in .cspace/secrets.env). The five cspace-owned credential
-			// keys are NOT resolved here — internal/credentials owns those,
-			// and Bake strips them from this map regardless of what it holds.
 			projectRoot := ""
 			if cfg != nil {
 				projectRoot = cfg.ProjectRoot
-			}
-			loaded, err := secrets.Load(projectRoot)
-			if err != nil {
-				return fmt.Errorf("load secrets: %w", err)
 			}
 
 			// Resolve credentials BEFORE the overlay starts. The overlay
@@ -124,13 +115,9 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// what happened to the old env_file collision warning. cspace's
 			// resolution no longer depends on the compose env_file merge, so
 			// nothing forces it later than this.
-			credHome, err := os.UserHomeDir()
-			if err != nil {
-				return fmt.Errorf("user home dir: %w", err)
-			}
 			credHost := credentials.ProductionHost()
 			resolvedCreds, err := credHost.ResolveErr(
-				project, projectRoot, credHome, credentials.EnvFlagCredentials(extraEnv))
+				project, credentials.EnvFlagCredentials(extraEnv))
 			if err != nil {
 				// A miss is not an error; this means the read genuinely
 				// failed, e.g. the keychain is locked. Reporting it as "not
@@ -254,12 +241,6 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				if pluginsJSON, perr := json.Marshal(cfg.Plugins); perr == nil {
 					env["CSPACE_PLUGINS_CONFIG"] = string(pluginsJSON)
 				}
-			}
-
-			// Merge loaded secrets into the main env map (secrets.Load was
-			// already called above before the overlay).
-			for k, v := range loaded {
-				env[k] = v
 			}
 
 			// Agent model: --model wins over .cspace.json agent.model. When

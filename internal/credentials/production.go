@@ -7,19 +7,17 @@ import (
 )
 
 // ProductionHost wires the real host dependencies: the macOS Keychain,
-// dotenv secrets files, ambient shell env, host credential discovery, and
-// GitHub's /user endpoint.
+// ambient shell env, host credential discovery, and GitHub's /user endpoint.
 //
 // Every field is a seam, so tests construct a Host with stubs instead and
 // never touch real credential stores or the network.
 func ProductionHost() Host {
 	return Host{
-		ReadKeychain:    secrets.ReadKeychain,
-		ReadSecretsFile: secrets.ParseFile,
-		LookupEnv:       os.LookupEnv,
-		DiscoverClaude:  secrets.DiscoverClaudeOauthToken,
-		DiscoverGh:      secrets.DiscoverGhAuthToken,
-		VerifyGitHub:    liveVerifyGitHub,
+		ReadKeychain:   secrets.ReadKeychain,
+		LookupEnv:      os.LookupEnv,
+		DiscoverClaude: secrets.DiscoverClaudeOauthToken,
+		DiscoverGh:     secrets.DiscoverGhAuthToken,
+		VerifyGitHub:   liveVerifyGitHub,
 	}
 }
 

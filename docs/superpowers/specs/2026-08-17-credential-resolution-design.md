@@ -2,7 +2,7 @@
 
 - **Date:** 2026-08-17
 - **Status:** approved, not yet implemented
-- **Revision:** 2 — incorporates adversarial spec review (2026-08-17)
+- **Revision:** 3 — removes the secrets.env layers entirely (2026-08-17)
 - **Supersedes:** the credential-resolution behavior currently spread across
   `internal/secrets`, `internal/cli/cmd_up.go`, `internal/cli/cmd_keychain.go`,
   and `internal/cli/probes.go`
@@ -113,9 +113,11 @@ refresh path at all.
 
 Settled during brainstorming on 2026-08-17. Each is load-bearing.
 
-1. **Keychain is the canonical credential source** on macOS. The two
-   `secrets.env` file layers remain readable for back-compat but are documented
-   as legacy and removed from the happy path. See Decision 8 for non-darwin.
+1. **Keychain is the only durable credential source.** `.cspace/secrets.env`
+   is removed outright rather than deprecated (revision 3). Keeping it alive
+   for app keys but not cspace keys would have been the hardest of the three
+   options to explain — "this file works for RESEND_API_KEY but not GH_TOKEN".
+   Credential sources drop from seven to five.
 2. **Auto-discovery is kept for both Anthropic and GitHub**, preserving the
    zero-config first run. Its durability is surfaced rather than hidden.
 3. **cspace's resolved credentials are the only source for the five
@@ -138,9 +140,11 @@ Settled during brainstorming on 2026-08-17. Each is load-bearing.
    `cspace-<project>-<KEY>`, preferred over the global entry. No secret material
    and no new config in the project tree. Written by a new `--project` flag on
    `cspace keychain init`.
-8. **Non-darwin keeps `secrets.env` as canonical.** Keychain is a no-op off
-   macOS (`keychain_other.go:10-12`, where `WriteKeychain` silently returns
-   nil), and Anthropic auto-discovery does not exist there. Deprecation
+8. **Non-darwin needs no story.** The `keychain_other.go` no-ops exist for the
+   in-sandbox Linux binary (`root.go:42` branches on `sandboxmode.IsInSandbox()`),
+   which never resolves credentials — it is handed them. cspace-the-host-tool
+   runs only on macOS, because Apple Container does. Revision 2's non-darwin
+   deprecation
    messaging for `secrets.env` is **darwin-only**; on other platforms it is the
    supported durable path and must not be nagged about. `keychain init` and
    `keychain init --project` continue to refuse off-darwin, as `init` already
@@ -267,9 +271,8 @@ Total and explicit, within the five cspace-owned keys:
 | 1 | `--env KEY=…` | explicit per-invocation intent |
 | 2 | Project Keychain | `cspace-<project>-KEY` — least privilege |
 | 3 | Global Keychain | `cspace-KEY` |
-| 4 | Legacy `secrets.env` | project file, then user file |
-| 5 | Ambient host shell | reported when it wins |
-| 6 | Auto-discovery | zero-config fallback |
+| 4 | Ambient host shell | reported when it wins |
+| 5 | Auto-discovery | zero-config fallback |
 | — | compose `env_file`, `containerEnv` | **ignored for these 5 keys**, recorded for reporting |
 
 ### Behavior changes (all four, declared)

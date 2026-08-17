@@ -10,11 +10,10 @@ import (
 // No test in this package touches the real Keychain, real gh, or the network.
 func newTestHost() *Host {
 	return &Host{
-		ReadKeychain:    func(string) (string, error) { return "", nil },
-		ReadSecretsFile: func(string) (map[string]string, error) { return nil, nil },
-		LookupEnv:       func(string) (string, bool) { return "", false },
-		DiscoverClaude:  func() (string, time.Time, error) { return "", time.Time{}, nil },
-		DiscoverGh:      func() (string, error) { return "", nil },
+		ReadKeychain:   func(string) (string, error) { return "", nil },
+		LookupEnv:      func(string) (string, bool) { return "", false },
+		DiscoverClaude: func() (string, time.Time, error) { return "", time.Time{}, nil },
+		DiscoverGh:     func() (string, error) { return "", nil },
 	}
 }
 
@@ -29,7 +28,7 @@ func TestResolveRanksProjectKeychainAboveGlobal(t *testing.T) {
 		}
 		return "", nil
 	}
-	got := h.Resolve("resume-redux", "/p", "/home/u", nil)
+	got := h.Resolve("resume-redux", nil)
 	cands := got[KeyGHToken].Candidates
 	if len(cands) != 2 {
 		t.Fatalf("want 2 candidates, got %d: %+v", len(cands), cands)
@@ -48,7 +47,7 @@ func TestResolveEnvFlagOutranksEverything(t *testing.T) {
 	h.LookupEnv = func(string) (string, bool) { return "ambient", true }
 	h.DiscoverGh = func() (string, error) { return "discovered", nil }
 
-	got := h.Resolve("proj", "/p", "/home/u", map[string]string{KeyGHToken: "flag"})
+	got := h.Resolve("proj", map[string]string{KeyGHToken: "flag"})
 	w, ok := got[KeyGHToken].Winner()
 	if !ok || w.Source != SourceEnvFlag || w.Value != "flag" {
 		t.Fatalf("winner = %+v, want the --env value", w)
@@ -67,42 +66,9 @@ func TestResolveAmbientShellRanksBelowKeychain(t *testing.T) {
 	}
 	h.LookupEnv = func(string) (string, bool) { return "ambient", true }
 
-	w, _ := h.Resolve("proj", "/p", "/home/u", nil)[KeyGHToken].Winner()
+	w, _ := h.Resolve("proj", nil)[KeyGHToken].Winner()
 	if w.Source != SourceGlobalKeychain {
 		t.Fatalf("winner source = %v, want Keychain to outrank ambient shell", w.Source)
-	}
-}
-
-func TestResolveKeychainOutranksSecretsFiles(t *testing.T) {
-	// Behavior change 3: secrets.go:79-81 documented files winning over
-	// Keychain as deliberate. Decision 1 reverses it on darwin.
-	h := newTestHost()
-	h.ReadKeychain = func(service string) (string, error) {
-		if service == "cspace-GH_TOKEN" {
-			return "keychain", nil
-		}
-		return "", nil
-	}
-	h.ReadSecretsFile = func(string) (map[string]string, error) {
-		return map[string]string{KeyGHToken: "file"}, nil
-	}
-	w, _ := h.Resolve("proj", "/p", "/home/u", nil)[KeyGHToken].Winner()
-	if w.Source != SourceGlobalKeychain {
-		t.Fatalf("winner source = %v, want Keychain to outrank secrets.env", w.Source)
-	}
-}
-
-func TestResolveProjectSecretsFileOutranksUserFile(t *testing.T) {
-	h := newTestHost()
-	h.ReadSecretsFile = func(path string) (map[string]string, error) {
-		if path == "/p/.cspace/secrets.env" {
-			return map[string]string{KeyGHToken: "project"}, nil
-		}
-		return map[string]string{KeyGHToken: "user"}, nil
-	}
-	w, _ := h.Resolve("proj", "/p", "/home/u", nil)[KeyGHToken].Winner()
-	if w.Value != "project" || w.Source != SourceLegacyProjectFile {
-		t.Fatalf("winner = %+v, want the project file to outrank the user file", w)
 	}
 }
 
@@ -114,7 +80,7 @@ func TestResolveCarriesOAuthExpiry(t *testing.T) {
 	h.Now = func() time.Time { return exp.Add(-time.Hour) }
 	h.DiscoverClaude = func() (string, time.Time, error) { return "sk-ant-oat01-x", exp, nil }
 
-	w, ok := h.Resolve("proj", "/p", "/home/u", nil)[KeyClaudeOAuthToken].Winner()
+	w, ok := h.Resolve("proj", nil)[KeyClaudeOAuthToken].Winner()
 	if !ok || !w.ExpiresAt.Equal(exp) {
 		t.Fatalf("winner = %+v, want the discovered expiry carried through", w)
 	}
@@ -127,7 +93,7 @@ func TestResolveAutoDiscoveryFillsOnlyTheOAuthCarrier(t *testing.T) {
 	// code path produced.
 	h := newTestHost()
 	h.DiscoverClaude = func() (string, time.Time, error) { return "sk-ant-oat01-x", time.Time{}, nil }
-	got := h.Resolve("proj", "/p", "/home/u", nil)
+	got := h.Resolve("proj", nil)
 	if len(got[KeyAnthropicAPIKey].Candidates) != 0 {
 		t.Errorf("ANTHROPIC_API_KEY = %+v, want no auto-discovered candidate", got[KeyAnthropicAPIKey].Candidates)
 	}
@@ -139,7 +105,7 @@ func TestResolveAutoDiscoveryFillsOnlyTheOAuthCarrier(t *testing.T) {
 func TestResolveGhDiscoveryFillsAllThreeGitHubNames(t *testing.T) {
 	h := newTestHost()
 	h.DiscoverGh = func() (string, error) { return "gho_x", nil }
-	got := h.Resolve("proj", "/p", "/home/u", nil)
+	got := h.Resolve("proj", nil)
 	for _, k := range []string{KeyGHToken, KeyGitHubToken, KeyGitHubPAT} {
 		if len(got[k].Candidates) != 1 || got[k].Candidates[0].Value != "gho_x" {
 			t.Errorf("%s = %+v, want the discovered gh token", k, got[k].Candidates)
@@ -149,7 +115,7 @@ func TestResolveGhDiscoveryFillsAllThreeGitHubNames(t *testing.T) {
 
 func TestResolveSkipsEmptyValues(t *testing.T) {
 	h := newTestHost() // everything returns ""
-	got := h.Resolve("proj", "/p", "/home/u", nil)
+	got := h.Resolve("proj", nil)
 	for _, k := range Keys() {
 		if len(got[k].Candidates) != 0 {
 			t.Errorf("%s: want no candidates, got %+v", k, got[k].Candidates)
@@ -165,7 +131,7 @@ func TestResolveSkipsProjectKeychainWhenProjectUnknown(t *testing.T) {
 		}
 		return "", nil
 	}
-	h.Resolve("", "/p", "/home/u", nil)
+	h.Resolve("", nil)
 }
 
 func TestResolveErrSurfacesLockedKeychain(t *testing.T) {
@@ -176,7 +142,7 @@ func TestResolveErrSurfacesLockedKeychain(t *testing.T) {
 	want := errors.New("keychain is locked")
 	h.ReadKeychain = func(string) (string, error) { return "", want }
 
-	if _, err := h.ResolveErr("proj", "/p", "/home/u", nil); !errors.Is(err, want) {
+	if _, err := h.ResolveErr("proj", nil); !errors.Is(err, want) {
 		t.Fatalf("ResolveErr() error = %v, want it to wrap %v", err, want)
 	}
 }
@@ -184,7 +150,7 @@ func TestResolveErrSurfacesLockedKeychain(t *testing.T) {
 func TestResolveSwallowsKeychainErrorForConvenienceCallers(t *testing.T) {
 	h := newTestHost()
 	h.ReadKeychain = func(string) (string, error) { return "", errors.New("locked") }
-	if got := h.Resolve("proj", "/p", "/home/u", nil); got == nil {
+	if got := h.Resolve("proj", nil); got == nil {
 		t.Fatal("Resolve() should still return a map when ResolveErr fails")
 	}
 }
@@ -198,7 +164,7 @@ func TestResolveRefusesAnAlreadyExpiredDiscoveredToken(t *testing.T) {
 	h.DiscoverClaude = func() (string, time.Time, error) {
 		return "sk-ant-oat01-x", now.Add(-time.Minute), nil
 	}
-	got := h.Resolve("proj", "/p", "/home/u", nil)
+	got := h.Resolve("proj", nil)
 	if len(got[KeyClaudeOAuthToken].Candidates) != 0 {
 		t.Fatalf("candidates = %+v, want an expired discovered token refused", got[KeyClaudeOAuthToken].Candidates)
 	}
@@ -211,7 +177,7 @@ func TestResolveKeepsAnUnexpiredDiscoveredToken(t *testing.T) {
 	h.DiscoverClaude = func() (string, time.Time, error) {
 		return "sk-ant-oat01-x", now.Add(time.Hour), nil
 	}
-	if got := h.Resolve("proj", "/p", "/home/u", nil); len(got[KeyClaudeOAuthToken].Candidates) != 1 {
+	if got := h.Resolve("proj", nil); len(got[KeyClaudeOAuthToken].Candidates) != 1 {
 		t.Fatalf("candidates = %+v, want the unexpired token kept", got[KeyClaudeOAuthToken].Candidates)
 	}
 }
@@ -221,7 +187,7 @@ func TestResolveKeepsATokenWithNoRecordedExpiry(t *testing.T) {
 	// rather than guessing.
 	h := newTestHost()
 	h.DiscoverClaude = func() (string, time.Time, error) { return "sk-ant-oat01-x", time.Time{}, nil }
-	if got := h.Resolve("proj", "/p", "/home/u", nil); len(got[KeyClaudeOAuthToken].Candidates) != 1 {
+	if got := h.Resolve("proj", nil); len(got[KeyClaudeOAuthToken].Candidates) != 1 {
 		t.Fatal("a token with no recorded expiry must not be refused")
 	}
 }
@@ -236,36 +202,45 @@ func TestResolveExplicitlyStoredExpiredCredentialIsNotRefused(t *testing.T) {
 		}
 		return "", nil
 	}
-	if got := h.Resolve("proj", "/p", "/home/u", nil); len(got[KeyClaudeOAuthToken].Candidates) != 1 {
+	if got := h.Resolve("proj", nil); len(got[KeyClaudeOAuthToken].Candidates) != 1 {
 		t.Fatal("an explicitly stored credential must always be offered")
 	}
 }
 
-func TestResolveResolvesKeychainReferencesInSecretsFiles(t *testing.T) {
-	// secrets.env supports `KEY=keychain:<service>` as an indirection; the
-	// literal string must never ship as the credential.
+func TestResolveHasExactlyFiveSources(t *testing.T) {
+	// The chain is deliberately short: --env, project Keychain, global
+	// Keychain, ambient host shell, auto-discovery. There is no credential
+	// file — .cspace/secrets.env was removed rather than deprecated, so
+	// "where did this value come from" has five possible answers, and the
+	// summary line names which one won.
 	h := newTestHost()
-	h.ReadSecretsFile = func(string) (map[string]string, error) {
-		return map[string]string{KeyGHToken: "keychain:my-pat"}, nil
-	}
 	h.ReadKeychain = func(service string) (string, error) {
-		if service == "my-pat" {
-			return "real-token", nil
+		switch service {
+		case "cspace-proj-GH_TOKEN":
+			return "project-keychain", nil
+		case "cspace-GH_TOKEN":
+			return "global-keychain", nil
 		}
 		return "", nil
 	}
-	w, ok := h.Resolve("proj", "/p", "/home/u", nil)[KeyGHToken].Winner()
-	if !ok || w.Value != "real-token" {
-		t.Fatalf("winner = %+v, want the dereferenced Keychain value", w)
-	}
-}
+	h.LookupEnv = func(string) (string, bool) { return "ambient", true }
+	h.DiscoverGh = func() (string, error) { return "discovered", nil }
 
-func TestResolveDropsAnUnresolvableKeychainReference(t *testing.T) {
-	h := newTestHost()
-	h.ReadSecretsFile = func(string) (map[string]string, error) {
-		return map[string]string{KeyGHToken: "keychain:missing"}, nil
+	got := h.Resolve("proj", map[string]string{KeyGHToken: "flag"})
+	want := []Source{
+		SourceEnvFlag,
+		SourceProjectKeychain,
+		SourceGlobalKeychain,
+		SourceHostShell,
+		SourceAutoDiscovered,
 	}
-	if got := h.Resolve("proj", "/p", "/home/u", nil); len(got[KeyGHToken].Candidates) != 0 {
-		t.Fatalf("candidates = %+v, want the unresolvable reference dropped, not shipped literally", got[KeyGHToken].Candidates)
+	cands := got[KeyGHToken].Candidates
+	if len(cands) != len(want) {
+		t.Fatalf("got %d candidates, want %d: %+v", len(cands), len(want), cands)
+	}
+	for i, src := range want {
+		if cands[i].Source != src {
+			t.Errorf("candidate %d source = %v, want %v", i, cands[i].Source, src)
+		}
 	}
 }

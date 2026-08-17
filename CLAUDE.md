@@ -97,16 +97,17 @@ cspace sandboxes need an Anthropic credential to drive Claude Code. Two token fo
 - **Long-lived OAuth token** (`sk-ant-oat-…`, from `claude setup-token`) → `CLAUDE_CODE_OAUTH_TOKEN`. `cspace keychain init` routes by prefix automatically.
 - **Short-lived OAuth token** auto-discovered from the host's `claude /login` Keychain entry. Convenient for first-run, but expires within hours — don't rely on it for sessions over a day.
 
-`internal/credentials` owns resolution, policy, and reporting for the five cspace-owned keys — `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, `GITHUB_PERSONAL_ACCESS_TOKEN`. `internal/secrets` holds only primitives (dotenv parsing, Keychain I/O, host discovery) and makes no policy decisions.
+`internal/credentials` owns resolution, policy, and reporting for the five cspace-owned keys — `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, `GITHUB_PERSONAL_ACCESS_TOKEN`. `internal/secrets` holds only primitives (Keychain I/O, host credential discovery) and makes no policy decisions.
 
 Precedence, highest first:
 
 1. `cspace up --env KEY=VALUE`
 2. **Project Keychain** — `cspace-<project>-<KEY>`, written by `cspace keychain init --project`. Use it to give one project's sandboxes a narrower token than your personal one; a host `gh` login carries `repo` scope over every repository you can reach.
 3. **Global Keychain** — `cspace-<KEY>`, written by `cspace keychain init`. The canonical store on macOS.
-4. Legacy `<project>/.cspace/secrets.env`, then `~/.cspace/secrets.env` — still read, deprecated on macOS. On non-darwin these are the canonical durable path (Keychain is a no-op there) and are never reported as deprecated.
-5. Ambient host shell
-6. Auto-discovery — `gh auth token`, and the host's `claude /login` Keychain entry
+4. Ambient host shell
+5. Auto-discovery — `gh auth token`, and the host's `claude /login` Keychain entry
+
+There is **no credential file**. `.cspace/secrets.env` was removed, not deprecated — the Keychain is the only durable store, so "where did this value come from" has five possible answers and the boot summary names which one won.
 
 **Compose `env_file` and devcontainer `containerEnv` are ignored for these five keys**, unconditionally — including when cspace resolves nothing. A project's `.env` cannot shadow a cspace credential, and every other key in it flows through untouched. See `docs/env-cspace.md` for the three cases this knowingly breaks.
 
@@ -123,7 +124,7 @@ A GitHub token is verified against `GET /user` at boot; a 401 advances down the 
 
 ## Env plumbing
 
-`docs/env-cspace.md` documents the `.env.cspace` convention (project-declared container overrides), the full env merge order, and the `$CSPACE_WORKSPACE_HOST` / e2e `baseURL` guidance. For **non-credential** keys the order is `--env` > devcontainer `containerEnv` > compose `env_file` > `.cspace/secrets.env`. The five cspace-owned credential keys do not participate in that order at all — see Credentials above.
+`docs/env-cspace.md` documents the `.env.cspace` convention (project-declared container overrides), the full env merge order, and the `$CSPACE_WORKSPACE_HOST` / e2e `baseURL` guidance. For **non-credential** keys the order is `--env` > devcontainer `containerEnv` > compose `env_file`. The five cspace-owned credential keys do not participate in that order at all — see Credentials above.
 
 Security caveat: secrets currently transit `-e` flags into the substrate, and Apple Container's `vminitd` logs the full process env — anyone with `container logs` access on the host can read them.
 

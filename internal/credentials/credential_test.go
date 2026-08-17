@@ -46,13 +46,11 @@ func TestResolutionWinner(t *testing.T) {
 
 func TestSourceStringIsStableForRendering(t *testing.T) {
 	want := map[Source]string{
-		SourceEnvFlag:           "--env",
-		SourceProjectKeychain:   "keychain:project",
-		SourceGlobalKeychain:    "keychain",
-		SourceLegacyProjectFile: "project secrets.env",
-		SourceLegacyUserFile:    "user secrets.env",
-		SourceHostShell:         "host shell",
-		SourceAutoDiscovered:    "auto-discovered",
+		SourceEnvFlag:         "--env",
+		SourceProjectKeychain: "keychain:project",
+		SourceGlobalKeychain:  "keychain",
+		SourceHostShell:       "host shell",
+		SourceAutoDiscovered:  "auto-discovered",
 	}
 	for src, label := range want {
 		if got := src.String(); got != label {
@@ -68,8 +66,6 @@ func TestSourceOrderIsPrecedence(t *testing.T) {
 		SourceEnvFlag,
 		SourceProjectKeychain,
 		SourceGlobalKeychain,
-		SourceLegacyProjectFile,
-		SourceLegacyUserFile,
 		SourceHostShell,
 		SourceAutoDiscovered,
 	}

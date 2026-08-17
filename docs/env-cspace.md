@@ -67,15 +67,14 @@ cspace-owned credential keys do not participate in that merge at all.
 
 Later steps overwrite earlier ones (`internal/cli/cmd_up.go`):
 
-1. `.cspace/secrets.env` — arbitrary keys a project or user put there
-2. Compose service `environment:`, including whatever compose-go resolved from
+1. Compose service `environment:`, including whatever compose-go resolved from
    `env_file:` entries — i.e. **`.env` and `.env.cspace`**
-3. devcontainer.json `containerEnv`
-4. `cspace up --env KEY=VALUE`
+2. devcontainer.json `containerEnv`
+3. `cspace up --env KEY=VALUE`
 
 Highest to lowest: **`--env` > `containerEnv` > compose `env_file`
-(`.env.cspace` / `.env`) > `.cspace/secrets.env`**. `.env.cspace` wins over
-`.env` because it is declared later in the `env_file:` list.
+(`.env.cspace` / `.env`)**. `.env.cspace` wins over `.env` because it is
+declared later in the `env_file:` list.
 
 ### The five cspace-owned credential keys
 
@@ -87,9 +86,12 @@ ignored for them, unconditionally. Order, highest first:
 1. `--env KEY=VALUE`
 2. Project Keychain — `cspace-<project>-<KEY>`
 3. Global Keychain — `cspace-<KEY>`
-4. Legacy `secrets.env` (project file, then user file)
-5. Ambient host shell
-6. Auto-discovery (`gh auth token`; the host `claude /login` Keychain entry)
+4. Ambient host shell
+5. Auto-discovery (`gh auth token`; the host `claude /login` Keychain entry)
+
+There is no credential file. `.cspace/secrets.env` was removed outright rather
+than deprecated: keeping it alive for app keys but not cspace keys would have
+been the worst of the three options to explain.
 
 `--env` genuinely beats ambient host-shell credentials now, closing the gap
 that `2026-07-16-env-precedence-smeared-env-flag-loses-to-ambient-credentials`
@@ -115,9 +117,9 @@ favour of a rule with no exceptions.
    will instead see the host user's key. **There is no opt-out** — projects in
    this position must rename their app-facing variable.
 
-A quieter change affects anyone with **both** a `secrets.env` entry and a
-Keychain entry for the same key: the winner flips from file to Keychain.
-`cspace keychain status` shows the new winner.
+A fourth case: anyone who kept credentials in `.cspace/secrets.env` loses them,
+since that file is no longer read at all. Move them into the Keychain with
+`cspace keychain init`.
 
 ### Baked env is immutable
 
@@ -138,21 +140,23 @@ with `--mode cspace`**, or the frontend build tooling will pick up
 `.env.cspace` is meant exclusively for the compose `env_file:` wiring above,
 not the app's own dotenv loading.
 
-## Relationship to `.cspace/secrets.env`
+## Where credentials live instead
 
-These two files solve different problems and shouldn't be confused:
+`.cspace/secrets.env` no longer exists. cspace credentials live in the macOS
+Keychain (`cspace keychain init`, or `--project` for a repo-scoped token) and
+nowhere else.
 
-| File | Owner | Contents | Delivery |
-|---|---|---|---|
-| `.cspace/secrets.env` | cspace / the developer | cspace-delivered credentials (`ANTHROPIC_API_KEY`, `GH_TOKEN`, ...) | Loaded by the CLI, passed as container env at boot. Gitignored. |
-| `.env.cspace` | the project | Project-declared container overrides (neutralizing host/cloud vars) | Loaded by compose's `env_file:` mechanism inside the container build. Committed. |
+| Surface | Owner | Contents |
+|---|---|---|
+| macOS Keychain | the developer | the five cspace credential keys |
+| `.env` / `.env.cspace` | the project | app vars and app secrets |
 
-Avoid reusing one of cspace's own secret key names
-(`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`,
-`GITHUB_PERSONAL_ACCESS_TOKEN`) as a key in `.env.cspace` — per the precedence
-note above, `.env.cspace` out-ranks `.cspace/secrets.env`, so reusing one of
-these keys silently overrides the delivered secret rather than the other way
-around.
+Reusing one of cspace's five key names (`ANTHROPIC_API_KEY`,
+`CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`,
+`GITHUB_PERSONAL_ACCESS_TOKEN`) in `.env` or `.env.cspace` no longer overrides
+anything — cspace ignores those files for those keys. It does mean your app
+receives cspace's credential under that name rather than its own, which is
+migration case 3 above and has no opt-out.
 
 ## Inert on the local box
 
