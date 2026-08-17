@@ -3,6 +3,7 @@ package credentials
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -28,6 +29,22 @@ type Host struct {
 	// VerifyGitHub reports whether GitHub accepts a token. Nil means
 	// verification is unavailable, which yields ValidityUnknown.
 	VerifyGitHub func(token string) Validity
+	// Now is a seam for expiry decisions. Nil means time.Now.
+	Now func() time.Time
+}
+
+func (h Host) now() time.Time {
+	if h.Now == nil {
+		return time.Now()
+	}
+	return h.Now()
+}
+
+// expired reports whether a known expiry is already in the past. A zero
+// expiry — older Claude Code builds that record none — is treated as not
+// expired rather than guessed at.
+func expired(expiresAt, now time.Time) bool {
+	return !expiresAt.IsZero() && !expiresAt.After(now)
 }
 
 // Resolve returns the ranked candidate stack for every cspace-owned key,
@@ -94,7 +111,14 @@ func (h Host) ResolveErr(project, projectRoot, userHome string, envFlags map[str
 			// Auto-discovery fills only the OAuth carrier: the host's
 			// Claude Code-credentials blob is always an sk-ant-oat access
 			// token. ANTHROPIC_API_KEY has no auto-discovered source.
-			if claudeTok != "" {
+			//
+			// An already-expired discovered token is refused outright rather
+			// than offered as a candidate. Injecting one yields a sandbox
+			// that boots and then fails every SDK call with a confusing auth
+			// error; leaving the key unset lets reporting say what to do.
+			// Only auto-discovery is filtered this way — an explicitly
+			// stored credential is the user's call, not ours.
+			if claudeTok != "" && !expired(claudeExp, h.now()) {
 				r.add(key, claudeTok, SourceAutoDiscovered, "Claude Code-credentials", claudeExp)
 			}
 		case KeyGHToken, KeyGitHubToken, KeyGitHubPAT:
@@ -132,6 +156,19 @@ func (h Host) secretsFile(dir string) map[string]string {
 	m, err := h.ReadSecretsFile(filepath.Join(dir, ".cspace", "secrets.env"))
 	if err != nil {
 		return nil
+	}
+	// secrets.env supports `KEY=keychain:<service>` as an indirection, so a
+	// credential can live in the Keychain while the file names it. Resolve
+	// it here or the literal string "keychain:my-pat" ships as the token.
+	for k, v := range m {
+		if service, found := strings.CutPrefix(v, "keychain:"); found {
+			resolved, err := h.readKeychain(service)
+			if err != nil || resolved == "" {
+				delete(m, k)
+				continue
+			}
+			m[k] = resolved
+		}
 	}
 	return m
 }

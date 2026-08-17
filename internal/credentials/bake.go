@@ -57,18 +57,26 @@ func (h Host) Select(res map[string]Resolution) Selection {
 		validity[key] = v
 	}
 
+	// Group policy rewrites Credential.Key to the landing slot — Anthropic
+	// routing moves a carrier, GitHub mirroring writes one credential under
+	// three names — so the post-policy key says nothing about which
+	// candidate was verified. Index validity by the credential's value,
+	// which survives relabeling, or a mirrored winner inherits whatever
+	// verdict its landing slot's own candidate happened to get.
+	validityByValue := make(map[string]Validity, len(picked))
+	for key, c := range picked {
+		if v, ok := validity[key]; ok {
+			validityByValue[c.Value] = v
+		}
+	}
+
 	out := Selection{
 		Winners:    make(map[string]Credential),
 		Validities: make(map[string]Validity),
 	}
 	for k, c := range ApplyGroupPolicy(picked) {
 		out.Winners[k] = c
-		// Group policy may relabel a credential onto a different key
-		// (Anthropic routing, GitHub mirroring), so carry the validity from
-		// the slot it was verified under rather than the slot it lands in.
-		if v, ok := validity[c.Key]; ok {
-			out.Validities[k] = v
-		} else if v, ok := validity[k]; ok {
+		if v, ok := validityByValue[c.Value]; ok {
 			out.Validities[k] = v
 		}
 	}

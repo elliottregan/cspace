@@ -19,14 +19,25 @@ func newKeychainCmd() *cobra.Command {
 	parent := &cobra.Command{
 		Use:   "keychain",
 		Short: "Manage cspace credentials in macOS Keychain",
-		Long: `cspace credentials live in four places by precedence:
+		Long: `cspace resolves credentials in this order, highest first:
 
-  1. <project>/.cspace/secrets.env   — project-scoped lock-in
-  2. ~/.cspace/secrets.env           — user-global manual entry
-  3. macOS Keychain "cspace-<KEY>"   — set via ` + "`cspace keychain init`" + `
-  4. Auto-discovery from host state  — Claude Code OAuth blob, gh auth token
+  1. cspace up --env KEY=VALUE
+  2. macOS Keychain "cspace-<project>-<KEY>"  — ` + "`cspace keychain init --project`" + `
+  3. macOS Keychain "cspace-<KEY>"            — ` + "`cspace keychain init`" + `
+  4. <project>/.cspace/secrets.env, then ~/.cspace/secrets.env  (legacy)
+  5. Ambient host shell
+  6. Auto-discovery from host state — Claude Code OAuth blob, gh auth token
 
-Subcommands manage layer 3. Layers 1, 2 take precedence; layer 4 is fallback.`,
+The Keychain is canonical on macOS; the secrets.env layers still work but are
+deprecated there. Off macOS the Keychain is unavailable and secrets.env is the
+supported durable path.
+
+A project's compose env_file and devcontainer containerEnv are IGNORED for the
+five cspace-owned keys, so a project .env cannot shadow a cspace credential.
+
+Use --project to give one project's sandboxes a narrower token than your
+personal one: a host ` + "`gh`" + ` login carries repo scope over every repository
+you can reach.`,
 	}
 	parent.AddCommand(newKeychainInitCmd())
 	parent.AddCommand(newKeychainStatusCmd())

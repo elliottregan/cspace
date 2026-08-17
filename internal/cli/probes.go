@@ -439,11 +439,30 @@ func credentialProbeChecks(projectRoot, userHome string, keys []string) []ProbeC
 	}
 	selection := host.Select(resolved)
 
+	// Group-level satisfaction, not per-key. The Anthropic carriers are
+	// mutually exclusive, so exactly one of them never ships by design —
+	// failing the other would leave doctor permanently red on every
+	// correctly-configured host.
+	groupSatisfied := false
+	for _, key := range keys {
+		if _, ok := selection.Winners[key]; ok {
+			groupSatisfied = true
+			break
+		}
+	}
+
 	var checks []ProbeCheck
 	for _, key := range keys {
 		winner, shipping := selection.Winners[key]
 		if !shipping {
-			if len(resolved[key].Candidates) == 0 {
+			switch {
+			case groupSatisfied:
+				checks = append(checks, ProbeCheck{
+					Status:  ProbePass,
+					Title:   key + ": not shipped",
+					Details: []string{"another carrier in this group ships instead"},
+				})
+			default:
 				checks = append(checks, ProbeCheck{
 					Status: ProbeFail,
 					Title:  key + ": not reachable",
@@ -555,8 +574,24 @@ func credentialContainerChecks(ctx context.Context, project string, sel credenti
 			})
 			continue
 		}
+		// A short-lived auto-discovered token rotates by design, so a
+		// container baked before the last host refresh diverges routinely
+		// and may still be perfectly usable. Report it, but do not paint
+		// doctor red for the default zero-config setup.
+		status := ProbeFail
+		rotation := true
+		for _, k := range diverged {
+			if sel.Winners[k].Source != credentials.SourceAutoDiscovered ||
+				sel.Winners[k].ExpiresAt.IsZero() {
+				rotation = false
+				break
+			}
+		}
+		if rotation {
+			status = ProbeWarn
+		}
 		checks = append(checks, ProbeCheck{
-			Status: ProbeFail,
+			Status: status,
 			Title:  e.Name + ": DIVERGED from host resolution",
 			Details: []string{
 				"stale keys: " + strings.Join(diverged, ", "),

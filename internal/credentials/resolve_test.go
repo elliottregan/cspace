@@ -109,6 +109,9 @@ func TestResolveProjectSecretsFileOutranksUserFile(t *testing.T) {
 func TestResolveCarriesOAuthExpiry(t *testing.T) {
 	exp := time.Date(2026, 8, 17, 15, 57, 0, 0, time.UTC)
 	h := newTestHost()
+	// Pin the clock: an unpinned wall clock eventually moves past this fixed
+	// expiry, and Resolve now refuses an already-expired discovered token.
+	h.Now = func() time.Time { return exp.Add(-time.Hour) }
 	h.DiscoverClaude = func() (string, time.Time, error) { return "sk-ant-oat01-x", exp, nil }
 
 	w, ok := h.Resolve("proj", "/p", "/home/u", nil)[KeyClaudeOAuthToken].Winner()
@@ -183,5 +186,86 @@ func TestResolveSwallowsKeychainErrorForConvenienceCallers(t *testing.T) {
 	h.ReadKeychain = func(string) (string, error) { return "", errors.New("locked") }
 	if got := h.Resolve("proj", "/p", "/home/u", nil); got == nil {
 		t.Fatal("Resolve() should still return a map when ResolveErr fails")
+	}
+}
+
+func TestResolveRefusesAnAlreadyExpiredDiscoveredToken(t *testing.T) {
+	// Injecting a lapsed short-lived token yields a sandbox that boots and
+	// then fails every SDK call with a confusing auth error.
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	h := newTestHost()
+	h.Now = func() time.Time { return now }
+	h.DiscoverClaude = func() (string, time.Time, error) {
+		return "sk-ant-oat01-x", now.Add(-time.Minute), nil
+	}
+	got := h.Resolve("proj", "/p", "/home/u", nil)
+	if len(got[KeyClaudeOAuthToken].Candidates) != 0 {
+		t.Fatalf("candidates = %+v, want an expired discovered token refused", got[KeyClaudeOAuthToken].Candidates)
+	}
+}
+
+func TestResolveKeepsAnUnexpiredDiscoveredToken(t *testing.T) {
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	h := newTestHost()
+	h.Now = func() time.Time { return now }
+	h.DiscoverClaude = func() (string, time.Time, error) {
+		return "sk-ant-oat01-x", now.Add(time.Hour), nil
+	}
+	if got := h.Resolve("proj", "/p", "/home/u", nil); len(got[KeyClaudeOAuthToken].Candidates) != 1 {
+		t.Fatalf("candidates = %+v, want the unexpired token kept", got[KeyClaudeOAuthToken].Candidates)
+	}
+}
+
+func TestResolveKeepsATokenWithNoRecordedExpiry(t *testing.T) {
+	// Older Claude Code builds record no expiresAt; treat that as usable
+	// rather than guessing.
+	h := newTestHost()
+	h.DiscoverClaude = func() (string, time.Time, error) { return "sk-ant-oat01-x", time.Time{}, nil }
+	if got := h.Resolve("proj", "/p", "/home/u", nil); len(got[KeyClaudeOAuthToken].Candidates) != 1 {
+		t.Fatal("a token with no recorded expiry must not be refused")
+	}
+}
+
+func TestResolveExplicitlyStoredExpiredCredentialIsNotRefused(t *testing.T) {
+	// Only auto-discovery is filtered — an explicitly stored credential is
+	// the user's call.
+	h := newTestHost()
+	h.ReadKeychain = func(service string) (string, error) {
+		if service == "cspace-CLAUDE_CODE_OAUTH_TOKEN" {
+			return "sk-ant-oat01-stored", nil
+		}
+		return "", nil
+	}
+	if got := h.Resolve("proj", "/p", "/home/u", nil); len(got[KeyClaudeOAuthToken].Candidates) != 1 {
+		t.Fatal("an explicitly stored credential must always be offered")
+	}
+}
+
+func TestResolveResolvesKeychainReferencesInSecretsFiles(t *testing.T) {
+	// secrets.env supports `KEY=keychain:<service>` as an indirection; the
+	// literal string must never ship as the credential.
+	h := newTestHost()
+	h.ReadSecretsFile = func(string) (map[string]string, error) {
+		return map[string]string{KeyGHToken: "keychain:my-pat"}, nil
+	}
+	h.ReadKeychain = func(service string) (string, error) {
+		if service == "my-pat" {
+			return "real-token", nil
+		}
+		return "", nil
+	}
+	w, ok := h.Resolve("proj", "/p", "/home/u", nil)[KeyGHToken].Winner()
+	if !ok || w.Value != "real-token" {
+		t.Fatalf("winner = %+v, want the dereferenced Keychain value", w)
+	}
+}
+
+func TestResolveDropsAnUnresolvableKeychainReference(t *testing.T) {
+	h := newTestHost()
+	h.ReadSecretsFile = func(string) (map[string]string, error) {
+		return map[string]string{KeyGHToken: "keychain:missing"}, nil
+	}
+	if got := h.Resolve("proj", "/p", "/home/u", nil); len(got[KeyGHToken].Candidates) != 0 {
+		t.Fatalf("candidates = %+v, want the unresolvable reference dropped, not shipped literally", got[KeyGHToken].Candidates)
 	}
 }

@@ -1352,11 +1352,6 @@ func ensureRegistryDaemon() error {
 	return fmt.Errorf("daemon started but not accepting connections within 3s")
 }
 
-// nudgeSentinelName is the per-user marker file that records "the no-auth
-// nudge has already been shown". Lives in ~/.cspace/. Once it exists the
-// nudge stays silent forever — the message has done its job.
-const nudgeSentinelName = ".no-claude-auth-nudge-shown"
-
 // browserDecision is the outcome of resolveBrowserEnabled: whether to start
 // the cspace browser sidecar and, when not, a human-readable reason for the
 // "skipped" log line.
@@ -1414,66 +1409,6 @@ func resolveSharedBrowser(cfgBrowser config.BrowserConfig, noSharedBrowser bool)
 		shared = false
 	}
 	return shared
-}
-
-// discoverClaudeOauth is a seam so tests can stub host OAuth discovery without
-// touching the real macOS Keychain (mirrors the secrets package's pattern).
-var discoverClaudeOauth = secrets.DiscoverClaudeOauthToken
-
-// warnExpiredAutoDiscoveredAuth prints an actionable warning when the only
-// Anthropic credential cspace could find was an auto-discovered Claude Code
-// OAuth token that had already expired — so secrets.Load refused to inject it
-// (see secrets.OAuthExpired) and env carries no Anthropic credential. Returns
-// true if it printed. Unlike the generic onboarding nudge this is shown on
-// every run, because it is an active misconfiguration the user must act on,
-// not a one-time hint. A carrier already present in env short-circuits it,
-// preserving the generic-nudge behavior for the truly-absent case.
-func warnExpiredAutoDiscoveredAuth(out io.Writer, env map[string]string) bool {
-	if env["ANTHROPIC_API_KEY"] != "" || env["CLAUDE_CODE_OAUTH_TOKEN"] != "" {
-		return false
-	}
-	oauth, expires, err := discoverClaudeOauth()
-	if err != nil || oauth == "" || !secrets.OAuthExpired(expires) {
-		return false
-	}
-	agoStr := time.Since(expires).Round(time.Minute).String()
-	if time.Since(expires) < time.Minute {
-		agoStr = "less than a minute"
-	}
-	_, _ = fmt.Fprintf(out, "warning: auto-discovered Claude Code OAuth token expired %s ago (at %s); not injecting it.\n",
-		agoStr, expires.Local().Format("2006-01-02 15:04 MST"))
-	_, _ = fmt.Fprintln(out, "  cspace refuses to inject an expired credential. To fix, do one of:")
-	_, _ = fmt.Fprintln(out, "    - run `cspace keychain init` and paste a long-lived key (sk-ant-api-… or sk-ant-oat-…)  [recommended]")
-	_, _ = fmt.Fprintln(out, "    - or run `claude` on the host to refresh the short-lived token, then `cspace up` again")
-	_, _ = fmt.Fprintln(out, "  The sandbox will still boot, but Claude SDK calls will fail until auth is configured.")
-	return true
-}
-
-// maybeNudgeMissingAnthropicAuth prints a one-time hint when no Anthropic
-// credential is reachable in env. Gated by a sentinel file in ~/.cspace/ so
-// it fires at most once per user. Failure to write the sentinel is swallowed
-// — the nudge already printed and a future re-print is harmless.
-func maybeNudgeMissingAnthropicAuth(out io.Writer, env map[string]string) {
-	if env["ANTHROPIC_API_KEY"] != "" {
-		return
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return
-	}
-	cspaceDir := filepath.Join(home, ".cspace")
-	sentinel := filepath.Join(cspaceDir, nudgeSentinelName)
-	if _, err := os.Stat(sentinel); err == nil {
-		// Already shown.
-		return
-	}
-	_, _ = fmt.Fprintln(out, "note: no Anthropic credential reachable. Run `cspace keychain init` to set one up")
-	_, _ = fmt.Fprintln(out, "      (or set ANTHROPIC_API_KEY in ~/.cspace/secrets.env). Sandbox will boot,")
-	_, _ = fmt.Fprintln(out, "      but Claude SDK calls will fail until auth is configured.")
-	if err := os.MkdirAll(cspaceDir, 0o755); err != nil {
-		return
-	}
-	_ = os.WriteFile(sentinel, []byte("shown\n"), 0o644)
 }
 
 // dnsInstallNudgeSentinel is the per-user marker for "the dns-install nudge

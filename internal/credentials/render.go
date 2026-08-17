@@ -50,9 +50,16 @@ func SummaryLine(b BakeResult, now time.Time, runway time.Duration) (line, warni
 		line += " · project env ignored for cspace keys"
 	}
 
-	if len(b.Winners) == 0 && len(b.Shadowed) > 0 {
-		warnings = append(warnings, "no cspace credential resolved, and this project's env file is "+
-			"ignored for cspace-owned keys. Store one with `cspace keychain init`.")
+	if len(b.Winners) == 0 {
+		// This is also the successor to the old one-time onboarding nudge,
+		// and it fires every boot rather than once: no credential is an
+		// active misconfiguration, not a first-run hint.
+		msg := "no cspace credential resolved. Store one with `cspace keychain init`."
+		if len(b.Shadowed) > 0 {
+			msg = "no cspace credential resolved, and this project's env file is " +
+				"ignored for cspace-owned keys. Store one with `cspace keychain init`."
+		}
+		warnings = append(warnings, msg)
 	}
 
 	return line, strings.Join(warnings, " ")
@@ -84,10 +91,8 @@ func groupState(b BakeResult, cred Credential, key string, now time.Time, runway
 
 	d := DurabilityOf(cred, now, runway)
 	if runway <= 0 {
-		// Escalation disabled: still report, never warn.
-		if d == Expiring || d == Expired {
-			return "expiring", ""
-		}
+		// Escalation disabled: still report accurately, never warn. An
+		// expired credential is reported as expired, not merely expiring.
 		return d.String(), ""
 	}
 	switch d {

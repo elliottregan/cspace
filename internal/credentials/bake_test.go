@@ -169,3 +169,52 @@ func TestBakeLeavesAppEnvUntouchedWhenNoCredentialsResolve(t *testing.T) {
 		t.Errorf("Shadowed = %v, want empty", got.Shadowed)
 	}
 }
+
+func TestSelectCarriesValidityThroughMirrorRelabeling(t *testing.T) {
+	// Group policy rewrites Credential.Key to the landing slot, so indexing
+	// validity by the post-policy key makes a mirrored winner inherit the
+	// verdict of whatever candidate its landing slot picked. Here the
+	// shipped value is verified but GH_TOKEN's own candidate was rejected.
+	h := newTestHost()
+	h.VerifyGitHub = func(tok string) Validity {
+		if tok == "dead" {
+			return ValidityRejected
+		}
+		return ValidityValid
+	}
+	res := map[string]Resolution{
+		KeyGHToken: {Key: KeyGHToken, Candidates: []Credential{
+			{Key: KeyGHToken, Value: "dead", Source: SourceLegacyUserFile},
+		}},
+		KeyGitHubPAT: {Key: KeyGitHubPAT, Candidates: []Credential{
+			{Key: KeyGitHubPAT, Value: "good", Source: SourceEnvFlag},
+		}},
+	}
+	sel := h.Select(res)
+	for _, k := range []string{KeyGHToken, KeyGitHubToken, KeyGitHubPAT} {
+		if sel.Winners[k].Value != "good" {
+			t.Fatalf("%s ships %q, want the highest-ranked value", k, sel.Winners[k].Value)
+		}
+		if sel.Validities[k] != ValidityValid {
+			t.Errorf("%s validity = %v, want verified for the value that ships", k, sel.Validities[k])
+		}
+	}
+}
+
+func TestSelectCarriesRejectionToEveryMirroredName(t *testing.T) {
+	// The inverse: a singly-sourced dead token must not show two green
+	// checks beside one red one for the same provider-rejected value.
+	h := newTestHost()
+	h.VerifyGitHub = func(string) Validity { return ValidityRejected }
+	res := map[string]Resolution{
+		KeyGHToken: {Key: KeyGHToken, Candidates: []Credential{
+			{Key: KeyGHToken, Value: "dead", Source: SourceGlobalKeychain},
+		}},
+	}
+	sel := h.Select(res)
+	for _, k := range []string{KeyGHToken, KeyGitHubToken, KeyGitHubPAT} {
+		if sel.Validities[k] != ValidityRejected {
+			t.Errorf("%s validity = %v, want rejected on every mirrored name", k, sel.Validities[k])
+		}
+	}
+}
