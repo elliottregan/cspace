@@ -19,21 +19,19 @@ func newImageCmd() *cobra.Command {
 	parent := &cobra.Command{
 		Use:   "image",
 		Short: "Manage the cspace sandbox image (cspace:latest)",
-		Long: `Released cspace versions publish a matching sandbox image to
-` + ghcrRepository + `, and ` + "`cspace up`" + ` pulls it when the local image is
-missing or built by a different cspace. ` + "`cspace image pull`" + ` does
-that fetch on demand.
+		Long: `The cspace sandbox image is built locally on each host; there is
+no published image to pull (see the ghcr push finding — Apple
+Container's push to ghcr.io fails, and publishing was dropped
+rather than worked around).
 
-` + "`cspace image build`" + ` builds the image locally instead: it extracts
-the embedded Dockerfile (plus the supervisor source, scripts, etc.)
-to a temp dir and runs ` + "`container build`" + ` against it. That is the
-only path for dev builds, which have no published image, and the
-one to use when testing local Dockerfile or supervisor changes.
-Idempotent — the extracted tree carries a .version marker so
-repeat builds reuse the existing extraction.`,
+` + "`cspace image build`" + ` extracts the embedded Dockerfile (plus the
+supervisor source, scripts, etc.) to a temp dir and runs
+` + "`container build`" + ` against it. ` + "`cspace up`" + ` runs it for you when the
+image is missing, and offers to when it was built by a different
+cspace version. Idempotent — the extracted tree carries a .version
+marker so repeat builds reuse the existing extraction.`,
 	}
 	parent.AddCommand(newImageBuildCmd())
-	parent.AddCommand(newImagePullCmd())
 	return parent
 }
 
@@ -54,29 +52,6 @@ func newImageBuildCmd() *cobra.Command {
 	return cmd
 }
 
-func newImagePullCmd() *cobra.Command {
-	var tag string
-	cmd := &cobra.Command{
-		Use:   "pull",
-		Short: "Pull the published sandbox image matching this cspace version",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ref, ok := pullImageRef(Version)
-			if !ok {
-				return fmt.Errorf("no published image for version %q (dev build, dirty tree, or commits past the tag). Build one instead: `cspace image build`", Version)
-			}
-			return runImagePull(cmd, ref, tag)
-		},
-	}
-	cmd.Flags().StringVar(&tag, "tag", "cspace:latest",
-		"local tag to point at the pulled image (default cspace:latest, which cspace up reads)")
-	return cmd
-}
-
-// ghcrRepository is where `make release` publishes the sandbox image. Its tags
-// are the release tags themselves (v1.0.0-rc.46), so a CLI knows the exact
-// image that matches it without a lookup.
-const ghcrRepository = "ghcr.io/elliottregan/cspace"
-
 // describeSuffix matches `git describe`'s "-<commits>-g<sha>" tail, which marks
 // a build made past the last tag — no release exists for it.
 var describeSuffix = regexp.MustCompile(`-\d+-g[0-9a-f]+$`)
@@ -86,7 +61,7 @@ var describeSuffix = regexp.MustCompile(`-\d+-g[0-9a-f]+$`)
 // ("1.0.0-rc.46") while the maintainer Makefile's `git describe` keeps it; both
 // name the same tag. Returns ok=false for anything that isn't exactly a tagged
 // commit — dev builds, dirty trees, commits past the tag — because no release
-// (and so no published binary or image) exists for those.
+// (and so no published linux binary) exists for those.
 func releaseTag(version string) (string, bool) {
 	if version == "" || version == "dev" ||
 		strings.Contains(version, "-dirty") || describeSuffix.MatchString(version) {
@@ -96,68 +71,6 @@ func releaseTag(version string) (string, bool) {
 		version = "v" + version
 	}
 	return version, true
-}
-
-// pullImageRef returns the published sandbox image matching this CLI, and
-// whether one exists at all.
-func pullImageRef(version string) (string, bool) {
-	tag, ok := releaseTag(version)
-	if !ok {
-		return "", false
-	}
-	return ghcrRepository + ":" + tag, true
-}
-
-// imageAction is what `cspace up` must do about the default sandbox image
-// before it can launch.
-type imageAction int
-
-const (
-	imageActionNone imageAction = iota
-	imageActionPull
-	imageActionBuild
-)
-
-// planImageRefresh decides between leaving the local image alone, pulling the
-// published one, and building from source. A released CLI pulls (seconds, and
-// only the changed layers); a dev build has no published image and must build.
-func planImageRefresh(present bool, imgVersion string, hasLabel bool, cliVersion string, pullable bool) imageAction {
-	if present && !imageIsStale(imgVersion, hasLabel, cliVersion) {
-		return imageActionNone
-	}
-	if pullable {
-		return imageActionPull
-	}
-	return imageActionBuild
-}
-
-// imageOps are the two ways to obtain the sandbox image, injected so the
-// refresh decision is testable without a container runtime.
-type imageOps struct {
-	pull  func(ref, localTag string) error
-	build func(tag string) error
-}
-
-// applyImageRefresh carries out a planned refresh, falling back from pull to
-// build so an unreachable registry never blocks a boot that could still build
-// locally. Reports whether the image was actually touched.
-func applyImageRefresh(action imageAction, ops imageOps, ref, localTag string, log io.Writer) (bool, error) {
-	if action == imageActionNone {
-		return false, nil
-	}
-	if action == imageActionPull {
-		err := ops.pull(ref, localTag)
-		if err == nil {
-			return true, nil
-		}
-		_, _ = fmt.Fprintf(log,
-			"[cspace] could not pull %s: %v\n[cspace] falling back to a local build of %s.\n",
-			ref, err, localTag)
-	}
-	if err := ops.build(localTag); err != nil {
-		return false, err
-	}
-	return true, nil
 }
 
 // parseImageInspect pulls the cspace.version label out of a
@@ -199,30 +112,6 @@ func inspectSandboxImage(image string) (version string, hasLabel bool, present b
 		return "", false, false
 	}
 	return parseImageInspect(out)
-}
-
-// imagePullCommands returns the argv pair that fetches a published image and
-// points the local tag at it. The tag step is load-bearing: without it nothing
-// local carries the new cspace.version, so every boot would pull again.
-func imagePullCommands(ref, localTag string) [][]string {
-	return [][]string{
-		{"image", "pull", "--platform", "linux/arm64", ref},
-		{"image", "tag", ref, localTag},
-	}
-}
-
-// runImagePull fetches the published sandbox image and retags it locally.
-func runImagePull(cmd *cobra.Command, ref, localTag string) error {
-	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "[cspace] pulling %s ...\n", ref)
-	for _, argv := range imagePullCommands(ref, localTag) {
-		c := exec.Command("container", argv...)
-		c.Stdout, c.Stderr = cmd.OutOrStdout(), cmd.ErrOrStderr()
-		if err := c.Run(); err != nil {
-			return fmt.Errorf("container %s: %w", strings.Join(argv, " "), err)
-		}
-	}
-	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "[cspace] %s is now %s.\n", localTag, ref)
-	return nil
 }
 
 func runImageBuild(cmd *cobra.Command, tag string, noCache bool) error {
@@ -288,17 +177,9 @@ func runImageBuild(cmd *cobra.Command, tag string, noCache bool) error {
 // `dst` (mode 0755). Returns a clear error for dev/dirty versions where
 // no release exists — those builds belong in the maintainer fast-path.
 func fetchReleaseBinary(cmd *cobra.Command, version, dst string) error {
-	if version == "dev" || version == "" || strings.Contains(version, "-dirty") {
+	tag, ok := releaseTag(version)
+	if !ok {
 		return fmt.Errorf("no published release for version %q. Build from the cspace source tree (cd into the cspace repo, run `make build`, then `cspace image build` from there) or tag and push a release first", version)
-	}
-	// goreleaser strips the leading "v" from {{ .Version }} when embedding the
-	// version into the binary (-X .Version=1.0.0-rc.X), but the GitHub release
-	// tag is `v1.0.0-rc.X`. The maintainer fast-path's `git describe` keeps
-	// the `v`. Normalize so the URL matches the tag regardless of which build
-	// path produced the running binary.
-	tag := version
-	if !strings.HasPrefix(tag, "v") {
-		tag = "v" + tag
 	}
 	url := fmt.Sprintf("https://github.com/elliottregan/cspace/releases/download/%s/cspace_linux_arm64.tar.gz", tag)
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "fetching %s ...\n", url)

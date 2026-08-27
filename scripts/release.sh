@@ -1,56 +1,47 @@
 #!/usr/bin/env bash
-# Cut a cspace release from this Mac: tag, publish binaries + Homebrew casks
-# via goreleaser, and publish the sandbox image to ghcr.io.
+# Cut a cspace release from this Mac: tag, then publish binaries and Homebrew
+# casks via goreleaser.
 #
-# Local rather than CI on purpose. Apple Container needs Virtualization.framework,
-# which GitHub's hosted macOS runners do not expose, so a Mac is the only place
-# that can build the sandbox image and cut the binaries in one pass. Running it
-# here also means a failed release is caught before anything is published —
-# a published GitHub release is immutable and cannot be re-cut under the same
-# tag (see the rc.41 tap-less release).
+# Local rather than CI on purpose. One `gh auth token` covers both the release
+# and the tap push (the tap is the same account's repo), so there is no Actions
+# secret to rot — the previous HOMEBREW_TAP_GITHUB_TOKEN was invalid from rc.36
+# through rc.41 while every release still reported success. Running it here also
+# means a failure is seen immediately, which matters because a published GitHub
+# release is immutable and cannot be re-cut under the same tag.
 #
-# Usage: scripts/release.sh <vX.Y.Z[-rc.N]> [--dry-run] [--skip-image]
+# The sandbox image is NOT published. Apple Container's push to ghcr.io fails
+# with BLOB_UPLOAD_UNKNOWN (see
+# .cspace/context/findings/2026-08-27-container-image-push-to-ghcr-fails-blob-
+# upload-unknown.md); rather than work around it, every host builds its own
+# image — `cspace up` does it automatically when the image is missing.
 #
-#   --dry-run     run every check and build nothing publishable: no tag, no
-#                 release, no image push
-#   --skip-image  publish binaries + casks only, leaving the sandbox image at
-#                 the previous release
+# Usage: scripts/release.sh <vX.Y.Z[-rc.N]> [--dry-run]
+#
+#   --dry-run     run every check and build nothing publishable: no tag,
+#                 no release
 #
 # Environment:
 #   CSPACE_RELEASE_ALLOW_BRANCH=1   release from a branch other than main
 #   TAG_MESSAGE                     annotated tag message (default: HEAD subject)
-#
-# One-time setup: the gh token needs write:packages to push the image
-# (`gh auth refresh -s write:packages`), and the ghcr package is created
-# private on first push — make it public once, or `cspace up` on other hosts
-# cannot pull it anonymously.
 set -euo pipefail
-
-GHCR_REPO="ghcr.io/elliottregan/cspace"
-GHCR_USER="elliottregan"
-LOCAL_IMAGE="cspace:latest"
-DOCKERFILE="lib/templates/Dockerfile"
 
 die() { echo "error: $*" >&2; exit 1; }
 step() { echo "==> $*"; }
 
 usage() {
   cat >&2 <<'EOF'
-Usage: scripts/release.sh <vX.Y.Z[-rc.N]> [--dry-run] [--skip-image]
+Usage: scripts/release.sh <vX.Y.Z[-rc.N]> [--dry-run]
 
   --dry-run     run the checks and a throwaway build; publish nothing
-  --skip-image  skip the sandbox image; publish binaries and casks only
 EOF
   exit 2
 }
 
 TAG=""
 DRY_RUN=0
-SKIP_IMAGE=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run)    DRY_RUN=1 ;;
-    --skip-image) SKIP_IMAGE=1 ;;
     -h|--help)    usage ;;
     -*)           echo "error: unknown flag $arg" >&2; usage ;;
     *)            [ -n "$TAG" ] && { echo "error: more than one tag given" >&2; usage; }; TAG="$arg" ;;
@@ -59,10 +50,10 @@ done
 
 [ -n "$TAG" ] || { echo "error: no tag given" >&2; usage; }
 
-# A release tag is the version. Refusing anything else keeps the GitHub tag,
-# the binary's stamped version, and the image tag identical — cspace up derives
-# the image ref from its own version, so a hand-rolled tag would leave the CLI
-# pulling an image that does not exist.
+# A release tag is the version. Refusing anything else keeps the GitHub tag and
+# the binary's stamped version identical — `cspace image build` derives the
+# release it downloads its linux binary from out of that version, so a
+# hand-rolled tag would send it at a release that does not exist.
 [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] \
   || die "tag '$TAG' is not a release tag (want vX.Y.Z or vX.Y.Z-rc.N)"
 
@@ -94,18 +85,6 @@ fi
 for tool in goreleaser gh git; do
   command -v "$tool" >/dev/null || die "$tool is not installed"
 done
-if [ "$SKIP_IMAGE" -eq 0 ]; then
-  command -v container >/dev/null || die "container (Apple Container) is not installed; re-run with --skip-image"
-  # Read the text, not just the exit code, and never with a bare "running"
-  # match: a stopped apiserver reports "apiserver is not running and not
-  # registered with launchd", which contains the word.
-  status_out="$(container system status 2>&1 || true)"
-  if echo "$status_out" | grep -qi "not running" ||
-     ! echo "$status_out" | grep -qiE "status[[:space:]]+running|is running"; then
-    die "Apple Container's apiserver is not running (start it with \`container system start\`):
-$status_out"
-  fi
-fi
 
 # One token covers both jobs: the release itself and the Homebrew tap push,
 # which lands in a repo the same account owns.
@@ -121,15 +100,6 @@ if [ "$DRY_RUN" -eq 1 ]; then
   step "dry run: building artifacts without tagging or publishing"
   goreleaser release --clean --skip=publish,announce,validate \
     || die "dry-run build failed"
-  if [ "$SKIP_IMAGE" -eq 0 ]; then
-    step "dry run: building the sandbox image as $GHCR_REPO:$TAG (not pushed)"
-    make cspace-linux
-    container build --platform linux/arm64 \
-      --tag "$GHCR_REPO:$TAG" \
-      --file "$DOCKERFILE" \
-      --build-arg "CSPACE_VERSION=$TAG" \
-      . || die "image build failed"
-  fi
   echo
   echo "Dry run complete. Nothing was tagged, pushed, or published."
   exit 0
@@ -151,37 +121,9 @@ rather than retrying this tag." >&2' ERR
 step "publishing binaries and casks"
 goreleaser release --clean
 
-if [ "$SKIP_IMAGE" -eq 1 ]; then
-  trap - ERR
-  echo
-  echo "Released $TAG (binaries + casks). Sandbox image left at the previous release."
-  exit 0
-fi
-
-step "building the sandbox image"
-make cspace-linux
-container build --platform linux/arm64 \
-  --tag "$GHCR_REPO:$TAG" \
-  --file "$DOCKERFILE" \
-  --build-arg "CSPACE_VERSION=$TAG" \
-  .
-# Point this Mac's local tag at what was just built, so the maintainer's own
-# `cspace up` doesn't turn around and pull the image it just made.
-container image tag "$GHCR_REPO:$TAG" "$LOCAL_IMAGE"
-
-step "pushing $GHCR_REPO:$TAG"
-printf '%s' "$TOKEN" | container registry login ghcr.io --username "$GHCR_USER" --password-stdin \
-  || die "ghcr login failed — the token needs the write:packages scope (\`gh auth refresh -s write:packages\`)"
-container image push "$GHCR_REPO:$TAG"
-
 trap - ERR
 echo
-echo "Released $TAG:"
-echo "  binaries + casks   https://github.com/elliottregan/cspace/releases/tag/$TAG"
-echo "  sandbox image      $GHCR_REPO:$TAG"
+echo "Released $TAG: https://github.com/elliottregan/cspace/releases/tag/$TAG"
 echo
 echo "Testers: brew update && brew upgrade --cask cspace-rc"
-echo
-echo "If this was the first image push, make the ghcr package public once at"
-echo "https://github.com/users/$GHCR_USER/packages/container/cspace/settings —"
-echo "it is created private, and \`cspace up\` pulls anonymously."
+echo "First cspace up on a new host builds the sandbox image locally."

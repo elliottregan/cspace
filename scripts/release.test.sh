@@ -107,7 +107,7 @@ run_release "$tmp" v1.0.0-rc.47 --dry-run
   && fail "dry run created a tag"
 grep -q "goreleaser release .*--skip" "$tmp/calls.log" \
   || fail "dry run did not run goreleaser in skip-publish mode: $(cat "$tmp/calls.log")"
-grep -q "container image push" "$tmp/calls.log" && fail "dry run pushed an image"
+grep -q "container" "$tmp/calls.log" && fail "dry run touched the container CLI"
 
 # ── full run: tag, publish, image ─────────────────────────────────────────
 tmp="$(make_repo)"; stub_bin "$tmp"
@@ -120,19 +120,10 @@ run_release "$tmp" v1.0.0-rc.47
 grep -q "make check" "$tmp/calls.log" || fail "full run skipped make check"
 grep -qE "goreleaser release( |.*)--clean" "$tmp/calls.log" \
   || fail "full run did not invoke goreleaser release --clean: $(cat "$tmp/calls.log")"
-grep -q "container build.*ghcr.io/elliottregan/cspace:v1.0.0-rc.47" "$tmp/calls.log" \
-  || fail "full run did not build the image with the release tag: $(cat "$tmp/calls.log")"
-grep -q "CSPACE_VERSION=v1.0.0-rc.47" "$tmp/calls.log" \
-  || fail "image build did not bake the release version label: $(cat "$tmp/calls.log")"
-grep -q "container image push ghcr.io/elliottregan/cspace:v1.0.0-rc.47" "$tmp/calls.log" \
-  || fail "full run did not push the image: $(cat "$tmp/calls.log")"
-
-# ── --skip-image stops at binaries ────────────────────────────────────────
-tmp="$(make_repo)"; stub_bin "$tmp"
-run_release "$tmp" v1.0.0-rc.47 --skip-image
-[ "$RC" -eq 0 ] || fail "--skip-image run failed: $out"
-grep -q "container image push" "$tmp/calls.log" && fail "--skip-image pushed an image"
-grep -qE "goreleaser release" "$tmp/calls.log" || fail "--skip-image skipped the binaries too"
+# The sandbox image is deliberately not published (Apple Container's push to
+# ghcr fails; see the finding). A release must not reach for a registry at all.
+grep -q "container image push" "$tmp/calls.log" && fail "full run pushed an image"
+grep -q "registry login" "$tmp/calls.log" && fail "full run logged in to a registry"
 
 # ── check failure aborts before tagging ───────────────────────────────────
 tmp="$(make_repo)"; stub_bin "$tmp"
@@ -146,27 +137,6 @@ run_release "$tmp" v1.0.0-rc.47
 [ "$RC" -eq 0 ] && fail "failing checks did not abort the release"
 (cd "$tmp/work" && git rev-parse -q --verify refs/tags/v1.0.0-rc.47 >/dev/null) \
   && fail "failing checks still created a tag"
-
-# ── a stopped apiserver is not "running" ──────────────────────────────────
-# `container system status` prints "apiserver is not running and not registered
-# with launchd" when it is down — a substring match on "running" reads that as
-# healthy, which is the exact false positive parseSystemStatus exists to avoid.
-tmp="$(make_repo)"; stub_bin "$tmp"
-cat > "$tmp/bin/container" <<EOF
-#!/usr/bin/env bash
-echo "container \$*" >> "$tmp/calls.log"
-if [ "\$1 \$2" = "system status" ]; then
-  echo "apiserver is not running and not registered with launchd"
-  exit 0
-fi
-exit 0
-EOF
-chmod +x "$tmp/bin/container"
-run_release "$tmp" v1.0.0-rc.47
-[ "$RC" -eq 0 ] && fail "released with a stopped apiserver"
-echo "$out" | grep -qi "container system start" || fail "stopped apiserver: message does not say how to start it: $out"
-(cd "$tmp/work" && git rev-parse -q --verify refs/tags/v1.0.0-rc.47 >/dev/null) \
-  && fail "stopped apiserver still created a tag"
 
 # ── failure after the tag is pushed explains immutability ─────────────────
 tmp="$(make_repo)"; stub_bin "$tmp"

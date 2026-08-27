@@ -314,9 +314,8 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				}
 			}
 
-			// Make sure cspace:latest exists and matches this CLI — pulled
-			// from ghcr for a released build, built locally otherwise.
-			// Skipped for project-supplied images (compose image:,
+			// Make sure cspace:latest exists and matches this CLI, building
+			// it when it is missing. Skipped for project-supplied images (compose image:,
 			// devcontainer image:, build:) — those are the user's
 			// responsibility, not cspace's.
 			if sandboxImage == "cspace:latest" {
@@ -326,7 +325,8 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				// the overlay is off (--no-overlay / piped stdout) AND stdin is a
 				// real terminal.
 				rebuilt, rbErr := ensureSandboxImage(cmd, sandboxImage, Version, rebuildImage,
-					!useOverlay && isStdinTTY(), inspectSandboxImage, realImageOps(cmd))
+					!useOverlay && isStdinTTY(), inspectSandboxImage,
+					func(tag string) error { return runImageBuild(cmd, tag, false) })
 				if rbErr != nil {
 					return rbErr
 				}
@@ -942,7 +942,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 	cmd.Flags().BoolVar(&noAttach, "no-attach", false,
 		"don't drop into an interactive `claude` session after the sandbox is ready (auto-disabled when stdout is not a TTY)")
 	cmd.Flags().BoolVar(&rebuildImage, "rebuild", false,
-		"build cspace:latest from source before launching instead of pulling the published image (otherwise you're prompted when the image is stale)")
+		"rebuild cspace:latest before launching if it was built by a different cspace version (otherwise you're prompted when the image is stale)")
 	cmd.Flags().StringVar(&rolePath, "role", "",
 		"host path to a role file whose content is appended to the agent's system prompt (staged at the sandbox's /sessions/agent-role.md; overrides the committed .cspace/agent.md convention). Read at up-time — a bad path fails before provisioning")
 	cmd.Flags().StringVar(&model, "model", "",
@@ -1522,34 +1522,33 @@ type imageInspector func(image string) (version string, hasLabel bool, present b
 // ensureSandboxImage makes cspace:latest exist and match the running CLI before
 // launch. Three cases, and the difference between them is consent:
 //
-//   - Absent: nothing to boot from, so it is fetched without asking, even when
-//     no prompt is possible (overlay up, CI, piped stdin).
-//   - Stale: usable, so the user is offered a refresh and can decline. Without
+//   - Absent: nothing to boot from, so it is built without asking, even when
+//     no prompt is possible (overlay up, CI, piped stdin). The boot would
+//     otherwise fail deep in the run with "image not found".
+//   - Stale: usable, so the user is offered a rebuild and can decline. Without
 //     a prompt available it warns and boots the stale image, as before —
 //     changing what someone is running mid-boot without consent is worse than
 //     a version skew they were told about.
 //   - Current: no-op.
 //
-// A refresh pulls the published image matching the CLI when one exists, and
-// builds locally otherwise (dev builds, dirty trees, an unreachable registry).
-// `--rebuild` forces the build path: it exists to test local Dockerfile and
-// supervisor changes, which a pull would silently discard.
-func ensureSandboxImage(cmd *cobra.Command, image, cliVersion string, forceBuild, canPrompt bool, inspect imageInspector, ops imageOps) (bool, error) {
+// There is no published image to pull: Apple Container's push to ghcr.io fails
+// (see .cspace/context/findings/2026-08-27-container-image-push-to-ghcr-fails-
+// blob-upload-unknown.md), and image publishing was dropped rather than worked
+// around. Every host builds its own.
+func ensureSandboxImage(cmd *cobra.Command, image, cliVersion string, forceBuild, canPrompt bool, inspect imageInspector, build func(tag string) error) (bool, error) {
 	stderr := cmd.ErrOrStderr()
 	imgVersion, hasLabel, present := inspect(image)
 
-	ref, pullable := pullImageRef(cliVersion)
-	if forceBuild {
-		pullable = false
-	}
-	action := planImageRefresh(present, imgVersion, hasLabel, cliVersion, pullable)
-	if action == imageActionNone {
+	if present && !imageIsStale(imgVersion, hasLabel, cliVersion) {
 		return false, nil
 	}
 
 	if !present {
-		_, _ = fmt.Fprintf(stderr, "[cspace] %s is not present on this host.\n", image)
-		return applyImageRefresh(action, ops, ref, image, stderr)
+		_, _ = fmt.Fprintf(stderr, "[cspace] %s is not present on this host; building it (this takes a few minutes) ...\n", image)
+		if err := build(image); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 
 	reason := fmt.Sprintf("%s has no cspace.version label (built by an older cspace)", image)
@@ -1558,32 +1557,20 @@ func ensureSandboxImage(cmd *cobra.Command, image, cliVersion string, forceBuild
 	}
 	if !forceBuild {
 		if !canPrompt {
-			how := "Rebuild to pick up matching scripts and tooling: `cspace image build` (or re-run with --rebuild)"
-			if action == imageActionPull {
-				how = "Refresh it with `cspace image pull` (or re-run with --rebuild to build from source)"
-			}
-			_, _ = fmt.Fprintf(stderr, "[cspace] warning: %s. %s.\n", reason, how)
+			_, _ = fmt.Fprintf(stderr, "[cspace] warning: %s. Rebuild to pick up matching scripts and tooling: `cspace image build` (or re-run with --rebuild).\n", reason)
 			return false, nil
 		}
 		_, _ = fmt.Fprintf(stderr, "[cspace] %s.\n", reason)
-		question := fmt.Sprintf("Rebuild %s now before launching?", image)
-		if action == imageActionPull {
-			question = fmt.Sprintf("Update %s from %s now?", image, ref)
-		}
-		if !promptYesNo(cmd, question, true) {
-			_, _ = fmt.Fprintf(stderr, "[cspace] continuing with the existing image; refresh later with `cspace image pull` or `cspace image build`.\n")
+		if !promptYesNo(cmd, fmt.Sprintf("Rebuild %s now before launching?", image), true) {
+			_, _ = fmt.Fprintf(stderr, "[cspace] continuing with the existing image; rebuild later with `cspace image build`.\n")
 			return false, nil
 		}
 	}
-	return applyImageRefresh(action, ops, ref, image, stderr)
-}
-
-// realImageOps binds the refresh paths to the container CLI.
-func realImageOps(cmd *cobra.Command) imageOps {
-	return imageOps{
-		pull:  func(ref, localTag string) error { return runImagePull(cmd, ref, localTag) },
-		build: func(tag string) error { return runImageBuild(cmd, tag, false) },
+	_, _ = fmt.Fprintf(stderr, "[cspace] rebuilding %s before launch ...\n", image)
+	if err := build(image); err != nil {
+		return false, fmt.Errorf("rebuild stale image: %w", err)
 	}
+	return true, nil
 }
 
 // imageIsStale reports whether an image's baked cspace.version drifts from the

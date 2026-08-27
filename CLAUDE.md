@@ -17,7 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `cspace agent status <sandbox>` — print the sandbox agent's steering status (session, working/idle state, queue depth, last event)
 - `cspace agent interrupt <sandbox>` — cancel a sandbox agent's in-flight task
 - `cspace keychain init|status` — store/inspect credentials in the macOS Keychain
-- `cspace image build|pull` — build the sandbox image locally (uses the repo's `lib/` when run from a cspace checkout, embedded assets otherwise) or pull the published one matching this CLI
+- `cspace image build` — rebuild the sandbox image (uses the repo's `lib/` when run from a cspace checkout, embedded assets otherwise)
 - `cspace daemon …`, `cspace dns …`, `cspace registry …`, `cspace doctor` — host daemon, resolver install, registry inspection, diagnostics
 - `cspace browser restart|status` — restart or health-check the project's shared browser sidecar; works both from the host and from inside a sandbox
 - `cspace tui` — full-screen dashboard of all cspace containers (grouped by project) with attach / down / agent send·interrupt / browser restart
@@ -48,20 +48,17 @@ bun run typecheck                            # supervisor typecheck — NOT run 
 **Releases are cut locally from a Mac, not by CI.** `.github/workflows/release.yml` was deleted on 2026-08-27; `ci.yml` stays and still runs fmt/vet/lint/test on pushes and PRs, but it no longer publishes anything.
 
 ```bash
-make release TAG=v1.0.0-rc.47 ARGS=--dry-run   # every guard + a throwaway build
-make release TAG=v1.0.0-rc.47                  # tag, publish, push the image
+make release TAG=v1.0.0-rc.48 ARGS=--dry-run   # every guard + a throwaway build
+make release TAG=v1.0.0-rc.48                  # tag, publish
 ```
 
-`scripts/release.sh` refuses without an explicit tag, then gates on: tag shape (`vX.Y.Z[-rc.N]`), a clean tree (untracked files included — goreleaser counts them as dirty), branch `main` (`CSPACE_RELEASE_ALLOW_BRANCH=1` overrides), the tag being unused locally and on origin, HEAD matching `origin/main`, a running Apple Container apiserver, and `make check`. Only then does it tag, push, run `goreleaser release --clean`, build the sandbox image, and push it to ghcr.
+`scripts/release.sh` refuses without an explicit tag, then gates on: tag shape (`vX.Y.Z[-rc.N]`), a clean tree (untracked files included — goreleaser counts them as dirty), branch `main` (`CSPACE_RELEASE_ALLOW_BRANCH=1` overrides), the tag being unused locally and on origin, HEAD matching `origin/main`, and `make check`. Only then does it tag, push, and run `goreleaser release --clean`.
 
-Two reasons it lives here rather than in Actions:
-
-- **Only a Mac can build the sandbox image.** Apple Container needs Virtualization.framework, which GitHub's hosted macOS runners don't expose, so no CI job can produce the image and the binaries in one pass.
-- **One token covers everything.** `gh auth token` authenticates both the release and the Homebrew tap push (the tap is the same account's repo), so the separate `HOMEBREW_TAP_GITHUB_TOKEN` secret — invalid and silently stranding the tap from rc.36 to rc.41 — is gone. Pushing the image additionally needs `write:packages`: `gh auth refresh -s write:packages`.
+It lives here rather than in Actions because **one token covers everything**: `gh auth token` authenticates both the release and the Homebrew tap push (the tap is the same account's repo), so the separate `HOMEBREW_TAP_GITHUB_TOKEN` secret — invalid and silently stranding the tap from rc.36 to rc.41 while every release still reported success — is gone.
 
 **A published GitHub release is immutable.** A failure after the tag is pushed cannot be fixed by re-running the same tag — cut the next rc. The script says so on failure, and refuses a tag that already exists.
 
-**The sandbox image is published too.** `ghcr.io/elliottregan/cspace:<tag>` carries the same tag as the release, and the CLI derives the ref from its own version (`internal/cli/cmd_image.go`). `cspace up` pulls it when `cspace:latest` is missing or was built by a different cspace, and falls back to a local build when the pull fails or the CLI is a dev build with no published image. `--rebuild` forces the build path — it exists to test local Dockerfile or supervisor changes, which a pull would discard. A first pull is ~362 MB; later releases reuse every layer except the cspace binary and supervisor (~42 MB). **The ghcr package is created private on the first push** — make it public once in the package settings, or `cspace up` on other hosts can't pull it anonymously.
+**The sandbox image is not published.** Publishing to ghcr was built and then dropped at rc.47: Apple Container's `image push` fails against ghcr.io with `BLOB_UPLOAD_UNKNOWN` (see the finding). Every host builds its own image, and `cspace up` now does that automatically when `cspace:latest` is missing rather than failing the boot; a stale image still prompts. For reference if this is ever revisited: the image is 362 MB as an OCI tar, of which only ~42 MB (the cspace binary and supervisor) changes per release.
 
 ## Architecture
 
