@@ -5,22 +5,34 @@ import (
 	"testing"
 )
 
+// Fixtures are captured verbatim from live `container inspect` runs, one per
+// Apple Container minor cspace supports. Apple reshapes this output across
+// versions, so each new minor gets its own fixture rather than a rewrite of
+// the last one — that way a shape move fails loudly and names the version it
+// broke on, instead of silently reporting an empty environment.
 func TestParseBakedEnvFromRealInspectFixture(t *testing.T) {
-	raw, err := os.ReadFile("testdata/inspect-1.2.json")
-	if err != nil {
-		t.Fatalf("read fixture: %v", err)
-	}
-	env, err := ParseBakedEnv(raw)
-	if err != nil {
-		t.Fatalf("ParseBakedEnv() error = %v", err)
-	}
-	if env[KeyGHToken] == "" {
-		t.Fatalf("want GH_TOKEN in the baked env, got %d keys", len(env))
-	}
-	// A plain env var proves we are reading the whole environment, not just
-	// keys that happen to look like credentials.
-	if env["CSPACE_PROJECT"] != "resume-redux" {
-		t.Errorf("CSPACE_PROJECT = %q, want the fixture's project", env["CSPACE_PROJECT"])
+	for _, fixture := range []string{
+		"testdata/inspect-1.2.json",
+		"testdata/inspect-1.3.json",
+	} {
+		t.Run(fixture, func(t *testing.T) {
+			raw, err := os.ReadFile(fixture)
+			if err != nil {
+				t.Fatalf("read fixture: %v", err)
+			}
+			env, err := ParseBakedEnv(raw)
+			if err != nil {
+				t.Fatalf("ParseBakedEnv() error = %v", err)
+			}
+			if env[KeyGHToken] == "" {
+				t.Fatalf("want GH_TOKEN in the baked env, got %d keys", len(env))
+			}
+			// A plain env var proves we are reading the whole environment,
+			// not just keys that happen to look like credentials.
+			if env["CSPACE_PROJECT"] != "resume-redux" {
+				t.Errorf("CSPACE_PROJECT = %q, want the fixture's project", env["CSPACE_PROJECT"])
+			}
+		})
 	}
 }
 

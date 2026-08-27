@@ -46,19 +46,24 @@ type AgentStatus struct {
 // (cspace-<project>-<name>); "" for project headers. ControlURL/Token drive
 // actions on sandbox rows and are never rendered (Token is a live secret).
 type Row struct {
-	Kind       RowKind
-	Project    string
-	Name       string // sandbox/sidecar/browser display name
-	Container  string
-	State      RowState
-	IP         string
-	MemoryB    int64
-	Uptime     time.Duration
-	Agent      AgentStatus   // meaningful only for RowSandbox
-	Browser    BrowserHealth // meaningful only for RowBrowser
-	ControlURL string
-	Token      string
-	Selectable bool
+	Kind      RowKind
+	Project   string
+	Name      string // sandbox/sidecar/browser display name
+	Container string
+	State     RowState
+	IP        string
+	MemoryB   int64 // memory cap from the container's configuration
+	// MemoryUsedB is live usage from `container stats`; 0 when the stats
+	// sample is missing (container not running, or the probe failed — the
+	// dashboard degrades to showing the cap alone rather than the whole
+	// poll failing).
+	MemoryUsedB int64
+	Uptime      time.Duration
+	Agent       AgentStatus   // meaningful only for RowSandbox
+	Browser     BrowserHealth // meaningful only for RowBrowser
+	ControlURL  string
+	Token       string
+	Selectable  bool
 }
 
 // DaemonHealth is the host daemon's GET /health, decoded.

@@ -19,6 +19,7 @@ func Correlate(
 	entries []registry.Entry,
 	statuses map[string]AgentStatus,
 	browserHealth map[string]BrowserHealth,
+	stats map[string]applecontainer.ContainerStats,
 	daemon DaemonHealth,
 	listErr error,
 ) Snapshot {
@@ -72,18 +73,19 @@ func Correlate(
 				state = StateBooting
 			}
 			rows = append(rows, Row{
-				Kind:       RowSandbox,
-				Project:    project,
-				Name:       e.Name,
-				Container:  cname,
-				State:      state,
-				IP:         ip,
-				MemoryB:    mem,
-				Uptime:     uptime,
-				Agent:      st,
-				ControlURL: e.ControlURL,
-				Token:      e.Token,
-				Selectable: true,
+				Kind:        RowSandbox,
+				Project:     project,
+				Name:        e.Name,
+				Container:   cname,
+				State:       state,
+				IP:          ip,
+				MemoryB:     mem,
+				MemoryUsedB: stats[cname].MemoryUsedB,
+				Uptime:      uptime,
+				Agent:       st,
+				ControlURL:  e.ControlURL,
+				Token:       e.Token,
+				Selectable:  true,
 			})
 
 			// Nest compose sidecars: cspace-<project>-<name>-<suffix>.
@@ -101,13 +103,14 @@ func Correlate(
 			for _, sc := range sidecars {
 				consumed[sc.Name] = true
 				rows = append(rows, Row{
-					Kind:      RowSidecar,
-					Project:   project,
-					Name:      strings.TrimPrefix(sc.Name, "cspace-"+project+"-"),
-					Container: sc.Name,
-					State:     sidecarState(sc.State),
-					IP:        sc.IP,
-					MemoryB:   sc.MemoryB,
+					Kind:        RowSidecar,
+					Project:     project,
+					Name:        strings.TrimPrefix(sc.Name, "cspace-"+project+"-"),
+					Container:   sc.Name,
+					State:       sidecarState(sc.State),
+					IP:          sc.IP,
+					MemoryB:     sc.MemoryB,
+					MemoryUsedB: stats[sc.Name].MemoryUsedB,
 				})
 			}
 		}
@@ -117,15 +120,16 @@ func Correlate(
 		if bc, ok := byName[bname]; ok {
 			consumed[bname] = true
 			rows = append(rows, Row{
-				Kind:       RowBrowser,
-				Project:    project,
-				Name:       "browser (shared)",
-				Container:  bname,
-				State:      sidecarState(bc.State),
-				IP:         bc.IP,
-				MemoryB:    bc.MemoryB,
-				Browser:    browserHealth[bname],
-				Selectable: true,
+				Kind:        RowBrowser,
+				Project:     project,
+				Name:        "browser (shared)",
+				Container:   bname,
+				State:       sidecarState(bc.State),
+				IP:          bc.IP,
+				MemoryB:     bc.MemoryB,
+				MemoryUsedB: stats[bname].MemoryUsedB,
+				Browser:     browserHealth[bname],
+				Selectable:  true,
 			})
 		}
 	}
@@ -140,12 +144,13 @@ func Correlate(
 	sort.Slice(system, func(i, j int) bool { return system[i].Name < system[j].Name })
 	for _, c := range system {
 		rows = append(rows, Row{
-			Kind:      RowSystem,
-			Name:      c.Name,
-			Container: c.Name,
-			State:     sidecarState(c.State),
-			IP:        c.IP,
-			MemoryB:   c.MemoryB,
+			Kind:        RowSystem,
+			Name:        c.Name,
+			Container:   c.Name,
+			State:       sidecarState(c.State),
+			IP:          c.IP,
+			MemoryB:     c.MemoryB,
+			MemoryUsedB: stats[c.Name].MemoryUsedB,
 		})
 	}
 

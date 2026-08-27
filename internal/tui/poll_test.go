@@ -15,12 +15,18 @@ import (
 )
 
 type fakeLister struct {
-	out []applecontainer.ContainerSummary
-	err error
+	out      []applecontainer.ContainerSummary
+	err      error
+	stats    []applecontainer.ContainerStats
+	statsErr error
 }
 
 func (f fakeLister) List(context.Context) ([]applecontainer.ContainerSummary, error) {
 	return f.out, f.err
+}
+
+func (f fakeLister) Stats(context.Context) ([]applecontainer.ContainerStats, error) {
+	return f.stats, f.statsErr
 }
 
 func writeRegistry(t *testing.T, project, name, controlURL, token string) *registry.Registry {

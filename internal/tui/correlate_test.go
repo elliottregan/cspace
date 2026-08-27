@@ -26,7 +26,7 @@ func TestCorrelateGroupsSortsAndNests(t *testing.T) {
 	browserHealth := map[string]BrowserHealth{
 		"cspace-alpha-browser": {Reachable: true, Version: "Chrome/140"},
 	}
-	snap := Correlate(now, containers, entries, statuses, browserHealth, DaemonHealth{Reachable: true, Version: "1.0"}, nil)
+	snap := Correlate(now, containers, entries, statuses, browserHealth, nil, DaemonHealth{Reachable: true, Version: "1.0"}, nil)
 
 	// Expected row order: project header, sandbox, its sidecar, browser, system(buildkit)
 	wantKinds := []RowKind{RowProject, RowSandbox, RowSidecar, RowBrowser, RowSystem}
@@ -77,7 +77,7 @@ func TestCorrelateDegradedWhenSupervisorUnreachable(t *testing.T) {
 	}
 	entries := []registry.Entry{{Project: "alpha", Name: "mercury", State: "ready"}}
 	// no status for the sandbox => unreachable
-	snap := Correlate(now, containers, entries, map[string]AgentStatus{}, nil, DaemonHealth{}, nil)
+	snap := Correlate(now, containers, entries, map[string]AgentStatus{}, nil, nil, DaemonHealth{}, nil)
 	if snap.Rows[1].State != StateDegraded {
 		t.Errorf("state = %v, want StateDegraded", snap.Rows[1].State)
 	}
@@ -86,7 +86,7 @@ func TestCorrelateDegradedWhenSupervisorUnreachable(t *testing.T) {
 func TestCorrelateStoppedWhenNoContainer(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
 	entries := []registry.Entry{{Project: "alpha", Name: "mercury", State: "ready"}}
-	snap := Correlate(now, nil, entries, map[string]AgentStatus{}, nil, DaemonHealth{}, nil)
+	snap := Correlate(now, nil, entries, map[string]AgentStatus{}, nil, nil, DaemonHealth{}, nil)
 	if snap.Rows[1].State != StateStopped {
 		t.Errorf("state = %v, want StateStopped", snap.Rows[1].State)
 	}
@@ -98,7 +98,7 @@ func TestCorrelateBootingFromRegistryState(t *testing.T) {
 		{Name: "cspace-alpha-mercury", State: "running", Started: now},
 	}
 	entries := []registry.Entry{{Project: "alpha", Name: "mercury", State: "starting"}}
-	snap := Correlate(now, containers, entries, map[string]AgentStatus{}, nil, DaemonHealth{}, nil)
+	snap := Correlate(now, containers, entries, map[string]AgentStatus{}, nil, nil, DaemonHealth{}, nil)
 	if snap.Rows[1].State != StateBooting {
 		t.Errorf("state = %v, want StateBooting", snap.Rows[1].State)
 	}
@@ -106,7 +106,7 @@ func TestCorrelateBootingFromRegistryState(t *testing.T) {
 
 func TestCorrelateCarriesListErr(t *testing.T) {
 	e := errors.New("apiserver down")
-	snap := Correlate(time.Unix(0, 0), nil, nil, map[string]AgentStatus{}, nil, DaemonHealth{}, e)
+	snap := Correlate(time.Unix(0, 0), nil, nil, map[string]AgentStatus{}, nil, nil, DaemonHealth{}, e)
 	if snap.Err == nil || snap.Err.Error() != "apiserver down" {
 		t.Errorf("Err = %v, want carried", snap.Err)
 	}

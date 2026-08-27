@@ -313,3 +313,48 @@ func TestListLive(t *testing.T) {
 		}
 	}
 }
+
+// TestParseContainerStats exercises the Apple Container 1.3.x `container stats
+// --no-stream --format json` shape, captured verbatim from a live install.
+// Unlike inspect/ls this payload is FLAT — no `status` nesting — so a future
+// move to the nested shape fails here loudly.
+func TestParseContainerStats(t *testing.T) {
+	raw := `[{"blockReadBytes":842924032,"blockWriteBytes":350232576,` +
+		`"cpuUsageUsec":6793453,"id":"cspace-cspace-browser",` +
+		`"memoryLimitBytes":4294967296,"memoryUsageBytes":1562316800,` +
+		`"networkRxBytes":128409839,"networkTxBytes":629342,"numProcesses":118}]`
+	got, err := parseContainerStats(raw)
+	if err != nil {
+		t.Fatalf("parseContainerStats() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d records, want 1", len(got))
+	}
+	if got[0].Name != "cspace-cspace-browser" {
+		t.Errorf("Name = %q, want cspace-cspace-browser", got[0].Name)
+	}
+	if got[0].MemoryUsedB != 1562316800 {
+		t.Errorf("MemoryUsedB = %d, want 1562316800", got[0].MemoryUsedB)
+	}
+	if got[0].Processes != 118 {
+		t.Errorf("Processes = %d, want 118", got[0].Processes)
+	}
+}
+
+// An empty stats array is normal (no containers running) and must not error —
+// the TUI polls this on every tick.
+func TestParseContainerStatsEmpty(t *testing.T) {
+	got, err := parseContainerStats(`[]`)
+	if err != nil {
+		t.Fatalf("parseContainerStats([]) error = %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %d records, want 0", len(got))
+	}
+}
+
+func TestParseContainerStatsErrorsOnGarbage(t *testing.T) {
+	if _, err := parseContainerStats("not json"); err == nil {
+		t.Fatal("want an error for unparseable stats output")
+	}
+}

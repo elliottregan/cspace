@@ -30,6 +30,27 @@ func formatMemory(b int64) string {
 	}
 }
 
+// formatMemUsage renders live usage against the cap as "<used>/<cap>" (e.g.
+// "1.1G/16G"). Falls back to the cap alone when no stats sample is available,
+// so a row never loses information it used to show. Used is rendered with one
+// decimal at GiB scale: whole gigabytes alone would show a 1.6G sandbox and a
+// 1.1G one identically as "1G".
+func formatMemUsage(usedB, capB int64) string {
+	if usedB <= 0 {
+		return formatMemory(capB)
+	}
+	var used string
+	if usedB >= 1<<30 {
+		used = fmt.Sprintf("%.1fG", float64(usedB)/float64(int64(1)<<30))
+	} else {
+		used = fmt.Sprintf("%dM", usedB/(1<<20))
+	}
+	if capB <= 0 {
+		return used
+	}
+	return used + "/" + formatMemory(capB)
+}
+
 // formatUptime renders a duration as ↑<h>h<m>m / ↑<m>m / ↑<s>s.
 func formatUptime(d time.Duration) string {
 	if d <= 0 {
@@ -150,17 +171,19 @@ func renderRow(r Row) string {
 		if r.Agent.Reachable {
 			agent = "agent: " + r.Agent.State + "  q:" + fmt.Sprintf("%d", r.Agent.QueueDepth)
 		}
-		return fmt.Sprintf("%s %-14s %-18s %-15s %-4s %s",
-			stateGlyph(r), r.Name, agent, r.IP, formatMemory(r.MemoryB), formatUptime(r.Uptime))
+		return fmt.Sprintf("%s %-14s %-18s %-15s %-10s %s",
+			stateGlyph(r), r.Name, agent, r.IP,
+			formatMemUsage(r.MemoryUsedB, r.MemoryB), formatUptime(r.Uptime))
 	case RowSidecar:
 		return styleDim.Render(fmt.Sprintf("  ├ %-16s %-9s %-15s %s",
-			r.Name, stateLabel(r), r.IP, formatMemory(r.MemoryB)))
+			r.Name, stateLabel(r), r.IP, formatMemUsage(r.MemoryUsedB, r.MemoryB)))
 	case RowBrowser:
 		return fmt.Sprintf("%s %-16s %-9s %-15s %s",
-			stateGlyph(r), r.Name, stateLabel(r), r.IP, formatMemory(r.MemoryB))
+			stateGlyph(r), r.Name, stateLabel(r), r.IP,
+			formatMemUsage(r.MemoryUsedB, r.MemoryB))
 	case RowSystem:
 		return styleDim.Render(fmt.Sprintf("  %-18s %-9s %-15s %s",
-			r.Name, stateLabel(r), r.IP, formatMemory(r.MemoryB)))
+			r.Name, stateLabel(r), r.IP, formatMemUsage(r.MemoryUsedB, r.MemoryB)))
 	}
 	return r.Name
 }

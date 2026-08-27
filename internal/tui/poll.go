@@ -30,6 +30,7 @@ type Poller interface {
 // an interface so tests inject a fake without the container CLI.
 type containerLister interface {
 	List(ctx context.Context) ([]applecontainer.ContainerSummary, error)
+	Stats(ctx context.Context) ([]applecontainer.ContainerStats, error)
 }
 
 type realPoller struct {
@@ -60,10 +61,44 @@ func NewPoller(lister containerLister, reg *registry.Registry, daemonURL string,
 func (p *realPoller) Poll(ctx context.Context) Snapshot {
 	containers, listErr := p.lister.List(ctx)
 	entries, _ := p.registry.List() // missing file => empty slice, nil
+
+	// `container stats` costs ~2s against Apple Container 1.3 — two orders of
+	// magnitude more than `container ls` (~0.03s) — so it runs concurrently
+	// with the HTTP probes instead of adding its cost to theirs. Run
+	// sequentially it would push a poll toward the model's 5s context ceiling
+	// (pollNowCmd) and start timing the whole snapshot out.
+	var (
+		stats   map[string]applecontainer.ContainerStats
+		statsWG sync.WaitGroup
+	)
+	statsWG.Add(1)
+	go func() {
+		defer statsWG.Done()
+		stats = p.fetchStats(ctx)
+	}()
+
 	statuses := p.fetchStatuses(ctx, entries)
 	browserHealth := p.fetchBrowserHealth(ctx, containers)
 	daemon := p.fetchDaemon(ctx)
-	return Correlate(p.now(), containers, entries, statuses, browserHealth, daemon, listErr)
+	statsWG.Wait()
+
+	return Correlate(p.now(), containers, entries, statuses, browserHealth, stats, daemon, listErr)
+}
+
+// fetchStats samples live per-container resource usage. A stats failure is
+// swallowed to an empty map rather than surfaced: usage is decoration on rows
+// that are already correct without it, so a wedged stats call must not blank
+// the dashboard the way a failed `container ls` legitimately does.
+func (p *realPoller) fetchStats(ctx context.Context) map[string]applecontainer.ContainerStats {
+	out := map[string]applecontainer.ContainerStats{}
+	samples, err := p.lister.Stats(ctx)
+	if err != nil {
+		return out
+	}
+	for _, s := range samples {
+		out[s.Name] = s
+	}
+	return out
 }
 
 // fetchBrowserHealth probes each running browser sidecar's Chrome DevTools

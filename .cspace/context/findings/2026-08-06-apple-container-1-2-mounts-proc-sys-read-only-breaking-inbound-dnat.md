@@ -171,3 +171,66 @@ one accepted limitation:
   both.
 - Interface selection, duplicate-supervisor guard, and EADDRINUSE backoff were
   also hardened; see the Known limitations section for what remains accepted.
+
+### 2026-08-27 — still present on Apple Container 1.3.0; fallback verified
+
+Re-verified against a live 1.3.0 install while bumping `supportedMinorVersion`
+to `1.3`. The read-only mount is unchanged:
+
+```
+# plain `container run` on 1.3.0
+proc /proc/sys proc ro,relatime 0 0
+sh: can't create /proc/sys/net/ipv4/conf/all/route_localnet: Read-only file system
+```
+
+1.3.0's changelog entry "Relax maskedPaths and readonlyPaths for container
+machines" (apple/container#2137) applies to container **machines**, not to
+containers started by `container run`, so it does not lift this.
+
+The gating added by this finding does the right thing on 1.3.0. Inside a
+freshly booted sandbox:
+
+```
+proc /proc/sys proc ro,relatime 0 0
+relay processes running: 1
+iptables -t nat -S PREROUTING  ->  -P PREROUTING ACCEPT   (no DNAT rule)
+```
+
+That is the intended fallback shape: readback sees `route_localnet=0`, the DNAT
+rule is not installed, and the userspace relay carries inbound traffic. A full
+`cspace up --no-attach` boots to `[8/8] ready`, `cspace agent status` reaches
+the supervisor over the relay, and `cspace browser status` reports CDP :9222
+and run-server :3000 healthy. Status stays **resolved**.
+
+### 2026-08-27 — userspace relay removed; DNAT restored via `--kernel-arg`
+
+The fallback this finding introduced is gone. Apple Container exposes
+`--kernel-arg`, which presets the sysctl on the kernel command line — the one
+path that works when `/proc/sys` is read-only. `cspace up` now passes
+`--kernel-arg sysctl.net.ipv4.conf.all.route_localnet=1` (adapter.go), so the
+kernel DNAT path is available again and the Node userspace relay is deleted.
+
+Controlled A/B on 1.3.0, relay absent in both arms, DNAT rule installed in
+both, service bound to `127.0.0.1` only:
+
+| | `route_localnet` | host → loopback-only service |
+|---|---|---|
+| with `--kernel-arg` | 1 | reachable |
+| without | 0 | times out (the blackhole this finding describes) |
+
+Removed: `lib/runtime/scripts/cspace-inbound-relay.mjs` (169 lines), its
+Dockerfile `COPY`, the Makefile `*.mjs` embed step (it was the only `.mjs`),
+and the entrypoint's fallback branch — bind-address derivation, the
+duplicate-relay `pgrep` guard, and the `|| true` respawn subshell that this
+finding's own review had to fix.
+
+What is deliberately *kept* is the `route_localnet` readback. It no longer
+selects between two paths; it now gates the DNAT rule and fails loud. That
+preserves this finding's core lesson — DNAT without `route_localnet` is worse
+than no DNAT, because it blackholes every inbound packet silently — against
+the possibility that the `--kernel-arg` preset stops taking. Services bound to
+`0.0.0.0` keep working in that case, and the entrypoint says why on stderr.
+
+Verified on a real sandbox: relay binary absent from the image, zero relay
+processes, DNAT rule present, a `127.0.0.1`-only listener reachable from the
+host, agent status and browser sidecar healthy. Status stays **resolved**.

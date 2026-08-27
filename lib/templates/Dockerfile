@@ -46,7 +46,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Runtime-only system deps:
 #   - iptables / iproute2: loopback NAT for ports bound to 127.0.0.1
 #   - dnsmasq: DNS forwarder for *.cspace.test + bare-name service DNS
-#   - bash / tini / sudo / procps: entrypoint + PID 1 + privilege drop + ps tools
+#   - bash / sudo / procps: entrypoint + privilege drop + ps tools
+#     (PID 1 is Apple Container's own init, requested with `--init` on
+#     `container run` — see adapter.go. tini used to fill that role here.)
 #   - ca-certificates / curl / unzip / git: plugin install + marketplace clone
 #   - jq / ripgrep: agent essentials (Claude Code uses rg heavily; jq in shell tooling)
 #   - python3: hook scripts + occasional agent use (slim, no build-essential)
@@ -70,7 +72,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     ripgrep \
     sudo \
-    tini \
     unzip \
  && rm -rf /var/lib/apt/lists/*
 
@@ -154,7 +155,6 @@ USER root
 COPY lib/runtime/scripts/cspace-entrypoint.sh /usr/local/bin/cspace-entrypoint.sh
 COPY lib/runtime/scripts/cspace-supervisor-loop.sh /usr/local/bin/cspace-supervisor-loop.sh
 COPY lib/runtime/scripts/cspace-install-plugins.sh /usr/local/bin/cspace-install-plugins.sh
-COPY lib/runtime/scripts/cspace-inbound-relay.mjs /usr/local/bin/cspace-inbound-relay.mjs
 COPY lib/runtime/scripts/statusline.sh /usr/local/bin/cspace-statusline.sh
 RUN chmod +x /usr/local/bin/cspace-entrypoint.sh \
             /usr/local/bin/cspace-supervisor-loop.sh \
@@ -197,5 +197,5 @@ LABEL cspace.version="${CSPACE_VERSION}"
 
 WORKDIR /workspace
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/cspace-entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/cspace-entrypoint.sh"]
 CMD ["/usr/local/bin/cspace-supervisor-loop.sh"]

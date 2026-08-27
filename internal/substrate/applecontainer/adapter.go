@@ -1,14 +1,16 @@
 // Package applecontainer implements substrate.Substrate against Apple's
 // `container` CLI (github.com/apple/container).
 //
-// VERSION COUPLING: tested against 1.2.x. The JSON shape changed at the 1.0
+// VERSION COUPLING: tested against 1.3.x. The JSON shape changed at the 1.0
 // boundary — runtime state (state word, startedDate, networks) that 0.12.x
 // emitted flat now nests under a `status` object in both `container inspect`
 // and `container ls --format json` (see inspectRecord / listRecord). That
-// shape is unchanged in 1.2.x; the 1.1 -> 1.2 bump was verified by hand
-// against a live 1.2.0 install (inspect's status.networks[].ipv4Address,
+// shape is unchanged through 1.3.x; the 1.2 -> 1.3 bump was verified by hand
+// against a live 1.3.0 install (inspect's status.networks[].ipv4Address,
 // network inspect's status.ipv4Gateway, ls's nested status, and system
-// status's FIELD/VALUE table all still parse). Known quirks:
+// status's FIELD/VALUE table all still parse). 1.3.0's one breaking CLI
+// change — `--scheme auto` removed for image operations, default now https
+// — does not reach cspace, which never passes --scheme. Known quirks:
 //
 //   - `container inspect` does NOT support a --format flag. We parse JSON.
 //   - `container inspect` of a missing container exits non-zero on 1.x
@@ -18,15 +20,19 @@
 //     daemon binds on 5354 (see internal/cli/cmd_daemon.go).
 //   - `container system kernel set --recommended` must be run by hand on
 //     fresh installs (the apiserver's first start tries to read stdin).
-//   - 1.2.x mounts /proc/sys READ-ONLY inside containers, so in-sandbox
-//     `sysctl -w` fails while netlink-based iptables still works. The
-//     entrypoint's inbound DNAT depends on a sysctl and is gated on it
+//   - 1.2.x and 1.3.x mount /proc/sys READ-ONLY inside containers, so
+//     in-sandbox `sysctl -w` fails while netlink-based iptables still works.
+//     The entrypoint's inbound DNAT depends on a sysctl and is gated on it
 //     (cs-finding 2026-08-06-apple-container-1-2-mounts-proc-sys-read-only-
-//     breaking-inbound-dnat).
+//     breaking-inbound-dnat). 1.3.0 relaxed maskedPaths/readonlyPaths for
+//     container *machines* only (apple/container#2137); a plain
+//     `container run` still gets `proc /proc/sys proc ro,relatime`, so the
+//     userspace-relay fallback stays load-bearing.
 //   - The vmnet gateway is NOT a fixed per-version address. A fresh 1.2.0
 //     install allocates 192.168.64.1 — the value the code once called the
-//     "pre-1.0 default" — so it must be discovered, never assumed from the
-//     CLI version (see internal/cli/gateway.go).
+//     "pre-1.0 default" — while this 1.3.0 install allocates 192.168.65.1.
+//     It must be discovered, never assumed from the CLI version (see
+//     internal/cli/gateway.go).
 //
 // VersionStatus() reports whether the installed CLI matches the tested
 // minor version. cspace up logs a one-line warning when out of range.
@@ -54,7 +60,7 @@ import (
 // (non-fatal) at cspace up time. Bumping this is a deliberate act: verify
 // the JSON shape of `container inspect` and the other quirks listed in the
 // package doc still hold.
-const supportedMinorVersion = "1.2"
+const supportedMinorVersion = "1.3"
 
 // SupportedMinorVersion returns the Apple Container CLI MAJOR.MINOR version
 // cspace has been tested against. Exposed as a function (rather than the raw
@@ -203,6 +209,24 @@ func (a *Adapter) Run(ctx context.Context, spec substrate.RunSpec) error {
 	// Apple Container strips this capability by default even for root
 	// inside the microVM.
 	args = append(args, "--cap-add", "NET_ADMIN")
+	// The other half of that DNAT: the rule is only legal when
+	// net.ipv4.conf.*.route_localnet is 1, and the entrypoint cannot set it
+	// itself — Apple Container mounts /proc/sys READ-ONLY inside containers,
+	// so `sysctl -w` fails there. Presetting it on the kernel command line
+	// is the one path that works. Without it the DNAT rule rewrites every
+	// inbound packet to 127.0.0.1 and the kernel drops it as a martian,
+	// which blackholes the supervisor's own control port; the entrypoint
+	// reads this value back and refuses to install the rule if it is 0
+	// rather than fail that way silently.
+	// (cs-finding 2026-08-06-apple-container-1-2-mounts-proc-sys-read-only-breaking-inbound-dnat)
+	args = append(args, "--kernel-arg", "sysctl.net.ipv4.conf.all.route_localnet=1")
+	// PID 1 that forwards signals and reaps orphans. The sandbox image used
+	// to carry tini for this; Apple Container ships an init of its own, so
+	// this replaces that dependency. Signal forwarding is load-bearing —
+	// cspace-supervisor-loop.sh treats exit 143 (SIGTERM) as an intentional
+	// shutdown and anything else as a crash to respawn, so a `container stop`
+	// has to reach the supervisor as a signal rather than a kill.
+	args = append(args, "--init")
 	for k, v := range spec.Env {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
 	}
@@ -635,6 +659,65 @@ func (a *Adapter) List(ctx context.Context) ([]ContainerSummary, error) {
 			err, strings.TrimSpace(stderr.String()))
 	}
 	return parseContainerList(stdout.String())
+}
+
+// ContainerStats is one row of `container stats --format json`, narrowed to
+// the live-usage fields the TUI renders. MemoryUsedB is instantaneous, so a
+// single sample is meaningful. CPU is deliberately absent: the CLI reports
+// `cpuUsageUsec` as a CUMULATIVE counter, so turning it into a percentage
+// would mean holding the previous sample plus its timestamp across poll
+// ticks — state the dashboard does not otherwise need, for a signal the
+// per-sandbox agent working/idle state already conveys.
+type ContainerStats struct {
+	Name        string // id
+	MemoryUsedB int64  // memoryUsageBytes
+	Processes   int    // numProcesses
+}
+
+// statsRecord mirrors the `container stats --format json` shape. Flat, unlike
+// inspect/ls — there is no `status` nesting here. See adapter.go's package doc
+// for the version cspace tests against.
+type statsRecord struct {
+	ID          string `json:"id"`
+	MemoryUsage int64  `json:"memoryUsageBytes"`
+	NumProcs    int    `json:"numProcesses"`
+}
+
+// parseContainerStats turns `container stats --format json` output into
+// summaries. Split out from Stats so it can be unit-tested with canned JSON.
+func parseContainerStats(jsonOutput string) ([]ContainerStats, error) {
+	var records []statsRecord
+	if err := json.Unmarshal([]byte(jsonOutput), &records); err != nil {
+		return nil, fmt.Errorf("parse `container stats --format json` output: %w "+
+			"(the Apple Container CLI's JSON shape may have changed; cspace tested "+
+			"with %s.x — run `container --version` and file an issue at "+
+			"https://github.com/elliottregan/cspace/issues if this version differs)",
+			err, supportedMinorVersion)
+	}
+	out := make([]ContainerStats, 0, len(records))
+	for _, r := range records {
+		out = append(out, ContainerStats{
+			Name:        r.ID,
+			MemoryUsedB: r.MemoryUsage,
+			Processes:   r.NumProcs,
+		})
+	}
+	return out, nil
+}
+
+// Stats returns live resource usage for every running container. --no-stream
+// takes a single sample and exits; without it the CLI streams forever and the
+// poll would never return. Mirrors List()'s shell-out + JSON-parse pattern.
+func (a *Adapter) Stats(ctx context.Context) ([]ContainerStats, error) {
+	cmd := exec.CommandContext(ctx, "container", "stats", "--no-stream", "--format", "json")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("container stats --no-stream --format json: %w (stderr: %s)",
+			err, strings.TrimSpace(stderr.String()))
+	}
+	return parseContainerStats(stdout.String())
 }
 
 // randSuffix returns a short hex suffix for unique test names.

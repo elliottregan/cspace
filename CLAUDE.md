@@ -51,7 +51,7 @@ Entry point is `cmd/cspace/main.go` → `cli.Execute()`. Commands are `newXxxCmd
 - **config** — three-layer JSON merge: embedded `defaults.json` → `.cspace.json` → `.cspace.local.json` via `config.Load()`. `DeepMerge` replaces arrays wholesale (setting `plugins.install` in `.cspace.json` discards the whole default list, it does not append).
 - **secrets** — credential resolution, macOS Keychain access, host auto-discovery (see Credentials below)
 - **registry** — the sandbox registry persisted/served by the daemon
-- **substrate/applecontainer** — wrapper around the Apple Container `container` CLI (run/stop/inspect/build)
+- **substrate/applecontainer** — wrapper around the Apple Container `container` CLI (run/stop/inspect/build/stats). Two `container run` flags are load-bearing and easy to drop by accident: `--kernel-arg sysctl.net.ipv4.conf.all.route_localnet=1` (the entrypoint's inbound DNAT is illegal without it, and Apple Container mounts `/proc/sys` read-only so it cannot be set from inside), and `--init` (PID 1 that forwards signals and reaps orphans — the sandbox image no longer carries tini).
 - **sidecars** — multi-service lifecycle: compose-plan execution, healthchecks, `/etc/hosts` injection
 - **compose/v2**, **devcontainer** — parse a project's `dockerComposeFile`/`devcontainer.json` and merge them into the sandbox plan
 - **overlay** — the `cspace up` TUI overlay
@@ -59,7 +59,7 @@ Entry point is `cmd/cspace/main.go` → `cli.Execute()`. Commands are `newXxxCmd
 
 ### Host daemon (`cspace daemon serve`)
 
-One background process per host, auto-spawned by `cspace up` (detached with `Setsid`, logging to `~/.cspace/daemon.log` with 1MiB rotation). It serves DNS for `*.cspace.test` on `127.0.0.1:5354` (host side; `sudo cspace dns install` writes `/etc/resolver/cspace.test`) and `192.168.64.1:5354` (vmnet gateway side, for sandboxes and sidecars), plus an HTTP registry API on `127.0.0.1:6280`. `cspace up` does a version handshake against `/health` and stops/respawns a version-mismatched daemon. DNS answers prefer a live `container inspect` IP (TTL-memoized, negative-cached) over the registry-recorded IP.
+One background process per host, auto-spawned by `cspace up` (detached with `Setsid`, logging to `~/.cspace/daemon.log` with 1MiB rotation). It serves DNS for `*.cspace.test` on `127.0.0.1:5354` (host side; `sudo cspace dns install` writes `/etc/resolver/cspace.test`) and the vmnet gateway on :5354 (sandbox/sidecar side — the gateway is *discovered* per install via `container network inspect default`, not hardcoded: 1.2 allocated `192.168.64.1`, 1.3 allocates `192.168.65.1`), plus an HTTP registry API on `127.0.0.1:6280`. `cspace up` does a version handshake against `/health` and stops/respawns a version-mismatched daemon. DNS answers prefer a live `container inspect` IP (TTL-memoized, negative-cached) over the registry-recorded IP.
 
 ### Agent supervisor (`lib/agent-supervisor-bun/`)
 

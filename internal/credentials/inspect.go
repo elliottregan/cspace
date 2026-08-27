@@ -8,11 +8,11 @@ import (
 )
 
 // inspectRecord is the slice of `container inspect` output this package
-// needs. The JSON path is pinned by testdata/inspect-1.2.json, captured
-// from a live Apple Container 1.2 host — Apple Container reshapes its
-// inspect output across versions (see substrate/applecontainer/adapter.go),
-// so a future move fails the fixture test loudly rather than silently
-// reporting an empty environment.
+// needs. The JSON path is pinned by testdata/inspect-1.2.json and
+// testdata/inspect-1.3.json, each captured from a live host of that version
+// — Apple Container reshapes its inspect output across versions (see
+// substrate/applecontainer/adapter.go), so a future move fails the fixture
+// test loudly rather than silently reporting an empty environment.
 type inspectRecord struct {
 	Configuration struct {
 		InitProcess struct {

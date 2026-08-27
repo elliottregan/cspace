@@ -156,3 +156,30 @@ func TestRenderRowStatusWordFollowsState(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatMemUsage(t *testing.T) {
+	const gib = int64(1) << 30
+	cases := []struct {
+		name      string
+		used, cap int64
+		want      string
+	}{
+		// The reason usage is rendered with a decimal: whole gigabytes would
+		// collapse these two distinct sandboxes onto the same "1G".
+		{"gib scale keeps one decimal", 1193979904, 16 * gib, "1.1G/16G"},
+		{"gib scale distinguishes neighbours", 1717986918, 16 * gib, "1.6G/16G"},
+		{"sub-gib usage renders as MiB", 512 * (1 << 20), 4 * gib, "512M/4G"},
+		// No sample (container stopped, or the stats probe failed): fall back
+		// to the cap alone so the row never loses information.
+		{"missing sample falls back to cap", 0, 4 * gib, "4G"},
+		{"missing sample and no cap", 0, 0, "-"},
+		{"usage with no cap shows usage alone", 2 * gib, 0, "2.0G"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := formatMemUsage(tc.used, tc.cap); got != tc.want {
+				t.Errorf("formatMemUsage(%d, %d) = %q, want %q", tc.used, tc.cap, got, tc.want)
+			}
+		})
+	}
+}
