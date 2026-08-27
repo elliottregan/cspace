@@ -1,0 +1,74 @@
+[
+  {
+    "configuration": {
+      "creationDate": "2026-08-27T19:24:29Z",
+      "descriptor": {
+        "annotations": {
+          "com.apple.containerization.image.name": "cspace:latest",
+          "io.containerd.image.name": "docker.io/library/cspace:latest",
+          "org.opencontainers.image.created": "2026-08-27T19:24:30Z",
+          "org.opencontainers.image.ref.name": "latest"
+        },
+        "digest": "sha256:0f2d9b68cf20b9c4ef6df93a7817f911cab33072eecd390093c653f7b472c7fa",
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "size": 375
+      },
+      "name": "cspace:latest"
+    },
+    "id": "0f2d9b68cf20b9c4ef6df93a7817f911cab33072eecd390093c653f7b472c7fa",
+    "variants": [
+      {
+        "config": {
+          "architecture": "arm64",
+          "config": {
+            "Cmd": [
+              "/usr/local/bin/cspace-supervisor-loop.sh"
+            ],
+            "Entrypoint": [
+              "/usr/local/bin/cspace-entrypoint.sh"
+            ],
+            "Env": [
+              "PATH=/home/dev/.bun/bin:/home/dev/.local/bin:/usr/local/bin:/usr/bin:/bin",
+              "NODE_VERSION=24.18.0",
+              "YARN_VERSION=1.22.22",
+              "DEBIAN_FRONTEND=noninteractive",
+              "HOME=/home/dev"
+            ],
+            "Labels": {
+              "cspace.version": "1.0.0-rc.46"
+            },
+            "User": "dev",
+            "WorkingDir": "/workspace"
+          },
+          "created": "2026-08-27T19:24:29.474325125Z",
+          "history": [
+            {
+              "comment": "debuerreotype 0.17",
+              "created": "2026-06-23T00:00:00Z",
+              "created_by": "# debian.sh --arch 'arm64' out/ 'bookworm' '@1782172800'"
+            },
+            {
+              "comment": "buildkit.dockerfile.v0",
+              "created": "2026-06-24T18:12:07.89408625Z",
+              "created_by": "RUN /bin/sh -c groupadd --gid 1000 node   && useradd --uid 1000 --gid node --shell /bin/bash --create-home node # buildkit"
+            }
+          ],
+          "os": "linux",
+          "rootfs": {
+            "diff_ids": [
+              "sha256:5b9cd2976ab91a69cd9bc7ff7bcf886b7d0a3518d4ec5f1e724d0f4cf8634197",
+              "sha256:2311f04910c7eadd4e6b3deff03a838258a9d0ba825b8e22443ac5c70ec4a606"
+            ],
+            "type": "layers"
+          }
+        },
+        "digest": "sha256:d8c571444eeac8c40a39d9c89427de80f074805772da43cabb64e3766ef4b4ee",
+        "platform": {
+          "architecture": "arm64",
+          "os": "linux"
+        },
+        "size": 361671300
+      }
+    ]
+  }
+]

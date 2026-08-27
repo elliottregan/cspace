@@ -16,6 +16,17 @@ echo "claude \$*" >> "$tmp/calls.log"
 exit 0
 EOF
   chmod +x "$tmp/bin/claude"
+  # The script wraps every claude call in `timeout` (GNU coreutils), which is
+  # present in the Debian sandbox image but not on a stock macOS host. Stub it
+  # to run the command directly so this test exercises the plugin logic rather
+  # than the host's coreutils.
+  cat > "$tmp/bin/timeout" <<'TEOF'
+#!/usr/bin/env bash
+while [[ "$1" == -* ]]; do shift; [[ "$1" =~ ^[0-9]+$ ]] && shift; done
+[[ "$1" =~ ^[0-9]+$ ]] && shift
+exec "$@"
+TEOF
+  chmod +x "$tmp/bin/timeout"
   HOME="$tmp" PATH="$tmp/bin:$PATH" \
     CSPACE_BROWSER_MARKET_DIR="$tmp/market" \
     CSPACE_BROWSER_CDP_URL="$2" \

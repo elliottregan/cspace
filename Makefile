@@ -3,7 +3,7 @@ LDFLAGS         := -ldflags "-X github.com/elliottregan/cspace/internal/cli.Vers
 LDFLAGS_RELEASE := -ldflags "-s -w -X github.com/elliottregan/cspace/internal/cli.Version=$(VERSION)"
 GOBIN           := ./bin/cspace-go
 
-.PHONY: build build-linux clean test vet sync-embedded fmt fmt-check lint check install-tools setup-hooks check-hooks cspace-linux cspace-image
+.PHONY: build build-linux clean test test-scripts vet sync-embedded fmt fmt-check lint check install-tools setup-hooks check-hooks cspace-linux cspace-image release
 # (registry-daemon target removed; daemon is embedded as `cspace daemon serve`.)
 
 # Sync lib/ contents into internal/assets/embedded/ for go:embed.
@@ -46,6 +46,15 @@ build-linux: sync-embedded
 test: sync-embedded
 	go test ./...
 
+# Bash-level tests (release guards, in-sandbox scripts). Not covered by
+# `go test`; run alongside it so `make check` gates the release script too.
+test-scripts:
+	@for t in scripts/*.test.sh lib/runtime/scripts/*.test.sh; do \
+		[ -f "$$t" ] || continue; \
+		echo "bash $$t"; \
+		bash "$$t" || exit 1; \
+	done
+
 vet: sync-embedded
 	go vet ./...
 
@@ -66,9 +75,9 @@ fmt-check:
 
 lint: sync-embedded
 	golangci-lint run ./...
-	shellcheck lib/runtime/scripts/*.sh
+	shellcheck lib/runtime/scripts/*.sh scripts/*.sh
 
-check: fmt-check vet lint test
+check: fmt-check vet lint test test-scripts
 
 install-tools:
 	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
@@ -96,11 +105,24 @@ cspace-linux:
 		-o bin/cspace-linux-arm64 \
 		./cmd/cspace
 
-# Build the cspace sandbox image.
+# Build the cspace sandbox image. CSPACE_VERSION bakes into the
+# cspace.version label that `cspace up` compares against the running CLI —
+# without it every locally-built image reports "dev" and reads as stale.
 .PHONY: cspace-image
 cspace-image: cspace-linux
 	container build \
 		--platform linux/arm64 \
 		--tag cspace:latest \
 		--file lib/templates/Dockerfile \
+		--build-arg CSPACE_VERSION=$(VERSION) \
 		.
+
+# Cut a release from this Mac: tag, publish binaries + casks via goreleaser,
+# and publish the sandbox image to ghcr. Local rather than CI because Apple
+# Container needs Virtualization.framework, which GitHub's hosted macOS
+# runners do not expose.
+#   make release TAG=v1.0.0-rc.47
+#   make release TAG=v1.0.0-rc.47 ARGS=--dry-run
+release:
+	@[ -n "$(TAG)" ] || { echo "usage: make release TAG=vX.Y.Z[-rc.N] [ARGS=\"--dry-run --skip-image\"]" >&2; exit 2; }
+	./scripts/release.sh $(TAG) $(ARGS)

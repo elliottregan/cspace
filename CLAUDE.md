@@ -17,7 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `cspace agent status <sandbox>` — print the sandbox agent's steering status (session, working/idle state, queue depth, last event)
 - `cspace agent interrupt <sandbox>` — cancel a sandbox agent's in-flight task
 - `cspace keychain init|status` — store/inspect credentials in the macOS Keychain
-- `cspace image build` — rebuild the sandbox image (uses the repo's `lib/` when run from a cspace checkout, embedded assets otherwise)
+- `cspace image build|pull` — build the sandbox image locally (uses the repo's `lib/` when run from a cspace checkout, embedded assets otherwise) or pull the published one matching this CLI
 - `cspace daemon …`, `cspace dns …`, `cspace registry …`, `cspace doctor` — host daemon, resolver install, registry inspection, diagnostics
 - `cspace browser restart|status` — restart or health-check the project's shared browser sidecar; works both from the host and from inside a sandbox
 - `cspace tui` — full-screen dashboard of all cspace containers (grouped by project) with attach / down / agent send·interrupt / browser restart
@@ -30,7 +30,8 @@ make build        # check-hooks + sync-embedded + go build -> bin/cspace-go
 make test         # go tests (runs sync-embedded first)
 make vet
 make lint
-make check        # fmt-check + vet + lint + test
+make test-scripts # bash tests (scripts/*.test.sh, lib/runtime/scripts/*.test.sh)
+make check        # fmt-check + vet + lint + test + test-scripts
 cspace image build  # rebuild the sandbox image after Dockerfile/scripts changes
 
 cd lib/agent-supervisor-bun && bun install   # supervisor deps (Bun, not pnpm)
@@ -41,6 +42,26 @@ bun run typecheck                            # supervisor typecheck — NOT run 
 **Typecheck the supervisor after any SDK bump.** `bun test` and `bun build.ts` both use Bun's transpiler, which strips types without checking them — so the supervisor can compile and pass all 45 tests with broken types. Its tests deliberately type the SDK query handle structurally (`routes.ts`) so they run without a real SDK, which means an upstream signature change is invisible to them. `bun run typecheck` (`tsc --noEmit`) is the only thing that catches it; `@anthropic-ai/claude-agent-sdk` 0.3.x widening `Query.interrupt()`'s resolved value was caught exactly this way and nothing else flagged it. It is not wired into `make check`, which covers the Go side only — run it by hand after touching the supervisor or its deps.
 
 **Always build via `make`** (or run `make sync-embedded` first). `internal/assets/embedded/` is gitignored and populated from `lib/` by `make sync-embedded`; a bare `go build`/`go install` on a clean checkout embeds an empty asset tree and fails only at runtime.
+
+## Releases
+
+**Releases are cut locally from a Mac, not by CI.** `.github/workflows/release.yml` was deleted on 2026-08-27; `ci.yml` stays and still runs fmt/vet/lint/test on pushes and PRs, but it no longer publishes anything.
+
+```bash
+make release TAG=v1.0.0-rc.47 ARGS=--dry-run   # every guard + a throwaway build
+make release TAG=v1.0.0-rc.47                  # tag, publish, push the image
+```
+
+`scripts/release.sh` refuses without an explicit tag, then gates on: tag shape (`vX.Y.Z[-rc.N]`), a clean tree (untracked files included — goreleaser counts them as dirty), branch `main` (`CSPACE_RELEASE_ALLOW_BRANCH=1` overrides), the tag being unused locally and on origin, HEAD matching `origin/main`, a running Apple Container apiserver, and `make check`. Only then does it tag, push, run `goreleaser release --clean`, build the sandbox image, and push it to ghcr.
+
+Two reasons it lives here rather than in Actions:
+
+- **Only a Mac can build the sandbox image.** Apple Container needs Virtualization.framework, which GitHub's hosted macOS runners don't expose, so no CI job can produce the image and the binaries in one pass.
+- **One token covers everything.** `gh auth token` authenticates both the release and the Homebrew tap push (the tap is the same account's repo), so the separate `HOMEBREW_TAP_GITHUB_TOKEN` secret — invalid and silently stranding the tap from rc.36 to rc.41 — is gone. Pushing the image additionally needs `write:packages`: `gh auth refresh -s write:packages`.
+
+**A published GitHub release is immutable.** A failure after the tag is pushed cannot be fixed by re-running the same tag — cut the next rc. The script says so on failure, and refuses a tag that already exists.
+
+**The sandbox image is published too.** `ghcr.io/elliottregan/cspace:<tag>` carries the same tag as the release, and the CLI derives the ref from its own version (`internal/cli/cmd_image.go`). `cspace up` pulls it when `cspace:latest` is missing or was built by a different cspace, and falls back to a local build when the pull fails or the CLI is a dev build with no published image. `--rebuild` forces the build path — it exists to test local Dockerfile or supervisor changes, which a pull would discard. A first pull is ~362 MB; later releases reuse every layer except the cspace binary and supervisor (~42 MB). **The ghcr package is created private on the first push** — make it public once in the package settings, or `cspace up` on other hosts can't pull it anonymously.
 
 ## Architecture
 

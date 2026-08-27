@@ -52,3 +52,8 @@ lib/agent-supervisor-bun/dist/
 internal/assets/embedded/*
 !internal/assets/embedded/.gitkeep
 .claude/settings.local.json
+
+# Leftover of the removed .cspace/secrets.env credential file (deleted in
+# 4b5d68d — the Keychain is the only durable store). Untracked files fail
+# the release dirty-tree gate, so ignore it explicitly.
+.cspace/secrets.env
