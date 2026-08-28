@@ -48,7 +48,7 @@ EOF
 
 INPUT='{"model":{"display_name":"Opus"},"cost":{"total_cost_usd":0},
 "context_window":{"context_window_size":200000,"used_percentage":10},
-"session_id":"s","transcript_path":"","cwd":"'"$TMP/work"'"}'
+"session_id":"s","transcript_path":"","cwd":"'"$TMP/repo"'"}'
 
 run_statusline() {
   printf '%s' "$INPUT" | env PATH="$TMP/bin:$PATH" \
@@ -107,5 +107,57 @@ out_urls="$(run_statusline CSPACE_STATUSLINE_PORT_URLS=1)"
 vis_urls="$(printf '%s' "$out_urls" | visible)"
 echo "$vis_urls" | grep -q "http://sand.proj.cspace.test:5173" \
   || fail "CSPACE_STATUSLINE_PORT_URLS=1 did not restore the visible URL: $vis_urls"
+
+# ── PR check status drives the icon color ────────────────────────────────
+# mergeStateStatus alone cannot tell "checks are running" from "checks
+# failed": GitHub reports BLOCKED for both (required checks not yet
+# satisfied), which painted an in-flight PR red. The rollup is what actually
+# knows.
+mkdir -p "$TMP/repo"
+(cd "$TMP/repo" && git init -q -b feature/x 2>/dev/null)
+
+pr_case() {  # $1=label $2=gh JSON payload; echoes the rendered line
+  local cache; cache="$(mktemp -d)"
+  cat > "$TMP/bin/gh" <<EOF
+#!/usr/bin/env bash
+cat <<'JSON'
+$2
+JSON
+EOF
+  chmod +x "$TMP/bin/gh"
+  printf '%s' "$INPUT" | env PATH="$TMP/bin:$PATH" TMPDIR="$cache"     CSPACE_SANDBOX_NAME=sand CSPACE_PROJECT=proj     CSPACE_STATUSLINE_DEVCONTAINER="$TMP/devcontainer.json"     CSPACE_STATUSLINE_CSPACE_JSON="$TMP/none.json"     bash "$SCRIPT" 2>/dev/null
+}
+
+ORANGE=$'\033[38;2;218;119;86m'
+RED=$'\033[31m'
+GREEN=$'\033[32m'
+YELLOW=$'\033[33m'
+PR_ICON=$(printf '\xee\xa9\xa4')
+
+running='{"url":"https://github.com/o/r/pull/42","mergeStateStatus":"BLOCKED","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":null}]}'
+out="$(pr_case running "$running")"
+printf '%s' "$out" | grep -qF "${ORANGE}${PR_ICON}" \
+  || fail "checks in flight are not orange: $(printf '%s' "$out" | cat -v | head -2)"
+
+failed='{"url":"https://github.com/o/r/pull/42","mergeStateStatus":"BLOCKED","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]}'
+out="$(pr_case failed "$failed")"
+printf '%s' "$out" | grep -qF "${RED}${PR_ICON}" \
+  || fail "a failed check is not red: $(printf '%s' "$out" | cat -v | head -2)"
+
+passed='{"url":"https://github.com/o/r/pull/42","mergeStateStatus":"CLEAN","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]}'
+out="$(pr_case passed "$passed")"
+printf '%s' "$out" | grep -qF "${GREEN}${PR_ICON}" \
+  || fail "a green PR is not green: $(printf '%s' "$out" | cat -v | head -2)"
+
+# Checks all passed but the PR still cannot merge (review required). That is
+# not a failure and not "running" — it is waiting on a human.
+blocked='{"url":"https://github.com/o/r/pull/42","mergeStateStatus":"BLOCKED","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]}'
+out="$(pr_case blocked "$blocked")"
+printf '%s' "$out" | grep -qF "${YELLOW}${PR_ICON}" \
+  || fail "checks-passed-but-blocked is not yellow: $(printf '%s' "$out" | cat -v | head -2)"
+
+# ── the PR number is a link ───────────────────────────────────────────────
+expected_pr=$'\033]8;;https://github.com/o/r/pull/42\033\\#42\033]8;;\033\\'
+printf '%s' "$out" | grep -qF "$expected_pr" || fail "PR number is not an OSC 8 link"
 
 echo "PASS"

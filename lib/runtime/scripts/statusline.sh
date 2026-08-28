@@ -96,18 +96,35 @@ if [ -n "$PR_LOOKUP_BRANCH" ] && command -v gh >/dev/null 2>&1; then
         PR_LINK=$(cut -f1 "$CACHE_FILE")
         PR_CHECK_STATUS=$(cut -f2 "$CACHE_FILE")
     else
-        PR_DATA=$(gh pr view "$PR_LOOKUP_BRANCH" \
-            --json url,mergeStateStatus \
-            -q '[.url, (
-                  if   .mergeStateStatus == "CLEAN"    then "success"
-                  elif .mergeStateStatus == "BLOCKED"  then "failure"
-                  elif .mergeStateStatus == "DIRTY"    then "failure"
-                  elif .mergeStateStatus == "BEHIND"   then "pending"
-                  elif .mergeStateStatus == "UNSTABLE" then "pending"
-                  else "none" end
-                )] | @tsv' 2>/dev/null || true)
-        PR_LINK=$(printf '%s' "$PR_DATA" | cut -f1)
-        PR_CHECK_STATUS=$(printf '%s' "$PR_DATA" | cut -f2)
+        # Fetch once, derive locally. mergeStateStatus alone cannot tell
+        # "checks are still running" from "checks failed" — GitHub reports
+        # BLOCKED for both, since in either case the required checks are not
+        # yet satisfied — so an in-flight PR used to paint red and read as
+        # broken. statusCheckRollup is what actually knows: CheckRun entries
+        # carry status/conclusion, older StatusContext entries carry state.
+        #
+        # Deriving here rather than in gh's -q also makes this testable: a gh
+        # stub emits a payload and the real derivation runs over it.
+        PR_JSON=$(gh pr view "$PR_LOOKUP_BRANCH" \
+            --json url,mergeStateStatus,statusCheckRollup 2>/dev/null || true)
+        PR_LINK=$(printf '%s' "$PR_JSON" | jq -r '.url // ""' 2>/dev/null)
+        PR_CHECK_STATUS=$(printf '%s' "$PR_JSON" | jq -r '
+            (.statusCheckRollup // []) as $c
+            | ($c | map(select(
+                  ((.conclusion // "") | test("FAILURE|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED"))
+                  or ((.state // "") | test("FAILURE|ERROR"))
+              )) | length) as $failed
+            | ($c | map(select(
+                  ((.status // "") | test("QUEUED|IN_PROGRESS|WAITING|PENDING"))
+                  or ((.state // "") == "PENDING")
+              )) | length) as $running
+            | if   .mergeStateStatus == "DIRTY" then "failure"
+              elif $failed  > 0 then "failure"
+              elif $running > 0 then "running"
+              elif .mergeStateStatus == "CLEAN" then "success"
+              elif ($c | length) == 0 then "none"
+              else "blocked" end
+        ' 2>/dev/null)
         printf '%s\t%s\n' "$PR_LINK" "$PR_CHECK_STATUS" > "$CACHE_FILE" 2>/dev/null
     fi
 fi
@@ -155,9 +172,13 @@ if [ -n "$BRANCH" ]; then
 fi
 if [ -n "$PR_LINK" ]; then
     PR_NUM=$(echo "$PR_LINK" | grep -o '[0-9]*$')
+    # Colors carry the distinction the old mapping lost: orange means the
+    # answer is not in yet, red means something actually failed. Yellow is
+    # "checks passed, still cannot merge" — waiting on a human, not on CI.
     case "$PR_CHECK_STATUS" in
         failure) PR_IC="$RED" ;;
-        pending) PR_IC="$YLW" ;;
+        running) PR_IC="$ORG" ;;
+        blocked) PR_IC="$YLW" ;;
         success) PR_IC="$GRN" ;;
         *)       PR_IC="$GRY" ;;
     esac
