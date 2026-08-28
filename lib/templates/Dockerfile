@@ -12,7 +12,7 @@
 # is tracked in git.
 #
 # IMPORTANT: We use the Debian-flavored Bun image (glibc), not -alpine
-# (musl). The runtime stage below is node:24-bookworm-slim (glibc). A
+# (musl). The runtime stage below is node:26-bookworm-slim (glibc). A
 # musl-linked supervisor binary fails at exec time in the runtime stage
 # with "cannot execute: required file not found" because
 # libc.musl-aarch64.so.1 isn't present. Keep the libc family aligned
@@ -33,13 +33,16 @@ RUN bun run build
 # At this point /build/dist/cspace-supervisor exists.
 
 # ── Stage 2: cspace runtime (lean) ─────────────────────────────────────────
-# node:24-bookworm-slim provides:
+# node:26-bookworm-slim provides:
 #   - glibc (supervisor binary requirement)
-#   - Node 24 + npm + corepack (most agents need npx for MCP servers)
+#   - Node 26 + npm + corepack (most agents need npx for MCP servers)
 #   - Debian apt for the few cspace-required deps not baked
 #   - ~250 MB base
+#
+# Pinned to an explicit major rather than `lts`: the floating tag would change
+# what a given cspace version ships without the version changing.
 # See docs/image-dependencies.md for the full image dependency contract.
-FROM docker.io/library/node:24-bookworm-slim
+FROM docker.io/library/node:26-bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -76,7 +79,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 # Non-root user (Claude Code refuses --dangerously-skip-permissions as root).
-# node:24-bookworm-slim ships a `node` user at UID 1000; remove it first so
+# node:26-bookworm-slim ships a `node` user at UID 1000; remove it first so
 # the cspace-conventional `dev` user can claim that UID (bind mounts assume
 # dev=1000 on the host side).
 RUN userdel -r node 2>/dev/null || true \
@@ -87,7 +90,12 @@ RUN userdel -r node 2>/dev/null || true \
 # corepack ON — projects' package.json `packageManager:` field transparently
 # fetches the right pnpm/yarn version. We do NOT install pnpm globally here;
 # corepack handles per-project pinning.
-RUN corepack enable
+#
+# Installed explicitly rather than enabled in place: Node unbundled corepack at
+# 25, so `corepack enable` alone fails with "not found" on any base newer than
+# node:24. Projects call it directly (a post-create running `corepack pnpm
+# install` is the common shape), so it has to stay on PATH.
+RUN npm install -g corepack && corepack enable
 
 # Bun + Claude Code CLI as the dev user (install lands in /home/dev).
 USER dev
@@ -124,7 +132,7 @@ RUN ln -sf /home/dev/.bun/bin/bun /usr/local/bin/bun \
 # Chromium itself comes from a project-declared Playwright sidecar (see
 # resume-redux/.devcontainer/docker-compose.yml for the pattern) or the
 # default-on cspace-managed Chromium sidecar (disable with `cspace up --no-browser`).
-RUN npm install -g @playwright/mcp@0.0.72 chrome-devtools-mcp@0.23.0 \
+RUN npm install -g @playwright/mcp@0.0.79 chrome-devtools-mcp@1.8.0 \
  && playwright-mcp --version
 
 # Repair home ownership after root-USER global installs landed under HOME=/home/dev.

@@ -243,7 +243,7 @@ func browserImage(version string) string {
 // supervisor's claude-runner.ts registers playwright-mcp/chrome-devtools-mcp
 // regardless, and a CDP-protocol mismatch between those clients and a
 // far-newer chromium would surface here too.
-const defaultPlaywrightVersion = "1.59.0"
+const defaultPlaywrightVersion = "1.62.1"
 
 // browserRunServerPort is where the sidecar's `playwright run-server`
 // listens. Project tests connect via PW_TEST_CONNECT_WS_ENDPOINT.

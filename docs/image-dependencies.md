@@ -4,7 +4,7 @@ cspace's runtime overlay (the supervisor, init scripts, plugin install
 machinery) is bind-mounted into your sandbox image at `/opt/cspace/`.
 For the overlay to function, the image must provide:
 
-| Dependency | Why | Default image (node:24-bookworm-slim) |
+| Dependency | Why | Default image (node:26-bookworm-slim) |
 |---|---|---|
 | **glibc** | Supervisor is a Bun-compiled binary linked against glibc | ✓ |
 | **iptables** | Loopback NAT for ports bound to 127.0.0.1 inside the sandbox | ✓ (auto-installed via apt if missing on debian/ubuntu) |
@@ -17,10 +17,10 @@ For the overlay to function, the image must provide:
 ## Default image
 
 If your `.devcontainer/devcontainer.json` doesn't set `image` or `dockerFile`,
-cspace uses **node:24-bookworm-slim**. It's chosen because:
+cspace uses **node:26-bookworm-slim**. It's chosen because:
 
 - Debian bookworm = glibc, easy `apt-get`.
-- Node 24 + npx is enough to run most MCP servers (context7, playwright-mcp, etc.).
+- Node 26 + npx is enough to run most MCP servers (context7, playwright-mcp, etc.). Note that Node unbundled corepack at 25, so the image installs it explicitly.
 - ~250 MB base, comfortable for the overlay model.
 - Stable upstream LTS as of 2026.
 
