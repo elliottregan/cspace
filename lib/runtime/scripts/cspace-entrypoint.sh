@@ -184,10 +184,28 @@ EOF
     # Repoint glibc's resolver. Apple Container's network init wrote
     # the original resolv.conf earlier (with the --dns flags from
     # substrate Run); we replace it with a single localhost entry.
-    sudo install -m 0644 /dev/stdin /etc/resolv.conf <<'EOF'
+    #
+    # The search domain is what keeps compose-style bare names working:
+    # a project's code says http://convex-backend:3210, and with
+    # `search <sandbox>.<project>.cspace.test` that resolves through the
+    # daemon to <service>.<sandbox>.<project>.cspace.test — re-inspected per
+    # query, so a sidecar restarting onto a new IP is transparent. The old
+    # answer was an /etc/hosts entry frozen at boot, which went stale the
+    # moment a sidecar restarted and won over DNS besides (files are
+    # consulted first).
+    #
+    # Only single-label names consult the search list: glibc's default
+    # ndots:1 means anything containing a dot is tried as absolute first, so
+    # external lookups are unaffected. Falls back to `search .` (the previous
+    # behavior) when either env var is missing.
+    CSPACE_SEARCH="."
+    if [ -n "${CSPACE_SANDBOX_NAME:-}" ] && [ -n "${CSPACE_PROJECT:-}" ]; then
+        CSPACE_SEARCH="${CSPACE_SANDBOX_NAME}.${CSPACE_PROJECT}.cspace.test"
+    fi
+    sudo install -m 0644 /dev/stdin /etc/resolv.conf <<EOF
 nameserver 127.0.0.1
 options edns0 trust-ad
-search .
+search ${CSPACE_SEARCH}
 EOF
 fi
 

@@ -20,6 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `cspace image build` — rebuild the sandbox image (uses the repo's `lib/` when run from a cspace checkout, embedded assets otherwise)
 - `cspace daemon …`, `cspace dns …`, `cspace registry …`, `cspace doctor` — host daemon, resolver install, registry inspection, diagnostics
 - `cspace browser restart|status` — restart or health-check the project's shared browser sidecar; works both from the host and from inside a sandbox
+- `cspace sidecar restart <service>` — restart one compose sidecar (a backend, a database); works from the host (`--sandbox` when several are running) and from inside a sandbox, so an agent can recover its own dependencies
 - `cspace tui` — full-screen dashboard of all cspace containers (grouped by project) with attach / down / agent send·interrupt / browser restart
 - `cspace self-update`, `cspace version`, `cspace completion`
 
@@ -86,6 +87,36 @@ Bun/TypeScript, compiled to a single binary by `build.ts` during image build. Th
 - **Config surface**: a role — text appended to (never replacing) the system prompt — resolves from `/sessions/agent-role.md` (staged by `cspace up --role <host-path>`, cleared on a subsequent `up` with no `--role`) or, failing that, the committed `/workspace/.cspace/agent.md` convention. Model comes from `CSPACE_AGENT_MODEL`, set from `cspace up --model` or `.cspace.json`'s `agent.model` (`--model` wins); empty leaves the SDK/CLI default model in effect.
 - **Control surface**: HTTP on `CSPACE_CONTROL_PORT` (default 6201), bearer-token auth (`CSPACE_CONTROL_TOKEN`) enforced on every route. `POST /send` injects a turn (`cspace send <sandbox> <text>`); `POST /interrupt` cancels the in-flight SDK query (`cspace agent interrupt <sandbox>`, 409 when there's no active task); `GET /status` reports session, `working`/`idle` state, last event, and queue depth (`cspace agent status <sandbox>`); `GET /health` reports liveness (polled by `cspace up`'s boot wait). The supervisor refuses to start at all if `CSPACE_CONTROL_TOKEN` is empty rather than serve unauthenticated on `0.0.0.0`.
 - **Liveness**: any terminal outcome of the SDK stream — it throwing, or its async iterator simply ending — makes the supervisor `exit(1)` so `lib/runtime/scripts/cspace-supervisor-loop.sh` respawns it; the process never lingers serving `/health` with a dead agent behind it. If a resumed session fails to start, it retries once with a fresh session (never re-resolving the poisoned resume id) before exiting either way. The loop treats only exit codes `0` and `143` (clean shutdown/SIGTERM) as intentional; `137` (SIGKILL, e.g. the OOM killer) now respawns instead of being mistaken for clean shutdown. Events append to `/sessions/primary/events.ndjson`, single-generation-rotating to `events.ndjson.1` at 10MiB; on (re)start the supervisor resumes the last session id found in the current (unrotated) generation of that log, falling back to a fresh session if it's gone.
+
+### Project sidecars and addressing
+
+Compose services declared by a project (`convex-backend`, a database, …) run as
+per-sandbox microVMs named `cspace-<project>-<sandbox>-<service>`, spawned by
+`sidecars.Orchestration.Up` during `cspace up`.
+
+**Sandboxes address them by DNS, not by IP.** The daemon resolves
+`<service>.<sandbox>.<project>.cspace.test` with a live `container inspect`, so
+a sidecar restarting onto a new vmnet IP is transparent — and the same name
+resolves on the host through `/etc/resolver/cspace.test`. Compose-style bare
+names (`http://convex-backend:3210`) keep working because the sandbox's
+`/etc/resolv.conf` carries `search <sandbox>.<project>.cspace.test`; only
+single-label names consult the search list (ndots:1), so external lookups are
+untouched.
+
+The sandbox's `/etc/hosts` therefore holds **only its own aliases** (its compose
+service name and `workspace`). Do not add sidecar entries back: files are
+consulted before DNS, so a boot-time IP would win over the correct answer for
+the life of the sandbox — that is exactly what stranded an agent in the
+2026-08-28 convex-backend incident. Sidecars themselves still get the full
+`/etc/hosts` map, because they run their own images with no dnsmasq and glibc
+cannot express the daemon's non-standard port in `resolv.conf`.
+
+`cspace sidecar restart <service>` recovers a dead sidecar from either side via
+the daemon's `POST /sidecar/restart/{project}/{sandbox}/{service}`, reusing the
+browser's escalation ladder (stop → SIGKILL → host-process teardown for Apple
+Container's split-brain state → start → wait for an address). It restarts but
+does not recreate: the run spec lives in the project's compose file, which only
+`cspace up` reads.
 
 ### Sandbox runtime (`lib/`)
 

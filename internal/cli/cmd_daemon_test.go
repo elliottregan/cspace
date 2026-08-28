@@ -904,3 +904,155 @@ func TestBrowserRestartHandlerSerializesPerProject(t *testing.T) {
 		t.Fatal("restartBrowserFn ran concurrently for the same project; want per-project serialization")
 	}
 }
+
+// stubRestartSidecarFn swaps the project-sidecar restart seam for a test.
+func stubRestartSidecarFn(t *testing.T, fn func(ctx context.Context, project, sandbox, service string) (string, error)) {
+	t.Helper()
+	orig := restartSidecarFn
+	t.Cleanup(func() { restartSidecarFn = orig })
+	restartSidecarFn = fn
+}
+
+// TestSidecarRestartHandlerLoopbackAllowed — the host's own CLI reaches the
+// daemon over loopback and is trusted without a token, same as the browser
+// route.
+func TestSidecarRestartHandlerLoopbackAllowed(t *testing.T) {
+	r := &registry.Registry{Path: filepath.Join(t.TempDir(), "registry.json")}
+
+	var gotProject, gotSandbox, gotService string
+	stubRestartSidecarFn(t, func(_ context.Context, project, sandbox, service string) (string, error) {
+		gotProject, gotSandbox, gotService = project, sandbox, service
+		return "192.168.66.13", nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/sidecar/restart/demo/mercury/convex-backend", nil)
+	req.RemoteAddr = "127.0.0.1:5555"
+	req.SetPathValue("project", "demo")
+	req.SetPathValue("sandbox", "mercury")
+	req.SetPathValue("service", "convex-backend")
+	rec := httptest.NewRecorder()
+
+	sidecarRestartHandler(r)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if gotProject != "demo" || gotSandbox != "mercury" || gotService != "convex-backend" {
+		t.Errorf("ladder called with (%q, %q, %q), want (demo, mercury, convex-backend)", gotProject, gotSandbox, gotService)
+	}
+	if !strings.Contains(rec.Body.String(), "192.168.66.13") {
+		t.Errorf("response omits the address the sidecar came back on: %s", rec.Body.String())
+	}
+}
+
+// TestSidecarRestartHandlerCrossProjectTokenUnauthorized — a sandbox must not
+// be able to restart a sibling project's sidecars, which is the whole reason
+// the token is checked against the path's project rather than merely existing.
+func TestSidecarRestartHandlerCrossProjectTokenUnauthorized(t *testing.T) {
+	r := &registry.Registry{Path: filepath.Join(t.TempDir(), "registry.json")}
+	if err := r.Register(registry.Entry{Project: "other", Name: "venus", Token: "tok-other", StartedAt: time.Now()}); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+
+	called := false
+	stubRestartSidecarFn(t, func(context.Context, string, string, string) (string, error) {
+		called = true
+		return "", nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/sidecar/restart/demo/mercury/convex-backend", nil)
+	req.RemoteAddr = "192.168.66.85:5555"
+	req.Header.Set("Authorization", "Bearer tok-other")
+	req.SetPathValue("project", "demo")
+	req.SetPathValue("sandbox", "mercury")
+	req.SetPathValue("service", "convex-backend")
+	rec := httptest.NewRecorder()
+
+	sidecarRestartHandler(r)(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if called {
+		t.Fatal("ladder ran despite failed auth")
+	}
+}
+
+// TestSidecarRestartHandlerSameProjectTokenAuthorized — the in-sandbox path:
+// a sandbox presents the token from its own registry entry.
+func TestSidecarRestartHandlerSameProjectTokenAuthorized(t *testing.T) {
+	r := &registry.Registry{Path: filepath.Join(t.TempDir(), "registry.json")}
+	if err := r.Register(registry.Entry{Project: "demo", Name: "mercury", Token: "tok-demo", StartedAt: time.Now()}); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	stubRestartSidecarFn(t, func(context.Context, string, string, string) (string, error) {
+		return "192.168.66.20", nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/sidecar/restart/demo/mercury/convex-backend", nil)
+	req.RemoteAddr = "192.168.66.85:5555"
+	req.Header.Set("Authorization", "Bearer tok-demo")
+	req.SetPathValue("project", "demo")
+	req.SetPathValue("sandbox", "mercury")
+	req.SetPathValue("service", "convex-backend")
+	rec := httptest.NewRecorder()
+
+	sidecarRestartHandler(r)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestSidecarRestartHandlerFailureIsNotReportedAsSuccess — a ladder error must
+// surface with its text, so an agent reads "recreate with cspace up" rather
+// than a bare 502.
+func TestSidecarRestartHandlerFailureIsNotReportedAsSuccess(t *testing.T) {
+	r := &registry.Registry{Path: filepath.Join(t.TempDir(), "registry.json")}
+	stubRestartSidecarFn(t, func(context.Context, string, string, string) (string, error) {
+		return "", errStub
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/sidecar/restart/demo/mercury/convex-backend", nil)
+	req.RemoteAddr = "127.0.0.1:5555"
+	req.SetPathValue("project", "demo")
+	req.SetPathValue("sandbox", "mercury")
+	req.SetPathValue("service", "convex-backend")
+	rec := httptest.NewRecorder()
+
+	sidecarRestartHandler(r)(rec, req)
+
+	if rec.Code == http.StatusOK {
+		t.Fatal("a failed restart returned 200")
+	}
+	if !strings.Contains(rec.Body.String(), errStub.Error()) {
+		t.Errorf("response drops the reason: %s", rec.Body.String())
+	}
+}
+
+// TestSidecarRestartHandlerRejectsEmptyService guards the path shape: without
+// a service label the name would collapse to the sandbox's own container.
+func TestSidecarRestartHandlerRejectsEmptyService(t *testing.T) {
+	r := &registry.Registry{Path: filepath.Join(t.TempDir(), "registry.json")}
+	called := false
+	stubRestartSidecarFn(t, func(context.Context, string, string, string) (string, error) {
+		called = true
+		return "", nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/sidecar/restart/demo/mercury/", nil)
+	req.RemoteAddr = "127.0.0.1:5555"
+	req.SetPathValue("project", "demo")
+	req.SetPathValue("sandbox", "mercury")
+	req.SetPathValue("service", "")
+	rec := httptest.NewRecorder()
+
+	sidecarRestartHandler(r)(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if called {
+		t.Fatal("ladder ran with an empty service name")
+	}
+}

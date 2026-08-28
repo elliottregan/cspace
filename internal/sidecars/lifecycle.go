@@ -199,18 +199,33 @@ func (o *Orchestration) injectAllHosts(ctx context.Context) error {
 		}
 		ips[name] = ip
 	}
-	// Per-target hosts content: every microVM gets the same compose
-	// service map, but the workspace also gets `workspace -> 127.0.0.1`
-	// so scripts inside the workspace can hit http://workspace:<port>
-	// (the same URL the browser sidecar uses to reach the workspace,
-	// where it resolves to the workspace's vmnet IP). Keeps a single
-	// stable hostname across both sides.
+	// Sidecars get the full service map. They run their own images with no
+	// cspace entrypoint, so no dnsmasq translates :53 to the daemon's
+	// gateway:5354 — and glibc cannot express a non-standard port in
+	// resolv.conf — which leaves /etc/hosts as their only addressing.
 	contentSidecar := renderHosts(ips)
-	workspaceIPs := make(map[string]string, len(ips)+1)
-	for k, v := range ips {
-		workspaceIPs[k] = v
+
+	// The workspace gets only its own aliases. It resolves sidecars through
+	// daemon DNS (`<service>.<sandbox>.<project>.cspace.test`, reached via the
+	// bare service name through resolv.conf's search domain), which
+	// re-inspects the container per query and so survives a sidecar restart
+	// onto a new IP. An /etc/hosts entry would defeat that outright: files
+	// are consulted before DNS, so a boot-time IP wins over the correct
+	// answer for the life of the sandbox. That is what stranded the agent in
+	// the 2026-08-28 convex-backend incident, where recovery meant hand-
+	// editing this file.
+	//
+	// Two entries stay. `workspace -> 127.0.0.1` is the stable loopback name
+	// scripts use (the same URL the browser sidecar uses to reach the
+	// workspace, where it resolves to the workspace's vmnet IP). The
+	// workspace's own compose service name points at its own IP, which
+	// cannot drift without the sandbox itself being recreated — and unlike a
+	// sidecar it has no `<service>.<sandbox>.<project>` DNS name, since the
+	// container is `cspace-<project>-<sandbox>` with no service suffix.
+	workspaceIPs := map[string]string{"workspace": "127.0.0.1"}
+	if selfIP, ok := ips[o.Plan.Service]; ok && o.Plan.Service != "" {
+		workspaceIPs[o.Plan.Service] = selfIP
 	}
-	workspaceIPs["workspace"] = "127.0.0.1"
 	contentWorkspace := renderHosts(workspaceIPs)
 	for name := range o.Plan.Compose.Services {
 		var target, content string

@@ -168,6 +168,7 @@ func runDaemonServe() error {
 	mux.HandleFunc("GET /health", healthHandler)
 
 	mux.HandleFunc("POST /browser/restart/{project}", browserRestartHandler(r))
+	mux.HandleFunc("POST /sidecar/restart/{project}/{sandbox}/{service}", sidecarRestartHandler(r))
 
 	// Idle-shutdown: track time of last HTTP request via an atomic, and
 	// have a background ticker exit the daemon once it has been idle past
@@ -342,6 +343,69 @@ func browserRestartHandler(r *registry.Registry) http.HandlerFunc {
 			"runServerWsUrl": bs.RunServerWSURL,
 		})
 	}
+}
+
+// sidecarRestartLocks serializes concurrent restart requests for the same
+// sidecar, so two agents reacting to the same outage can't interleave stop and
+// start on one container.
+var sidecarRestartLocks sync.Map
+
+// sidecarRestartHandler handles POST /sidecar/restart/{project}/{sandbox}/{service}:
+// restarts one compose-spawned sidecar via restartSidecarFn.
+//
+// Auth mirrors browserRestartHandler exactly — loopback (the host's own CLI)
+// is trusted; anything else (a sandbox reaching the daemon over the vmnet
+// gateway) must present a Bearer token from a registry entry in the SAME
+// project, so one project's agents cannot restart a sibling's services.
+//
+// This is what closes the gap from the 2026-08-28 incident: an agent whose
+// sidecar dies can recover it without a human on the host, and because
+// sandboxes now address sidecars through daemon DNS rather than boot-baked
+// IPs, the new address a restart produces is invisible to callers.
+func sidecarRestartHandler(r *registry.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		project := req.PathValue("project")
+		sandbox := req.PathValue("sandbox")
+		service := req.PathValue("service")
+		if project == "" || sandbox == "" || service == "" {
+			http.Error(w, "expected /sidecar/restart/<project>/<sandbox>/<service>", http.StatusBadRequest)
+			return
+		}
+
+		if !isLoopbackRemoteAddr(req.RemoteAddr) && !browserRestartAuthorized(r, req, project) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		key := project + "/" + sandbox + "/" + service
+		lockV, _ := sidecarRestartLocks.LoadOrStore(key, &sync.Mutex{})
+		lock := lockV.(*sync.Mutex)
+		lock.Lock()
+		defer lock.Unlock()
+
+		ctx, cancel := context.WithTimeout(req.Context(), browserRestartTimeout)
+		defer cancel()
+
+		ip, err := restartSidecarFn(ctx, project, sandbox, service)
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil {
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":        true,
+			"ip":        ip,
+			"container": projectSidecarName(project, sandbox, service),
+			"host":      service + "." + sandbox + "." + project + "." + daemonDNSDomainName(),
+		})
+	}
+}
+
+// daemonDNSDomainName returns the DNS suffix without its trailing dot, for
+// building the stable hostname a restarted sidecar keeps.
+func daemonDNSDomainName() string {
+	return strings.TrimSuffix(daemonDNSDomain, ".")
 }
 
 // isLoopbackRemoteAddr reports whether an http.Request.RemoteAddr's host

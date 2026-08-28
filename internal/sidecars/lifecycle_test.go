@@ -280,3 +280,97 @@ func TestDownNoComposeIsNoOp(t *testing.T) {
 		t.Fatalf("expected no stops, got %v", stub.stops)
 	}
 }
+
+// TestSandboxHostsOmitsSidecarIPs — the workspace resolves sidecars through
+// daemon DNS, which re-inspects the container per query. An /etc/hosts entry
+// would defeat that: files are consulted before DNS, so a boot-time IP would
+// win over the correct answer for the life of the sandbox. That is the bug
+// behind the 2026-08-28 convex-backend incident, where the recovery was
+// hand-editing this file.
+func TestSandboxHostsOmitsSidecarIPs(t *testing.T) {
+	stub := newStub()
+	stub.ips["cspace-rr-mercury"] = "192.168.64.40"
+	orch := &Orchestration{
+		Sandbox: "mercury", Project: "rr",
+		Plan: &devcontainer.Plan{
+			Devcontainer: &devcontainer.Config{},
+			Compose: &v2.Project{
+				SourcePath: "/tmp/compose.yml",
+				Services: map[string]*v2.Service{
+					"app":     {Name: "app", Image: "alpine"},
+					"backend": {Name: "backend", Image: "be"},
+				},
+			},
+			Service: "app",
+		},
+		Substrate: stub,
+	}
+	if err := orch.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	sandboxHosts := hostsContentFor(t, stub, "cspace-rr-mercury")
+	if strings.Contains(sandboxHosts, "backend") {
+		t.Errorf("sandbox /etc/hosts pins the sidecar IP; DNS can never correct it:\n%s", sandboxHosts)
+	}
+	// Its own aliases stay: `app` is the sandbox itself (an IP that cannot
+	// drift without the sandbox being recreated), and `workspace` is the
+	// stable loopback name scripts use.
+	if !strings.Contains(sandboxHosts, "app") || !strings.Contains(sandboxHosts, "workspace") {
+		t.Errorf("sandbox lost its own aliases:\n%s", sandboxHosts)
+	}
+}
+
+// TestSidecarHostsKeepsFullMap — sidecars run their own images with no cspace
+// entrypoint, so they have no dnsmasq translating :53 to the daemon's
+// gateway:5354, and glibc cannot express a non-standard port in resolv.conf.
+// /etc/hosts is the only addressing they have; removing it would strand
+// sidecar-to-sidecar traffic with nothing to fall back on.
+func TestSidecarHostsKeepsFullMap(t *testing.T) {
+	stub := newStub()
+	stub.ips["cspace-rr-mercury"] = "192.168.64.40"
+	orch := &Orchestration{
+		Sandbox: "mercury", Project: "rr",
+		Plan: &devcontainer.Plan{
+			Devcontainer: &devcontainer.Config{},
+			Compose: &v2.Project{
+				SourcePath: "/tmp/compose.yml",
+				Services: map[string]*v2.Service{
+					"app":       {Name: "app", Image: "alpine"},
+					"backend":   {Name: "backend", Image: "be"},
+					"dashboard": {Name: "dashboard", Image: "db"},
+				},
+			},
+			Service: "app",
+		},
+		Substrate: stub,
+	}
+	if err := orch.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	got := hostsContentFor(t, stub, orch.containerName("dashboard"))
+	for _, peer := range []string{"backend", "app"} {
+		if !strings.Contains(got, peer) {
+			t.Errorf("sidecar /etc/hosts lost peer %q, its only way to address it:\n%s", peer, got)
+		}
+	}
+}
+
+// hostsContentFor digs the injected /etc/hosts payload out of the recorded
+// execs for a container.
+func hostsContentFor(t *testing.T, stub *stubSubstrate, container string) string {
+	t.Helper()
+	cmds, ok := stub.execs[container]
+	if !ok {
+		t.Fatalf("no exec recorded for %s; got %v", container, stub.execs)
+	}
+	for _, cmd := range cmds {
+		last := cmd[len(cmd)-1]
+		if strings.Contains(last, ">> /etc/hosts") {
+			return last
+		}
+	}
+	t.Fatalf("no /etc/hosts injection recorded for %s: %v", container, cmds)
+	return ""
+}
