@@ -189,6 +189,8 @@ The shared per-project sidecar (`cspace-<project>-browser`) has a stable DNS nam
 - **Sessions**: per-sandbox at `~/.cspace/sessions/<project>/<sandbox>/` on the host, bind-mounted into the sandbox; wiped by `cspace down`.
 - **Adding a CLI command**: create `newXxxCmd()` in a new file under `internal/cli/`, register it in `root.go`.
 - **Template resolution**: `cspace image build` uses the repo's `lib/templates/Dockerfile` when run from a cspace checkout, otherwise the embedded copy.
+- **Stale-image gate**: `cspace up` checks `cspace:latest`'s `cspace.version` label against the running CLI *before* `overlay.Start` (`preflightImageGate`, cmd_up.go). It has to be there — bubbletea holds stdin in raw mode once the overlay is up, so a prompt issued later can never be answered, which is why this used to warn and boot a stale image anyway. Projects that pin their own image (compose `image:`, devcontainer `image:`, a Dockerfile) skip the gate entirely.
+- **Reclaiming disk**: every image rebuild leaves the previous one dangling, and Apple Container keeps an unpacked snapshot per image. `container image prune` removes both — measured 2026-08-28 on a dev machine: 65 GB → 41 GB, with snapshots falling 40 GB → 16 GB. It only touches unreferenced images, so it is safe to run with containers up; `--all` additionally drops images no container currently uses (a re-pull next time).
 
 ## Security posture (read before relying on it)
 

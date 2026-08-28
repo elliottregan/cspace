@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	v2 "github.com/elliottregan/cspace/internal/compose/v2"
+	"github.com/elliottregan/cspace/internal/devcontainer"
 	"github.com/spf13/cobra"
 )
 
@@ -214,5 +216,112 @@ func TestEnsureSandboxImageDevBuildsWhenMissing(t *testing.T) {
 	}
 	if !acted || builds != 1 {
 		t.Errorf("acted=%v builds=%d, want a local build", acted, builds)
+	}
+}
+
+// TestPlannedImage covers the pure half of image resolution: what a project
+// pins directly, versus what would make cspace build one. Kept separate from
+// resolveSandboxImage because that one can *build* a project image, so it
+// cannot be called twice — and the boot needs a cheap answer before the
+// overlay starts.
+func TestPlannedImage(t *testing.T) {
+	t.Run("compose service image wins", func(t *testing.T) {
+		plan := &devcontainer.Plan{
+			Compose: &v2.Project{Services: map[string]*v2.Service{"app": {Name: "app", Image: "node:24"}}},
+			Service: "app",
+		}
+		img, needsBuild := plannedImage(plan)
+		if img != "node:24" || needsBuild {
+			t.Errorf("got (%q, %v), want (node:24, false)", img, needsBuild)
+		}
+	})
+
+	t.Run("devcontainer image field", func(t *testing.T) {
+		plan := &devcontainer.Plan{Devcontainer: &devcontainer.Config{Image: "custom:tag"}}
+		img, needsBuild := plannedImage(plan)
+		if img != "custom:tag" || needsBuild {
+			t.Errorf("got (%q, %v), want (custom:tag, false)", img, needsBuild)
+		}
+	})
+
+	t.Run("dockerfile means cspace builds one", func(t *testing.T) {
+		plan := &devcontainer.Plan{Devcontainer: &devcontainer.Config{DockerFile: "Dockerfile"}}
+		img, needsBuild := plannedImage(plan)
+		if img != "" || !needsBuild {
+			t.Errorf("got (%q, %v), want (\"\", true)", img, needsBuild)
+		}
+	})
+
+	t.Run("nothing pinned means the default image", func(t *testing.T) {
+		img, needsBuild := plannedImage(&devcontainer.Plan{Devcontainer: &devcontainer.Config{}})
+		if img != "" || needsBuild {
+			t.Errorf("got (%q, %v), want (\"\", false)", img, needsBuild)
+		}
+	})
+
+	t.Run("nil plan", func(t *testing.T) {
+		if img, needsBuild := plannedImage(nil); img != "" || needsBuild {
+			t.Errorf("got (%q, %v), want (\"\", false)", img, needsBuild)
+		}
+	})
+}
+
+// TestPreflightImageGateBuildsForDefaultImage — the whole point of the
+// pre-flight: it runs before overlay.Start, where stdin is still free, so the
+// stale-image question can actually be asked. After overlay.Start bubbletea
+// holds stdin in raw mode and the gate could only ever warn.
+func TestPreflightImageGateBuildsForDefaultImage(t *testing.T) {
+	var builds int
+	var tag string
+	cmd := &cobra.Command{}
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetOut(&bytes.Buffer{})
+
+	// An empty project root: no devcontainer.json, so the boot uses
+	// cspace:latest and a missing image must be built.
+	acted, err := preflightImageGate(cmd, t.TempDir(), false, false,
+		fakeInspector("", false, false), recordingBuilder(&builds, &tag))
+	if err != nil {
+		t.Fatalf("preflightImageGate: %v", err)
+	}
+	if !acted || builds != 1 || tag != "cspace:latest" {
+		t.Errorf("acted=%v builds=%d tag=%q, want a build of cspace:latest", acted, builds, tag)
+	}
+}
+
+// TestPreflightImageGateSkipsProjectOwnedImages — a project that pins its own
+// image never boots cspace:latest, so nagging about its version would be noise.
+func TestPreflightImageGateSkipsProjectOwnedImages(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		json string
+	}{
+		{"image field", `{"name":"x","image":"ghcr.io/acme/dev:1"}`},
+		{"dockerfile", `{"name":"x","build":{"dockerfile":"Dockerfile"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			dcDir := filepath.Join(root, ".devcontainer")
+			if err := os.MkdirAll(dcDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dcDir, "devcontainer.json"), []byte(tc.json), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			var builds int
+			var tag string
+			cmd := &cobra.Command{}
+			cmd.SetErr(&bytes.Buffer{})
+
+			acted, err := preflightImageGate(cmd, root, false, false,
+				fakeInspector("", false, false), recordingBuilder(&builds, &tag))
+			if err != nil {
+				t.Fatalf("preflightImageGate: %v", err)
+			}
+			if acted || builds != 0 {
+				t.Errorf("acted=%v builds=%d, want the gate skipped for a project-owned image", acted, builds)
+			}
+		})
 	}
 }

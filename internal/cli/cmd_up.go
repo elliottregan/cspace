@@ -182,6 +182,24 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// to real stdout after the overlay tears down. With
 			// --no-overlay or piped stdout, output flows normally and
 			// boot phases print as plain "[N/5] phase" lines.
+			// Gate on the sandbox image while stdin is still ours. Once
+			// overlay.Start runs, bubbletea holds stdin in raw mode and a
+			// prompt would never receive the answer — so this has to come
+			// first, not alongside the rest of the boot.
+			rebuilt, rbErr := preflightImageGate(cmd, projectRoot, rebuildImage, isStdinTTY(),
+				inspectSandboxImage, func(tag string) error { return runImageBuild(cmd, tag, false) })
+			if rbErr != nil {
+				return rbErr
+			}
+			if rebuilt {
+				// A rebuild can take minutes and isn't bound by ctx; refresh
+				// the boot deadline so the 4-minute budget covers the launch
+				// rather than the build that preceded it.
+				cancel()
+				ctx, cancel = context.WithTimeout(parent, 4*time.Minute)
+				defer cancel()
+			}
+
 			useOverlay := !noOverlay && isStdoutTTY()
 			realOut := cmd.OutOrStdout()
 			var pendingOut bytes.Buffer
@@ -311,32 +329,6 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 					for k, v := range dc.ContainerEnv {
 						env[k] = v
 					}
-				}
-			}
-
-			// Make sure cspace:latest exists and matches this CLI, building
-			// it when it is missing. Skipped for project-supplied images (compose image:,
-			// devcontainer image:, build:) — those are the user's
-			// responsibility, not cspace's.
-			if sandboxImage == "cspace:latest" {
-				// canPrompt is false while the overlay TUI is up: bubbletea owns
-				// stdin in raw mode, so a blocking prompt here would never receive
-				// the user's keystrokes and would hang the boot. Only prompt when
-				// the overlay is off (--no-overlay / piped stdout) AND stdin is a
-				// real terminal.
-				rebuilt, rbErr := ensureSandboxImage(cmd, sandboxImage, Version, rebuildImage,
-					!useOverlay && isStdinTTY(), inspectSandboxImage,
-					func(tag string) error { return runImageBuild(cmd, tag, false) })
-				if rbErr != nil {
-					return rbErr
-				}
-				if rebuilt {
-					// The rebuild can take minutes and isn't bound by ctx;
-					// refresh the boot deadline so the 4-minute budget covers
-					// container launch, not the preceding build.
-					cancel()
-					ctx, cancel = context.WithTimeout(parent, 4*time.Minute)
-					defer cancel()
 				}
 			}
 
@@ -1484,22 +1476,38 @@ func maybeNudgeMissingDnsInstall(out io.Writer) {
 // a broken Dockerfile does not silently produce a cryptic "image not found"
 // error from the substrate; instead the container boots with the default and
 // the user sees the build error.
-func resolveSandboxImage(ctx context.Context, plan *devcontainer.Plan, defaultImage string) string {
+// plannedImage reports the image a plan pins outright, and whether the plan
+// would have cspace build one for it. Pure — no substrate calls — so the boot
+// can ask "will this project use cspace:latest?" cheaply, before the overlay
+// takes over stdin. resolveSandboxImage cannot answer that question twice: it
+// builds a project image as a side effect.
+func plannedImage(plan *devcontainer.Plan) (image string, needsBuild bool) {
 	if plan == nil {
-		return defaultImage
+		return "", false
 	}
 	// 1. Compose service image.
 	if plan.Compose != nil && plan.Service != "" {
 		if svc, ok := plan.Compose.Services[plan.Service]; ok && svc.Image != "" {
-			return svc.Image
+			return svc.Image, false
 		}
 	}
 	// 2. Devcontainer image field.
 	if plan.Devcontainer != nil && plan.Devcontainer.Image != "" {
-		return plan.Devcontainer.Image
+		return plan.Devcontainer.Image, false
 	}
 	// 3. Build via Apple Container.
 	if plan.Devcontainer != nil && (plan.Devcontainer.DockerFile != "" || plan.Devcontainer.Build != nil) {
+		return "", true
+	}
+	return "", false
+}
+
+func resolveSandboxImage(ctx context.Context, plan *devcontainer.Plan, defaultImage string) string {
+	image, needsBuild := plannedImage(plan)
+	if image != "" {
+		return image
+	}
+	if needsBuild {
 		tag, err := sidecars.BuildProjectImage(ctx, plan)
 		if err == nil && tag != "" {
 			return tag
@@ -1508,6 +1516,43 @@ func resolveSandboxImage(ctx context.Context, plan *devcontainer.Plan, defaultIm
 		// default image doesn't satisfy the project's needs.
 	}
 	return defaultImage
+}
+
+// preflightImageGate makes sure cspace:latest is present and matches this CLI
+// *before* the overlay starts.
+//
+// It has to run here, not alongside the rest of the boot: overlay.Start hands
+// stdin to bubbletea in raw mode, so a prompt issued after it can never be
+// answered — which is why the gate used to warn and boot a stale image anyway,
+// leaving "I forgot to rebuild" as a thing you discover later.
+//
+// Projects that pin their own image (compose `image:`, devcontainer `image:`,
+// a Dockerfile) never boot cspace:latest, so the gate stays silent for them.
+// Determining that means parsing devcontainer.json here and again in the boot
+// flow below; both are file reads with no side effects, and the duplicate
+// parse buys a question that can actually be answered.
+func preflightImageGate(cmd *cobra.Command, projectRoot string, forceBuild, canPrompt bool, inspect imageInspector, build func(tag string) error) (bool, error) {
+	var plan *devcontainer.Plan
+	if projectRoot != "" {
+		dcPath := filepath.Join(projectRoot, ".devcontainer", "devcontainer.json")
+		if _, statErr := os.Stat(dcPath); statErr == nil {
+			dc, loadErr := devcontainer.Load(dcPath)
+			if loadErr != nil {
+				// The boot below reports this properly; here it only means we
+				// cannot tell which image is coming, so leave the gate alone.
+				return false, nil
+			}
+			merged, mergeErr := devcontainer.Merge(dc, filepath.Dir(dcPath))
+			if mergeErr != nil {
+				return false, nil
+			}
+			plan = merged
+		}
+	}
+	if image, needsBuild := plannedImage(plan); image != "" || needsBuild {
+		return false, nil
+	}
+	return ensureSandboxImage(cmd, "cspace:latest", Version, forceBuild, canPrompt, inspect, build)
 }
 
 // hostGitConfig returns the trimmed value of `git config --global --get <key>`
