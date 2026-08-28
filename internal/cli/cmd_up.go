@@ -408,6 +408,13 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				}
 			}
 
+			// Describe the host terminal to the sandbox. Without this the
+			// runtime's TERM=xterm default leaves Claude painting with 16
+			// colors while the same terminal gives it 16.7M outside. Seeded
+			// before --env so an explicit override still wins, and it never
+			// displaces a value the project already set.
+			applyTerminalEnv(env, os.Getenv("TERM"), os.Getenv("COLORTERM"))
+
 			// CLI --env flag wins over secrets file (used for spike-test
 			// injection like CSPACE_BROWSER_CDP_URL).
 			for _, kv := range extraEnv {

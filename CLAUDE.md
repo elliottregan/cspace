@@ -144,6 +144,8 @@ A GitHub token is verified against `GET /user` at boot; a 401 advances down the 
 
 `docs/env-cspace.md` documents the `.env.cspace` convention (project-declared container overrides), the full env merge order, and the `$CSPACE_WORKSPACE_HOST` / e2e `baseURL` guidance. For **non-credential** keys the order is `--env` > devcontainer `containerEnv` > compose `env_file`. The five cspace-owned credential keys do not participate in that order at all — see Credentials above.
 
+**Terminal color.** `cspace up` bakes `TERM`/`COLORTERM` from the host terminal into the container, and `cspace attach` passes them again per-exec (`terminalEnv` in `cmd_attach.go`). Without this, Apple Container's TTY default of a bare `TERM=xterm` with no `COLORTERM` makes Claude paint with 16 colors inside a sandbox while the same terminal gives it 16.7M outside — the PTY strips nothing, the program just picks a smaller palette. `TERM` is mapped to `xterm-256color` unless it already ends in `-256color`, because the sandbox carries Debian's terminfo and an entry it lacks (`xterm-ghostty`) breaks every ncurses program in there. A `dumb` or unset `TERM` is left alone.
+
 Security caveat: secrets currently transit `-e` flags into the substrate, and Apple Container's `vminitd` logs the full process env — anyone with `container logs` access on the host can read them.
 
 ## Browser sidecar
