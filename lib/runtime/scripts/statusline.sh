@@ -175,7 +175,8 @@ fi
 # port shows up.
 #
 # Colors: dev=green, preview=yellow, brainstorm=magenta; anything else
-# is cyan. Labels are clickable terminal hyperlinks via OSC 8.
+# is cyan. The label is the whole entry and carries the URL as an OSC 8
+# hyperlink; CSPACE_STATUSLINE_PORT_URLS=1 shows the URLs as text too.
 label_color() {
     case "$1" in
         dev)        printf '%s' "$GRN" ;;
@@ -200,8 +201,8 @@ if [ -n "$CONTAINER" ] && command -v ss >/dev/null 2>&1; then
     #
     # Bash 4+ associative array — sandbox image is debian-bookworm.
     declare -A PORT_LABELS=()
-    DEVCONTAINER_JSON="/workspace/.devcontainer/devcontainer.json"
-    CSPACE_JSON="/workspace/.cspace.json"
+    DEVCONTAINER_JSON="${CSPACE_STATUSLINE_DEVCONTAINER:-/workspace/.devcontainer/devcontainer.json}"
+    CSPACE_JSON="${CSPACE_STATUSLINE_CSPACE_JSON:-/workspace/.cspace.json}"
     if [ -f "$DEVCONTAINER_JSON" ] && command -v jq >/dev/null 2>&1; then
         # devcontainer.json is JSONC: strip // and /* ... */ comments before
         # piping to jq. portsAttributes uses { "<port>": { "label": "<x>" } };
@@ -258,23 +259,37 @@ if [ -n "$CONTAINER" ] && command -v ss >/dev/null 2>&1; then
             continue
         fi
         URL="http://${FQDN}:${port}"
-        # Visible text is the full URL (with http:// prefix) so terminals
-        # that don't honor OSC 8 still auto-linkify via URL pattern
-        # matching (cmd-click on URLs). When OSC 8 IS honored, the
-        # surrounding hyperlink wrapper makes the same text clickable
-        # directly. Either way the user can click. Earlier iterations
-        # used short text ("dev", then host:port without scheme); both
-        # failed to auto-link in renderers that strip OSC 8 (some
-        # Claude-Code statusline contexts), forcing users to type the
-        # URL by hand.
         printf "%s" "$DIV"
-        if [ -n "$label" ]; then
-            printf "%s● %s%s " "$(label_color "$label")" "$label" "$RST"
-        else
-            printf "%s● %s" "$CYN" "$RST"
+        # The label alone is the visible text, carrying the URL as an OSC 8
+        # hyperlink — "dev", not "dev http://sand.proj.cspace.test:5173".
+        # A row of full URLs crowds out everything else on the line.
+        #
+        # This trades away a fallback: renderers that strip OSC 8 linkify
+        # bare URLs by pattern match, so short text leaves nothing clickable
+        # there. Two earlier iterations were reverted for that reason, which
+        # is why CSPACE_STATUSLINE_PORT_URLS=1 restores the old rendering
+        # rather than the fallback being lost outright — set it if links go
+        # dead in your terminal.
+        if [ -n "${CSPACE_STATUSLINE_PORT_URLS:-}" ]; then
+            if [ -n "$label" ]; then
+                printf "%s● %s%s " "$(label_color "$label")" "$label" "$RST"
+            else
+                printf "%s● %s" "$CYN" "$RST"
+            fi
+            printf "%s" "$CYN"
+            link "$URL" "$URL"
+            printf "%s" "$RST"
+            continue
         fi
-        printf "%s" "$CYN"
-        link "$URL" "$URL"
+        # An unlabeled port falls back to its number: hiding the URL must
+        # not leave a bare bullet with nothing to read or click.
+        if [ -n "$label" ]; then
+            printf "%s● " "$(label_color "$label")"
+            link "$URL" "$label"
+        else
+            printf "%s● " "$CYN"
+            link "$URL" "$port"
+        fi
         printf "%s" "$RST"
     done
 fi
