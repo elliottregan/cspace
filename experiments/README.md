@@ -132,6 +132,53 @@ commit to building next:
 | TERM/COLORTERM forwarding for real sandbox execs | Not started, but solved elsewhere to copy from | `portable-pty`'s `CommandBuilder` just inherits the multiplexer's own env verbatim — fine today since we spawn `$SHELL` directly. Breaks the moment the child becomes `container exec -it <sandbox> claude`, because Apple Container's TTY defaults to a bare `TERM=xterm` with no `COLORTERM` (documented in the main repo's CLAUDE.md). `cmd_attach.go`'s `terminalEnvArgs` already solves this for `cspace attach`; the multiplexer would need to replicate the same explicit `-e TERM=... -e COLORTERM=...` flags on its own `container exec` invocations |
 | Mouse support generally (click-to-focus sidebar, draggable splits) | Not started | Standard crossterm capability, not enabled; draggable splits specifically have no ecosystem widget (hand-roll) |
 
+## Status line hyperlinks: move off Claude Code's statusline, into the TUI
+
+Separate finding, worth recording since it changes the layout sketch below.
+
+**The problem**: cspace's statusline (`lib/runtime/scripts/statusline.sh`)
+emits port URLs as OSC 8 terminal hyperlinks via a `link()` helper
+(`statusline.sh:133`, a correctly-formed `\033]8;;URL\033\\TEXT\033]8;;\033\\`
+sequence) — these haven't been working in Ghostty. The sequence itself
+isn't the issue; the rendering path is three layers deep and cspace only
+controls the first one: Ghostty (outer terminal) ← `container exec -it`'s
+PTY ← Claude Code's own interactive TUI ← Claude Code's `statusLine` hook
+feature, which takes the script's stdout and renders it inside its own
+status-bar region (wired in `cspace-entrypoint.sh:103-106` — a native
+Claude Code CLI feature, not cspace's own rendering). The script's own
+comments (`statusline.sh:288-291`) already record that **two earlier
+iterations of this were reverted** because a row of full URLs crowds out
+the line, and OSC 8 needs its open/close sequence to stay byte-adjacent to
+the exact text it wraps — any truncation or reflow Claude Code's renderer
+does to fit the single line can clip mid-escape-sequence and break it.
+That's a structural fragility of "single-line, width-constrained, rendered
+by someone else's closed-source pipeline," not a one-off bug, and not
+worth debugging further from cspace's side — Claude Code's statusline
+renderer isn't our code to fix.
+
+**The fix: don't fight that renderer, own the render path instead.**
+Checked ratatui-core directly rather than assume this was possible: it has
+a real, tested mechanism for embedding OSC 8 (and even inline image
+escapes) into a cell —
+[`Cell::set_symbol`](https://docs.rs/ratatui-core) paired with
+`CellDiffOption::ForcedWidth(n)`, which tells the diff/repaint engine the
+correct *visual* width to reserve since the escape bytes themselves are
+zero-width. Both are public API (`ratatui-core-0.1.2/src/buffer/cell.rs`),
+and ratatui's own test suite covers exactly this case — an OSC 8 link
+split across multiple cells, confirmed to diff/repaint correctly
+(`buffer.rs:1217-1251`). This isn't a hack riding on undocumented
+internals; it's the mechanism the crate was built to support, just not
+exposed as a one-line `Span::hyperlink(url)` convenience.
+
+**Plan**: drop the OSC 8 port-link trick from the single-line statusline
+(simplify it back to plain text there) and render port/URL links in the
+TUI's sidebar or footer instead, where there's room and cspace owns every
+byte from its own buffer straight to the terminal — no intermediate
+renderer to reflow or truncate them. Still unverified: actual Ghostty
+rendering of an OSC 8 sequence emitted this way, since this exploration
+has no macOS/Ghostty access — worth an empirical check once this lands in
+`mux-prototype`.
+
 ## Rough feature/layout outline (draft — not a spec)
 
 Sketch of where this is headed, roughly matching what's already built plus
@@ -160,7 +207,10 @@ what's discussed above:
   (●working / ○idle / ▲blocked / ✓done / ✕exited) + name. Future: pull
   from the real registry instead of an in-process `Vec<Pane>`, add ports /
   credential-staleness indicators (cspace already tracks this data,
-  per CLAUDE.md's credential-baking section).
+  per CLAUDE.md's credential-baking section), and render each port as a
+  clickable OSC 8 hyperlink (see "Status line hyperlinks" above) — this is
+  where the links the statusline currently struggles with should live
+  instead.
 - **Tabs** (`Tabs`, already built) — mirrors sidebar selection, one label
   per open pane.
 - **Main pane area** (`tui-term`'s `PseudoTerminal`, already built) — the
@@ -207,6 +257,10 @@ Not yet decided, worth resolving before investing further:
 4. **Where image uploads land for an interactive pane** specifically,
    since there's no HTTP control surface for those today (see "Image
    paste flow" above).
+5. **Does Ghostty actually render an OSC 8 hyperlink emitted directly by
+   our own TUI?** The ratatui mechanism is confirmed real and tested (see
+   "Status line hyperlinks" above); what's unverified is the terminal end,
+   since this exploration has no macOS/Ghostty access to check.
 
 ## Running the prototypes
 
