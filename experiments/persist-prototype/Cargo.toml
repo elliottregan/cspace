@@ -1,0 +1,11 @@
+[package]
+name = "persist-prototype"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+nix = { version = "0.31.3", features = ["process", "signal", "fs"] }
+portable-pty = "0.9.0"
+ratatui = "0.30.2"
+tui-term = "0.3.4"
+vt100 = "0.16.2"
