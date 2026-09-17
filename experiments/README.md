@@ -69,6 +69,7 @@ Ctrl+b then x       kill/dismiss focused pane (explicitly kills the child)
 Ctrl+b then c       cycle focused pane's status override (none → blocked → done → none)
 Ctrl+b then u / d   scroll focused pane's scrollback up / down
 Ctrl+b then g       jump focused pane back to live output
+Ctrl+b then m       toggle single-pane / grid (all panes at once)
 Ctrl+b then q       quit
 anything else       forwarded to the focused pane's shell
 ```
@@ -88,6 +89,7 @@ Gaps closed so far (see git log for detail):
   `vt100::Cell`'s bold/italic/underline/dim/inverse and 256-color/truecolor
   straight into ratatui `Style`, verified by reading its actual conversion
   code, not assumed
+- Multi-pane grid display (`Ctrl+b m`) — see "Multi-pane grid" below
 
 ### `rmux-prototype/` — evaluated, not chosen
 
@@ -125,7 +127,7 @@ commit to building next:
 | Feature | Blocked? | Why |
 |---|---|---|
 | Copy/selection out of a pane | **No** — low risk, ~bounded | `vt100::Cell::contents()` already gives plain text per cell (proven by our own test helper); mouse drag events are standard crossterm (`EnableMouseCapture`), just not turned on yet; clipboard write is solved either via `arboard` (direct OS clipboard access — sufficient since the multiplexer runs locally on the user's own Mac) or OSC 52 (the tmux/neovim-style escape-sequence fallback for remote scenarios) |
-| Multi-pane simultaneous display | **No** — rendering is already proven, the size is in the layout model | `PseudoTerminal` already renders into an arbitrary sub-`Rect` (we already do this for the single focused pane); showing N panes is mechanically the same call N times into N smaller rects. What's actually undecided is the **arrangement model**: a fixed 2-up/4-up grid is cheap; tmux-style arbitrary recursive splits with resizable dividers is a real data structure + interaction model, and nothing in the ratatui ecosystem gives you resizable splits for free (confirmed via the widget survey) |
+| Multi-pane simultaneous display | **No longer blocked — built, tested, in `mux-prototype`** | `Ctrl+b m` toggles single-pane / an auto-computed grid showing every pane at once, each resized to its own cell (not a shared size). Confirms the rendering side was never the risk — the same `PseudoTerminal`-into-a-sub-`Rect` call from the single-pane path, just N times. A fixed grid, not tmux-style recursive resizable splits: no split-tree data structure, no draggable dividers (still no free ecosystem widget for that, confirmed via the widget survey) — see "Multi-pane grid" below |
 | Session persistence / detach-reattach | **No longer blocked — prototyped and tested** | Was flagged as the real structural gap (panes are child processes of the multiplexer, so closing the window killed them). `persist-prototype/` proves the cheap fix: our own binary self-daemonizes (fork + `setsid` + ignore `SIGHUP`) instead of adopting rmux's heavyweight architecture — see "Persistence: proven" below |
 | Image paste (clipboard → sandbox) | Not started | Needs: browser/OS clipboard paste event → write bytes somewhere the target process can read → hand the agent a path or inline it. See "Image paste flow" below for the shape |
 | Real cspace integration | Not started | Both prototypes spawn a local `$SHELL`/session as a stand-in for `container exec -it <sandbox> claude`; neither talks to the registry, DNS, or `events.ndjson` yet |
@@ -253,6 +255,49 @@ in the command it sent needs this.
   `mux-prototype`'s sidebar/tabs/multi-pane UX on top of a socket instead
   of local PTYs is straightforward once this is the accepted direction.
 
+## Multi-pane grid: proven, in `mux-prototype`
+
+The other item flagged as "not actually blocked, just undecided" — now
+built. `Ctrl+b m` toggles between the original single-focused-pane view
+and a grid showing every pane simultaneously.
+
+**Confirms what was already argued**: the rendering call was never the
+risk. `draw_grid_panes` (`src/main.rs`) is the same `PseudoTerminal`
+widget rendered into an arbitrary sub-`Rect` that the single-pane path
+already proved out — just called once per pane instead of once total,
+into N smaller rects instead of one full-area rect. No new rendering
+capability was needed.
+
+**What's actually new**: two pure functions, `grid_dims(n)` (picks a
+balanced `rows x cols` — `cols` is the smallest value with
+`cols*cols >= n`) and `grid_rects(area, n)` (splits an area into exactly
+`n` rects in row-major order, stretching a partially-filled last row
+across the full width instead of leaving empty cells). Both are
+deterministic layout math with no PTY/terminal dependency, so they're
+covered by real unit tests — `grid_rects_covers_every_pane_without_overlap_or_overflow`
+checks exact rect count, in-bounds, and no pairwise overlap across
+awkward pane counts (1, primes, a perfect square); `grid_dims_is_at_least_as_big_as_pane_count`
+checks the capacity invariant holds for 1 through 20 panes.
+
+**The bookkeeping this exposed, as expected**: each visible pane now
+resizes to its own grid cell (`draw_grid_panes` calls `pane.resize(...)`
+per cell) instead of the shared `content_size` the single-pane path uses.
+No extra machinery was needed to keep these consistent when toggling
+modes or resizing the terminal — `Pane::resize` already no-ops when the
+size is unchanged, so whichever mode's draw function runs next simply
+corrects any pane that's now the wrong size, including the one harmless
+redundant resize call when a terminal-resize event fires while in grid
+mode (the event handler still calls the single-pane `resize_all_panes`
+first; the very next `draw_grid_panes` call immediately re-corrects each
+pane to its real cell size).
+
+**Deliberately still a fixed grid, not tmux-style splits** — matching
+what was scoped from the start: no split tree, no resizable dividers, no
+mouse. A grid cell that shrinks below ~3 rows/cols just stops resizing
+(the existing `rows == 0 || cols == 0` guard in `Pane::resize`) rather
+than rendering garbage, an acceptable rough edge for a lot of panes in a
+small terminal.
+
 ## Rough feature/layout outline (draft — not a spec)
 
 Sketch of where this is headed, roughly matching what's already built plus
@@ -320,8 +365,11 @@ Not yet decided, worth resolving before investing further:
    self-daemonizing path works (see "Persistence: proven" above). Open
    sub-question: fold this into `mux-prototype` directly, or keep them
    separate until snapshot-on-reattach and multi-pane are also ported?
-2. **Multi-pane arrangement model**: fixed grid (cheap) vs. tmux-style
-   recursive resizable splits (real feature, no free ecosystem widget)?
+2. ~~**Multi-pane arrangement model**~~ — resolved as a fixed grid, not
+   tmux-style recursive splits (see "Multi-pane grid" above). Open
+   sub-question: is a fixed grid good enough long-term, or does resizable
+   splits become worth its cost (no free ecosystem widget, hand-rolled
+   split-tree + divider dragging) once this is used daily?
 3. **Status source**: for headless (`cspace send`-style) sessions, tail
    `events.ndjson`/poll `/status` for a real signal, same shape as the
    activity-derived working/idle already built. For interactive attach
@@ -356,9 +404,10 @@ cargo run -- attach sandbox-1                   # spawns the daemon automaticall
 ```
 
 All three have `cargo test` coverage for their core claims:
-`mux-prototype` covers spawn/write/parse plus the activity-derived status
-and exited-pane-visibility behavior added later; `rmux-prototype` covers
-spawn/write/snapshot against a real daemon; `persist-prototype` covers
-daemon survival across `SIGHUP` and — the actual persistence claim — a
-pane surviving a client disconnect and a different client reattaching to
-the same still-running shell.
+`mux-prototype` covers spawn/write/parse, the activity-derived status and
+exited-pane-visibility behavior, and the grid layout math (exact rect
+count, in-bounds, no overlap, capacity, across awkward pane counts);
+`rmux-prototype` covers spawn/write/snapshot against a real daemon;
+`persist-prototype` covers daemon survival across `SIGHUP` and — the
+actual persistence claim — a pane surviving a client disconnect and a
+different client reattaching to the same still-running shell.

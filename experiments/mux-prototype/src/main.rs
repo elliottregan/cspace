@@ -17,6 +17,7 @@
 //!                       activity, not toggled — see `effective_status`.
 //!   Ctrl+b then u / d   scroll the focused pane's scrollback up / down
 //!   Ctrl+b then g       jump the focused pane back to live output
+//!   Ctrl+b then m       toggle single-pane / grid (all panes at once)
 //!   Ctrl+b then q       quit
 //!   anything else       forwarded to the focused pane's shell
 
@@ -256,11 +257,22 @@ impl Pane {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LayoutMode {
+    /// The focused pane fills the whole content area; the mechanism
+    /// proven first (a single `PseudoTerminal` into a sub-`Rect`).
+    Single,
+    /// Every pane renders simultaneously in an auto-computed grid. Each
+    /// visible pane is resized to its own cell, not a shared size.
+    Grid,
+}
+
 struct App {
     panes: Vec<Pane>,
     focused: usize,
     awaiting_leader: bool,
     next_id: usize,
+    layout_mode: LayoutMode,
     /// Last computed (rows, cols) available for pane content, kept in
     /// sync by resize_all_panes so newly spawned panes start at the
     /// right size instead of a hardcoded default.
@@ -276,6 +288,7 @@ impl App {
             focused: 0,
             awaiting_leader: false,
             next_id: 2,
+            layout_mode: LayoutMode::Single,
             content_size: DEFAULT_PANE_SIZE,
             last_error: None,
         })
@@ -345,7 +358,10 @@ impl App {
             .split(root[1]);
 
         self.draw_tabs(frame, main[0]);
-        self.draw_focused_pane(frame, main[1]);
+        match self.layout_mode {
+            LayoutMode::Single => self.draw_focused_pane(frame, main[1]),
+            LayoutMode::Grid => self.draw_grid_panes(frame, main[1]),
+        }
         self.draw_footer(frame, main[2]);
     }
 
@@ -401,6 +417,32 @@ impl App {
         }
     }
 
+    /// Renders every pane at once in an auto-computed grid, each resized
+    /// to its own cell (not the shared `content_size` single-pane logic
+    /// uses). The focused pane's border is bolded so it's clear which one
+    /// receives input; all panes are live simultaneously, not just shown.
+    fn draw_grid_panes(&mut self, frame: &mut Frame, area: Rect) {
+        let rects = grid_rects(area, self.panes.len());
+        let focused = self.focused;
+        for (i, (pane, rect)) in self.panes.iter_mut().zip(rects).enumerate() {
+            let inner_rows = rect.height.saturating_sub(2);
+            let inner_cols = rect.width.saturating_sub(2);
+            pane.resize(inner_rows, inner_cols);
+
+            let status = pane.effective_status();
+            let parser = pane.parser.lock().unwrap();
+            let screen = parser.screen();
+            let title = format!(" {} — {} ", pane.title, status.label());
+            let mut border_style = Style::default().fg(status.color());
+            if i == focused {
+                border_style = border_style.add_modifier(Modifier::BOLD);
+            }
+            let widget = PseudoTerminal::new(screen)
+                .block(Block::default().title(title).borders(Borders::ALL).border_style(border_style));
+            frame.render_widget(widget, rect);
+        }
+    }
+
     fn draw_footer(&self, frame: &mut Frame, area: Rect) {
         if let Some(err) = &self.last_error {
             let footer = Paragraph::new(Line::from(Span::styled(
@@ -452,6 +494,44 @@ fn pane_content_rect(full: Rect) -> Rect {
         .constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(1)])
         .split(root[1]);
     main[1]
+}
+
+/// Computes a balanced (rows, cols) grid for `n` panes: `cols` is the
+/// smallest value with `cols * cols >= n`, `rows` is however many are
+/// then needed to fit `n` panes at that width. `(0, 0)` for `n == 0`.
+fn grid_dims(n: usize) -> (usize, usize) {
+    if n == 0 {
+        return (0, 0);
+    }
+    let cols = (n as f64).sqrt().ceil() as usize;
+    let rows = n.div_ceil(cols);
+    (rows, cols)
+}
+
+/// Splits `area` into exactly `n` rects in row-major order. A partially
+/// filled last row stretches across the full width among however many
+/// panes actually land there, rather than leaving empty grid cells.
+fn grid_rects(area: Rect, n: usize) -> Vec<Rect> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let (rows, cols) = grid_dims(n);
+    let row_constraints = vec![Constraint::Ratio(1, rows as u32); rows];
+    let row_areas = Layout::default().direction(Direction::Vertical).constraints(row_constraints).split(area);
+
+    let mut rects = Vec::with_capacity(n);
+    let mut remaining = n;
+    for row_area in row_areas.iter() {
+        let cols_this_row = remaining.min(cols);
+        if cols_this_row == 0 {
+            break;
+        }
+        let col_constraints = vec![Constraint::Ratio(1, cols_this_row as u32); cols_this_row];
+        let col_areas = Layout::default().direction(Direction::Horizontal).constraints(col_constraints).split(*row_area);
+        rects.extend(col_areas.iter().copied());
+        remaining -= cols_this_row;
+    }
+    rects
 }
 
 fn run(mut terminal: DefaultTerminal) -> io::Result<()> {
@@ -511,6 +591,12 @@ fn run(mut terminal: DefaultTerminal) -> io::Result<()> {
                                 p.jump_to_live();
                             }
                         }
+                        KeyCode::Char('m') => {
+                            app.layout_mode = match app.layout_mode {
+                                LayoutMode::Single => LayoutMode::Grid,
+                                LayoutMode::Grid => LayoutMode::Single,
+                            };
+                        }
                         KeyCode::Char('q') => break,
                         _ => {}
                     }
@@ -538,6 +624,21 @@ fn run(mut terminal: DefaultTerminal) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+fn main() -> io::Result<()> {
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+
+    let terminal = ratatui::init();
+    let result = run(terminal);
+
+    ratatui::restore();
+    execute!(io::stdout(), LeaveAlternateScreen, DisableBracketedPaste)?;
+    disable_raw_mode()?;
+
+    result
 }
 
 #[cfg(test)]
@@ -606,6 +707,51 @@ mod tests {
         );
     }
 
+    /// The multi-pane feature's actual risk was never "can ratatui render
+    /// into a sub-Rect" (already proven by the single-pane path) — it's
+    /// getting the grid math right: exactly n rects, none overlapping,
+    /// all inside the given area, for a range of pane counts including
+    /// the awkward ones (1, primes, a perfect square).
+    #[test]
+    fn grid_rects_covers_every_pane_without_overlap_or_overflow() {
+        let area = Rect::new(0, 0, 120, 40);
+        for n in [1usize, 2, 3, 4, 5, 7, 9, 16] {
+            let rects = grid_rects(area, n);
+            assert_eq!(rects.len(), n, "expected {n} rects for {n} panes");
+
+            for r in &rects {
+                assert!(
+                    r.x >= area.x && r.y >= area.y && r.right() <= area.right() && r.bottom() <= area.bottom(),
+                    "rect {r:?} escapes the {area:?} bounds for n={n}"
+                );
+            }
+
+            for i in 0..rects.len() {
+                for j in (i + 1)..rects.len() {
+                    assert!(
+                        !rects_overlap(rects[i], rects[j]),
+                        "rects {i} and {j} overlap for n={n}: {:?} vs {:?}",
+                        rects[i],
+                        rects[j]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn grid_dims_is_at_least_as_big_as_pane_count() {
+        for n in 1usize..=20 {
+            let (rows, cols) = grid_dims(n);
+            assert!(rows * cols >= n, "grid {rows}x{cols} too small for {n} panes");
+        }
+        assert_eq!(grid_dims(0), (0, 0));
+    }
+
+    fn rects_overlap(a: Rect, b: Rect) -> bool {
+        a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom()
+    }
+
     fn screen_contains(parser: &vt100::Parser, needle: &str) -> bool {
         let screen = parser.screen();
         let (rows, cols) = screen.size();
@@ -617,7 +763,7 @@ mod tests {
                     if contents.is_empty() {
                         line.push(' ');
                     } else {
-                        line.push_str(&contents);
+                        line.push_str(contents);
                     }
                 }
             }
@@ -627,19 +773,4 @@ mod tests {
         }
         false
     }
-}
-
-fn main() -> io::Result<()> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
-
-    let terminal = ratatui::init();
-    let result = run(terminal);
-
-    ratatui::restore();
-    execute!(io::stdout(), LeaveAlternateScreen, DisableBracketedPaste)?;
-    disable_raw_mode()?;
-
-    result
 }
