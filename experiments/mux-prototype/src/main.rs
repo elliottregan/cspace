@@ -10,15 +10,20 @@
 //! Controls:
 //!   Ctrl+b then n / p   next / previous pane
 //!   Ctrl+b then t       new pane (spawns another shell)
-//!   Ctrl+b then x       kill focused pane
-//!   Ctrl+b then c       cycle focused pane's demo status (stand-in for
-//!                       real status derived from cspace's events.ndjson)
+//!   Ctrl+b then x       kill/dismiss focused pane
+//!   Ctrl+b then c       cycle focused pane's status override
+//!                       (none → blocked → done → none); "working"/"idle"
+//!                       are derived automatically from real PTY output
+//!                       activity, not toggled — see `effective_status`.
+//!   Ctrl+b then u / d   scroll the focused pane's scrollback up / down
+//!   Ctrl+b then g       jump the focused pane back to live output
 //!   Ctrl+b then q       quit
 //!   anything else       forwarded to the focused pane's shell
 
 use std::io::{self, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use ratatui::crossterm::event::{
@@ -31,34 +36,36 @@ use ratatui::crossterm::terminal::{
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Tabs};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs};
 use ratatui::{DefaultTerminal, Frame};
 use tui_term::widget::PseudoTerminal;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// How many scrollback lines each pane's vt100 parser retains.
+const SCROLLBACK_LINES: usize = 10_000;
+/// How many lines a single leader+u/d scroll step moves.
+const SCROLL_STEP: usize = 10;
+/// A pane counts as "working" if it produced output more recently than this.
+const IDLE_THRESHOLD: Duration = Duration::from_secs(2);
+/// Fallback pane size before the first real terminal size is known.
+const DEFAULT_PANE_SIZE: (u16, u16) = (24, 80);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PaneStatus {
     Working,
     Idle,
     Blocked,
     Done,
+    Exited,
 }
 
 impl PaneStatus {
-    fn next(self) -> Self {
-        match self {
-            PaneStatus::Working => PaneStatus::Blocked,
-            PaneStatus::Blocked => PaneStatus::Idle,
-            PaneStatus::Idle => PaneStatus::Done,
-            PaneStatus::Done => PaneStatus::Working,
-        }
-    }
-
     fn glyph(self) -> &'static str {
         match self {
             PaneStatus::Working => "●",
             PaneStatus::Idle => "○",
             PaneStatus::Blocked => "▲",
             PaneStatus::Done => "✓",
+            PaneStatus::Exited => "✕",
         }
     }
 
@@ -68,6 +75,36 @@ impl PaneStatus {
             PaneStatus::Idle => Color::DarkGray,
             PaneStatus::Blocked => Color::Yellow,
             PaneStatus::Done => Color::Blue,
+            PaneStatus::Exited => Color::Red,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            PaneStatus::Working => "working",
+            PaneStatus::Idle => "idle",
+            PaneStatus::Blocked => "blocked",
+            PaneStatus::Done => "done",
+            PaneStatus::Exited => "exited",
+        }
+    }
+}
+
+/// Manual status override cycle, independent of the automatic
+/// working/idle signal derived from real output activity.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StatusOverride {
+    None,
+    Blocked,
+    Done,
+}
+
+impl StatusOverride {
+    fn next(self) -> Self {
+        match self {
+            StatusOverride::None => StatusOverride::Blocked,
+            StatusOverride::Blocked => StatusOverride::Done,
+            StatusOverride::Done => StatusOverride::None,
         }
     }
 }
@@ -78,7 +115,14 @@ impl PaneStatus {
 /// the raw bytes itself.
 struct Pane {
     title: String,
-    status: PaneStatus,
+    status_override: StatusOverride,
+    /// Set by the reader thread on every non-empty read; read by the UI
+    /// thread to derive a real (not simulated) working/idle signal.
+    last_activity: Arc<Mutex<Instant>>,
+    /// Set by the reader thread when it hits EOF (child exited). The pane
+    /// stays visible with an "exited" status until explicitly dismissed
+    /// (Ctrl+b x) rather than vanishing the moment the process dies.
+    exited: Arc<AtomicBool>,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     parser: Arc<Mutex<vt100::Parser>>,
@@ -99,10 +143,7 @@ fn spawn_pane(title: impl Into<String>, rows: u16, cols: u16) -> io::Result<Pane
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
     let cmd = CommandBuilder::new(shell);
-    let child = pair
-        .slave
-        .spawn_command(cmd)
-        .map_err(io::Error::other)?;
+    let child = pair.slave.spawn_command(cmd).map_err(io::Error::other)?;
     // The slave end belongs to the child now; drop our copy so the
     // master's reader sees EOF when the child actually exits.
     drop(pair.slave);
@@ -113,24 +154,34 @@ fn spawn_pane(title: impl Into<String>, rows: u16, cols: u16) -> io::Result<Pane
         .map_err(io::Error::other)?;
     let writer = pair.master.take_writer().map_err(io::Error::other)?;
 
-    let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 0)));
+    let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, SCROLLBACK_LINES)));
+    let last_activity = Arc::new(Mutex::new(Instant::now()));
+    let exited = Arc::new(AtomicBool::new(false));
 
     let reader_parser = Arc::clone(&parser);
+    let reader_activity = Arc::clone(&last_activity);
+    let reader_exited = Arc::clone(&exited);
     std::thread::spawn(move || {
         let mut reader = reader;
         let mut buf = [0u8; 8192];
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break, // child exited
-                Ok(n) => reader_parser.lock().unwrap().process(&buf[..n]),
+                Ok(n) => {
+                    reader_parser.lock().unwrap().process(&buf[..n]);
+                    *reader_activity.lock().unwrap() = Instant::now();
+                }
                 Err(_) => break,
             }
         }
+        reader_exited.store(true, Ordering::Relaxed);
     });
 
     Ok(Pane {
         title: title.into(),
-        status: PaneStatus::Working,
+        status_override: StatusOverride::None,
+        last_activity,
+        exited,
         master: pair.master,
         writer,
         parser,
@@ -155,11 +206,53 @@ impl Pane {
     }
 
     fn write_bytes(&mut self, bytes: &[u8]) {
+        if self.exited.load(Ordering::Relaxed) {
+            return;
+        }
         let _ = self.writer.write_all(bytes);
     }
 
-    fn is_alive(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
+    /// True once the reader thread has observed EOF. This is the
+    /// authoritative "did the process die" signal; `Child::try_wait`
+    /// alone can race the reader thread draining the last bytes.
+    fn has_exited(&self) -> bool {
+        self.exited.load(Ordering::Relaxed)
+    }
+
+    fn scroll(&mut self, delta: isize) {
+        let mut parser = self.parser.lock().unwrap();
+        let current = parser.screen().scrollback();
+        let next = if delta.is_negative() {
+            current.saturating_sub(delta.unsigned_abs())
+        } else {
+            current.saturating_add(delta as usize)
+        };
+        parser.screen_mut().set_scrollback(next);
+    }
+
+    fn jump_to_live(&mut self) {
+        self.parser.lock().unwrap().screen_mut().set_scrollback(0);
+    }
+
+    /// The status actually shown: an exited pane always shows as exited;
+    /// otherwise a manual override (blocked/done) sticks, and absent
+    /// that, working/idle is derived from real recent output activity.
+    fn effective_status(&self) -> PaneStatus {
+        if self.has_exited() {
+            return PaneStatus::Exited;
+        }
+        match self.status_override {
+            StatusOverride::Blocked => PaneStatus::Blocked,
+            StatusOverride::Done => PaneStatus::Done,
+            StatusOverride::None => {
+                let idle_for = self.last_activity.lock().unwrap().elapsed();
+                if idle_for < IDLE_THRESHOLD {
+                    PaneStatus::Working
+                } else {
+                    PaneStatus::Idle
+                }
+            }
+        }
     }
 }
 
@@ -168,24 +261,38 @@ struct App {
     focused: usize,
     awaiting_leader: bool,
     next_id: usize,
+    /// Last computed (rows, cols) available for pane content, kept in
+    /// sync by resize_all_panes so newly spawned panes start at the
+    /// right size instead of a hardcoded default.
+    content_size: (u16, u16),
+    last_error: Option<String>,
 }
 
 impl App {
     fn new() -> io::Result<Self> {
-        let first = spawn_pane("sandbox-1", 24, 80)?;
+        let first = spawn_pane("sandbox-1", DEFAULT_PANE_SIZE.0, DEFAULT_PANE_SIZE.1)?;
         Ok(Self {
             panes: vec![first],
             focused: 0,
             awaiting_leader: false,
             next_id: 2,
+            content_size: DEFAULT_PANE_SIZE,
+            last_error: None,
         })
     }
 
     fn new_pane(&mut self) {
-        if let Ok(p) = spawn_pane(format!("sandbox-{}", self.next_id), 24, 80) {
-            self.next_id += 1;
-            self.panes.push(p);
-            self.focused = self.panes.len() - 1;
+        let (rows, cols) = self.content_size;
+        match spawn_pane(format!("sandbox-{}", self.next_id), rows, cols) {
+            Ok(p) => {
+                self.next_id += 1;
+                self.panes.push(p);
+                self.focused = self.panes.len() - 1;
+                self.last_error = None;
+            }
+            Err(e) => {
+                self.last_error = Some(format!("spawn failed: {e}"));
+            }
         }
     }
 
@@ -193,7 +300,11 @@ impl App {
         if self.panes.len() <= 1 {
             return; // keep at least one pane in this prototype
         }
-        self.panes.remove(self.focused);
+        let mut pane = self.panes.remove(self.focused);
+        // Explicit kill rather than relying on Drop: an exited pane's
+        // child is already gone, so this only matters for dismissing a
+        // still-running one, but it's the honest way to end it either way.
+        let _ = pane.child.kill();
         if self.focused >= self.panes.len() {
             self.focused = self.panes.len() - 1;
         }
@@ -211,13 +322,12 @@ impl App {
         }
     }
 
-    fn reap_dead(&mut self) {
-        self.panes.retain_mut(|p| p.is_alive());
-        if self.panes.is_empty() {
-            return;
-        }
-        if self.focused >= self.panes.len() {
-            self.focused = self.panes.len() - 1;
+    /// Resizes every pane (not just the focused one) so switching focus
+    /// after a window resize never shows stale-size content.
+    fn resize_all_panes(&mut self, rows: u16, cols: u16) {
+        self.content_size = (rows, cols);
+        for pane in &mut self.panes {
+            pane.resize(rows, cols);
         }
     }
 
@@ -231,11 +341,12 @@ impl App {
 
         let main = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(1)])
+            .constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(1)])
             .split(root[1]);
 
         self.draw_tabs(frame, main[0]);
         self.draw_focused_pane(frame, main[1]);
+        self.draw_footer(frame, main[2]);
     }
 
     fn draw_sidebar(&self, frame: &mut Frame, area: Rect) {
@@ -243,8 +354,9 @@ impl App {
             .panes
             .iter()
             .map(|p| {
+                let status = p.effective_status();
                 let line = Line::from(vec![
-                    Span::styled(format!("{} ", p.status.glyph()), Style::default().fg(p.status.color())),
+                    Span::styled(format!("{} ", status.glyph()), Style::default().fg(status.color())),
                     Span::raw(p.title.clone()),
                 ]);
                 ListItem::new(line)
@@ -276,19 +388,27 @@ impl App {
             pane.resize(inner_rows, inner_cols);
             let parser = pane.parser.lock().unwrap();
             let screen = parser.screen();
-            let title = format!(" {} — {:?} (Ctrl+b then ? for help) ", pane.title, status_label(pane.status));
-            let widget = PseudoTerminal::new(screen).block(Block::default().title(title).borders(Borders::ALL));
+            let status = pane.effective_status();
+            let scroll_note = if screen.scrollback() > 0 {
+                format!(" [scrollback -{}]", screen.scrollback())
+            } else {
+                String::new()
+            };
+            let title = format!(" {} — {}{} ", pane.title, status.label(), scroll_note);
+            let widget = PseudoTerminal::new(screen)
+                .block(Block::default().title(title).borders(Borders::ALL).border_style(Style::default().fg(status.color())));
             frame.render_widget(widget, area);
         }
     }
-}
 
-fn status_label(s: PaneStatus) -> &'static str {
-    match s {
-        PaneStatus::Working => "working",
-        PaneStatus::Idle => "idle",
-        PaneStatus::Blocked => "blocked",
-        PaneStatus::Done => "done",
+    fn draw_footer(&self, frame: &mut Frame, area: Rect) {
+        if let Some(err) = &self.last_error {
+            let footer = Paragraph::new(Line::from(Span::styled(
+                format!(" {err}"),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )));
+            frame.render_widget(footer, area);
+        }
     }
 }
 
@@ -296,12 +416,13 @@ fn status_label(s: PaneStatus) -> &'static str {
 /// expects on stdin. Deliberately minimal — enough to drive a shell.
 fn key_to_bytes(code: KeyCode, mods: KeyModifiers) -> Option<Vec<u8>> {
     if mods.contains(KeyModifiers::CONTROL)
-        && let KeyCode::Char(c) = code {
-            let c = c.to_ascii_lowercase();
-            if c.is_ascii_lowercase() {
-                return Some(vec![c as u8 - b'a' + 1]);
-            }
+        && let KeyCode::Char(c) = code
+    {
+        let c = c.to_ascii_lowercase();
+        if c.is_ascii_lowercase() {
+            return Some(vec![c as u8 - b'a' + 1]);
         }
+    }
     match code {
         KeyCode::Char(c) => Some(c.to_string().into_bytes()),
         KeyCode::Enter => Some(b"\r".to_vec()),
@@ -318,11 +439,35 @@ fn key_to_bytes(code: KeyCode, mods: KeyModifiers) -> Option<Vec<u8>> {
     }
 }
 
+/// Computes the pane content rect for a given full-terminal size, mirroring
+/// `App::draw`'s layout. Used outside the draw loop (on resize events) so
+/// every pane — not just the focused one — can be resized immediately.
+fn pane_content_rect(full: Rect) -> Rect {
+    let root = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(24), Constraint::Min(1)])
+        .split(full);
+    let main = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(1)])
+        .split(root[1]);
+    main[1]
+}
+
 fn run(mut terminal: DefaultTerminal) -> io::Result<()> {
     let mut app = App::new()?;
 
+    // Size every pane to the real terminal before the first draw, instead
+    // of leaving them at DEFAULT_PANE_SIZE until something triggers a
+    // resize.
+    let size = terminal.size()?;
+    let area = pane_content_rect(Rect::new(0, 0, size.width, size.height));
+    app.resize_all_panes(area.height.saturating_sub(2), area.width.saturating_sub(2));
+
     loop {
-        app.reap_dead();
+        // Exited panes stay visible (marked via effective_status) until
+        // the user explicitly dismisses them with Ctrl+b x; they are
+        // never auto-removed here.
         if app.panes.is_empty() {
             break;
         }
@@ -334,6 +479,10 @@ fn run(mut terminal: DefaultTerminal) -> io::Result<()> {
         }
 
         match event::read()? {
+            Event::Resize(width, height) => {
+                let area = pane_content_rect(Rect::new(0, 0, width, height));
+                app.resize_all_panes(area.height.saturating_sub(2), area.width.saturating_sub(2));
+            }
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 if app.awaiting_leader {
                     app.awaiting_leader = false;
@@ -344,7 +493,22 @@ fn run(mut terminal: DefaultTerminal) -> io::Result<()> {
                         KeyCode::Char('x') => app.kill_focused(),
                         KeyCode::Char('c') => {
                             if let Some(p) = app.panes.get_mut(app.focused) {
-                                p.status = p.status.next();
+                                p.status_override = p.status_override.next();
+                            }
+                        }
+                        KeyCode::Char('u') => {
+                            if let Some(p) = app.panes.get_mut(app.focused) {
+                                p.scroll(SCROLL_STEP as isize);
+                            }
+                        }
+                        KeyCode::Char('d') => {
+                            if let Some(p) = app.panes.get_mut(app.focused) {
+                                p.scroll(-(SCROLL_STEP as isize));
+                            }
+                        }
+                        KeyCode::Char('g') => {
+                            if let Some(p) = app.panes.get_mut(app.focused) {
+                                p.jump_to_live();
                             }
                         }
                         KeyCode::Char('q') => break,
@@ -359,9 +523,10 @@ fn run(mut terminal: DefaultTerminal) -> io::Result<()> {
                 }
 
                 if let Some(bytes) = key_to_bytes(key.code, key.modifiers)
-                    && let Some(pane) = app.panes.get_mut(app.focused) {
-                        pane.write_bytes(&bytes);
-                    }
+                    && let Some(pane) = app.panes.get_mut(app.focused)
+                {
+                    pane.write_bytes(&bytes);
+                }
             }
             Event::Paste(text) => {
                 if let Some(pane) = app.panes.get_mut(app.focused) {
@@ -399,6 +564,46 @@ mod tests {
             }
         }
         assert!(found, "expected pane output to contain the echoed marker");
+    }
+
+    /// Covers the activity-derived status gap closed in this pass: a
+    /// freshly-active pane reads as Working, and after it goes quiet
+    /// past IDLE_THRESHOLD it reads as Idle without any manual toggle.
+    #[test]
+    fn effective_status_tracks_real_activity() {
+        let pane = spawn_pane("activity-test", 24, 80).expect("spawn pane");
+        assert_eq!(pane.effective_status(), PaneStatus::Working);
+
+        *pane.last_activity.lock().unwrap() = Instant::now() - IDLE_THRESHOLD - Duration::from_millis(1);
+        assert_eq!(pane.effective_status(), PaneStatus::Idle);
+    }
+
+    /// Covers the "exited pane vanishes silently" gap: a dead child's
+    /// pane must report Exited via has_exited/effective_status, and that
+    /// must win over any status override, instead of being reaped
+    /// invisibly.
+    #[test]
+    fn exited_pane_is_visible_not_silently_removed() {
+        let mut pane = spawn_pane("exit-test", 24, 80).expect("spawn pane");
+        pane.write_bytes(b"exit\n");
+
+        let mut observed_exit = false;
+        for _ in 0..50 {
+            std::thread::sleep(Duration::from_millis(100));
+            if pane.has_exited() {
+                observed_exit = true;
+                break;
+            }
+        }
+        assert!(observed_exit, "expected reader thread to observe EOF after shell exit");
+        assert_eq!(pane.effective_status(), PaneStatus::Exited);
+
+        pane.status_override = StatusOverride::Blocked;
+        assert_eq!(
+            pane.effective_status(),
+            PaneStatus::Exited,
+            "exited must win over a manual override"
+        );
     }
 
     fn screen_contains(parser: &vt100::Parser, needle: &str) -> bool {
