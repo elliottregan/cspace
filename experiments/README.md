@@ -303,6 +303,92 @@ mouse. A grid cell that shrinks below ~3 rows/cols just stops resizing
 than rendering garbage, an acceptable rough edge for a lot of panes in a
 small terminal.
 
+## Remote access: SSH passthrough proven, browser rendering is a different path
+
+Prompted by "how hard would it be to target a remote instance instead of
+the container running on the local computer" — split into two genuinely
+different questions with very different costs.
+
+**(A) Same sandbox, viewed/typed from a different machine — cheap,
+proven.** `persist-prototype`'s client is just a normal program reading
+and writing a real TTY; nothing about it assumes the terminal is local.
+Proved this concretely rather than just asserting it: stood up a real
+`sshd` + keypair in this exploration's environment, started the daemon,
+then drove the *actual* interactive `attach` client through
+`ssh -tt localhost` by piping keystrokes into SSH's own stdin (which SSH
+forwards to the remote PTY exactly as if typed) and capturing the
+rendered output SSH streamed back. The round trip held end to end: local
+keystrokes → SSH → remote PTY → the real client → the Unix socket → the
+daemon → the shell → vt100/ratatui rendering → back out through SSH →
+captured locally, landing on a real shell PID (`SSH_PROOF=1174`) followed
+by a live cursor — not a mock.
+
+Two things surfaced along the way, both confirming existing findings
+rather than new problems:
+- **The remote PTY's window size is whatever the local side's real
+  terminal propagates** — this exploration's own sandboxed environment
+  has no controlling terminal, so the first attempt negotiated a `0x0`
+  pty (confirmed directly via `stty size` over the same SSH hop) and
+  nothing ever rendered. Forcing an explicit size (`stty rows 30 cols
+  100`) before launching the client — what a real terminal app does
+  automatically — fixed it immediately. Not a flaw in the SSH path or
+  the client; purely an artifact of testing from an environment with no
+  real terminal of its own.
+- **`TERM` forwarding over SSH degraded exactly the way the main repo's
+  own `cmd_attach.go` fix and the Ghostty-statusline finding both
+  describe** — the remote session saw a plain `TERM=linux`, not
+  whatever richer value a real terminal app would carry. Any real
+  "attach to a remote sandbox over SSH" feature would need the same
+  explicit `TERM`/`COLORTERM` forcing cspace already applies for local
+  `container exec`, just applied to the SSH invocation instead.
+
+A native TCP transport (instead of piggybacking on SSH) is a small
+protocol change — `protocol.rs` already works over anything implementing
+`Read`+`Write` — but reopens the `QUALITY_FINDINGS.md` §7 security gaps
+far more seriously: "no auth, reachable from other local users" becomes
+"no auth, reachable from the network" unless real authentication and
+network confinement are added.
+
+**(B) The sandbox itself hosted on a different machine** — a much bigger,
+separate question, and blocked by something the Apple-Container-coupling
+research already found: Apple Container has no remote mode at all — it
+drives Apple's own local Virtualization.framework hypervisor directly,
+with nothing like Docker's `DOCKER_HOST`/remote-context support. This
+isn't a gap in cspace to fix; it falls entirely out of the Docker
+substrate work already scoped separately, since Docker's remote-context
+support (`ssh://`/`tcp://` daemons) already exists and would come along
+with adopting it, not as new work of its own.
+
+**Browser-rendered terminals are not the same path as either of the
+above**, and not something SSH passthrough gets you toward. A browser
+can't open a raw Unix/TCP socket or an SSH connection — only
+HTTP/WebSocket — so a browser terminal always needs a server-side bridge
+translating PTY bytes into WebSocket messages, and something has to
+actually draw characters in the DOM/canvas, since there's no real
+terminal app in the loop the way there is for SSH. That drawing is either:
+- **A JS terminal emulator** (almost always `xterm.js`) fed over
+  WebSocket — what most existing "web terminal" tools actually do. The
+  backend can be Rust; the rendering itself is JavaScript, not Rust.
+  (Correcting an earlier framing in this doc: t3code's browser terminal,
+  `native/libghostty-vt`, is **Zig**, not Rust — Ghostty itself is
+  written in Zig. Not an example of a Rust-rendered browser terminal
+  either, despite looking similar.)
+- **An actual Rust-compiled-to-WASM terminal core running client-side**
+  — the genuine case. The concrete real example is
+  [ratzilla](https://github.com/orhun/ratzilla), which compiles a
+  `ratatui` app itself to run in a browser canvas via WASM — directly
+  relevant here since that's the exact framework `mux-prototype` is
+  built on.
+
+`persist-prototype/src/protocol.rs`'s transport-agnostic design (already
+proven above, over SSH rather than a direct socket) means a WebSocket
+bridge would be additive, not a redesign. `vt100` itself is a
+pure, dependency-light Rust crate with no OS calls, and should compile to
+WASM without much friction — making a `ratzilla`-style client-side path
+using our *own* existing vt100 parsing code a plausible, architecturally
+consistent future direction, distinct from and complementary to (A)
+above. Not attempted in either prototype.
+
 ## Rough feature/layout outline (draft — not a spec)
 
 Sketch of where this is headed, roughly matching what's already built plus
@@ -392,6 +478,16 @@ Not yet decided, worth resolving before investing further:
    `vt100::Parser` so a newly-attached client can be repainted with
    current screen state instead of only seeing output from the moment it
    attached (see "Persistence: proven" above).
+7. ~~**Remote UI to a local sandbox**~~ — resolved as cheap/already
+   possible via SSH passthrough (see "Remote access" above). Open
+   sub-question: worth a native TCP transport for this, given the
+   security hardening it would require, or is SSH passthrough sufficient
+   indefinitely? **Remote sandbox hosting** (a different, larger
+   question) stays gated on the Docker substrate work, unresolved here.
+8. **Browser-rendered terminal**: a `ratzilla`-style WASM build of our
+   own `vt100` parsing code is plausible (see "Remote access" above) but
+   entirely unattempted — not prototyped in either direction (JS/xterm.js
+   bridge vs. Rust/WASM client-side rendering).
 
 ## Running the prototypes
 
