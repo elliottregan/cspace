@@ -4,6 +4,11 @@ Status: exploratory, not wired into the Go CLI or `make check`. This
 document is a snapshot of an in-progress design conversation, not a spec —
 expect it to be wrong in places and to change as the prototypes evolve.
 
+See [`QUALITY_FINDINGS.md`](./QUALITY_FINDINGS.md) for a productionization
+audit — maintenance/performance/security risks identified across all three
+prototypes, with no proposed fixes, as prep for turning this exploration
+into a real cspace feature.
+
 ## Motivation
 
 cspace today is a Go CLI + a bubbletea boot overlay/dashboard (`cspace tui`)
