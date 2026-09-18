@@ -1,0 +1,333 @@
+package controlplane
+
+import (
+	"errors"
+	"strings"
+	"testing"
+
+	tea "charm.land/bubbletea/v2"
+
+	"github.com/elliottregan/cspace/internal/control"
+)
+
+// press builds the KeyPressMsg a terminal would deliver. bubbletea v2 keys
+// are structs: printable keys carry Text, named keys carry a Code.
+func press(s string) tea.KeyPressMsg {
+	switch s {
+	case "enter":
+		return tea.KeyPressMsg{Code: tea.KeyEnter}
+	case "esc":
+		return tea.KeyPressMsg{Code: tea.KeyEscape}
+	case "up":
+		return tea.KeyPressMsg{Code: tea.KeyUp}
+	case "down":
+		return tea.KeyPressMsg{Code: tea.KeyDown}
+	}
+	r := []rune(s)[0]
+	return tea.KeyPressMsg{Code: r, Text: string(r)}
+}
+
+// step delivers a key and returns the new model, discarding the command.
+func step(t *testing.T, m Model, k string) Model {
+	t.Helper()
+	mm, _ := m.Update(press(k))
+	return mm.(Model)
+}
+
+// answer delivers a key to an open teardown confirmation and pumps the
+// commands it produces back into the model until the confirmation closes.
+//
+// huh answers a Confirm over two asynchronous round trips, not one: the
+// field sets the value and returns huh.NextField (a *command*), the group
+// turns that message into nextGroup (another command), and only when the
+// form receives nextGroupMsg does it report StateCompleted. A single Update
+// therefore leaves the form open, which is why step() is not enough here.
+// Production does this for free — Task 6's fall-through routes the
+// unconsumed messages straight back into updateConfirm — so this helper is
+// the test-side equivalent of that loop and nothing more.
+//
+// It stops as soon as the mode leaves modeConfirmDown, so the action's own
+// command (which carries the spinner tick) is never run here.
+func answer(t *testing.T, m Model, k string) Model {
+	t.Helper()
+	mm, cmd := m.Update(press(k))
+	m = mm.(Model)
+	for i := 0; i < 8 && cmd != nil && m.mode == modeConfirmDown; i++ {
+		var next tea.Cmd
+		for _, msg := range drain(cmd) {
+			if msg == nil {
+				continue
+			}
+			mm, c := m.Update(msg)
+			m = mm.(Model)
+			if c != nil {
+				next = c
+			}
+			if m.mode != modeConfirmDown {
+				break
+			}
+		}
+		cmd = next
+	}
+	if m.mode == modeConfirmDown {
+		t.Fatalf("the confirmation never settled after %q", k)
+	}
+	return m
+}
+
+func TestMoveKeysChangeTheSelection(t *testing.T) {
+	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
+	m = step(t, m, "j")
+	if got := m.selectedRow().Name; got != "issue-42" {
+		t.Errorf("after j, selection = %q, want issue-42", got)
+	}
+	m = step(t, m, "k")
+	if got := m.selectedRow().Name; got != "mercury" {
+		t.Errorf("after k, selection = %q, want mercury", got)
+	}
+	m = step(t, m, "down")
+	if got := m.selectedRow().Name; got != "issue-42" {
+		t.Errorf("after ↓, selection = %q, want issue-42", got)
+	}
+}
+
+func TestAttachAndInterruptDispatch(t *testing.T) {
+	a := &recordingActor{}
+	d := &fakeData{snap: testSnapshot()}
+	m := newTestModel(d, a)
+	// mercury's snapshot agent is idle, so interrupt is gated off; the fast
+	// ticker reporting it working is what enables the key.
+	mm, _ := m.Update(liveMsg{states: map[sandboxKey]liveState{
+		{Project: "alpha", Name: "mercury"}: {
+			Agent: control.AgentStatus{Reachable: true, State: "working"}},
+	}})
+	m = mm.(Model)
+
+	m2 := step(t, m, "enter")
+	if len(a.attach) != 1 || a.attach[0].Name != "mercury" {
+		t.Fatalf("attach calls = %+v, want one for mercury", a.attach)
+	}
+	if m2.action != "attach" {
+		t.Errorf("action = %q, want attach in flight", m2.action)
+	}
+
+	m3 := step(t, m, "i")
+	if len(a.interrupt) != 1 {
+		t.Errorf("interrupt calls = %d, want 1", len(a.interrupt))
+	}
+	_ = m3
+}
+
+func TestInterruptIsGatedOnAWorkingAgent(t *testing.T) {
+	a := &recordingActor{}
+	m := newTestModel(&fakeData{snap: testSnapshot()}, a) // mercury is idle
+	step(t, m, "i")
+	if len(a.interrupt) != 0 {
+		t.Errorf("interrupt fired on an idle agent: %+v", a.interrupt)
+	}
+}
+
+// Spec, Error handling: an unreachable supervisor disables send and
+// interrupt on that row rather than failing on press.
+func TestSendAndInterruptAreOffForADegradedSandbox(t *testing.T) {
+	snap := testSnapshot()
+	snap.Rows[1].State = control.StateDegraded
+	snap.Rows[1].Agent = control.AgentStatus{}
+	a := &recordingActor{}
+	m := newTestModel(&fakeData{snap: snap}, a)
+
+	m = step(t, m, "m")
+	if m.mode == modeInput {
+		t.Error("the send box opened for an unreachable supervisor")
+	}
+	step(t, m, "i")
+	if len(a.interrupt) != 0 {
+		t.Errorf("interrupt fired for an unreachable supervisor: %+v", a.interrupt)
+	}
+	// The footer must not advertise them either.
+	if out := plain(m.View().Content); strings.Contains(out, "send a turn") {
+		t.Errorf("footer offered send for a degraded sandbox:\n%s", out)
+	}
+}
+
+func TestBootOnlyOffersAStoppedSandbox(t *testing.T) {
+	a := &recordingActor{}
+	m := newTestModel(&fakeData{snap: testSnapshot()}, a)
+
+	step(t, m, "u") // mercury is running
+	if len(a.up) != 0 {
+		t.Errorf("boot fired on a running sandbox: %+v", a.up)
+	}
+	m = step(t, m, "j") // issue-42 is stopped
+	step(t, m, "u")
+	if len(a.up) != 1 || a.up[0].Name != "issue-42" {
+		t.Errorf("boot calls = %+v, want one for issue-42", a.up)
+	}
+}
+
+func TestBrowserRestartDispatches(t *testing.T) {
+	a := &recordingActor{}
+	m := newTestModel(&fakeData{snap: testSnapshot()}, a)
+	step(t, m, "b")
+	if len(a.browser) != 1 || a.browser[0].Project != "alpha" {
+		t.Errorf("browser restart calls = %+v, want one for alpha", a.browser)
+	}
+}
+
+func TestOneActionAtATime(t *testing.T) {
+	a := &recordingActor{}
+	m := newTestModel(&fakeData{snap: testSnapshot()}, a)
+	m = step(t, m, "enter") // attach in flight
+	m = step(t, m, "d")     // must not open the confirmation
+	if m.mode == modeConfirmDown {
+		t.Error("a second action started while one was in flight")
+	}
+	mm, _ := m.Update(actionResultMsg{label: "attach"})
+	m = mm.(Model)
+	if m.action != "" {
+		t.Errorf("action = %q after its result landed, want cleared", m.action)
+	}
+	m = step(t, m, "d")
+	if m.mode != modeConfirmDown {
+		t.Error("the confirmation should open once the gate cleared")
+	}
+}
+
+func TestSendBox(t *testing.T) {
+	a := &recordingActor{}
+	m := newTestModel(&fakeData{snap: testSnapshot()}, a)
+
+	m = step(t, m, "m")
+	if m.mode != modeInput {
+		t.Fatalf("mode = %v, want modeInput", m.mode)
+	}
+	if len(a.sends) != 0 {
+		t.Fatal("Send called before the text was entered")
+	}
+	if !strings.Contains(plain(m.View().Content), "send to mercury") {
+		t.Errorf("the footer should show the send box:\n%s", plain(m.View().Content))
+	}
+
+	// Ordinary keys type rather than dispatch: "q" must not quit here.
+	m = step(t, m, "q")
+	if m.quitting {
+		t.Fatal("q quit the dashboard from inside the send box")
+	}
+
+	m.input.SetValue("do the thing")
+	m = step(t, m, "enter")
+	if len(a.sends) != 1 || a.sends[0].text != "do the thing" || a.sends[0].row.Name != "mercury" {
+		t.Errorf("send calls = %+v, want one for mercury", a.sends)
+	}
+	if m.mode != modeNormal || m.action != "send" {
+		t.Errorf("mode = %v, action = %q after sending", m.mode, m.action)
+	}
+}
+
+func TestSendBoxEmptyAndCancel(t *testing.T) {
+	a := &recordingActor{}
+	m := newTestModel(&fakeData{snap: testSnapshot()}, a)
+
+	m = step(t, m, "m")
+	m = step(t, m, "enter") // empty
+	if len(a.sends) != 0 || m.action != "" {
+		t.Errorf("an empty send should do nothing: sends=%+v action=%q", a.sends, m.action)
+	}
+
+	m = step(t, m, "m")
+	m.input.SetValue("discarded")
+	m = step(t, m, "esc")
+	if len(a.sends) != 0 || m.mode != modeNormal {
+		t.Errorf("esc should cancel the send box: sends=%+v mode=%v", a.sends, m.mode)
+	}
+}
+
+func TestTeardownConfirms(t *testing.T) {
+	a := &recordingActor{}
+	m := newTestModel(&fakeData{snap: testSnapshot()}, a)
+
+	m = step(t, m, "d")
+	if m.mode != modeConfirmDown || m.confirm == nil {
+		t.Fatalf("mode = %v, confirm = %v, want the confirmation open", m.mode, m.confirm)
+	}
+	if len(a.down) != 0 {
+		t.Fatal("Down called before the confirmation was answered")
+	}
+	if out := plain(m.View().Content); !strings.Contains(out, "Tear down mercury") {
+		t.Errorf("the confirmation should name the sandbox:\n%s", out)
+	}
+	if out := plain(m.View().Content); !strings.Contains(out, "Keep it") {
+		t.Errorf("confirm buttons missing from view:\n%s", out)
+	}
+
+	m = answer(t, m, "y")
+	if len(a.down) != 1 || a.down[0].Name != "mercury" {
+		t.Errorf("down calls = %+v, want one for mercury", a.down)
+	}
+	if m.mode != modeNormal || m.confirm != nil {
+		t.Errorf("the confirmation should close after answering: mode=%v", m.mode)
+	}
+}
+
+func TestTeardownCancels(t *testing.T) {
+	a := &recordingActor{}
+	m := newTestModel(&fakeData{snap: testSnapshot()}, a)
+	m = step(t, m, "d")
+	m = step(t, m, "esc")
+	if len(a.down) != 0 {
+		t.Errorf("esc should cancel the teardown: %+v", a.down)
+	}
+	if m.mode != modeNormal {
+		t.Errorf("mode = %v after cancelling, want modeNormal", m.mode)
+	}
+
+	// Answering "no" is a cancel too: huh's Reject binding sets the value
+	// and advances the form, which completes it with false — over the same
+	// two command round trips "y" takes, hence answer() rather than step().
+	m = step(t, m, "d")
+	m = answer(t, m, "n")
+	if len(a.down) != 0 {
+		t.Errorf("answering no should not tear down: %+v", a.down)
+	}
+	if m.mode != modeNormal || m.confirm != nil {
+		t.Errorf("answering no should close the confirmation: mode=%v", m.mode)
+	}
+}
+
+func TestHelpOverlayToggles(t *testing.T) {
+	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
+	m = step(t, m, "?")
+	out := plain(m.View().Content)
+	if !strings.Contains(out, "restart browser") || !strings.Contains(out, "tear down") {
+		t.Errorf("the help overlay should list every binding:\n%s", out)
+	}
+	if !strings.Contains(out, "~/.cspace/config.json") {
+		t.Errorf("the help overlay should say where bindings come from:\n%s", out)
+	}
+	if !strings.Contains(out, "mercury") {
+		t.Error("the sidebar stays visible behind the help overlay")
+	}
+	m = step(t, m, "?")
+	if strings.Contains(plain(m.View().Content), "~/.cspace/config.json") {
+		t.Error("the help overlay should toggle off")
+	}
+}
+
+func TestQuitKeyAndErrorNoticeDismissal(t *testing.T) {
+	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
+	mm, _ := m.Update(actionResultMsg{label: "down", err: errors.New("boom")})
+	m = mm.(Model)
+
+	m = step(t, m, "j") // any key dismisses an error notice
+	if m.notice.text != "" {
+		t.Errorf("error notice = %q, want it dismissed on the next keypress", m.notice.text)
+	}
+
+	_, cmd := m.Update(press("q"))
+	if cmd == nil {
+		t.Fatal("q should quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("q produced %T, want tea.QuitMsg", cmd())
+	}
+}
