@@ -201,3 +201,37 @@ func TestLeaderIsDeclaredButNotAdvertised(t *testing.T) {
 		}
 	}
 }
+
+// TestOverriddenBindingsAdvertiseTheirOwnKeys — the footer and the help
+// overlay have to name the key that works. With attach rebound to "o" they
+// used to keep reading "enter attach" beside an enter that did nothing,
+// because the label was hard-coded per action rather than taken from the
+// resolved keys.
+func TestOverriddenBindingsAdvertiseTheirOwnKeys(t *testing.T) {
+	k := NewKeyMap(map[string][]string{
+		ActionAttach: {"o"},
+		ActionHelp:   {"f1", "?"},
+	})
+	if got := k.Attach.Help().Key; got != "o" {
+		t.Errorf("attach label = %q, want o", got)
+	}
+	if got := k.Help.Help().Key; got != "f1/?" {
+		t.Errorf("help label = %q, want f1/?", got)
+	}
+	// Untouched actions keep their hand-written labels.
+	if got := k.MoveUp.Help().Key; got != "↑/k" {
+		t.Errorf("moveUp label = %q, want the curated default ↑/k", got)
+	}
+	if got := k.Send.Help().Key; got != "m" {
+		t.Errorf("send label = %q, want m", got)
+	}
+}
+
+// An override that restates the defaults is not an override: the curated
+// label survives it.
+func TestDefaultKeysRestatedKeepTheCuratedLabel(t *testing.T) {
+	k := NewKeyMap(map[string][]string{ActionMoveUp: {"up", "k"}})
+	if got := k.MoveUp.Help().Key; got != "↑/k" {
+		t.Errorf("moveUp label = %q, want ↑/k", got)
+	}
+}
