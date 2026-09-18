@@ -251,6 +251,45 @@ func TestSendBoxEmptyAndCancel(t *testing.T) {
 	}
 }
 
+// The send box's footer label has to name the same sandbox Send will
+// actually act on. Like TestTeardownActsOnTheRowThePromptNamed, a poll can
+// land and move the selection while the box is open (applySnapshot runs
+// unconditionally in the snapshotMsg case; only the *tick* handlers that
+// start a new poll respect paused()) — the footer must keep naming mercury,
+// not whatever ends up selected.
+func TestSendBoxFooterNamesThePendingRow(t *testing.T) {
+	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
+
+	m = step(t, m, "m") // opens the send box on mercury, the initial selection
+	if m.mode != modeInput || m.pending.Name != "mercury" {
+		t.Fatalf("test setup: mode = %v, pending = %+v, want the send box open on mercury",
+			m.mode, m.pending)
+	}
+
+	// Drop the mercury-convex sidecar along with mercury itself: left in
+	// place it would still read "mercury" in the sidebar (sidecar names are
+	// trimmed by their *preceding* sandbox row, venus here, which is not
+	// mercury's prefix), which would pass this assertion for the wrong
+	// reason. Checking the footer directly rather than the whole view sidesteps that too.
+	moved := testSnapshot()
+	moved.Rows = append([]control.Row{moved.Rows[0]}, moved.Rows[2:]...)
+	moved.Rows[1] = control.Row{Kind: control.RowSandbox, Project: "alpha", Name: "venus",
+		Container: "cspace-alpha-venus", State: control.StateRunning, Selectable: true}
+	mm, _ := m.Update(snapshotMsg{snap: moved})
+	m = mm.(Model)
+	if got := m.selectedRow().Name; got != "venus" {
+		t.Fatalf("test setup: selection = %q after the snapshot, want venus", got)
+	}
+
+	footer := plain(m.footer())
+	if !strings.Contains(footer, "mercury") {
+		t.Errorf("the footer should still name mercury, the row the send box was opened against: %q", footer)
+	}
+	if strings.Contains(footer, "venus") {
+		t.Errorf("the footer should not have followed the selection to venus: %q", footer)
+	}
+}
+
 func TestTeardownConfirms(t *testing.T) {
 	a := &recordingActor{}
 	m := newTestModel(&fakeData{snap: testSnapshot()}, a)
