@@ -86,6 +86,11 @@ type Options struct {
 	DaemonURL string
 	Home      string
 	Now       func() time.Time
+
+	// Host supplies the operations whose implementations still live in
+	// internal/cli. Nil is legal: read-only callers need no Host, and the
+	// actions that do fail with ErrNoHost.
+	Host Host
 }
 
 // Client answers cspace's control queries and runs its control actions. It is
@@ -98,6 +103,7 @@ type Client struct {
 	daemonURL  string
 	home       string
 	now        func() time.Time
+	host       Host
 
 	probeClient  *http.Client
 	actionClient *http.Client
@@ -128,6 +134,7 @@ func New(o Options) *Client {
 		daemonURL:     o.DaemonURL,
 		home:          o.Home,
 		now:           now,
+		host:          o.Host,
 		probeClient:   &http.Client{Timeout: probeTimeout},
 		actionClient:  &http.Client{Timeout: actionTimeout},
 		browserCDPURL: func(ip string) string { return fmt.Sprintf("http://%s:%d/json/version", ip, browserCDPPort) },
