@@ -2,7 +2,7 @@
 title: the dashboard's screen comes back mostly blank after an attach returns
 date: 2026-09-18
 kind: finding
-status: open
+status: resolved
 category: bug
 tags: control-plane, dashboard, bubbletea, attach, rendering
 ---
@@ -59,3 +59,35 @@ about 0.6 s.
 
 ## Updates
 - 2026-09-18: filed from task 9's live verification of rollout step 3.
+- 2026-09-18: resolved. The renderer was never the problem. `container exec
+  -it` leaves O_NONBLOCK set on the terminal's open file description when it
+  exits; cspace shares that description with the child, and the flag lives on
+  the description rather than the descriptor, so it outlives the attach
+  (confirmed directly: `container exec -it buildkit true` run from a pty
+  returns with fd 1 non-blocking). Go does not register the standard
+  descriptors with its poller, so the first write that does not fit in the
+  tty's buffer comes back short with EAGAIN. bubbletea drops that error
+  (`_ = p.renderer.flush(false)`, tea.go:1427) while `cursedRenderer.flush`
+  has already recorded the frame as painted — `s.lastView`, and ultraviolet's
+  `curbuf` inside `Render` — so the truncated tail is never drawn again and
+  the screen keeps a hole for the rest of the session. The restore itself is
+  correct and complete: `RestoreTerminal` → `startRenderer` →
+  `cursedRenderer.start` → `enterAltScreen` → `scr.Erase()` makes the next
+  flush a full `clearUpdate`, i.e. `ESC[H ESC[2J` plus every non-blank row.
+  That is why both `tea.ClearScreen` workarounds changed nothing: the repaint
+  was issued and then cut off mid-write.
+
+  Reproduced without a sandbox, under a 120x40 pty, with a child that sets
+  O_NONBLOCK on fd 1: 14 of 39 sidebar rule rows repainted and the footer
+  never painted at all, against 39 of 39 with a well-behaved child.
+  `tea.ClearScreen`, a re-emitted `tea.WindowSizeMsg` and
+  `tea.RequestWindowSize` batched with the attach result all measured
+  byte-identical to no fix.
+
+  Fixed by handing the descriptors back in the mode they were lent out in:
+  `restoreBlockingStreams` (internal/cli/child_streams.go), deferred in
+  `attachExec.Run` and in `runAttachChild` — so plain `cspace attach` stops
+  leaving the shell's stdout non-blocking too. Verified live against
+  `cspace-cspace-dashcheck` through the same pty harness: the restore paints
+  39 of 39 rule rows and `attach ok` reaches the footer, against 7 rows and
+  no notice before.
