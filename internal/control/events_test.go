@@ -1,6 +1,7 @@
-package tui
+package control
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -78,10 +79,11 @@ func TestTailEventsMissingFileIsNotError(t *testing.T) {
 	}
 }
 
-func TestSessionEventsPath(t *testing.T) {
-	got := SessionEventsPath("/home/x", "alpha", "mercury")
-	want := "/home/x/.cspace/sessions/alpha/mercury/primary/events.ndjson"
-	if got != want {
-		t.Errorf("path = %q, want %q", got, want)
+// A Client built with no Home must fail closed rather than silently read an
+// events log path relative to the process cwd.
+func TestClientEventsErrorsWithoutHome(t *testing.T) {
+	c := New(Options{Containers: &fakeContainers{}})
+	if _, err := c.Events("alpha", "mercury", 8); !errors.Is(err, ErrNoHome) {
+		t.Errorf("err = %v, want ErrNoHome", err)
 	}
 }

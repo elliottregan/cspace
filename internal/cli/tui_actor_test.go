@@ -5,10 +5,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/elliottregan/cspace/internal/control"
+	"github.com/elliottregan/cspace/internal/registry"
 	"github.com/elliottregan/cspace/internal/tui"
 )
 
@@ -17,6 +20,20 @@ func drain(cmd tea.Cmd) tea.Msg {
 		return nil
 	}
 	return cmd()
+}
+
+// actorAgainst builds an actor whose control client resolves alpha/mercury to
+// the given stub supervisor, so the actor's HTTP path is exercised end to end
+// through the same registry lookup production uses.
+func actorAgainst(t *testing.T, controlURL string) *tuiActor {
+	t.Helper()
+	reg := &registry.Registry{Path: filepath.Join(t.TempDir(), "reg.json")}
+	if err := reg.Register(registry.Entry{
+		Project: "alpha", Name: "mercury", ControlURL: controlURL, Token: "tok", State: "ready",
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	return newTUIActor(control.New(control.Options{Entries: reg}), t.TempDir())
 }
 
 func TestTUIActorSendPostsToControlURL(t *testing.T) {
@@ -33,8 +50,8 @@ func TestTUIActorSendPostsToControlURL(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a := newTUIActor(nil, nil, "/home/x")
-	row := tui.Row{Kind: tui.RowSandbox, Project: "alpha", Name: "mercury", ControlURL: srv.URL, Token: "tok"}
+	a := actorAgainst(t, srv.URL)
+	row := tui.Row{Kind: tui.RowSandbox, Project: "alpha", Name: "mercury"}
 	msg := drain(a.Send(row, "hello"))
 
 	if err := tui.ResultErr(msg); err != nil {
@@ -55,8 +72,8 @@ func TestTUIActorInterrupt409IsBenign(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a := newTUIActor(nil, nil, "/home/x")
-	row := tui.Row{Kind: tui.RowSandbox, ControlURL: srv.URL, Token: "tok"}
+	a := actorAgainst(t, srv.URL)
+	row := tui.Row{Kind: tui.RowSandbox, Project: "alpha", Name: "mercury"}
 	msg := drain(a.Interrupt(row))
 	// A 409 "no active task" is not an error state — the agent was simply idle.
 	if err := tui.ResultErr(msg); err != nil {
@@ -74,8 +91,8 @@ func TestTUIActorInterrupt500Surfaces(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a := newTUIActor(nil, nil, "/home/x")
-	row := tui.Row{Kind: tui.RowSandbox, ControlURL: srv.URL, Token: "tok"}
+	a := actorAgainst(t, srv.URL)
+	row := tui.Row{Kind: tui.RowSandbox, Project: "alpha", Name: "mercury"}
 	msg := drain(a.Interrupt(row))
 	if !msgHasError(msg, "boom") {
 		t.Errorf("interrupt 500 should surface an error: %#v", msg)
@@ -89,7 +106,7 @@ func TestTUIActorInterrupt500Surfaces(t *testing.T) {
 func TestTUIActorAttachAbortsWhenTheTmuxProbeFails(t *testing.T) {
 	withFakeExec(t, fakeExecer{err: errors.New("boom: transport down")})
 
-	a := newTUIActor(nil, nil, "/home/x")
+	a := newTUIActor(nil, "/home/x")
 	row := tui.Row{
 		Kind:      tui.RowSandbox,
 		Project:   "alpha",

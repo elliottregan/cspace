@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/elliottregan/cspace/internal/control"
 	"github.com/elliottregan/cspace/internal/sandboxmode"
 	"github.com/spf13/cobra"
 )
@@ -211,7 +212,7 @@ func browserStatusTargets(ctx context.Context, inSandbox bool) (cdpURL, wsAddr s
 		if project == "" {
 			return "", "", fmt.Errorf("CSPACE_PROJECT not set; cannot determine project in sandbox mode")
 		}
-		return fmt.Sprintf("http://127.0.0.1:%d", browserCDPPort),
+		return fmt.Sprintf("http://127.0.0.1:%d", control.BrowserCDPPort),
 			fmt.Sprintf("%s:%d", browserSandboxHost(project), browserRunServerPort), nil
 	}
 
@@ -224,7 +225,7 @@ func browserStatusTargets(ctx context.Context, inSandbox bool) (cdpURL, wsAddr s
 	if err != nil {
 		return "", "", fmt.Errorf("resolve browser sidecar IP for %s: %w", name, err)
 	}
-	return fmt.Sprintf("http://%s:%d", ip, browserCDPPort),
+	return fmt.Sprintf("http://%s:%d", ip, control.BrowserCDPPort),
 		fmt.Sprintf("%s:%d", ip, browserRunServerPort), nil
 }
 
@@ -251,7 +252,7 @@ type browserEndpointStatus struct {
 // addresses instead of hardcoding DNS names in the probe call site.
 func probeBrowserEndpoints(ctx context.Context, cdpURL, wsAddr string, bound time.Duration) []browserEndpointStatus {
 	return []browserEndpointStatus{
-		{label: fmt.Sprintf("CDP :%d", browserCDPPort), err: waitForCDP(ctx, cdpURL, bound)},
+		{label: fmt.Sprintf("CDP :%d", control.BrowserCDPPort), err: waitForCDP(ctx, cdpURL, bound)},
 		{label: fmt.Sprintf("run-server :%d", browserRunServerPort), err: waitForRunServerWS(ctx, wsAddr, bound)},
 	}
 }

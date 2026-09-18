@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/elliottregan/cspace/internal/control"
 	"github.com/spf13/cobra"
 )
 
@@ -20,9 +21,9 @@ import (
 // http://<sandbox>.<project>.cspace.test:<port>/ — see
 // https://github.com/elliottregan/cspace for the routing model.
 const (
-	dnsResolverFile = "/etc/resolver/cspace.test"
+	dnsResolverFile = control.ResolverFile
 	dnsLocalPort    = "5354"
-	dnsDomain       = "cspace.test"
+	dnsDomain       = control.DNSDomain
 	dnsResolverBody = `# Written by ` + "`cspace dns install`" + `. Routes *.cspace.test lookups to the
 # cspace daemon's local DNS server on 127.0.0.1. Safe to delete; uninstall
 # via ` + "`cspace dns uninstall`" + `.

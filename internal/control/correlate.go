@@ -1,4 +1,4 @@
-package tui
+package control
 
 import (
 	"sort"
@@ -83,8 +83,6 @@ func Correlate(
 				MemoryUsedB: stats[cname].MemoryUsedB,
 				Uptime:      uptime,
 				Agent:       st,
-				ControlURL:  e.ControlURL,
-				Token:       e.Token,
 				Selectable:  true,
 			})
 

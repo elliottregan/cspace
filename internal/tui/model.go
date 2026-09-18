@@ -7,6 +7,8 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/elliottregan/cspace/internal/control"
 )
 
 type uiMode int
@@ -101,7 +103,7 @@ func (m Model) pollNowCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return snapshotMsg{snap: p.Poll(ctx)}
+		return snapshotMsg{snap: p.Snapshot(ctx)}
 	}
 }
 
@@ -112,7 +114,7 @@ func (m Model) readEventsCmd() tea.Cmd {
 	}
 	home, project, name := m.home, row.Project, row.Name
 	return func() tea.Msg {
-		lines, err := TailEvents(SessionEventsPath(home, project, name), 8)
+		lines, err := control.TailEvents(control.SessionEventsPath(home, project, name), 8)
 		return eventsMsg{lines: lines, err: err}
 	}
 }

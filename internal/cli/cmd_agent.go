@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/elliottregan/cspace/internal/control"
 )
 
 // agentClientTimeout bounds each /status and /interrupt round trip to a
@@ -102,7 +103,7 @@ func runAgentStatus(ctx context.Context, out io.Writer, project, sandbox string)
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("status failed: status %d: %s", resp.StatusCode, agentErrorText(body))
+		return fmt.Errorf("status failed: status %d: %s", resp.StatusCode, control.ErrorText(body))
 	}
 
 	var status agentStatusResponse
@@ -146,26 +147,9 @@ func runAgentInterrupt(ctx context.Context, out io.Writer, project, sandbox stri
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("interrupt failed: status %d: %s", resp.StatusCode, agentErrorText(body))
+		return fmt.Errorf("interrupt failed: status %d: %s", resp.StatusCode, control.ErrorText(body))
 	}
 
 	_, _ = fmt.Fprintln(out, "ok")
 	return nil
-}
-
-// agentErrorText extracts the meaningful error text from a non-2xx
-// /status or /interrupt response body. main.ts's /interrupt 409 shape is
-// {"ok":false,"error":"no active task"}; when the body parses as that
-// shape, return just the error field so the CLI doesn't dump a raw JSON
-// envelope at the user (mirrors cmd_browser.go's restartErrorText).
-// Anything else (e.g. a plain-text http.Error body) falls back to the
-// trimmed raw body.
-func agentErrorText(body []byte) string {
-	var parsed struct {
-		Error string `json:"error"`
-	}
-	if err := json.Unmarshal(body, &parsed); err == nil && parsed.Error != "" {
-		return parsed.Error
-	}
-	return strings.TrimSpace(string(body))
 }
