@@ -71,7 +71,7 @@ func renderDetail(row control.Row, live liveState, ports []control.Port, portsEr
 		default:
 			add(styleDim, "recent events")
 			for _, e := range tailEvents(events, detailEvents) {
-				add(styleDim, "  %s %-10s %s", shortTs(e.Ts), e.Type, e.Subtype)
+				add(styleDim, "  %s %-16s %s", shortTs(e.Ts), eventKind(e), eventDetail(e))
 			}
 		}
 
@@ -100,6 +100,36 @@ func renderDetail(row control.Row, live liveState, ports []control.Port, portsEr
 		add(styleDim, "select a sandbox")
 	}
 	return strings.Join(lines, "\n")
+}
+
+// eventKind names one event-log record. Every line the supervisor writes
+// carries a kind — supervisor-start, supervisor-resume, agent-role,
+// agent-model, user-turn, interrupt, sdk-event, sdk-error, sdk-ended — but
+// only sdk-event records carry the SDK message's type/subtype in their data.
+// Rendering the type alone therefore printed a bare timestamp for every event
+// the supervisor emits about itself, which is all there is until the agent
+// takes its first turn.
+func eventKind(e control.EventLine) string {
+	if e.Kind != "" {
+		return e.Kind
+	}
+	if e.Type != "" {
+		return e.Type
+	}
+	return "event"
+}
+
+// eventDetail is the sdk-event payload's type/subtype, empty for the kinds
+// that carry no such data.
+func eventDetail(e control.EventLine) string {
+	if e.Kind == "" || e.Type == "" {
+		// Kind already showed the type; don't repeat it.
+		return ""
+	}
+	if e.Subtype != "" {
+		return e.Type + "/" + e.Subtype
+	}
+	return e.Type
 }
 
 // tailEvents keeps the last n of what the reader returned. control.Events
