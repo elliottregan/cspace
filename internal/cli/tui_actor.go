@@ -43,14 +43,26 @@ func (t *tuiActor) Attach(row tui.Row) tea.Cmd {
 	// step, so bound them rather than redesign this path now: a wedged
 	// container or flock contention must not freeze the whole dashboard.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	spec := control.ClaudeAttach(row.Container, defaultTmux.Present(ctx, row.Container))
+	present, err := defaultTmux.Present(ctx, row.Container)
+	if err != nil {
+		cancel()
+		return func() tea.Msg { return tui.Result("attach", err) }
+	}
+	spec := control.ClaudeAttach(row.Container, present)
 	bin, argv, err := control.AttachArgv(spec)
 	if err != nil {
 		cancel()
 		return func() tea.Msg { return tui.Result("attach", err) }
 	}
-	att, err := control.BeginAttach(ctx, defaultTmux, row.Container,
-		control.ControlPlaneDir(t.home, row.Project, row.Name), spec.Session)
+	// io.Discard: Attach runs synchronously inside bubbletea's Update, with
+	// the dashboard's alt-screen still owning the terminal — a direct
+	// stderr write here would corrupt that rendering rather than being seen
+	// (the same reason the no-tmux fallback prints nothing in this path
+	// either). beginAttachOrWarn still downgrades a bookkeeping failure to
+	// an inert attachment; it just has nowhere safe to say so. t.home was
+	// already resolved (and hard-failed on, if unresolvable) at `cspace tui`
+	// startup, so it is passed with a nil homeErr rather than re-resolved.
+	att, err := beginAttachOrWarn(ctx, io.Discard, t.home, nil, row.Project, row.Name, row.Container, spec.Session)
 	cancel()
 	if err != nil {
 		return func() tea.Msg { return tui.Result("attach", err) }

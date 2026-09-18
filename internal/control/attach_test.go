@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -176,6 +177,8 @@ func TestCloseWithoutAKnownClientStillSucceeds(t *testing.T) {
 
 // TestBeginAttachFailsWhenTheLockIsHeld — the lock is what makes "the one new
 // tty" unambiguous. If another attach is mid-window, this one must not guess.
+// The wait is derived from tm.PollFor (see attachLockWait), so the test
+// shortens PollFor itself rather than reaching for a fixed timeout constant.
 func TestBeginAttachFailsWhenTheLockIsHeld(t *testing.T) {
 	dir := t.TempDir()
 	lockPath := filepath.Join(dir, "attach.lock")
@@ -188,13 +191,86 @@ func TestBeginAttachFailsWhenTheLockIsHeld(t *testing.T) {
 		t.Fatalf("could not take the lock in the test: %v", err)
 	}
 
-	old := attachLockTimeout
-	attachLockTimeout = 150 * time.Millisecond
-	defer func() { attachLockTimeout = old }()
-
 	f := &fakeExec{reply: clientScript("")}
-	if _, err := BeginAttach(context.Background(), testTmux(f), "cspace-demo-mercury", dir, SessionClaude); err == nil {
-		t.Error("BeginAttach() succeeded while the attach lock was held")
+	tm := testTmux(f)
+	tm.PollFor = 50 * time.Millisecond
+
+	_, err = BeginAttach(context.Background(), tm, "cspace-demo-mercury", dir, SessionClaude)
+	if err == nil {
+		t.Fatal("BeginAttach() succeeded while the attach lock was held")
+	}
+	// A busy lock is contention, not a local bookkeeping problem: callers
+	// must not downgrade it to a warning-and-proceed the way they do for
+	// ErrBookkeepingUnavailable.
+	if errors.Is(err, ErrBookkeepingUnavailable) {
+		t.Error("a busy lock must stay a hard error, not ErrBookkeepingUnavailable")
+	}
+}
+
+// TestAttachLockWaitDerivesFromPollFor — Important 4(a): the lock is held
+// across the whole discovery window (see track), so the wait for it must
+// exceed PollFor or a second attach can fail against a first attach that is
+// merely still succeeding, not stuck.
+func TestAttachLockWaitDerivesFromPollFor(t *testing.T) {
+	tm := testTmux(&fakeExec{})
+	tm.PollFor = 3 * time.Second
+	if got, want := attachLockWait(tm), 5*time.Second; got != want {
+		t.Errorf("attachLockWait() = %s, want PollFor(%s)+2s = %s", got, tm.PollFor, want)
+	}
+}
+
+// TestAttachLockWaitOverride — the test-only escape hatch for a short wait
+// independent of PollFor.
+func TestAttachLockWaitOverride(t *testing.T) {
+	tm := testTmux(&fakeExec{})
+	tm.PollFor = 3 * time.Second
+	old := attachLockTimeout
+	attachLockTimeout = 250 * time.Millisecond
+	defer func() { attachLockTimeout = old }()
+	if got, want := attachLockWait(tm), 250*time.Millisecond; got != want {
+		t.Errorf("attachLockWait() = %s, want the override %s", got, want)
+	}
+}
+
+// TestBeginAttachBookkeepingUnavailableOnDirCreateFailure — Important 4(b):
+// a local filesystem problem creating the control-plane directory must not
+// refuse the attach; the caller downgrades ErrBookkeepingUnavailable to a
+// warning and an inert attachment instead.
+func TestBeginAttachBookkeepingUnavailableOnDirCreateFailure(t *testing.T) {
+	tmp := t.TempDir()
+	blocker := filepath.Join(tmp, "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(blocker, "controlplane") // MkdirAll under a file fails
+
+	f := &fakeExec{}
+	_, err := BeginAttach(context.Background(), testTmux(f), "cspace-demo-mercury", dir, SessionClaude)
+	if err == nil {
+		t.Fatal("BeginAttach() succeeded despite an uncreatable control-plane dir")
+	}
+	if !errors.Is(err, ErrBookkeepingUnavailable) {
+		t.Errorf("BeginAttach() error = %v, want it to wrap ErrBookkeepingUnavailable", err)
+	}
+}
+
+// TestLockAttachBookkeepingUnavailableOnOpenFailure — the other half of
+// Important 4(b): the directory exists (or MkdirAll no-ops on it) but the
+// lock file itself cannot be opened.
+func TestLockAttachBookkeepingUnavailableOnOpenFailure(t *testing.T) {
+	tmp := t.TempDir()
+	blocker := filepath.Join(tmp, "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// dir=blocker: filepath.Join(blocker, "attach.lock") tries to open a
+	// path through a regular file, which os.OpenFile cannot do.
+	_, err := lockAttach(context.Background(), blocker, time.Second)
+	if err == nil {
+		t.Fatal("lockAttach() succeeded despite an unopenable lock file")
+	}
+	if !errors.Is(err, ErrBookkeepingUnavailable) {
+		t.Errorf("lockAttach() error = %v, want it to wrap ErrBookkeepingUnavailable", err)
 	}
 }
 
@@ -202,13 +278,16 @@ func TestBeginAttachFailsWhenTheLockIsHeld(t *testing.T) {
 // backstop for a client tmux still lists; deleting the record on a failed
 // detach would hide that from it. Regression test for finding 1: Close used
 // to run os.Remove unconditionally regardless of whether DetachClient
-// succeeded.
+// succeeded. Uses a genuine (non-gone) failure text — "no server running" is
+// now recognized as ErrClientGone (Important 1) and is covered instead by
+// TestCloseTreatsAGoneClientAsDetached, where Close succeeds and the record
+// is removed.
 func TestCloseLeavesTheRecordWhenDetachFails(t *testing.T) {
 	dir := t.TempDir()
 	list := clientScript("", "/dev/pts/4\n")
 	f := &fakeExec{reply: func(n int, cmdline []string) (string, int, error) {
 		if len(cmdline) > 1 && cmdline[1] == "detach-client" {
-			return "no server running", 1, nil
+			return "permission denied", 1, nil
 		}
 		return list(n, cmdline)
 	}}
@@ -229,11 +308,57 @@ func TestCloseLeavesTheRecordWhenDetachFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("Close() error = nil, want the tmux failure surfaced")
 	}
-	if !strings.Contains(err.Error(), "no server running") {
+	if !strings.Contains(err.Error(), "permission denied") {
 		t.Errorf("Close() error = %q, want it to contain tmux's own message", err.Error())
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("record deleted despite a failed detach: %v", err)
+	}
+}
+
+// TestCloseTreatsAGoneClientAsDetached — Important 1. When `claude` exits
+// normally, tmux tears its session and client down before `container exec`
+// returns, so Close's detach-client exec always finds them gone. That must
+// be a successful detach — the record deleted, Close returning nil — not a
+// spurious warning and a record the sweep has to reap later.
+func TestCloseTreatsAGoneClientAsDetached(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+	}{
+		{"no server running", "no server running on /tmp/tmux-1000/default"},
+		{"can't find client", "can't find client /dev/pts/9"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			list := clientScript("", "/dev/pts/9\n")
+			f := &fakeExec{reply: func(n int, cmdline []string) (string, int, error) {
+				if len(cmdline) > 1 && cmdline[1] == "detach-client" {
+					return tc.out, 1, nil
+				}
+				return list(n, cmdline)
+			}}
+			tm := testTmux(f)
+
+			att, err := BeginAttach(context.Background(), tm, "cspace-demo-mercury", dir, SessionClaude)
+			if err != nil {
+				t.Fatalf("BeginAttach() error: %v", err)
+			}
+			waitTracked(t, att)
+
+			path := filepath.Join(dir, recordName(SessionClaude, "/dev/pts/9"))
+			if _, err := os.Stat(path); err != nil {
+				t.Fatalf("record not written before Close: %v", err)
+			}
+
+			if err := att.Close(context.Background()); err != nil {
+				t.Fatalf("Close() error = %v, want nil for an already-gone client", err)
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Errorf("record survived Close() for an already-gone client: %v", err)
+			}
+		})
 	}
 }
 

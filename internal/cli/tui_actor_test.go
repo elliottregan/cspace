@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -78,6 +79,29 @@ func TestTUIActorInterrupt500Surfaces(t *testing.T) {
 	msg := drain(a.Interrupt(row))
 	if !msgHasError(msg, "boom") {
 		t.Errorf("interrupt 500 should surface an error: %#v", msg)
+	}
+}
+
+// TestTUIActorAttachAbortsWhenTheTmuxProbeFails — Important 3's dashboard
+// side. Present/BeginAttach run synchronously inside Attach itself (before
+// the returned tea.Cmd ever runs), so a transport error has to surface
+// through the same tui.Result the tea.Cmd path uses.
+func TestTUIActorAttachAbortsWhenTheTmuxProbeFails(t *testing.T) {
+	withFakeExec(t, fakeExecer{err: errors.New("boom: transport down")})
+
+	a := newTUIActor(nil, nil, "/home/x")
+	row := tui.Row{
+		Kind:      tui.RowSandbox,
+		Project:   "alpha",
+		Name:      "probe-error-tui",
+		Container: "cspace-alpha-probe-error-tui",
+	}
+	msg := drain(a.Attach(row))
+	if err := tui.ResultErr(msg); err == nil {
+		t.Fatal("Attach() should surface the probe's transport error, got nil")
+	}
+	if l, _ := tui.ResultLabel(msg); l != "attach" {
+		t.Errorf("label = %q, want \"attach\"", l)
 	}
 }
 

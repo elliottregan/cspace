@@ -14,9 +14,24 @@ import (
 	"time"
 )
 
-// attachLockTimeout bounds the wait for another process's attach window. A
-// var so tests do not sit through it.
-var attachLockTimeout = 5 * time.Second
+// attachLockTimeout overrides attachLockWait's derived value when non-zero.
+// Production leaves it at its zero value; a test that needs a short wait
+// independent of PollFor can set it directly rather than waiting out a
+// PollFor-derived window.
+var attachLockTimeout time.Duration
+
+// attachLockWait bounds how long BeginAttach waits for another process's
+// attach window. It must exceed tm.PollFor: PollFor is how long a
+// legitimate attach holds the lock while it tracks down its own client (see
+// track), so a wait shorter than PollFor would fail a second attach against
+// a first one that is still succeeding, not stuck. The 2s margin covers the
+// gap between the poll loop's last iteration and the lock actually clearing.
+func attachLockWait(tm *Tmux) time.Duration {
+	if attachLockTimeout > 0 {
+		return attachLockTimeout
+	}
+	return tm.PollFor + 2*time.Second
+}
 
 // detachTimeout bounds the detach-client exec that Close runs, independent
 // of the caller's context. Close derives its own bounded context
@@ -41,6 +56,18 @@ type ClientRecord struct {
 	PID     int    `json:"pid"`
 	At      string `json:"at"`
 }
+
+// ErrBookkeepingUnavailable marks a BeginAttach failure that has nothing to
+// do with another attach being in progress: the control-plane directory or
+// its lock file could not be created or opened at all — a permissions
+// problem, a full disk, a missing parent. Callers treat it as non-fatal:
+// warn once and proceed with an inert attachment (BeginAttach's own
+// empty-session path returns one) rather than refuse an attach over
+// bookkeeping that exists only to make a graceful detach possible. A busy
+// lock (another attach's window still open) is a different failure — it is
+// not wrapped in this and stays a hard error, since guessing the wrong tty
+// out from under a concurrent attach is the exact bug the lock prevents.
+var ErrBookkeepingUnavailable = errors.New("attach bookkeeping unavailable")
 
 // recordName turns a session and a tty into a file name:
 // (cspace-claude, /dev/pts/12) -> cspace-claude.dev-pts-12.json
@@ -92,9 +119,9 @@ func BeginAttach(ctx context.Context, tm *Tmux, container, dir, session string) 
 		return a, nil
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("create control-plane dir %q: %w", dir, err)
+		return nil, fmt.Errorf("create control-plane dir %q: %w: %w", dir, ErrBookkeepingUnavailable, err)
 	}
-	lock, err := lockAttach(ctx, dir)
+	lock, err := lockAttach(ctx, dir, attachLockWait(tm))
 	if err != nil {
 		return nil, err
 	}
@@ -196,11 +223,16 @@ func (a *Attachment) writeRecord(tty string) {
 // keeps the client attached indefinitely. The detach always runs even when
 // ctx is already done — a dead caller context (the SIGHUP path) is exactly
 // the case this exists to recover from, so Close derives its own bounded
-// context rather than trusting the caller's. The record is deleted only once
-// the detach actually succeeds; on a detach failure it is left in place so
-// the startup sweep (rollout step 4), which reaps a record whose tty tmux
-// still lists, remains the backstop — deleting it here would hide from the
-// sweep that a client is still attached.
+// context rather than trusting the caller's. The record is deleted once the
+// detach succeeds OR the client turns out to already be gone
+// (errors.Is(err, ErrClientGone)) — the common case: when `claude` exits
+// normally, tmux tears the session and client down before `container exec`
+// even returns, so the detach this runs always finds them gone, and that is
+// success, not a failure to warn about and a record to strand. On any other
+// detach failure the record is left in place so the startup sweep (rollout
+// step 4), which reaps a record whose tty tmux still lists, remains the
+// backstop — deleting it here would hide from the sweep that a client is
+// still attached.
 func (a *Attachment) Close(ctx context.Context) error {
 	a.mu.Lock()
 	if a.closed {
@@ -221,13 +253,15 @@ func (a *Attachment) Close(ctx context.Context) error {
 	var err error
 	if tty := a.TTY(); tty != "" {
 		detachCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachTimeout)
-		err = a.tmux.DetachClient(detachCtx, a.container, tty)
+		detachErr := a.tmux.DetachClient(detachCtx, a.container, tty)
 		cancel()
-		if err == nil {
+		if detachErr == nil || errors.Is(detachErr, ErrClientGone) {
 			if rmErr := os.Remove(filepath.Join(a.dir, recordName(a.session, tty))); rmErr != nil &&
 				!errors.Is(rmErr, fs.ErrNotExist) {
 				err = rmErr
 			}
+		} else {
+			err = detachErr
 		}
 	}
 	a.releaseLock()
@@ -245,23 +279,28 @@ func (a *Attachment) releaseLock() {
 }
 
 // lockAttach takes an exclusive flock on <dir>/attach.lock, retrying until
-// the context is done or attachLockTimeout passes. Non-blocking + retry
-// rather than a blocking LOCK_EX because a blocking flock cannot be
-// cancelled, and a wedged peer must not hang the user's terminal forever.
-func lockAttach(ctx context.Context, dir string) (*os.File, error) {
+// the context is done or wait passes. Non-blocking + retry rather than a
+// blocking LOCK_EX because a blocking flock cannot be cancelled, and a
+// wedged peer must not hang the user's terminal forever.
+//
+// Failing to open the lock file at all (as opposed to failing to acquire it)
+// wraps ErrBookkeepingUnavailable: that is a local filesystem problem, not
+// contention with another attach, and callers downgrade it to a warning
+// rather than refusing the attach.
+func lockAttach(ctx context.Context, dir string, wait time.Duration) (*os.File, error) {
 	path := filepath.Join(dir, "attach.lock")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
-		return nil, fmt.Errorf("open attach lock %q: %w", path, err)
+		return nil, fmt.Errorf("open attach lock %q: %w: %w", path, ErrBookkeepingUnavailable, err)
 	}
-	deadline := time.Now().Add(attachLockTimeout)
+	deadline := time.Now().Add(wait)
 	for {
 		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
 			return f, nil
 		}
 		if ctx.Err() != nil || !time.Now().Before(deadline) {
 			_ = f.Close()
-			return nil, fmt.Errorf("attach lock %q busy after %s: another attach to this sandbox is starting", path, attachLockTimeout)
+			return nil, fmt.Errorf("attach lock %q busy after %s: another attach to this sandbox is starting", path, wait)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
