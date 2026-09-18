@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -1286,14 +1287,11 @@ func validateSandboxName(project, name string) error {
 	return nil
 }
 
-// sandboxContainerExists is a package seam so tests can script container
-// existence without shelling out to the container CLI.
-var sandboxContainerExists = containerExists
-
-// sandboxContainerRunning is a package seam reporting whether a container
-// that exists is also running. Separate from sandboxContainerExists because
-// the collision guard treats the two states completely differently.
-var sandboxContainerRunning = containerRunning
+// sandboxContainerState is a package seam so tests can script the substrate's
+// answer — existence, state, or a failure to read either — without shelling
+// out to the container CLI. One seam, because the collision guard has to make
+// its decision from one reading of the substrate.
+var sandboxContainerState = containerState
 
 // sandboxContainerRemove is a package seam that deletes a container by name.
 var sandboxContainerRemove = containerRemove
@@ -1315,9 +1313,25 @@ var sandboxContainerRemove = containerRemove
 // An explicitly named sandbox bypassed that entirely, which is the path
 // agents use by convention — descriptive names like issue-142 rather than
 // planet names.
+//
+// The one state that is reclaimed — rather than refused — is "stopped", and
+// it is reclaimed by destroying the container, so the rule is fail-closed:
+// only a state the substrate actually reported as stopped reclaims. An
+// inspect that failed, a record with no state word, or any other state
+// ("running", "stopping", a mid-create container, a word a future CLI grows)
+// refuses. A `cspace up` that refuses costs a retry; one that force-removes a
+// live sandbox costs whatever the agent inside it was doing.
 func ensureSandboxAvailable(ctx context.Context, out io.Writer, project, name string) error {
 	containerName := fmt.Sprintf("cspace-%s-%s", project, name)
-	if !sandboxContainerExists(ctx, containerName) {
+	exists, state, err := sandboxContainerState(ctx, containerName)
+	if err != nil {
+		// An unreadable substrate is not evidence that the name is free, and
+		// it is certainly not evidence that whatever holds it can be thrown
+		// away. Refuse, and say why the state could not be read.
+		return fmt.Errorf("%s\n  (its state could not be read: %w)",
+			sandboxNameTakenMessage(project, name), err)
+	}
+	if !exists {
 		return nil
 	}
 	// A stopped container of the same name is not the thing this guard
@@ -1333,14 +1347,23 @@ func ensureSandboxAvailable(ctx context.Context, out io.Writer, project, name st
 	//
 	// Reclaim it instead. `cspace up` provisions everything downstream from
 	// scratch anyway.
-	if !sandboxContainerRunning(ctx, containerName) {
-		_, _ = fmt.Fprintf(out, "[cspace] reclaiming the stopped container %s\n", containerName)
+	if strings.EqualFold(strings.TrimSpace(state), containerStateStopped) {
+		_, _ = fmt.Fprintf(out,
+			"[cspace] reclaiming the name %s: removing the stopped container, which destroys it "+
+				"and anything written into it outside the bind mounts\n", containerName)
 		if err := sandboxContainerRemove(ctx, containerName); err != nil {
 			return fmt.Errorf("remove the stopped container %s: %w", containerName, err)
 		}
 		return nil
 	}
-	return fmt.Errorf(
+	return errors.New(sandboxNameTakenMessage(project, name))
+}
+
+// sandboxNameTakenMessage is what `cspace up` says when it will not take a
+// name: one message for "a running container holds it" and for "the substrate
+// would not say what holds it", because the remedy is the same either way.
+func sandboxNameTakenMessage(project, name string) string {
+	return fmt.Sprintf(
 		"sandbox %s already exists for project %s.\n"+
 			"  attach to it:  cspace attach %s\n"+
 			"  or replace it: cspace down %s && cspace up %s",

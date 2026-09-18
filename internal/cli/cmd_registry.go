@@ -284,25 +284,69 @@ func runRegistryPrune(out io.Writer, dryRun bool) error {
 	return nil
 }
 
-// containerRunning reports whether a container exists AND is running.
-// `container inspect` carries the state at status.state; anything other than
-// "running" (stopped, and whatever future states the CLI grows) counts as
-// not running, because the callers all ask this to decide whether something
-// live would be disturbed.
-func containerRunning(ctx context.Context, name string) bool {
-	out, err := exec.CommandContext(ctx, "container", "inspect", name).Output()
-	if err != nil {
-		return false
+// containerStateStopped is the substrate's word for a container that exists
+// but is not running. `container inspect` carries it at status.state; every
+// other word the CLI reports ("running", "stopping", and whatever states it
+// grows) is something else, and callers that ask in order to decide whether
+// to destroy something must treat it as such.
+const containerStateStopped = "stopped"
+
+// containerState inspects a container once and reports whether it exists and
+// what state the substrate says it is in.
+//
+// One inspect, not two. Asking "does it exist?" and then "is it running?"
+// leaves a window where the second call fails transiently and the caller
+// reads that as "not running" — which, for the collision guard, means
+// force-removing a live sandbox. With a single call the outcome is either a
+// state that was actually read or an error, and there is no third answer to
+// misread.
+//
+// The three returns are mutually exclusive:
+//
+//   - (false, "", nil): the container does not exist; the name is free.
+//   - (true, state, nil): it exists, and `state` is what the substrate said
+//     (possibly "" if the record carried no state word).
+//   - (false, "", err): the substrate could not be read. Nothing may be
+//     inferred about the container from this — in particular not that it is
+//     absent, and not that it is safe to remove.
+//
+// A missing container exits non-zero on 1.x ("Error: container not found:
+// <name>"); 0.12.x exited 0 with the body "[]". Both are handled.
+func containerState(ctx context.Context, name string) (exists bool, state string, err error) {
+	cmd := exec.CommandContext(ctx, "container", "inspect", name)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if runErr := cmd.Run(); runErr != nil {
+		if isContainerNotFound(stderr.String()) {
+			return false, "", nil
+		}
+		return false, "", fmt.Errorf("container inspect %s: %w (stderr: %s)",
+			name, runErr, strings.TrimSpace(stderr.String()))
 	}
 	var records []struct {
 		Status struct {
 			State string `json:"state"`
 		} `json:"status"`
 	}
-	if err := json.Unmarshal(out, &records); err != nil || len(records) == 0 {
-		return false
+	if jsonErr := json.Unmarshal(stdout.Bytes(), &records); jsonErr != nil {
+		return false, "", fmt.Errorf("parse `container inspect %s` output: %w "+
+			"(cspace tested with Apple Container 1.x)", name, jsonErr)
 	}
-	return records[0].Status.State == "running"
+	if len(records) == 0 {
+		return false, "", nil
+	}
+	return true, records[0].Status.State, nil
+}
+
+// isContainerNotFound recognizes the substrate's "no such container" message,
+// which is the one non-zero exit that means the name is free rather than that
+// the substrate is unwell. 1.x's inspect says "container not found: <name>";
+// `container rm` reports the same condition as "notFound", so both spellings
+// are matched.
+func isContainerNotFound(stderr string) bool {
+	s := strings.ToLower(stderr)
+	return strings.Contains(s, "not found") || strings.Contains(s, "notfound")
 }
 
 // containerRemove deletes a container by name. Idempotent: a name that is
@@ -312,7 +356,7 @@ func containerRemove(ctx context.Context, name string) error {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		if strings.Contains(stderr.String(), "notFound") {
+		if isContainerNotFound(stderr.String()) {
 			return nil
 		}
 		return fmt.Errorf("container rm --force %s: %w (stderr: %s)",
