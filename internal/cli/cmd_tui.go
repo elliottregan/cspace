@@ -46,7 +46,7 @@ func newTuiCmd() *cobra.Command {
 				Home:       home,
 				Now:        time.Now,
 			})
-			actor := newTUIActor(adapter, reg, home)
+			actor := newTUIActor(ctrl, adapter, reg, home)
 			model := tui.NewModel(ctrl, actor, home, interval, time.Now)
 
 			prog := tea.NewProgram(model, tea.WithAltScreen())

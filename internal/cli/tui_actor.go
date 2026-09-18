@@ -3,10 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os/exec"
 	"strings"
 	"time"
@@ -18,18 +16,21 @@ import (
 	"github.com/elliottregan/cspace/internal/tui"
 )
 
-// tuiActor implements tui.Actor against the real host: attach via
-// tea.ExecProcess, down via teardownSandbox, send/interrupt/browser via HTTP
-// and the browser restart ladder. Constructed by cmd_tui.go.
+// tuiActor implements tui.Actor against the real host. Supervisor traffic
+// goes through internal/control so the CLI and the dashboard share one
+// implementation; attach stays here because it needs tea.ExecProcess to hand
+// the terminal to the child, and down still calls teardownSandbox directly.
+// home is kept for the attach lock and client records under
+// ~/.cspace/controlplane/. Constructed by cmd_tui.go.
 type tuiActor struct {
+	ctrl     *control.Client
 	adapter  *applecontainer.Adapter
 	registry *registry.Registry
 	home     string
-	client   *http.Client
 }
 
-func newTUIActor(a *applecontainer.Adapter, r *registry.Registry, home string) *tuiActor {
-	return &tuiActor{adapter: a, registry: r, home: home, client: &http.Client{Timeout: 10 * time.Second}}
+func newTUIActor(ctrl *control.Client, a *applecontainer.Adapter, r *registry.Registry, home string) *tuiActor {
+	return &tuiActor{ctrl: ctrl, adapter: a, registry: r, home: home}
 }
 
 // Attach joins the sandbox's tmux session through the same control-plane path
@@ -97,48 +98,20 @@ func (t *tuiActor) Down(row tui.Row) tea.Cmd {
 }
 
 func (t *tuiActor) Send(row tui.Row, text string) tea.Cmd {
-	url, token := row.ControlURL, row.Token
-	client := t.client
+	ctrl, project, name := t.ctrl, row.Project, row.Name
 	return func() tea.Msg {
-		body, _ := json.Marshal(map[string]string{"session": "primary", "text": text})
-		req, err := http.NewRequest(http.MethodPost, url+"/send", bytes.NewReader(body))
-		if err != nil {
-			return tui.Result("send", err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		if token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
-		}
-		return tui.Result("send", doExpect2xx(client, req))
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return tui.Result("send", ctrl.Send(ctx, project, name, "", text))
 	}
 }
 
 func (t *tuiActor) Interrupt(row tui.Row) tea.Cmd {
-	url, token := row.ControlURL, row.Token
-	client := t.client
+	ctrl, project, name := t.ctrl, row.Project, row.Name
 	return func() tea.Msg {
-		req, err := http.NewRequest(http.MethodPost, url+"/interrupt", nil)
-		if err != nil {
-			return tui.Result("interrupt", err)
-		}
-		if token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			return tui.Result("interrupt", err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-		body, _ := io.ReadAll(resp.Body)
-		// A 409 "no active task" is not an error — the agent was simply idle.
-		// Surface it as a benign (non-error) notice per the spec.
-		if resp.StatusCode == http.StatusConflict {
-			return tui.Result("interrupt", nil)
-		}
-		if resp.StatusCode/100 != 2 {
-			return tui.Result("interrupt", fmt.Errorf("status %d: %s", resp.StatusCode, agentErrorText(body)))
-		}
-		return tui.Result("interrupt", nil)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return tui.Result("interrupt", ctrl.Interrupt(ctx, project, name))
 	}
 }
 
@@ -154,19 +127,4 @@ func (t *tuiActor) RestartBrowser(row tui.Row) tea.Cmd {
 		_, err := restartBrowserFn(ctx, project, "")
 		return tui.Result("browser restart", err)
 	}
-}
-
-// doExpect2xx runs req and returns nil on a 2xx, else an error carrying the
-// server's error text (mirrors agentErrorText for a clean footer message).
-func doExpect2xx(client *http.Client, req *http.Request) error {
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("status %d: %s", resp.StatusCode, agentErrorText(body))
-	}
-	return nil
 }

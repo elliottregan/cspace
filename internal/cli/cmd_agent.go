@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/elliottregan/cspace/internal/control"
 )
 
 // agentClientTimeout bounds each /status and /interrupt round trip to a
@@ -161,11 +162,5 @@ func runAgentInterrupt(ctx context.Context, out io.Writer, project, sandbox stri
 // Anything else (e.g. a plain-text http.Error body) falls back to the
 // trimmed raw body.
 func agentErrorText(body []byte) string {
-	var parsed struct {
-		Error string `json:"error"`
-	}
-	if err := json.Unmarshal(body, &parsed); err == nil && parsed.Error != "" {
-		return parsed.Error
-	}
-	return strings.TrimSpace(string(body))
+	return control.ErrorText(body)
 }
