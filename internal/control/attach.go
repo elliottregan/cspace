@@ -18,6 +18,15 @@ import (
 // var so tests do not sit through it.
 var attachLockTimeout = 5 * time.Second
 
+// detachTimeout bounds the detach-client exec that Close runs, independent
+// of the caller's context. Close derives its own bounded context
+// (context.WithoutCancel(ctx) plus this timeout) rather than trusting the
+// caller's, because the caller's context being done — a dead host side, a
+// SIGHUP — is exactly the situation the detach exists to recover from; it
+// must not be skipped on the one path that needs it most. A var so tests do
+// not have to wait out the real value.
+var detachTimeout = 5 * time.Second
+
 // ClientRecord is the on-disk record of one live tmux client, written to
 // <ControlPlaneDir>/<session>.<tty>.json.
 //
@@ -118,6 +127,13 @@ func (a *Attachment) TTY() string {
 // `container exec` cannot ask, so the one tty that was not in the snapshot is
 // the answer — which only holds while no other attach can interleave, hence
 // the lock held across this whole window.
+//
+// It always records what it finds, regardless of whether Close has already
+// been called: `closed` exists purely to make Close idempotent, not to gate
+// discovery. Close always waits on trackDone before reading the tty, so a
+// discovery that races Close's start still gets recorded and detached —
+// skipping it here would silently strand the client tmux actually has, with
+// no record for the sweep to find later.
 func (a *Attachment) track(ctx context.Context, before []string) {
 	defer close(a.trackDone)
 	defer a.releaseLock()
@@ -136,14 +152,9 @@ func (a *Attachment) track(ctx context.Context, before []string) {
 					continue
 				}
 				a.mu.Lock()
-				closed := a.closed
-				if !closed {
-					a.tty = tty
-				}
+				a.tty = tty
 				a.mu.Unlock()
-				if !closed {
-					a.writeRecord(tty)
-				}
+				a.writeRecord(tty)
 				return
 			}
 		}
@@ -182,7 +193,14 @@ func (a *Attachment) writeRecord(tty string) {
 //
 // This is the step that makes a closed window actually end the guest-side
 // client: the host-side `container exec` dying never reaches tmux, which
-// keeps the client attached indefinitely.
+// keeps the client attached indefinitely. The detach always runs even when
+// ctx is already done — a dead caller context (the SIGHUP path) is exactly
+// the case this exists to recover from, so Close derives its own bounded
+// context rather than trusting the caller's. The record is deleted only once
+// the detach actually succeeds; on a detach failure it is left in place so
+// the startup sweep (rollout step 4), which reaps a record whose tty tmux
+// still lists, remains the backstop — deleting it here would hide from the
+// sweep that a client is still attached.
 func (a *Attachment) Close(ctx context.Context) error {
 	a.mu.Lock()
 	if a.closed {
@@ -199,17 +217,20 @@ func (a *Attachment) Close(ctx context.Context) error {
 		a.trackStop()
 	}
 	<-a.trackDone
-	a.releaseLock()
 
-	tty := a.TTY()
-	if tty == "" {
-		return nil
+	var err error
+	if tty := a.TTY(); tty != "" {
+		detachCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachTimeout)
+		err = a.tmux.DetachClient(detachCtx, a.container, tty)
+		cancel()
+		if err == nil {
+			if rmErr := os.Remove(filepath.Join(a.dir, recordName(a.session, tty))); rmErr != nil &&
+				!errors.Is(rmErr, fs.ErrNotExist) {
+				err = rmErr
+			}
+		}
 	}
-	err := a.tmux.DetachClient(ctx, a.container, tty)
-	if rmErr := os.Remove(filepath.Join(a.dir, recordName(a.session, tty))); rmErr != nil &&
-		!errors.Is(rmErr, fs.ErrNotExist) && err == nil {
-		err = rmErr
-	}
+	a.releaseLock()
 	return err
 }
 
