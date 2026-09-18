@@ -60,10 +60,13 @@ type Model struct {
 	snapErr  error
 	lastSnap time.Time
 
-	live     map[sandboxKey]liveState
-	memory   map[string]int64 // container name -> live usage bytes
-	ports    map[sandboxKey][]control.Port
-	portsErr error
+	live   map[sandboxKey]liveState
+	memory map[string]int64 // container name -> live usage bytes
+	ports  map[sandboxKey][]control.Port
+	// portsErr is keyed like ports: a failed probe belongs to the sandbox it
+	// failed for. One shared error made a sandbox that stopped between two
+	// slow ticks render "ports unavailable" in every other sandbox's band.
+	portsErr map[sandboxKey]error
 
 	events    []control.EventLine
 	eventsErr error
@@ -107,16 +110,17 @@ func New(data Data, actor Actor, keys KeyMap) Model {
 	ti.Placeholder = "message"
 	ti.CharLimit = 2000
 	return Model{
-		data:    data,
-		actor:   actor,
-		keys:    keys,
-		help:    help.New(),
-		now:     time.Now,
-		input:   ti,
-		spinner: spinner.New(spinner.WithSpinner(spinner.Dot)),
-		live:    map[sandboxKey]liveState{},
-		memory:  map[string]int64{},
-		ports:   map[sandboxKey][]control.Port{},
+		data:     data,
+		actor:    actor,
+		keys:     keys,
+		help:     help.New(),
+		now:      time.Now,
+		input:    ti,
+		spinner:  spinner.New(spinner.WithSpinner(spinner.Dot)),
+		live:     map[sandboxKey]liveState{},
+		memory:   map[string]int64{},
+		ports:    map[sandboxKey][]control.Port{},
+		portsErr: map[sandboxKey]error{},
 	}
 }
 
@@ -202,11 +206,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case slowMsg:
 		m.pollingSlow = false
+		// Ports first, then the snapshot: applySnapshot drops the entries
+		// this sample carries for rows its own, newer row set reports as
+		// stopped. The other order would let a sample taken against the
+		// previous row set reinstate them.
+		m.ports, m.portsErr = msg.ports, msg.portsErr
 		m.applySnapshot(msg.snap)
-		if msg.ports != nil {
-			m.ports = msg.ports
-		}
-		m.portsErr = msg.portsErr
 		return m, nil
 
 	case eventsMsg:
@@ -292,7 +297,32 @@ func (m *Model) applySnapshot(snap control.Snapshot) {
 	m.rows = snap.Rows
 	m.lastSnap = snap.TakenAt
 	m.memory = mergeMemory(m.memory, snap.Rows)
+	m.ports, m.portsErr = dropStalePorts(m.ports, m.portsErr, snap.Rows)
 	m.restoreSelection(prev)
+}
+
+// dropStalePorts keeps only the port lists — and port errors — that still
+// describe a live sandbox. Ports arrive on the slow cadence alone, so without
+// this a sandbox that stopped would keep advertising URLs that answer nothing
+// for up to a full slowInterval, and a probe error would outlive the row it
+// was about. Same rule mergeMemory applies to usage: a stopped row drops its
+// sample, and a row that vanished drops out entirely.
+func dropStalePorts(ports map[sandboxKey][]control.Port, errs map[sandboxKey]error, rows []control.Row) (map[sandboxKey][]control.Port, map[sandboxKey]error) {
+	outPorts := make(map[sandboxKey][]control.Port, len(ports))
+	outErrs := make(map[sandboxKey]error, len(errs))
+	for _, r := range rows {
+		if r.Kind != control.RowSandbox || r.State == control.StateStopped {
+			continue
+		}
+		k := keyOf(r)
+		if p, ok := ports[k]; ok {
+			outPorts[k] = p
+		}
+		if e, ok := errs[k]; ok {
+			outErrs[k] = e
+		}
+	}
+	return outPorts, outErrs
 }
 
 // mergeMemory carries live usage forward across the snapshots that skip
