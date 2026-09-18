@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
+	"github.com/elliottregan/cspace/internal/control"
 	"github.com/elliottregan/cspace/internal/registry"
 	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
 	"github.com/elliottregan/cspace/internal/tui"
@@ -38,9 +39,15 @@ func newTuiCmd() *cobra.Command {
 			reg := &registry.Registry{Path: regPath}
 			adapter := applecontainer.New()
 
-			poller := tui.NewPoller(adapter, reg, daemonBaseURL, time.Now)
+			ctrl := control.New(control.Options{
+				Containers: adapter,
+				Entries:    reg,
+				DaemonURL:  daemonBaseURL,
+				Home:       home,
+				Now:        time.Now,
+			})
 			actor := newTUIActor(adapter, reg, home)
-			model := tui.NewModel(poller, actor, home, interval, time.Now)
+			model := tui.NewModel(ctrl, actor, home, interval, time.Now)
 
 			prog := tea.NewProgram(model, tea.WithAltScreen())
 			_, err = prog.Run()

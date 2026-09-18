@@ -101,7 +101,7 @@ func (m Model) pollNowCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return snapshotMsg{snap: p.Poll(ctx)}
+		return snapshotMsg{snap: p.Snapshot(ctx)}
 	}
 }
 
