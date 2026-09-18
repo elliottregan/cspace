@@ -42,11 +42,12 @@ func newTuiCmd() *cobra.Command {
 			ctrl := control.New(control.Options{
 				Containers: adapter,
 				Entries:    reg,
+				Host:       newCLIHost(adapter, reg),
 				DaemonURL:  daemonBaseURL,
 				Home:       home,
 				Now:        time.Now,
 			})
-			actor := newTUIActor(ctrl, adapter, reg, home)
+			actor := newTUIActor(ctrl, home)
 			model := tui.NewModel(ctrl, actor, home, interval, time.Now)
 
 			prog := tea.NewProgram(model, tea.WithAltScreen())

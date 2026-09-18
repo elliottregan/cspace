@@ -1,36 +1,28 @@
 package cli
 
 import (
-	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"os/exec"
-	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/elliottregan/cspace/internal/control"
-	"github.com/elliottregan/cspace/internal/registry"
-	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
 	"github.com/elliottregan/cspace/internal/tui"
 )
 
-// tuiActor implements tui.Actor against the real host. Supervisor traffic
-// goes through internal/control so the CLI and the dashboard share one
-// implementation; attach stays here because it needs tea.ExecProcess to hand
-// the terminal to the child, and down still calls teardownSandbox directly.
-// home is kept for the attach lock and client records under
-// ~/.cspace/controlplane/. Constructed by cmd_tui.go.
+// tuiActor implements tui.Actor by delegating to internal/control, which owns
+// the one implementation of each action. Only Attach stays here: it needs
+// tea.ExecProcess to hand the terminal to the child, which is a Bubble Tea
+// concern and therefore not control's. home is kept for the attach lock and
+// client records under ~/.cspace/controlplane/. Constructed by cmd_tui.go.
 type tuiActor struct {
-	ctrl     *control.Client
-	adapter  *applecontainer.Adapter
-	registry *registry.Registry
-	home     string
+	ctrl *control.Client
+	home string
 }
 
-func newTUIActor(ctrl *control.Client, a *applecontainer.Adapter, r *registry.Registry, home string) *tuiActor {
-	return &tuiActor{ctrl: ctrl, adapter: a, registry: r, home: home}
+func newTUIActor(ctrl *control.Client, home string) *tuiActor {
+	return &tuiActor{ctrl: ctrl, home: home}
 }
 
 // Attach joins the sandbox's tmux session through the same control-plane path
@@ -80,20 +72,11 @@ func (t *tuiActor) Attach(row tui.Row) tea.Cmd {
 }
 
 func (t *tuiActor) Down(row tui.Row) tea.Cmd {
-	adapter, reg, project, name := t.adapter, t.registry, row.Project, row.Name
+	ctrl, project, name := t.ctrl, row.Project, row.Name
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		var buf bytes.Buffer
-		teardownSandbox(ctx, adapter, reg, project, name, &buf, true /* wipeState */)
-		// teardownSandbox has no return value and swallows the container Stop
-		// error; its only failure signal is warning text written to the
-		// captured writer (prefix "[cspace] warning:"). Surface those warnings
-		// instead of a false "down ok".
-		if strings.Contains(buf.String(), "warning:") {
-			return tui.Result("down", fmt.Errorf("%s", strings.TrimSpace(buf.String())))
-		}
-		return tui.Result("down", nil)
+		return tui.Result("down", ctrl.Down(ctx, project, name))
 	}
 }
 
@@ -115,16 +98,11 @@ func (t *tuiActor) Interrupt(row tui.Row) tea.Cmd {
 	}
 }
 
-// RestartBrowser restarts the project's shared browser sidecar via the same
-// seam the daemon's restart handler uses. Empty plVersion lets the ladder pin
-// the version from the running sidecar (sidecarVersion) or fall back to
-// defaultPlaywrightVersion. Uses restartBrowserFn (var-seam) so tests can fake it.
 func (t *tuiActor) RestartBrowser(row tui.Row) tea.Cmd {
-	project := row.Project
+	ctrl, project := t.ctrl, row.Project
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
-		_, err := restartBrowserFn(ctx, project, "")
-		return tui.Result("browser restart", err)
+		return tui.Result("browser restart", ctrl.RestartBrowser(ctx, project))
 	}
 }
