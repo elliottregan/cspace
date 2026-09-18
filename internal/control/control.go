@@ -20,9 +20,11 @@ const (
 	SessionShell  = "cspace-shell"
 
 	// TmuxConf is where the sandbox image puts cspace's tmux config. It is
-	// always passed with `tmux -f`, so ~/.tmux.conf and /etc/tmux.conf inside
-	// the sandbox are never read and no user binding can swallow a key the
-	// host meant for Claude.
+	// passed with `tmux -f` wherever a session might be created
+	// (new-session), so ~/.tmux.conf and /etc/tmux.conf inside the sandbox
+	// are never read and no user binding can swallow a key the host meant
+	// for Claude. list-clients and detach-client never start a server and so
+	// never need it.
 	TmuxConf = "/usr/local/etc/cspace-tmux.conf"
 
 	// Workspace is the sandbox's project directory, and the working
