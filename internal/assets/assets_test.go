@@ -2,8 +2,12 @@ package assets
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -207,5 +211,108 @@ func TestExtractTo_ReExtractsOnVersionChange(t *testing.T) {
 	}
 	if string(data) == "modified" {
 		t.Error("expected re-extraction to overwrite modified file")
+	}
+}
+
+// TestEmbeddedRuntimeCarriesTmuxConf — tmux.conf is the first file under
+// lib/runtime/ that is not a .sh, so no existing sync-embedded glob sweeps
+// it. Without its own cp rule the embedded tree (and therefore any
+// `cspace image build` outside a source checkout) silently loses it.
+func TestEmbeddedRuntimeCarriesTmuxConf(t *testing.T) {
+	runtimeFS, err := RuntimeFS()
+	if err != nil {
+		t.Fatalf("RuntimeFS() error: %v", err)
+	}
+	data, err := fs.ReadFile(runtimeFS, "tmux.conf")
+	if err != nil {
+		t.Fatalf("embedded runtime/tmux.conf missing: %v", err)
+	}
+	conf := string(data)
+
+	// extended-keys=on silently swallows Shift+Enter in CSI-u form; only
+	// `always` passes it through byte-for-byte. Verified on tmux 3.3a.
+	if !strings.Contains(conf, "set -g extended-keys always") {
+		t.Error("tmux.conf must set `extended-keys always`, not `on`")
+	}
+	// tmux 3.3a (bookworm) does not know extended-keys-format and rejects
+	// the line, which would poison the whole config. Matched as a directive
+	// on a non-comment line, not as a substring: the config's own header
+	// comment names the option to explain why it is absent, so a substring
+	// match would fail on that comment. `[^#\n]*` stops at the first `#`, so
+	// neither a full-line comment nor a trailing one can trigger this.
+	if regexp.MustCompile(`(?m)^[^#\n]*\bextended-keys-format\b`).MatchString(conf) {
+		t.Error("tmux.conf sets extended-keys-format, which tmux 3.3a rejects as invalid")
+	}
+	// The host owns every key: a prefix would eat one of Claude's.
+	if !strings.Contains(conf, "set -g prefix None") {
+		t.Error("tmux.conf must unset the prefix so the host owns every key")
+	}
+	if !strings.Contains(conf, "set -g status off") {
+		t.Error("tmux.conf must turn the status bar off")
+	}
+}
+
+// TestDockerfileCopiesEveryEmbeddedRuntimeFile guards the per-file COPY trap
+// (finding 2026-07-16-per-file-dockerfile-copy-and-gitignored-embedded-assets):
+// Apple Container's builder drops the contents of a whole-directory COPY, so
+// lib/templates/Dockerfile names runtime files one at a time. A file that
+// reaches the build context without a COPY line produces no build error —
+// just a missing file inside the sandbox at runtime.
+func TestDockerfileCopiesEveryEmbeddedRuntimeFile(t *testing.T) {
+	df, err := EmbeddedFS.ReadFile("embedded/templates/Dockerfile")
+	if err != nil {
+		t.Fatalf("embedded Dockerfile missing: %v", err)
+	}
+
+	// Collect every COPY source token: `COPY <src...> <dst>`, skipping
+	// --from=/--chown= flags and the final destination argument.
+	var sources []string
+	for _, line := range strings.Split(string(df), "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 3 || !strings.EqualFold(fields[0], "COPY") {
+			continue
+		}
+		for _, tok := range fields[1 : len(fields)-1] {
+			if strings.HasPrefix(tok, "--") {
+				continue
+			}
+			sources = append(sources, tok)
+		}
+	}
+
+	runtimeFS, err := RuntimeFS()
+	if err != nil {
+		t.Fatalf("RuntimeFS() error: %v", err)
+	}
+	err = fs.WalkDir(runtimeFS, ".", func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() {
+			return walkErr
+		}
+		want := "lib/runtime/" + p
+		for _, src := range sources {
+			if src == want {
+				return nil
+			}
+			if ok, _ := path.Match(src, want); ok {
+				return nil
+			}
+		}
+		t.Errorf("no COPY line in lib/templates/Dockerfile ships %s — Apple Container's builder does not recurse directory COPYs, so it will be missing from the image", want)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking the embedded runtime tree: %v", err)
+	}
+}
+
+// TestDockerfileInstallsTmux — the config is useless without the binary, and
+// the binary is what `cspace attach` probes for before choosing the tmux argv.
+func TestDockerfileInstallsTmux(t *testing.T) {
+	df, err := EmbeddedFS.ReadFile("embedded/templates/Dockerfile")
+	if err != nil {
+		t.Fatalf("embedded Dockerfile missing: %v", err)
+	}
+	if !regexp.MustCompile(`(?m)^\s+tmux\s+\\$`).Match(df) {
+		t.Error("Dockerfile's apt-get install block does not list tmux")
 	}
 }
