@@ -174,10 +174,12 @@ COPY lib/runtime/scripts/statusline.sh /usr/local/bin/cspace-statusline.sh
 RUN mkdir -p /usr/local/etc
 COPY lib/runtime/tmux.conf /usr/local/etc/cspace-tmux.conf
 RUN test -f /usr/local/etc/cspace-tmux.conf
+COPY lib/runtime/scripts/cspace-agent-state.sh /usr/local/bin/cspace-agent-state.sh
 
 RUN chmod +x /usr/local/bin/cspace-entrypoint.sh \
             /usr/local/bin/cspace-supervisor-loop.sh \
             /usr/local/bin/cspace-install-plugins.sh \
+            /usr/local/bin/cspace-agent-state.sh \
             /usr/local/bin/cspace-statusline.sh
 
 # Devcontainer feature scripts (node, python, common-utils, git, github-cli,
