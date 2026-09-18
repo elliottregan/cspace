@@ -218,6 +218,11 @@ func beginAttachOrWarn(ctx context.Context, warn io.Writer, tm *control.Tmux, ho
 // of the tmux client it left behind still runs while the container is
 // reachable.
 func runAttachChild(bin string, argv []string) (int, error) {
+	// `container exec -it` leaves O_NONBLOCK on the descriptors it was given,
+	// and they are the shell's as much as ours — hand them back blocking so
+	// nothing written to this terminal afterwards is silently truncated.
+	defer restoreBlockingStreams(os.Stdin, os.Stdout, os.Stderr)
+
 	child := exec.Command(bin, argv[1:]...)
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
