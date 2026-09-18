@@ -118,6 +118,12 @@ func (a *attachExec) SetStderr(w io.Writer) { a.stderr = w }
 // guest-side client: a host-side exit never reaches tmux, which would
 // otherwise keep the client attached indefinitely.
 func (a *attachExec) Run() error {
+	// The child gets cspace's own terminal descriptors and `container exec
+	// -it` hands them back non-blocking, which silently truncates the first
+	// repaint bubbletea writes after this returns. Give them back the way
+	// they were lent out, on every exit path.
+	defer restoreBlockingStreams(a.stdin, a.stdout, a.stderr)
+
 	if a.row.Container == "" {
 		// A row can reach here with no container when its sandbox is
 		// registered but not booted — refuse before the probe names a
