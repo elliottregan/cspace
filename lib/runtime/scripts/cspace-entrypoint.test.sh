@@ -2,10 +2,18 @@
 # Tests the settings.json seed in cspace-entrypoint.sh without running the
 # entrypoint itself (which wants sudo, iptables, dnsmasq and a network).
 #
-# The two heredocs are extracted from the script and re-rendered in a fresh
+# The JSON heredoc is extracted from the script and re-rendered in a fresh
 # bash with the variables the entrypoint would have set, then asserted with
 # jq. That catches the thing editing a JSON heredoc actually breaks: a stray
-# comma, a missing brace, a hook pointed at the wrong path.
+# comma, a missing brace, a hook pointed at the wrong path. The
+# cspace_hooks_block function is extracted separately and called directly, so
+# its own executable gate — not just the JSON it emits when the gate passes —
+# is exercised for real.
+#
+# Both extractions key off exact text staying unique in the entrypoint: the
+# HOOKS/JSON heredoc terminators, and the "cspace_hooks_block() {" / "}"
+# function boundary. If any of those stop being unique, extraction silently
+# grabs the wrong span instead of failing loudly.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/cspace-entrypoint.sh"
@@ -25,6 +33,12 @@ extract_heredoc() {
   sed -n "/<<$1\$/,/^$1\$/p" "$SCRIPT" | sed '1d;$d'
 }
 
+# extract_function <name> — the function body from "<name>() {" through the
+# matching closing "}" at column 0.
+extract_function() {
+  sed -n "/^$1() {\$/,/^}\$/p" "$SCRIPT"
+}
+
 # render <terminator> — re-run the heredoc in a fresh shell so ${vars} expand
 # exactly as they would at boot. Variables come from the environment.
 render() {
@@ -36,10 +50,27 @@ render() {
   bash "$TMP/render-$1.sh"
 }
 
-AGENT_STATE_CMD=/usr/local/bin/cspace-agent-state.sh
-export AGENT_STATE_CMD
-hooks="$(render HOOKS)"
-[ -n "$hooks" ] || fail "no HOOKS heredoc found in the entrypoint"
+FUNC_SRC="$(extract_function cspace_hooks_block)"
+[ -n "$FUNC_SRC" ] || fail "cspace_hooks_block function not found in the entrypoint"
+
+# call_hooks_block <cmd-arg> — defines the extracted cspace_hooks_block in a
+# fresh bash and calls it with $1 as the command path, so the function's own
+# "[ -x ]" gate runs for real rather than being assumed by the test.
+call_hooks_block() {
+  {
+    printf '%s\n' "$FUNC_SRC"
+    printf 'cspace_hooks_block %q\n' "$1"
+  } > "$TMP/call-hooks.sh"
+  bash "$TMP/call-hooks.sh"
+}
+
+# ── the executable branch: full nine-event hooks JSON ─────────────────────
+EXEC_CMD="$TMP/fake-agent-state.sh"
+: > "$EXEC_CMD"
+chmod +x "$EXEC_CMD"
+
+hooks="$(call_hooks_block "$EXEC_CMD")"
+[ -n "$hooks" ] || fail "cspace_hooks_block produced nothing for an executable command"
 
 export statusline_cmd=/usr/local/bin/cspace-statusline.sh
 export hooks_block="$hooks"
@@ -70,8 +101,8 @@ jq -e '[.hooks[] | length] | max == 1' "$TMP/settings.json" >/dev/null \
 
 # ── the state each event records ──────────────────────────────────────────
 check_state() {  # $1=event  $2=expected state
-  jq -e --arg e "$1" --arg s "$2" \
-    '.hooks[$e][0].hooks[0].command == "/usr/local/bin/cspace-agent-state.sh " + $s' \
+  jq -e --arg e "$1" --arg s "$2" --arg cmd "$EXEC_CMD" \
+    '.hooks[$e][0].hooks[0].command == $cmd + " " + $s' \
     "$TMP/settings.json" >/dev/null \
     || fail "$1 does not record '$2': $(jq -c --arg e "$1" '.hooks[$e]' "$TMP/settings.json")"
 }
@@ -100,16 +131,41 @@ jq -e '.hooks.Notification[0].matcher == "idle_prompt"' "$TMP/settings.json" >/d
 jq -e '.hooks.PostToolUse[0].matcher == "*"' "$TMP/settings.json" >/dev/null \
   || fail "PostToolUse does not match every tool"
 
-# ── with no state script in the image, the file is still valid JSON ───────
+# ── the six non-matcher events carry no matcher key at all ────────────────
+jq -e '[.hooks.SessionStart[0], .hooks.UserPromptSubmit[0], .hooks.PermissionRequest[0], .hooks.Stop[0], .hooks.StopFailure[0], .hooks.SessionEnd[0]] | all(has("matcher") | not)' "$TMP/settings.json" >/dev/null \
+  || fail "a non-matcher event carries a matcher key"
+
+# ── the gate closed: a non-executable file ─────────────────────────────────
 # An older/project image has no cspace-agent-state.sh; hooks pointed at a
-# missing binary would fail on every single turn and show a banner.
-export hooks_block=""
-render JSON > "$TMP/settings-nohooks.json"
-jq -e . "$TMP/settings-nohooks.json" >/dev/null \
-  || fail "settings.json is invalid JSON with an empty hooks block: $(cat "$TMP/settings-nohooks.json")"
-jq -e '.hooks == null' "$TMP/settings-nohooks.json" >/dev/null \
-  || fail "empty hooks block still produced a hooks key"
-jq -e '.statusLine.command == "/usr/local/bin/cspace-statusline.sh"' "$TMP/settings-nohooks.json" >/dev/null \
-  || fail "statusLine lost on the no-hooks path"
+# missing binary would fail on every single turn and show a banner. Exercise
+# the function's actual "[ -x ]" check, not a stand-in for it.
+NONEXEC_CMD="$TMP/fake-agent-state-nonexec.sh"
+: > "$NONEXEC_CMD"
+chmod -x "$NONEXEC_CMD"
+nonexec_out="$(call_hooks_block "$NONEXEC_CMD")"
+[ -z "$nonexec_out" ] || fail "cspace_hooks_block emitted something for a non-executable command: $nonexec_out"
+
+export hooks_block="$nonexec_out"
+render JSON > "$TMP/settings-nonexec.json"
+jq -e . "$TMP/settings-nonexec.json" >/dev/null \
+  || fail "settings.json is invalid JSON with a non-executable state script: $(cat "$TMP/settings-nonexec.json")"
+jq -e '.hooks == null' "$TMP/settings-nonexec.json" >/dev/null \
+  || fail "a non-executable state script still produced a hooks key"
+jq -e '.statusLine.command == "/usr/local/bin/cspace-statusline.sh"' "$TMP/settings-nonexec.json" >/dev/null \
+  || fail "statusLine lost on the non-executable path"
+
+# ── the gate closed: a path that doesn't exist at all ──────────────────────
+MISSING_CMD="$TMP/does-not-exist.sh"
+missing_out="$(call_hooks_block "$MISSING_CMD")"
+[ -z "$missing_out" ] || fail "cspace_hooks_block emitted something for a nonexistent command: $missing_out"
+
+export hooks_block="$missing_out"
+render JSON > "$TMP/settings-missing.json"
+jq -e . "$TMP/settings-missing.json" >/dev/null \
+  || fail "settings.json is invalid JSON with a missing state script: $(cat "$TMP/settings-missing.json")"
+jq -e '.hooks == null' "$TMP/settings-missing.json" >/dev/null \
+  || fail "a missing state script still produced a hooks key"
+jq -e '.statusLine.command == "/usr/local/bin/cspace-statusline.sh"' "$TMP/settings-missing.json" >/dev/null \
+  || fail "statusLine lost on the missing-script path"
 
 echo "PASS"

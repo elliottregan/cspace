@@ -115,24 +115,31 @@ statusline_cmd="/usr/local/bin/cspace-statusline.sh"
 # Emitted only when the state script is actually in the image: a project that
 # pins its own image has no /usr/local/bin/cspace-agent-state.sh, and hooks
 # pointed at a missing command fail on every turn with a visible banner.
-AGENT_STATE_CMD=/usr/local/bin/cspace-agent-state.sh
-hooks_block=""
-if [ -x "$AGENT_STATE_CMD" ]; then
-    hooks_block=$(cat <<HOOKS
+#
+# A function (not an inline if/heredoc) so the gate itself — not just the
+# JSON it emits when the gate passes — is something a test can call directly
+# and exercise for real, including the two ways it can be closed: a
+# non-executable file and a path that doesn't exist at all.
+cspace_hooks_block() {
+    local cmd="$1"
+    [ -x "$cmd" ] || return 0
+    cat <<HOOKS
   "hooks": {
-    "SessionStart": [{ "hooks": [{ "type": "command", "command": "${AGENT_STATE_CMD} starting" }] }],
-    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "${AGENT_STATE_CMD} working" }] }],
-    "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "${AGENT_STATE_CMD} working" }] }],
-    "PreToolUse": [{ "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": "${AGENT_STATE_CMD} needs-input" }] }],
-    "PermissionRequest": [{ "hooks": [{ "type": "command", "command": "${AGENT_STATE_CMD} needs-input" }] }],
-    "Notification": [{ "matcher": "idle_prompt", "hooks": [{ "type": "command", "command": "${AGENT_STATE_CMD} idle" }] }],
-    "Stop": [{ "hooks": [{ "type": "command", "command": "${AGENT_STATE_CMD} idle" }] }],
-    "StopFailure": [{ "hooks": [{ "type": "command", "command": "${AGENT_STATE_CMD} idle" }] }],
-    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "${AGENT_STATE_CMD} exited" }] }]
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "${cmd} starting" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "${cmd} working" }] }],
+    "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "${cmd} working" }] }],
+    "PreToolUse": [{ "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": "${cmd} needs-input" }] }],
+    "PermissionRequest": [{ "hooks": [{ "type": "command", "command": "${cmd} needs-input" }] }],
+    "Notification": [{ "matcher": "idle_prompt", "hooks": [{ "type": "command", "command": "${cmd} idle" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "${cmd} idle" }] }],
+    "StopFailure": [{ "hooks": [{ "type": "command", "command": "${cmd} idle" }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "${cmd} exited" }] }]
   },
 HOOKS
-)
-fi
+}
+
+AGENT_STATE_CMD=/usr/local/bin/cspace-agent-state.sh
+hooks_block=$(cspace_hooks_block "$AGENT_STATE_CMD")
 
 cat > "$SETTINGS_JSON" <<JSON
 {
