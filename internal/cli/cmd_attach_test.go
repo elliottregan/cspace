@@ -130,7 +130,7 @@ func TestAttachInteractiveAbortsWhenTheTmuxProbeFails(t *testing.T) {
 // degrade to a warning and an inert attachment, not refuse the whole attach.
 func TestBeginAttachOrWarnFallsBackWhenHomeUnavailable(t *testing.T) {
 	var buf bytes.Buffer
-	att, warned, err := beginAttachOrWarn(context.Background(), &buf,
+	att, warned, err := beginAttachOrWarn(context.Background(), &buf, defaultTmux,
 		"", errors.New("$HOME is not defined"),
 		"proj", "sandbox-home-fail", "cspace-proj-sandbox-home-fail", control.SessionClaude)
 	if err != nil {
@@ -160,7 +160,7 @@ func TestBeginAttachOrWarnFallsBackWhenControlPlaneDirUnusable(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	att, warned, err := beginAttachOrWarn(context.Background(), &buf,
+	att, warned, err := beginAttachOrWarn(context.Background(), &buf, defaultTmux,
 		fakeHome, nil,
 		"proj", "sandbox-dir-fail", "cspace-proj-sandbox-dir-fail", control.SessionClaude)
 	if err != nil {
