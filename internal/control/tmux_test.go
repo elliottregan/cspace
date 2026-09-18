@@ -3,11 +3,30 @@ package control
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+// fakeContainerBinary puts an executable named "container" at the front of
+// PATH for the duration of the test, standing in for the real Apple
+// Container CLI so CLIExecer.Exec (which shells out to it by name) can be
+// tested without it. script is the body of a POSIX shell script; it sees
+// argv as "$@" the way a real `container exec <container> <cmdline…>` call
+// would.
+func fakeContainerBinary(t *testing.T, script string) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "container")
+	body := "#!/bin/sh\n" + script + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatalf("write fake container binary: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
 
 // fakeExec is the substrate stand-in for every test in this package: it
 // records each command it was asked to run and replies from a script keyed by
@@ -235,5 +254,52 @@ func TestDetachClientRecognizesAGoneClient(t *testing.T) {
 				t.Errorf("DetachClient() error = %v, want it to wrap ErrClientGone for tmux output %q", err, out)
 			}
 		})
+	}
+}
+
+// TestCLIExecerReportsUnreachableContainerAsTransportError — finding from
+// Task 9's manual verification (Step 13): a stopped or removed container
+// makes `container exec` itself fail, before it ever reaches the guest.
+// Apple Container 1.3.0 reports that as a non-zero exit with a stderr line
+// it writes itself, prefixed "Error: " ("Error: get failed: container …
+// not found", "Error: container … is not running") — indistinguishable
+// from an ordinary guest non-zero exit unless Exec looks at the prefix.
+// Present() must see this as a transport error (Execer's own contract), not
+// silently read it as "no tmux" and send attachInteractive down the
+// no-tmux fallback while naming the wrong problem.
+func TestCLIExecerReportsUnreachableContainerAsTransportError(t *testing.T) {
+	cases := []struct {
+		name   string
+		stderr string
+	}{
+		{"removed", "Error: get failed: container cspace-demo-mercury not found"},
+		{"stopped", "Error: container cspace-demo-mercury is not running"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fakeContainerBinary(t, "echo '"+c.stderr+"' >&2\nexit 1")
+			_, _, err := CLIExecer{}.Exec(context.Background(), "cspace-demo-mercury", []string{"sh", "-c", "command -v tmux"})
+			if err == nil {
+				t.Fatal("Exec() error = nil, want the unreachable-container failure surfaced")
+			}
+			if !strings.Contains(err.Error(), c.stderr) {
+				t.Errorf("error = %q, want it to contain the CLI's own message %q", err.Error(), c.stderr)
+			}
+		})
+	}
+}
+
+// TestCLIExecerTreatsGuestNonZeroExitAsOrdinary — the flip side: a guest
+// command (the shell's `command -v`, tmux itself) exiting non-zero is not a
+// transport failure and must not be promoted into one, or Present() would
+// never see a legitimate "no tmux" answer again.
+func TestCLIExecerTreatsGuestNonZeroExitAsOrdinary(t *testing.T) {
+	fakeContainerBinary(t, "exit 1") // `command -v tmux` found nothing: silent, exit 1
+	_, code, err := CLIExecer{}.Exec(context.Background(), "cspace-demo-mercury", []string{"sh", "-c", "command -v tmux"})
+	if err != nil {
+		t.Fatalf("Exec() error = %v, want nil for an ordinary guest non-zero exit", err)
+	}
+	if code != 1 {
+		t.Errorf("code = %d, want 1", code)
 	}
 }
