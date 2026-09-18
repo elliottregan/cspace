@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/elliottregan/cspace/internal/config"
+	"github.com/elliottregan/cspace/internal/control"
 	"github.com/elliottregan/cspace/internal/credentials"
 	"github.com/elliottregan/cspace/internal/devcontainer"
 	"github.com/elliottregan/cspace/internal/overlay"
@@ -405,7 +406,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// colors while the same terminal gives it 16.7M outside. Seeded
 			// before --env so an explicit override still wins, and it never
 			// displaces a value the project already set.
-			applyTerminalEnv(env, os.Getenv("TERM"), os.Getenv("COLORTERM"))
+			control.ApplyTerminalEnv(env, os.Getenv("TERM"), os.Getenv("COLORTERM"))
 
 			// CLI --env flag wins over secrets file (used for spike-test
 			// injection like CSPACE_BROWSER_CDP_URL).
@@ -900,10 +901,10 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// Auto-attach: drop the user into an interactive claude
 			// session inside the sandbox. The defer above will fire
 			// during return and tear down the overlay + flush buffered
-			// output to realOut BEFORE attachInteractive replaces the
-			// process with `container exec -it ... claude`. Skipped
-			// when --no-attach, when stdout isn't a TTY (CI / piped),
-			// or after any error path.
+			// output to realOut BEFORE attachInteractive runs
+			// `container exec -it ... claude` as a foreground child.
+			// Skipped when --no-attach, when stdout isn't a TTY (CI /
+			// piped), or after any error path.
 			if !noAttach && isStdoutTTY() {
 				// Tear down overlay + flush captured output now so the
 				// success line lands on the real terminal before we
@@ -915,7 +916,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 					_, _ = io.Copy(realOut, &pendingOut)
 					teaDone = nil // mark cleanup as done so the defer no-ops
 				}
-				return attachInteractive(containerName)
+				return attachInteractive(cmd.Context(), cmd.ErrOrStderr(), project, name, containerName, true)
 			}
 			return nil
 		},

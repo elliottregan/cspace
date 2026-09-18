@@ -1,23 +1,37 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
-	"sort"
-	"strings"
+	"os/signal"
 	"syscall"
+	"time"
 
+	"github.com/elliottregan/cspace/internal/control"
 	"github.com/spf13/cobra"
 )
 
+// defaultTmux is the process-wide tmux driver: it memoizes the per-sandbox
+// presence probe, so the first attach pays for it and nothing else does.
+var defaultTmux = control.NewTmux()
+
 func newAttachCmd() *cobra.Command {
-	return &cobra.Command{
+	var noTmux bool
+
+	cmd := &cobra.Command{
 		Use:   "attach <name>",
 		Short: "Open an interactive Claude Code session inside a running sandbox",
 		Long: `Drop into an interactive ` + "`claude`" + ` session running inside the named
 sandbox. Workspace is /workspace; your turns and the agent's output
 appear in your terminal directly.
+
+The session runs inside a tmux session in the sandbox, so closing this
+window leaves it running and the next ` + "`cspace attach`" + ` rejoins it
+with its screen intact.
 
 This is independent of the supervisor's autonomous session — they
 share the same /workspace but are separate Claude Code sessions
@@ -33,119 +47,221 @@ hands-on work.`,
 			name := args[0]
 			project := projectName()
 			containerName := fmt.Sprintf("cspace-%s-%s", project, name)
-			return attachInteractive(containerName)
+			return attachInteractive(cmd.Context(), cmd.ErrOrStderr(), project, name, containerName, !noTmux)
 		},
 	}
+
+	// Undocumented on purpose (the design's open question 3): it exists only
+	// until no sandbox image without tmux is in use, and then it goes.
+	cmd.Flags().BoolVar(&noTmux, "no-tmux", false,
+		"attach without tmux; the session does not survive this window closing")
+	_ = cmd.Flags().MarkHidden("no-tmux")
+	return cmd
 }
 
-// attachInteractive replaces the current process with `container exec
-// -it <containerName> claude`, so the user's terminal is wired
-// directly to the in-sandbox Claude Code TUI. On return, the user has
-// dropped back to the host shell.
+// attachInteractive runs `container exec -it … tmux new-session -A …` as a
+// foreground child and, when it ends, detaches the tmux client it created.
 //
-// We use syscall.Exec rather than cmd.Run so signals (Ctrl-C, resize)
-// flow uninterrupted — there's no Go process between the terminal and
-// the `container exec` child to trap them.
-func attachInteractive(containerName string) error {
-	bin, argv, err := attachArgs(containerName)
+// It used to syscall.Exec, which was simpler and wrong. A dead host side
+// never reaches the guest: the exec'd `claude` was still alive 30 s after its
+// host terminal closed, and with tmux the client it left behind stays
+// attached indefinitely. Running the exec as a child is what leaves a process
+// alive to do the detach — so cspace stays in place, forwards the terminal's
+// signals, and exits with the child's status.
+// (cs-finding:2026-09-17-attach-orphans-claude-when-the-host-terminal-closes)
+func attachInteractive(ctx context.Context, warn io.Writer, project, sandbox, containerName string, wantTmux bool) error {
+	useTmux := false
+	warned := false
+	if wantTmux {
+		probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		present, presentErr := defaultTmux.Present(probeCtx, containerName)
+		cancel()
+		if presentErr != nil {
+			// A transport error means we could not learn whether tmux is
+			// there, not that it isn't — falling back to a direct exec
+			// would just hit the same transport failure a moment later, so
+			// there is nothing useful to fall back to.
+			return fmt.Errorf("cannot reach sandbox %s to probe for tmux: %w", sandbox, presentErr)
+		}
+		useTmux = present
+		if !useTmux {
+			_, _ = fmt.Fprintf(warn,
+				"warning: this sandbox has no tmux, so the session will not survive this window closing — and `claude` will keep running inside the sandbox when it does. Rebuild the image with `cspace image build`, then `cspace down %s && cspace up %s`.\n",
+				sandbox, sandbox)
+			warned = true
+		}
+	}
+
+	spec := control.ClaudeAttach(containerName, useTmux)
+	bin, argv, err := control.AttachArgv(spec)
 	if err != nil {
 		return err
 	}
-	// Clear the terminal before claude takes over so the user gets a
-	// clean screen instead of opening claude on top of their pre-
-	// cspace-up shell history. \033c is the full reset (clear screen +
-	// scrollback + cursor home + reset attributes); claude immediately
-	// repaints over it. Stdout-only — stderr stays usable for diagnostics.
-	if isStdoutTTY() {
+
+	home, homeErr := os.UserHomeDir()
+	att, bookkeepingWarned, err := beginAttachOrWarn(ctx, warn, home, homeErr, project, sandbox, containerName, spec.Session)
+	if err != nil {
+		return err
+	}
+	warned = warned || bookkeepingWarned
+
+	// Skip the reset whenever this attach has already printed a warning to
+	// `warn` (the no-tmux fallback above, or beginAttachOrWarn's bookkeeping
+	// warning): \033c clears scrollback too, and claude's immediate repaint
+	// would erase the warning before the user has a chance to read it. Still
+	// reset when nothing was printed — the ordinary tmux path, and the
+	// explicit --no-tmux path (wantTmux is already false, so nothing above
+	// runs).
+	if isStdoutTTY() && !warned {
 		_, _ = os.Stdout.WriteString("\033c")
 	}
-	return syscall.Exec(bin, argv, os.Environ())
+
+	// SIGINT/SIGTERM/SIGHUP must not kill cspace between here and the end of
+	// Close: runAttachChild has its own signal.Notify covering only the
+	// child's lifetime, and its deferred signal.Stop fires the moment the
+	// child exits — exactly when Close's up-to-15s detach exec starts.
+	// Without an overlapping registration here, one of those signals
+	// arriving during that window would fall back to Go's default
+	// disposition (terminate) and the tmux-client detach would never run.
+	// This registration does not need to act on anything: runAttachChild's
+	// own handler already forwards what needs forwarding while the child is
+	// alive, and Close does not respond to host signals at all — it just
+	// has to survive one. Multiple signal.Notify registrations for the same
+	// signal coexist fine; this one is never drained, which is deliberate.
+	sigs := make(chan os.Signal, 8)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigs)
+
+	code, runErr := runAttachChild(bin, argv)
+
+	// The detach gets its own context: the caller's may already be cancelled
+	// by whatever ended the session, and this is the one thing that must
+	// still run.
+	detachCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if closeErr := att.Close(detachCtx); closeErr != nil {
+		_, _ = fmt.Fprintf(warn, "warning: detaching this sandbox's tmux client failed: %v\n", closeErr)
+	}
+
+	if runErr != nil {
+		return runErr
+	}
+	if code != 0 {
+		return ExitError{Code: code}
+	}
+	return nil
 }
 
-// attachArgs resolves the container binary and builds the exec argv shared by
-// both attach paths (CLI syscall.Exec and TUI tea.ExecProcess), so they stay
-// identical. argv[0] is the literal "container" per exec convention.
+// beginAttachOrWarn opens the attach's control-plane bookkeeping
+// (control.BeginAttach) under the given home directory, downgrading two
+// classes of failure to a one-line warning plus an inert attachment instead
+// of refusing the whole attach:
 //
-// --dangerously-skip-permissions matches the v0 default: sandboxes are
-// isolated, so the per-tool confirmation prompts that protect host-shell
-// users just get in the way. The supervisor's non-interactive runner already
-// passes bypassPermissions; this makes the interactive path consistent.
-func attachArgs(containerName string) (bin string, argv []string, err error) {
-	bin, err = exec.LookPath("container")
+//   - homeErr non-nil (home is then ignored) — resolving the host home
+//     directory failed, so there is nowhere to put the lock/records at all.
+//     Callers that already know their home directory (the TUI resolves it
+//     once at startup and refuses to launch if that fails) pass nil here.
+//   - BeginAttach itself reporting control.ErrBookkeepingUnavailable — the
+//     control-plane directory or its lock file could not be created/opened
+//     (a permissions problem, a full disk).
+//
+// A busy lock (another attach's window still open) is not downgraded:
+// BeginAttach reports that as a plain error and this still refuses, since
+// guessing the wrong tty out from under a concurrent attach is exactly what
+// the lock exists to prevent.
+//
+// The returned bool reports whether a warning was written to warn, so the
+// caller can skip its post-attach screen reset rather than erase it.
+func beginAttachOrWarn(ctx context.Context, warn io.Writer, home string, homeErr error, project, sandbox, container, session string) (*control.Attachment, bool, error) {
+	const bookkeepingWarning = "warning: attach bookkeeping unavailable: %v; this session's tmux client will not be detached automatically\n"
+
+	if homeErr != nil {
+		_, _ = fmt.Fprintf(warn, bookkeepingWarning, homeErr)
+		att, err := control.BeginAttach(ctx, defaultTmux, container, "", "")
+		return att, true, err
+	}
+
+	dir := control.ControlPlaneDir(home, project, sandbox)
+	att, err := control.BeginAttach(ctx, defaultTmux, container, dir, session)
 	if err != nil {
-		return "", nil, fmt.Errorf("apple `container` CLI not on PATH: %w", err)
-	}
-	argv = []string{"container", "exec", "-it"}
-	argv = append(argv, terminalEnvArgs(os.Getenv("TERM"), os.Getenv("COLORTERM"))...)
-	argv = append(argv, containerName, "claude", "--dangerously-skip-permissions")
-	return bin, argv, nil
-}
-
-// terminalEnv reports the TERM/COLORTERM a sandbox should see, given the
-// host terminal's own values.
-//
-// Programs pick a palette by reading these two variables — there is no way to
-// ask a terminal what it supports. Apple Container injects a bare TERM=xterm
-// when it allocates a TTY and never sets COLORTERM, which Node's color
-// detection reads as 16 colors. Measured in a real sandbox: TERM=xterm alone
-// yields 16, xterm-256color yields 256, and adding COLORTERM=truecolor yields
-// 16.7M. That is why Claude's palette flattens inside a sandbox while the same
-// terminal renders it fully outside — nothing in the PTY strips color, the
-// program simply chooses fewer colors.
-//
-// TERM is not forwarded verbatim. The sandbox's terminfo database is Debian's,
-// and an entry it lacks (xterm-ghostty, say) breaks every ncurses program in
-// there with "unknown terminal type" — Claude survives it, `less` and `vim` do
-// not. Anything unrecognized is mapped to xterm-256color, which Debian ships.
-// COLORTERM is forwarded as-is: claiming truecolor the host never claimed
-// would be inventing capability.
-func terminalEnv(term, colorterm string) map[string]string {
-	// "dumb" and unset both mean "not an interactive terminal" — output is
-	// being captured, and escape codes would be noise in whatever captures it.
-	if term == "" || term == "dumb" {
-		return map[string]string{}
-	}
-	out := map[string]string{"TERM": sandboxTERM(term)}
-	if colorterm != "" {
-		out["COLORTERM"] = colorterm
-	}
-	return out
-}
-
-// sandboxTERM maps a host TERM onto one the sandbox's terminfo database
-// actually carries.
-func sandboxTERM(term string) string {
-	if strings.HasSuffix(term, "-256color") {
-		return term
-	}
-	return "xterm-256color"
-}
-
-// applyTerminalEnv seeds the container's env with the terminal description,
-// leaving any value already there alone. Baking it at create time covers the
-// paths attach's per-exec flags don't: a hand-rolled `container exec`, and the
-// container's own main process. Apple Container only injects its TERM=xterm
-// default when nothing is set, so a baked value survives a TTY exec.
-func applyTerminalEnv(env map[string]string, term, colorterm string) {
-	for k, v := range terminalEnv(term, colorterm) {
-		if _, exists := env[k]; !exists {
-			env[k] = v
+		if errors.Is(err, control.ErrBookkeepingUnavailable) {
+			_, _ = fmt.Fprintf(warn, bookkeepingWarning, err)
+			att, err := control.BeginAttach(ctx, defaultTmux, container, "", "")
+			return att, true, err
 		}
+		return nil, false, err
 	}
+	return att, false, nil
 }
 
-// terminalEnvArgs renders terminalEnv as `container exec` flags, ordered by
-// key so argv is deterministic.
-func terminalEnvArgs(term, colorterm string) []string {
-	env := terminalEnv(term, colorterm)
-	keys := make([]string, 0, len(env))
-	for k := range env {
-		keys = append(keys, k)
+// runAttachChild runs the attach argv wired straight to this process's
+// terminal and reports the child's exit status.
+//
+// The child shares stdin/stdout/stderr — the real tty — so `container exec
+// -it` puts that terminal into raw mode itself and keystrokes reach the guest
+// as bytes rather than as host-side signals. exec.Command is not given a
+// Setpgid, so the child stays in cspace's own process group and controlling
+// tty: the kernel delivers Ctrl-C (SIGINT) and window resizes (SIGWINCH) to
+// that whole foreground process group directly, the child included, so
+// relaying either one here would only deliver it twice. SIGINT is still in
+// the Notify set below, but only so Go's default handling — which would kill
+// cspace outright — doesn't fire before the child exits and Close can run;
+// once received it is otherwise ignored. SIGTERM is forwarded because it
+// arrives by pid, so only cspace gets it and the child would never see it
+// otherwise. SIGHUP means the terminal itself is gone: the child is signalled
+// and, after a grace period, killed, so Wait returns and the caller's detach
+// of the tmux client it left behind still runs while the container is
+// reachable.
+func runAttachChild(bin string, argv []string) (int, error) {
+	child := exec.Command(bin, argv[1:]...)
+	child.Stdin = os.Stdin
+	child.Stdout = os.Stdout
+	child.Stderr = os.Stderr
+
+	sigs := make(chan os.Signal, 8)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigs)
+
+	if err := child.Start(); err != nil {
+		return 0, fmt.Errorf("start %s: %w", bin, err)
 	}
-	sort.Strings(keys)
-	args := make([]string, 0, len(keys)*2)
-	for _, k := range keys {
-		args = append(args, "-e", k+"="+env[k])
+
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case sig := <-sigs:
+				switch sig {
+				case syscall.SIGHUP:
+					// Nothing can be typed into the child any more. Ask it to
+					// go, then insist, so Wait returns and the detach runs
+					// while the container is still reachable.
+					_ = child.Process.Signal(syscall.SIGHUP)
+					time.AfterFunc(2*time.Second, func() { _ = child.Process.Kill() })
+				case syscall.SIGINT:
+					// The kernel already delivered this to the child
+					// directly (same process group, same controlling tty).
+					// Nothing to relay — this case exists only to keep
+					// receiving it above from killing cspace.
+				default:
+					// SIGTERM: arrives by pid, so cspace has to pass it on.
+					_ = child.Process.Signal(sig)
+				}
+			}
+		}
+	}()
+
+	err := child.Wait()
+	close(done)
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode(), nil
 	}
-	return args
+	if err != nil {
+		return 0, fmt.Errorf("attach to sandbox: %w", err)
+	}
+	return 0, nil
 }

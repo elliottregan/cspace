@@ -56,6 +56,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 #   - jq / ripgrep: agent essentials (Claude Code uses rg heavily; jq in shell tooling)
 #   - python3: hook scripts + occasional agent use (slim, no build-essential)
 #   - gh: GitHub CLI for agent ops
+#   - tmux: persistent in-sandbox sessions — `cspace attach` runs inside one so
+#     a closed host window does not end (or orphan) the session
 #
 # DROPPED from previous fat image (now project's job via devcontainer features
 # or their own image): Go toolchain, pnpm 10 global, build-essential,
@@ -75,6 +77,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     ripgrep \
     sudo \
+    tmux \
     unzip \
  && rm -rf /var/lib/apt/lists/*
 
@@ -164,9 +167,19 @@ COPY lib/runtime/scripts/cspace-entrypoint.sh /usr/local/bin/cspace-entrypoint.s
 COPY lib/runtime/scripts/cspace-supervisor-loop.sh /usr/local/bin/cspace-supervisor-loop.sh
 COPY lib/runtime/scripts/cspace-install-plugins.sh /usr/local/bin/cspace-install-plugins.sh
 COPY lib/runtime/scripts/statusline.sh /usr/local/bin/cspace-statusline.sh
+
+# tmux config for in-sandbox sessions. Passed explicitly with `tmux -f` by
+# every cspace attach, so ~/.tmux.conf inside the sandbox is never consulted
+# and a stray user binding can never swallow one of Claude's keys.
+RUN mkdir -p /usr/local/etc
+COPY lib/runtime/tmux.conf /usr/local/etc/cspace-tmux.conf
+RUN test -f /usr/local/etc/cspace-tmux.conf
+COPY lib/runtime/scripts/cspace-agent-state.sh /usr/local/bin/cspace-agent-state.sh
+
 RUN chmod +x /usr/local/bin/cspace-entrypoint.sh \
             /usr/local/bin/cspace-supervisor-loop.sh \
             /usr/local/bin/cspace-install-plugins.sh \
+            /usr/local/bin/cspace-agent-state.sh \
             /usr/local/bin/cspace-statusline.sh
 
 # Devcontainer feature scripts (node, python, common-utils, git, github-cli,

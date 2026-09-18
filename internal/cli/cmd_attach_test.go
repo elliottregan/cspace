@@ -1,176 +1,178 @@
 package cli
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/elliottregan/cspace/internal/control"
 )
 
-func TestAttachArgs(t *testing.T) {
-	// Pin the terminal env: argv now carries it, and the developer's own
-	// terminal must not decide what this test expects.
-	t.Setenv("TERM", "xterm-256color")
-	t.Setenv("COLORTERM", "")
+// fakeExecer is a control.Execer stand-in for tests that need to drive
+// defaultTmux's probe without a real `container` CLI. It always reports the
+// same (stdout, exitCode, err) triple regardless of what it's asked to run.
+type fakeExecer struct {
+	stdout   string
+	exitCode int
+	err      error
+}
 
-	bin, argv, err := attachArgs("cspace-demo-mercury")
+func (f fakeExecer) Exec(context.Context, string, []string) (string, int, error) {
+	return f.stdout, f.exitCode, f.err
+}
+
+// withFakeExec swaps defaultTmux.Exec for the duration of a test and
+// restores it afterward. defaultTmux is a process-wide var shared by every
+// test in this package, so callers must use a container name unique to the
+// test — Present's memoization is per-container and would otherwise leak a
+// cached answer from an unrelated test.
+func withFakeExec(t *testing.T, e control.Execer) {
+	t.Helper()
+	orig := defaultTmux.Exec
+	defaultTmux.Exec = e
+	t.Cleanup(func() { defaultTmux.Exec = orig })
+}
+
+// Signal delivery (SIGINT/SIGTERM/SIGWINCH reaching the child, absorbing
+// SIGINT here) and the SIGHUP signal-then-kill escalation are not
+// unit-tested: they depend on a controlling terminal and process-group
+// semantics that a `go test` process doesn't have. They are covered by Task
+// 9's manual verification instead.
+
+// TestRunAttachChildPropagatesExitStatus — attach stopped being a
+// syscall.Exec, so the child's status has to travel back out by hand or an
+// interactive `claude` that exits 1 would look like a success.
+func TestRunAttachChildPropagatesExitStatus(t *testing.T) {
+	code, err := runAttachChild("/bin/sh", []string{"sh", "-c", "exit 7"})
 	if err != nil {
-		// container may not be on PATH in CI; only assert argv shape then.
-		t.Skipf("container CLI not resolvable: %v", err)
+		t.Fatalf("runAttachChild() error: %v", err)
 	}
-	if !strings.HasSuffix(bin, "container") {
-		t.Errorf("bin = %q, want it to resolve the container binary", bin)
-	}
-	want := []string{
-		"container", "exec", "-it",
-		"-e", "TERM=xterm-256color",
-		"cspace-demo-mercury", "claude", "--dangerously-skip-permissions",
-	}
-	if len(argv) != len(want) {
-		t.Fatalf("argv = %v, want %v", argv, want)
-	}
-	for i := range want {
-		if argv[i] != want[i] {
-			t.Errorf("argv[%d] = %q, want %q", i, argv[i], want[i])
-		}
+	if code != 7 {
+		t.Errorf("exit code = %d, want 7", code)
 	}
 }
 
-// TestTerminalEnv covers the color-support signal cspace hands a sandbox.
-// Apple Container injects a bare TERM=xterm when it allocates a TTY and never
-// sets COLORTERM, which Node's color detection reads as 16 colors — so Claude
-// inside a sandbox paints with 16 while the same terminal gives it 16.7M
-// outside. These values are what close that gap.
-func TestTerminalEnv(t *testing.T) {
-	cases := []struct {
-		name      string
-		term      string
-		colorterm string
-		want      map[string]string
-	}{
-		{
-			// The sandbox's terminfo database is Debian's; xterm-ghostty is
-			// not in it, and ncurses tools (vim, less) fail outright on an
-			// unknown terminal type. Substitute an entry it does have.
-			name: "exotic TERM is substituted, COLORTERM forwarded",
-			term: "xterm-ghostty", colorterm: "truecolor",
-			want: map[string]string{"TERM": "xterm-256color", "COLORTERM": "truecolor"},
-		},
-		{
-			name: "a terminfo entry the sandbox has passes through",
-			term: "screen-256color", colorterm: "truecolor",
-			want: map[string]string{"TERM": "screen-256color", "COLORTERM": "truecolor"},
-		},
-		{
-			// Claiming truecolor the host never claimed would be inventing
-			// capability; 256 colors is still a 16x improvement on xterm.
-			name: "no COLORTERM on the host means none in the sandbox",
-			term: "xterm-256color", colorterm: "",
-			want: map[string]string{"TERM": "xterm-256color"},
-		},
-		{
-			// TERM=dumb means "emit no escape codes at all" — dressing that
-			// up would put escape sequences into whatever is capturing output.
-			name: "dumb terminal is left alone",
-			term: "dumb", colorterm: "truecolor",
-			want: map[string]string{},
-		},
-		{
-			name: "no TERM at all (cron, pipe) is left alone",
-			term: "", colorterm: "",
-			want: map[string]string{},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := terminalEnv(tc.term, tc.colorterm)
-			if len(got) != len(tc.want) {
-				t.Fatalf("terminalEnv(%q, %q) = %v, want %v", tc.term, tc.colorterm, got, tc.want)
-			}
-			for k, v := range tc.want {
-				if got[k] != v {
-					t.Errorf("%s = %q, want %q", k, got[k], v)
-				}
-			}
-		})
-	}
-}
-
-// TestTerminalEnvArgs pins the flag form and its ordering, since argv is what
-// attach actually execs.
-func TestTerminalEnvArgs(t *testing.T) {
-	got := terminalEnvArgs("xterm-ghostty", "truecolor")
-	want := []string{"-e", "COLORTERM=truecolor", "-e", "TERM=xterm-256color"}
-	if len(got) != len(want) {
-		t.Fatalf("terminalEnvArgs = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("arg[%d] = %q, want %q", i, got[i], want[i])
-		}
-	}
-	if len(terminalEnvArgs("dumb", "")) != 0 {
-		t.Error("dumb terminal produced -e flags")
-	}
-}
-
-// TestAttachArgsCarriesTerminalEnv — attach is the interactive path, so it
-// forwards the terminal actually attaching rather than whatever was current
-// when the sandbox booted.
-func TestAttachArgsCarriesTerminalEnv(t *testing.T) {
-	t.Setenv("TERM", "xterm-ghostty")
-	t.Setenv("COLORTERM", "truecolor")
-
-	_, argv, err := attachArgs("cspace-demo-mercury")
+func TestRunAttachChildCleanExit(t *testing.T) {
+	code, err := runAttachChild("/bin/sh", []string{"sh", "-c", "exit 0"})
 	if err != nil {
-		t.Skipf("container CLI not resolvable: %v", err)
+		t.Fatalf("runAttachChild() error: %v", err)
 	}
-	joined := strings.Join(argv, " ")
-	if !strings.Contains(joined, "-e TERM=xterm-256color") {
-		t.Errorf("argv does not set TERM: %v", argv)
-	}
-	if !strings.Contains(joined, "-e COLORTERM=truecolor") {
-		t.Errorf("argv does not forward COLORTERM: %v", argv)
-	}
-	// The command being run must still come last, after every flag.
-	if argv[len(argv)-1] != "--dangerously-skip-permissions" || argv[len(argv)-2] != "claude" {
-		t.Errorf("argv does not end with the claude invocation: %v", argv)
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
 	}
 }
 
-// TestApplyTerminalEnvNeverOverridesExisting — the baked values are a default
-// for a container that would otherwise be told TERM=xterm. Anything the
-// project or the user set explicitly (devcontainer containerEnv, --env) is a
-// deliberate choice and outranks it.
-func TestApplyTerminalEnvNeverOverridesExisting(t *testing.T) {
-	env := map[string]string{"TERM": "screen"}
-	applyTerminalEnv(env, "xterm-ghostty", "truecolor")
-
-	if env["TERM"] != "screen" {
-		t.Errorf("TERM = %q, want the pre-existing \"screen\" to survive", env["TERM"])
-	}
-	if env["COLORTERM"] != "truecolor" {
-		t.Errorf("COLORTERM = %q, want it seeded alongside", env["COLORTERM"])
+// TestRunAttachChildReportsStartFailure — a missing binary is cspace's own
+// error, not the session's exit status.
+func TestRunAttachChildReportsStartFailure(t *testing.T) {
+	if _, err := runAttachChild("/nonexistent/container", []string{"container"}); err == nil {
+		t.Error("runAttachChild() returned nil for a binary that cannot start")
 	}
 }
 
-// TestApplyTerminalEnvSeedsAnEmptyMap is the ordinary boot: nothing set, so
-// both land and the sandbox stops reporting 16 colors.
-func TestApplyTerminalEnvSeedsAnEmptyMap(t *testing.T) {
-	env := map[string]string{}
-	applyTerminalEnv(env, "xterm-ghostty", "truecolor")
-
-	if env["TERM"] != "xterm-256color" || env["COLORTERM"] != "truecolor" {
-		t.Errorf("env = %v, want TERM=xterm-256color COLORTERM=truecolor", env)
+// TestExitErrorCarriesTheCode — main prints nothing for this error and exits
+// with the code, so a session that ended 130 (Ctrl-C) does not print
+// "Error: exit status 130" over a terminal the user is done with.
+func TestExitErrorCarriesTheCode(t *testing.T) {
+	var err error = ExitError{Code: 130}
+	var target ExitError
+	if !errors.As(err, &target) {
+		t.Fatal("ExitError is not recoverable with errors.As")
+	}
+	if target.Code != 130 {
+		t.Errorf("Code = %d, want 130", target.Code)
+	}
+	if target.Error() == "" {
+		t.Error("ExitError has an empty message")
 	}
 }
 
-// TestApplyTerminalEnvHeadlessBootAddsNothing — `cspace up` from a cron job or
-// a pipe has no terminal to describe, and inventing one would put escape codes
-// into captured output.
-func TestApplyTerminalEnvHeadlessBootAddsNothing(t *testing.T) {
-	env := map[string]string{}
-	applyTerminalEnv(env, "", "")
+// TestAttachHasNoTmuxEscapeHatch — tmux by default, with an undocumented way
+// out: the flag exists only until no image without tmux is in use.
+func TestAttachHasNoTmuxEscapeHatch(t *testing.T) {
+	cmd := newAttachCmd()
+	flag := cmd.Flags().Lookup("no-tmux")
+	if flag == nil {
+		t.Fatal("cspace attach has no --no-tmux flag")
+	}
+	if flag.DefValue != "false" {
+		t.Errorf("--no-tmux defaults to %q, want false so attach uses tmux by default", flag.DefValue)
+	}
+	if !flag.Hidden {
+		t.Error("--no-tmux is documented; the design says keep it undocumented")
+	}
+}
 
-	if len(env) != 0 {
-		t.Errorf("env = %v, want it untouched", env)
+// TestAttachInteractiveAbortsWhenTheTmuxProbeFails — Important 3. A
+// transport error means we don't know whether tmux is there, not that it
+// isn't; falling back to a direct exec would just hit the same transport
+// failure a moment later, so attachInteractive refuses instead of guessing.
+func TestAttachInteractiveAbortsWhenTheTmuxProbeFails(t *testing.T) {
+	withFakeExec(t, fakeExecer{err: errors.New("boom: transport down")})
+
+	err := attachInteractive(context.Background(), io.Discard,
+		"proj", "probe-error-sandbox", "cspace-proj-probe-error-sandbox", true)
+	if err == nil {
+		t.Fatal("attachInteractive() error = nil, want the probe failure surfaced")
+	}
+	if !strings.Contains(err.Error(), "cannot reach sandbox probe-error-sandbox to probe for tmux") {
+		t.Errorf("error = %q, want it to name the probe failure", err.Error())
+	}
+}
+
+// TestBeginAttachOrWarnFallsBackWhenHomeUnavailable — Important 4(b). No
+// resolvable home directory means nowhere to put the lock/records; that must
+// degrade to a warning and an inert attachment, not refuse the whole attach.
+func TestBeginAttachOrWarnFallsBackWhenHomeUnavailable(t *testing.T) {
+	var buf bytes.Buffer
+	att, warned, err := beginAttachOrWarn(context.Background(), &buf,
+		"", errors.New("$HOME is not defined"),
+		"proj", "sandbox-home-fail", "cspace-proj-sandbox-home-fail", control.SessionClaude)
+	if err != nil {
+		t.Fatalf("beginAttachOrWarn() error = %v, want nil (should degrade to an inert attach)", err)
+	}
+	if att == nil {
+		t.Fatal("beginAttachOrWarn() returned a nil Attachment")
+	}
+	if !warned {
+		t.Error("beginAttachOrWarn() warned = false, want true when bookkeeping degrades")
+	}
+	if !strings.Contains(buf.String(), "attach bookkeeping unavailable") {
+		t.Errorf("warning = %q, want it to mention bookkeeping being unavailable", buf.String())
+	}
+}
+
+// TestBeginAttachOrWarnFallsBackWhenControlPlaneDirUnusable — Important
+// 4(b)'s other trigger: BeginAttach itself reports
+// control.ErrBookkeepingUnavailable (here, because the given home directory
+// is actually a regular file, so the control-plane directory under it can
+// never be created).
+func TestBeginAttachOrWarnFallsBackWhenControlPlaneDirUnusable(t *testing.T) {
+	tmp := t.TempDir()
+	fakeHome := filepath.Join(tmp, "home-is-a-file")
+	if err := os.WriteFile(fakeHome, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	att, warned, err := beginAttachOrWarn(context.Background(), &buf,
+		fakeHome, nil,
+		"proj", "sandbox-dir-fail", "cspace-proj-sandbox-dir-fail", control.SessionClaude)
+	if err != nil {
+		t.Fatalf("beginAttachOrWarn() error = %v, want nil (should degrade to an inert attach)", err)
+	}
+	if att == nil {
+		t.Fatal("beginAttachOrWarn() returned a nil Attachment")
+	}
+	if !warned {
+		t.Error("beginAttachOrWarn() warned = false, want true when bookkeeping degrades")
+	}
+	if !strings.Contains(buf.String(), "attach bookkeeping unavailable") {
+		t.Errorf("warning = %q, want it to mention bookkeeping being unavailable", buf.String())
 	}
 }

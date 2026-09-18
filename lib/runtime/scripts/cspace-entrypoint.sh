@@ -98,8 +98,54 @@ SETTINGS_JSON="$HOME/.claude/settings.json"
 mkdir -p "$HOME/.claude"
 statusline_cmd="/usr/local/bin/cspace-statusline.sh"
 [ -x "/workspace/.cspace/scripts/statusline.sh" ] && statusline_cmd="/workspace/.cspace/scripts/statusline.sh"
+
+# Agent-state hooks. Every entry runs cspace-agent-state.sh <state>, which
+# writes /sessions/agent-state.json — the host's
+# ~/.cspace/sessions/<project>/<sandbox>/agent-state.json — so the control
+# plane can show what this sandbox's interactive session is doing without
+# asking Claude anything.
+#
+# One entry per event, never two: hooks matching the same event run in
+# parallel, so two entries on one event would race to write different states.
+# That is why the generic "working" comes from PostToolUse (a tool finished,
+# Claude continues) and PreToolUse is narrowed to AskUserQuestion. Stop does
+# not fire on a user interrupt, which is why the host also keeps an
+# output-activity heuristic on top of this file. SessionStart is narrowed to
+# startup|resume|clear so a mid-session compact or fork doesn't flip an
+# already-working session back to "starting".
+#
+# Emitted only when the state script is actually in the image: a project that
+# pins its own image has no /usr/local/bin/cspace-agent-state.sh, and hooks
+# pointed at a missing command fail on every turn with a visible banner.
+#
+# A function (not an inline if/heredoc) so the gate itself — not just the
+# JSON it emits when the gate passes — is something a test can call directly
+# and exercise for real, including the two ways it can be closed: a
+# non-executable file and a path that doesn't exist at all.
+cspace_hooks_block() {
+    local cmd="$1"
+    [ -x "$cmd" ] || return 0
+    cat <<HOOKS
+  "hooks": {
+    "SessionStart": [{ "matcher": "startup|resume|clear", "hooks": [{ "type": "command", "command": "${cmd} starting" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "${cmd} working" }] }],
+    "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "${cmd} working" }] }],
+    "PreToolUse": [{ "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": "${cmd} needs-input" }] }],
+    "PermissionRequest": [{ "hooks": [{ "type": "command", "command": "${cmd} needs-input" }] }],
+    "Notification": [{ "matcher": "idle_prompt", "hooks": [{ "type": "command", "command": "${cmd} idle" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "${cmd} idle" }] }],
+    "StopFailure": [{ "hooks": [{ "type": "command", "command": "${cmd} idle" }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "${cmd} exited" }] }]
+  },
+HOOKS
+}
+
+AGENT_STATE_CMD=/usr/local/bin/cspace-agent-state.sh
+hooks_block=$(cspace_hooks_block "$AGENT_STATE_CMD")
+
 cat > "$SETTINGS_JSON" <<JSON
 {
+${hooks_block}
   "statusLine": {
     "type": "command",
     "command": "${statusline_cmd}"

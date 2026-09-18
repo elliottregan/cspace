@@ -12,7 +12,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-- `cspace up [name]`, `cspace down`, `cspace attach`, `cspace ports` — sandbox lifecycle
+- `cspace up [name]`, `cspace down`, `cspace ports` — sandbox lifecycle
+- `cspace attach <name>` — attach to a persistent tmux session (`cspace-claude`) inside the sandbox, so closing the terminal no longer ends the Claude session and the next `cspace attach` resumes it with its screen intact. Runs `container exec` as a supervised child (not `syscall.Exec`) so cspace stays alive to detach its tmux client when the session ends. `--no-tmux` is a hidden escape hatch for the old direct-exec behavior; a sandbox built from an image that predates tmux falls back to it automatically, with a warning that the session will not survive the window closing
 - `cspace send <instance> <text>` — inject a user turn into a sandbox's supervisor via its HTTP control port
 - `cspace agent status <sandbox>` — print the sandbox agent's steering status (session, working/idle state, queue depth, last event)
 - `cspace agent interrupt <sandbox>` — cancel a sandbox agent's in-flight task
@@ -68,6 +69,7 @@ It lives here rather than in Actions because **one token covers everything**: `g
 Entry point is `cmd/cspace/main.go` → `cli.Execute()`. Commands are `newXxxCmd()` functions in `internal/cli/`, registered via `AddCommand()` in `root.go`. `cmd_up.go` holds the (large, ~875-line) boot flow: daemon spawn, credential reconciliation, devcontainer merge, clone provisioning, sidecars, registry writes, DNS gate, attach. Internal packages:
 
 - **config** — three-layer JSON merge: embedded `defaults.json` → `.cspace.json` → `.cspace.local.json` via `config.Load()`. `DeepMerge` replaces arrays wholesale (setting `plugins.install` in `.cspace.json` discards the whole default list, it does not append).
+- **control** — the control API the TUI and CLI commands share: attach argv construction and TERM/COLORTERM mapping (`argv.go`), the tmux driver — presence probe, client list, detach (`tmux.go`) — and the attach lock plus per-client records under `~/.cspace/controlplane/<project>/<sandbox>/` (`attach.go`). `cmd_attach.go` and the TUI's `Attach` action both call into it rather than duplicating the argv/lock/detach logic.
 - **secrets** — credential resolution, macOS Keychain access, host auto-discovery (see Credentials below)
 - **registry** — the sandbox registry persisted/served by the daemon
 - **substrate/applecontainer** — wrapper around the Apple Container `container` CLI (run/stop/inspect/build/stats). Two `container run` flags are load-bearing and easy to drop by accident: `--kernel-arg sysctl.net.ipv4.conf.all.route_localnet=1` (the entrypoint's inbound DNAT is illegal without it, and Apple Container mounts `/proc/sys` read-only so it cannot be set from inside), and `--init` (PID 1 that forwards signals and reaps orphans — the sandbox image no longer carries tini).
@@ -123,7 +125,7 @@ does not recreate: the run spec lives in the project's compose file, which only
 `lib/` is the source of truth; `make sync-embedded` copies an explicit allowlist into `internal/assets/embedded/` for `go:embed`.
 
 - **templates/Dockerfile** — the sandbox image (Debian-based: Node, Bun, Claude Code, MCP servers, dev tooling). Apple Container's builder does **not** recurse directory COPYs, so files are COPY'd individually — when you add a file under `lib/runtime/scripts/` or `lib/plugins/`, you must also add a COPY line or it silently won't ship (see the per-file-COPY finding).
-- **runtime/scripts/** — `cspace-entrypoint.sh` (settings seed, git identity, in-sandbox DNS forwarder, inbound DNAT), `cspace-install-plugins.sh`, `cspace-supervisor-loop.sh`, `statusline.sh`
+- **runtime/scripts/** — `cspace-entrypoint.sh` (settings seed, git identity, in-sandbox DNS forwarder, inbound DNAT), `cspace-install-plugins.sh`, `cspace-supervisor-loop.sh`, `statusline.sh`, `cspace-agent-state.sh` (the target of the settings-seeded hooks; writes `/sessions/agent-state.json`, bind-mounted to the host at `~/.cspace/sessions/<project>/<sandbox>/agent-state.json`, so the control plane can show an interactive session's state without asking Claude anything). `lib/runtime/tmux.conf` (cspace's tmux config, passed with `tmux -f` on every session create) lives alongside these but isn't a `.sh` — it needed its own `sync-embedded` rule and Dockerfile COPY, since the existing rule only globs `*.sh`. `set -g extended-keys always` in it is load-bearing: `extended-keys on` silently swallows Shift+Enter in CSI-u form, and only `always` passes it through byte-for-byte.
 - **runtime/features/** — optional installers: node, python, git, github-cli, docker-in-docker, common-utils
 - **plugins/** — the `cspace-browser` Claude plugin (marketplace + `.mcp.json` wiring for the shared browser sidecar)
 - **defaults.json** — embedded config defaults. cspace ships primitives — `up`/`send`/`down`/`browser`, the supervisor; orchestration patterns live in project-side skills such as resume-redux's `delegate-to-containers`.
@@ -175,7 +177,7 @@ A GitHub token is verified against `GET /user` at boot; a 401 advances down the 
 
 `docs/env-cspace.md` documents the `.env.cspace` convention (project-declared container overrides), the full env merge order, and the `$CSPACE_WORKSPACE_HOST` / e2e `baseURL` guidance. For **non-credential** keys the order is `--env` > devcontainer `containerEnv` > compose `env_file`. The five cspace-owned credential keys do not participate in that order at all — see Credentials above.
 
-**Terminal color.** `cspace up` bakes `TERM`/`COLORTERM` from the host terminal into the container, and `cspace attach` passes them again per-exec (`terminalEnv` in `cmd_attach.go`). Without this, Apple Container's TTY default of a bare `TERM=xterm` with no `COLORTERM` makes Claude paint with 16 colors inside a sandbox while the same terminal gives it 16.7M outside — the PTY strips nothing, the program just picks a smaller palette. `TERM` is mapped to `xterm-256color` unless it already ends in `-256color`, because the sandbox carries Debian's terminfo and an entry it lacks (`xterm-ghostty`) breaks every ncurses program in there. A `dumb` or unset `TERM` is left alone.
+**Terminal color.** `cspace up` bakes `TERM`/`COLORTERM` from the host terminal into the container, and `cspace attach` passes them again per-exec (`TerminalEnv` in `internal/control/argv.go`). Without this, Apple Container's TTY default of a bare `TERM=xterm` with no `COLORTERM` makes Claude paint with 16 colors inside a sandbox while the same terminal gives it 16.7M outside — the PTY strips nothing, the program just picks a smaller palette. `TERM` is mapped to `xterm-256color` unless it already ends in `-256color`, because the sandbox carries Debian's terminfo and an entry it lacks (`xterm-ghostty`) breaks every ncurses program in there. A `dumb` or unset `TERM` is left alone.
 
 Security caveat: secrets currently transit `-e` flags into the substrate, and Apple Container's `vminitd` logs the full process env — anyone with `container logs` access on the host can read them.
 
@@ -190,7 +192,7 @@ The shared per-project sidecar (`cspace-<project>-browser`) has a stable DNS nam
 ## Key patterns
 
 - **Instance naming**: planet names (`mercury`, `venus`, …) with deterministic ports are reserved for the human-facing TUI. Agents spawning sandboxes should use descriptive names (`issue-<n>`, a short task label). `cspace up` refuses a name a container already holds — auto-naming skips taken names via `pickPlanetName`, and explicit names are checked by `ensureSandboxAvailable` right after the substrate health check, before anything else runs.
-- **Sessions**: per-sandbox at `~/.cspace/sessions/<project>/<sandbox>/` on the host, bind-mounted into the sandbox; wiped by `cspace down`.
+- **Sessions**: per-sandbox at `~/.cspace/sessions/<project>/<sandbox>/` on the host, bind-mounted into the sandbox; wiped by `cspace down`. Attach bookkeeping is separate and lives at `~/.cspace/controlplane/<project>/<sandbox>/` — the attach lock and one client record per live tmux client (see the **control** package above) — deliberately not under `sessions/`, since it has to outlive nothing but its own client. `cspace down` removes it unconditionally (even with `--keep-state`): once the container is stopped there is no tmux server left for a record to describe.
 - **Adding a CLI command**: create `newXxxCmd()` in a new file under `internal/cli/`, register it in `root.go`.
 - **Template resolution**: `cspace image build` uses the repo's `lib/templates/Dockerfile` when run from a cspace checkout, otherwise the embedded copy.
 - **Stale-image gate**: `cspace up` checks `cspace:latest`'s `cspace.version` label against the running CLI *before* `overlay.Start` (`preflightImageGate`, cmd_up.go). It has to be there — bubbletea holds stdin in raw mode once the overlay is up, so a prompt issued later can never be answered, which is why this used to warn and boot a stale image anyway. Projects that pin their own image (compose `image:`, devcontainer `image:`, a Dockerfile) skip the gate entirely.
@@ -201,6 +203,7 @@ The shared per-project sidecar (`cspace-<project>-browser`) has a stable DNS nam
 - **There is no firewall.** The `firewall.*` config is parsed and merged but no egress filtering is implemented — deliberately tabled for now (agents benefit from web access); see the firewall finding. Never describe sandboxes as network-restricted.
 - The entrypoint's inbound DNAT forwards all vmnet TCP to loopback, so "loopback-only" services in a sandbox are reachable by its vmnet peers.
 - The supervisor control port binds 0.0.0.0 with bearer-token auth enforced on every route; the supervisor now fails closed (refuses to start) rather than serve unauthenticated if `CSPACE_CONTROL_TOKEN` is empty (production always sets one).
+- The `cspace-claude` tmux server's socket inside the sandbox lets anything running as `dev` there — including the supervisor — drive the interactive Claude session (`tmux send-keys -t cspace-claude …`). This crosses no new trust boundary (`dev` already owns everything else in the sandbox), but it is a new capability worth knowing about.
 
 ## Commit Style
 
