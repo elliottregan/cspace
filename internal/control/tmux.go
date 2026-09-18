@@ -16,16 +16,26 @@ import (
 // substrate, and it is an interface so the plumbing can be tested without
 // Apple Container.
 //
-// A non-zero exit status is NOT an error: tmux uses it to say ordinary things
-// like "no server running". Only a transport failure (the CLI missing, the
-// context cancelled) returns err.
+// A non-zero exit status is NOT an error: tmux uses it to say ordinary
+// things like "no server running", and a `container exec` against an
+// unreachable (missing or stopped) container surfaces the same way — a
+// non-zero exit with the CLI's own message folded into the combined output
+// — rather than as an error here. Only a transport failure (the CLI
+// missing, the context cancelled: the command could not even be started)
+// returns err. This layer does not try to read the difference between "the
+// guest said no" and "the container could not be reached" out of that text;
+// Present instead decides presence only from its probe's own yes/no output
+// (see Present), so an unreachable container's exit just fails that
+// yes/no check like any other unexpected answer would, rather than being a
+// special case this interface has to recognize.
 //
 // The returned string is the command's stdout. When the command exits
 // non-zero, its stderr (trimmed) is appended after stdout, separated by a
 // newline when both are non-empty, so a caller that wants to know why a
-// command failed (DetachClient) can read it from there. This is safe for
-// every caller in this package: ListClients only parses the string on exit
-// 0, and Present ignores it entirely.
+// command failed (DetachClient, Present) can read it from there. This is
+// safe for every caller in this package: ListClients only parses the string
+// on exit 0, DetachClient reads it on failure, and Present reads it on
+// either branch to decide yes/no or to explain a failed probe.
 type Execer interface {
 	Exec(ctx context.Context, container string, cmdline []string) (stdout string, exitCode int, err error)
 }
@@ -36,15 +46,6 @@ type Execer interface {
 type CLIExecer struct{}
 
 // Exec implements Execer.
-//
-// A process that starts and exits non-zero is not automatically "the guest
-// command failed": `container exec` itself exits non-zero, without ever
-// reaching the guest, when the named container cannot be found or is not
-// running (e.g. "Error: get failed: container … not found", "Error:
-// container … is not running") — that is a transport failure by Execer's
-// contract, not tmux (or the shell) saying no. containerUnreachable tells
-// the two apart: the `container` CLI's own diagnostics are always prefixed
-// "Error: ", where tmux's and the shell's non-zero exits never are.
 func (CLIExecer) Exec(ctx context.Context, container string, cmdline []string) (string, int, error) {
 	args := append([]string{"exec", container}, cmdline...)
 	cmd := exec.CommandContext(ctx, "container", args...)
@@ -54,10 +55,6 @@ func (CLIExecer) Exec(ctx context.Context, container string, cmdline []string) (
 	err := cmd.Run()
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
-		if containerUnreachable(stderr.String()) {
-			return stdout.String(), exitErr.ExitCode(), fmt.Errorf("container exec %s: %s",
-				container, strings.TrimSpace(stderr.String()))
-		}
 		return combineOutput(stdout.String(), stderr.String()), exitErr.ExitCode(), nil
 	}
 	if err != nil {
@@ -65,18 +62,6 @@ func (CLIExecer) Exec(ctx context.Context, container string, cmdline []string) (
 			container, err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), 0, nil
-}
-
-// containerUnreachable reports whether stderr is the `container` CLI's own
-// complaint that it never reached the named container — missing or
-// stopped — rather than output from whatever `container exec` ran inside
-// it. Observed on Apple Container 1.3.0: "Error: get failed: container …
-// not found" and "Error: container … is not running"; both, like every
-// top-level error this CLI prints, start with "Error: ". Nothing this
-// package execs inside a guest (a shell builtin probe, tmux's own
-// subcommands) ever produces output with that prefix.
-func containerUnreachable(stderr string) bool {
-	return strings.HasPrefix(strings.TrimSpace(stderr), "Error: ")
 }
 
 // combineOutput implements Execer's non-zero-exit contract: stdout as-is,
@@ -123,18 +108,32 @@ func NewTmux() *Tmux {
 
 // Present reports whether the sandbox's image carries tmux.
 //
-// One `sh -c 'command -v tmux'` exec, memoized per container for the life of
-// the process: an image cannot grow tmux while its container runs, and every
-// attach and every pane would otherwise pay for the probe. A sandbox built
-// from an image that predates this feature answers false, and callers fall
+// One exec, memoized per container for the life of the process: an image
+// cannot grow tmux while its container runs, and every attach and every pane
+// would otherwise pay for the probe. The probe command is
+// `command -v tmux >/dev/null 2>&1 && echo yes || echo no` — as long as the
+// container is reachable, a shell running that always exits 0 and prints
+// exactly "yes" or "no", so presence is decided from that output alone,
+// never from the exit code and never by pattern-matching the `container`
+// CLI's own error wording. An earlier version tried the latter — treating
+// any non-zero exit as "tmux not found" — and silently misread a stopped or
+// removed container's `container exec` failure as "no tmux", sending the
+// caller down the no-tmux fallback while hiding the real problem (found by
+// Task 9's manual verification, Step 13). Anything other than a clean
+// "yes"/"no" — a non-zero exit (most often the container itself could not
+// be reached: stopped, removed, or otherwise not running) or an exit 0 with
+// output that is neither — fails the probe with an error instead of
+// guessing, and is not cached. A sandbox built from an image that predates
+// this feature answers "no" (a plain `command -v` miss), and callers fall
 // back to a direct exec with a warning.
 //
-// A transport failure (the `container` CLI missing, the context cancelled)
-// returns a non-nil error and is never cached: only a decided answer — the
-// probe actually ran and exited 0 or not — is worth remembering for the life
-// of the process. Caching a transport hiccup as "no tmux" would wrongly
-// force every later attach to this container down the no-tmux fallback path
-// even once the transport recovers.
+// A transport failure (the `container` CLI missing, the context cancelled —
+// the command could not even be started) also returns a non-nil error and is
+// never cached: only a decided answer — the probe actually ran and said yes
+// or no — is worth remembering for the life of the process. Caching a
+// transport hiccup, or an unreachable container's failed probe, as "no
+// tmux" would wrongly force every later attach to this container down the
+// no-tmux fallback path even once the transport (or the container) recovers.
 //
 // The memoization is not single-flight: two goroutines racing to be the
 // first to touch the same container can both miss the cache and each pay for
@@ -147,16 +146,30 @@ func (t *Tmux) Present(ctx context.Context, container string) (bool, error) {
 	}
 	t.mu.Unlock()
 
-	_, code, err := t.Exec.Exec(ctx, container, []string{"sh", "-c", "command -v tmux"})
+	out, code, err := t.Exec.Exec(ctx, container,
+		[]string{"sh", "-c", "command -v tmux >/dev/null 2>&1 && echo yes || echo no"})
 	if err != nil {
 		return false, err
 	}
-	ok := code == 0
+
+	trimmed := strings.TrimSpace(out)
+	var present bool
+	switch {
+	case code == 0 && trimmed == "yes":
+		present = true
+	case code == 0 && trimmed == "no":
+		present = false
+	default:
+		if trimmed != "" {
+			return false, fmt.Errorf("tmux presence probe in %s: exit %d: %s", container, code, trimmed)
+		}
+		return false, fmt.Errorf("tmux presence probe in %s: exit %d", container, code)
+	}
 
 	t.mu.Lock()
-	t.present[container] = ok
+	t.present[container] = present
 	t.mu.Unlock()
-	return ok, nil
+	return present, nil
 }
 
 // ListClients returns the ttys currently attached to one tmux session.
