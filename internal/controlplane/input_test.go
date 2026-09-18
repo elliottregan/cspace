@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/elliottregan/cspace/internal/control"
 )
@@ -488,5 +489,61 @@ func TestMainWidthForFloorsANarrowWindow(t *testing.T) {
 	}
 	if got := mainWidthFor(100); got != 76 {
 		t.Errorf("mainWidthFor(100) = %d, want 76", got)
+	}
+}
+
+// TestSendBoxShowsItsWholePlaceholder — bubbles/v2's placeholderView builds a
+// rune slice of Width()+1, so an unsized textinput renders exactly one
+// character of its placeholder. "message" showed as "m", which on a box opened
+// with the "m" key reads as the keystroke having leaked into the input.
+func TestSendBoxShowsItsWholePlaceholder(t *testing.T) {
+	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
+	m = step(t, m, "m")
+	if m.mode != modeInput {
+		t.Fatalf("mode = %v, want modeInput", m.mode)
+	}
+	if got := m.input.Width(); got <= 0 {
+		t.Fatalf("input width = %d, want the box sized to the footer", got)
+	}
+	footer := plain(m.footer())
+	if !strings.Contains(footer, "message") {
+		t.Errorf("send box should show its whole placeholder; got %q", footer)
+	}
+}
+
+// The box must fit the window: a long sandbox name cannot push the input off
+// the footer line.
+func TestSendInputWidthLeavesRoomForTheLabel(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		window int
+	}{
+		{"mercury", 120},
+		{"a-very-long-descriptive-sandbox-name", 100},
+		{"mercury", 10}, // narrower than the label itself
+	} {
+		w := sendInputWidth(tc.name, tc.window)
+		if w < 8 {
+			t.Errorf("sendInputWidth(%q, %d) = %d, want at least the 8-column floor", tc.name, tc.window, w)
+		}
+		if tc.window > 60 && w+lipgloss.Width(sendBoxPrefix(tc.name))+3 > tc.window {
+			t.Errorf("sendInputWidth(%q, %d) = %d overflows the line", tc.name, tc.window, w)
+		}
+	}
+}
+
+// The whole send box has to fit the footer line: fit() would otherwise
+// truncate the input the person is typing into and show an ellipsis.
+func TestSendBoxFitsTheFooterLine(t *testing.T) {
+	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = mm.(Model)
+	m = step(t, m, "m")
+	if got := lipgloss.Width(plain(m.footer())); got > 120 {
+		t.Errorf("send box footer is %d columns wide, want at most 120:\n%q", got, plain(m.footer()))
+	}
+	m.input.SetValue(strings.Repeat("x", 300))
+	if got := lipgloss.Width(plain(m.footer())); got > 120 {
+		t.Errorf("send box footer with a long turn is %d columns wide, want at most 120", got)
 	}
 }
