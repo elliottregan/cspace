@@ -547,3 +547,40 @@ func TestSendBoxFitsTheFooterLine(t *testing.T) {
 		t.Errorf("send box footer with a long turn is %d columns wide, want at most 120", got)
 	}
 }
+
+// The label is plain text and the input's view is already styled ANSI, so a
+// narrow window shortens the label — it never fits the composed line. fit()
+// counts display cells while cutting runes, so fitting a styled string can
+// cut an escape sequence in half or drop the closing reset and bleed the
+// style into whatever the terminal draws next.
+//
+// 30 columns with an ordinary sandbox name is where sendInputWidth's
+// eight-column floor starts to bite; 16 is past it, where the label gives all
+// it can and the line is allowed to overflow rather than cut the input.
+func TestSendBoxShortensItsLabelRatherThanTheStyledInput(t *testing.T) {
+	for _, window := range []int{80, 30, 16} {
+		m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
+		mm, _ := m.Update(tea.WindowSizeMsg{Width: window, Height: 24})
+		m = mm.(Model)
+		m = step(t, m, "m")
+		if m.mode != modeInput {
+			t.Fatalf("window %d: the send box did not open", window)
+		}
+
+		footer := m.footer()
+		if !strings.HasSuffix(footer, m.input.View()) {
+			t.Errorf("window %d: the styled input was not rendered verbatim:\n%q", window, footer)
+		}
+		if visible := plain(footer); strings.ContainsRune(visible, '\x1b') {
+			t.Errorf("window %d: a cut escape sequence survived stripping: %q", window, visible)
+		}
+		if window >= 30 {
+			if got := lipgloss.Width(plain(footer)); got > window {
+				t.Errorf("window %d: footer is %d columns wide: %q", window, got, plain(footer))
+			}
+		}
+		if !strings.HasPrefix(plain(footer), "send") {
+			t.Errorf("window %d: the label should still read as one: %q", window, plain(footer))
+		}
+	}
+}
