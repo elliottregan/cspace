@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/elliottregan/cspace/internal/control"
 	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
 )
 
@@ -53,7 +54,7 @@ var verifyBrowserFn = func(ctx context.Context, bs *BrowserSidecar) error {
 		return fmt.Errorf("browser sidecar IP: %w", err)
 	}
 	bs.IP = ip
-	bs.CDPURL = fmt.Sprintf("http://%s:%d", ip, browserCDPPort)
+	bs.CDPURL = fmt.Sprintf("http://%s:%d", ip, control.BrowserCDPPort)
 	bs.RunServerWSURL = fmt.Sprintf("ws://%s:%d/", ip, browserRunServerPort)
 	if err := waitForCDP(ctx, bs.CDPURL, remainingBudget(ctx, 90*time.Second)); err != nil {
 		return fmt.Errorf("browser sidecar CDP: %w", err)
@@ -249,11 +250,6 @@ const defaultPlaywrightVersion = "1.62.1"
 // listens. Project tests connect via PW_TEST_CONNECT_WS_ENDPOINT.
 const browserRunServerPort = 3000
 
-// browserCDPPort is where the sidecar's headless Chromium exposes
-// DevTools Protocol. The agent's playwright-mcp / chrome-devtools-mcp
-// connect via CSPACE_BROWSER_CDP_URL.
-const browserCDPPort = 9222
-
 // browserContainerName returns the canonical sidecar name for a sandbox,
 // in lockstep with cspace up's containerName template plus a "-browser"
 // suffix.
@@ -291,11 +287,11 @@ func browserEnvURLs(project string) (cdpURL, wsURL string) {
 	// DevTools HTTP endpoint rejects any Host header that isn't an IP or
 	// localhost (DNS-rebinding protection), so name-based CDP URLs 500.
 	// The entrypoint's relay (cspace-entrypoint.sh) listens on
-	// 127.0.0.1:browserCDPPort and dials CSPACE_BROWSER_HOST per
+	// 127.0.0.1:control.BrowserCDPPort and dials CSPACE_BROWSER_HOST per
 	// connection, so sidecar restarts stay transparent. The run-server WS
 	// endpoint has no such check and keeps the stable name. (cs-finding
 	// 2026-07-19-chrome-cdp-rejects-dns-name-host-header)
-	return fmt.Sprintf("http://127.0.0.1:%d", browserCDPPort),
+	return fmt.Sprintf("http://127.0.0.1:%d", control.BrowserCDPPort),
 		fmt.Sprintf("ws://%s:%d/", browserSandboxHost(project), browserRunServerPort)
 }
 
@@ -406,7 +402,7 @@ func browserSidecarRunArgs(containerName, plVersion, gateway string) []string {
 			// 5) Wait for chrome's CDP to be ready.
 			"until curl -sf http://127.0.0.1:9223/json/version >/dev/null 2>&1; do sleep 0.5; done; " +
 			// 6) Forward CDP loopback → external for siblings.
-			fmt.Sprintf("socat TCP-LISTEN:%d,fork,reuseaddr TCP:127.0.0.1:9223 & ", browserCDPPort) +
+			fmt.Sprintf("socat TCP-LISTEN:%d,fork,reuseaddr TCP:127.0.0.1:9223 & ", control.BrowserCDPPort) +
 			// 7) Start Playwright run-server in the foreground for
 			//    project tests using PW_TEST_CONNECT_WS_ENDPOINT.
 			//    `npx playwright` resolves to the version baked into
@@ -438,7 +434,7 @@ func runBrowserSidecar(ctx context.Context, containerName, plVersion string) (*B
 		return nil, fmt.Errorf("browser sidecar IP: %w", err)
 	}
 
-	cdpURL := fmt.Sprintf("http://%s:%d", ip, browserCDPPort)
+	cdpURL := fmt.Sprintf("http://%s:%d", ip, control.BrowserCDPPort)
 	wsURL := fmt.Sprintf("ws://%s:%d/", ip, browserRunServerPort)
 
 	// Wait for CDP endpoint to actually respond. apt-get update +
@@ -646,7 +642,7 @@ func ensureSharedBrowserSidecar(ctx context.Context, project, plVersion string) 
 		// Healthy + version-matched? Reuse without torching.
 		ip, ipErr := waitForBrowserIP(ctx, name, 5*time.Second)
 		if ipErr == nil {
-			cdpURL := fmt.Sprintf("http://%s:%d", ip, browserCDPPort)
+			cdpURL := fmt.Sprintf("http://%s:%d", ip, control.BrowserCDPPort)
 			runServerAddr := fmt.Sprintf("%s:%d", ip, browserRunServerPort)
 			if waitForCDP(ctx, cdpURL, 10*time.Second) == nil && sidecarVersion(ctx, name) == plVersion &&
 				waitForRunServerWS(ctx, runServerAddr, 10*time.Second) == nil {
@@ -663,7 +659,7 @@ func ensureSharedBrowserSidecar(ctx context.Context, project, plVersion string) 
 		// run ("already exists"). Re-probe and reuse if it's now healthy.
 		if containerExists(ctx, name) {
 			if ip, ipErr := waitForBrowserIP(ctx, name, 5*time.Second); ipErr == nil {
-				cdpURL := fmt.Sprintf("http://%s:%d", ip, browserCDPPort)
+				cdpURL := fmt.Sprintf("http://%s:%d", ip, control.BrowserCDPPort)
 				runServerAddr := fmt.Sprintf("%s:%d", ip, browserRunServerPort)
 				if waitForCDP(ctx, cdpURL, 10*time.Second) == nil &&
 					waitForRunServerWS(ctx, runServerAddr, 10*time.Second) == nil {

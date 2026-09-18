@@ -14,15 +14,6 @@ import (
 	"github.com/elliottregan/cspace/internal/substrate"
 )
 
-// DNSDomain is the suffix cspace's daemon answers DNS queries for; each
-// sandbox is reachable at http://<sandbox>.<project>.cspace.test:<port>/.
-// ResolverFile is the macOS resolver stanza `sudo cspace dns install` writes;
-// its presence is what makes those names resolve on the host.
-const (
-	DNSDomain    = "cspace.test"
-	ResolverFile = "/etc/resolver/" + DNSDomain
-)
-
 // Port is one listening TCP port inside a sandbox, with the project's label
 // for it (empty when the project declared none) and the URL to reach it.
 type Port struct {
