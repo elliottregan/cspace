@@ -150,6 +150,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.help.SetWidth(msg.Width)
+		if m.mode == modeInput {
+			m.input.SetWidth(sendInputWidth(m.pending.Name, msg.Width))
+		}
 		return m, nil
 
 	case fastTickMsg:
