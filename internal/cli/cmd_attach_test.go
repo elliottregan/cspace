@@ -5,6 +5,12 @@ import (
 	"testing"
 )
 
+// Signal delivery (SIGINT/SIGTERM/SIGWINCH reaching the child, absorbing
+// SIGINT here) and the SIGHUP signal-then-kill escalation are not
+// unit-tested: they depend on a controlling terminal and process-group
+// semantics that a `go test` process doesn't have. They are covered by Task
+// 9's manual verification instead.
+
 // TestRunAttachChildPropagatesExitStatus — attach stopped being a
 // syscall.Exec, so the child's status has to travel back out by hand or an
 // interactive `claude` that exits 1 would look like a success.
