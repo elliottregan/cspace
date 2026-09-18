@@ -125,6 +125,7 @@ The sidebar's boot key must work for any project on screen, not just the one `cs
   - `control.Options.Project string`
   - `func (c *Client) Up(ctx context.Context, project, sandbox string) error`
   - unexported `func (c *Client) projectRootFor(project string) (string, error)`
+  - `var ErrNoProjectRoot error` (already exists in `internal/control/up.go`; its message becomes `control: no project root` — nothing asserts the old text)
 
 - [ ] **Step 1: Write the failing registry test**
 
@@ -366,19 +367,23 @@ In `internal/control/client.go`, inside `type Options struct`, immediately after
 	Project string
 ```
 
-In `type Client struct`, beside `projectRoot`:
+In `type Client struct`, this block replaces the existing `projectRoot string` field declaration:
 
 ```go
 	project     string
 	projectRoot string
 ```
 
-And in `New`, beside `projectRoot: o.ProjectRoot,`:
+The result is exactly these two lines in that spot, not three — the existing `projectRoot` line is re-shown here so the alignment is right, not added a second time.
+
+And in `New`, this block replaces the existing `projectRoot: o.ProjectRoot,` literal key:
 
 ```go
 		project:           o.Project,
 		projectRoot:       o.ProjectRoot,
 ```
+
+The result is exactly these two lines in that spot, not three — the existing `projectRoot` line is re-shown here so the alignment is right, not added a second time.
 
 - [ ] **Step 8: Rewrite `Up` and add `projectRootFor`**
 
@@ -1506,6 +1511,7 @@ The two renderers, as pure functions over rows and samples — no model, no Bubb
   - `func renderDetail(row control.Row, live liveState, ports []control.Port, portsErr error, events []control.EventLine, eventsErr error, memoryUsedB int64, width int) string`
   - formatters `formatMemory`, `formatMemUsage`, `formatUptime`, `formatAge`, `stateLabel`, `lastEventLabel`, `shortTs`, `fit`
   - styles `styleProject`, `styleDim`, `styleSelected`, `styleErr`, `styleOK`, `stylePort`, `styleSidebar` (the layout's `styleTabs` and `styleMain` land with `view.go` in Task 5, so each style arrives with its first consumer and `unused` stays quiet)
+  - glyphs `glyphStopped`, `glyphBooting`, `glyphDegraded`, `glyphWorking`, `glyphIdle`, `glyphNeedsInput`, `glyphHealthy`, plus `sidebarLine`, `tailEvents`, `sessionOr`, `detailEvents`
 
 - [ ] **Step 1: Add the rendering dependencies**
 
@@ -1889,7 +1895,7 @@ func TestRenderDetailStoppedSandboxOffersBoot(t *testing.T) {
 	row := control.Row{Kind: control.RowSandbox, Project: "alpha", Name: "issue-42",
 		State: control.StateStopped}
 	out := plain(renderDetail(row, liveState{}, nil, nil, nil, nil, 0, 70))
-	if !strings.Contains(out, "stopped") || !strings.Contains(out, "u") {
+	if !strings.Contains(out, "stopped") || !strings.Contains(out, "press u to boot") {
 		t.Errorf("a stopped sandbox should offer the boot key; got:\n%s", out)
 	}
 }
@@ -3377,7 +3383,6 @@ type Model struct {
 
 	notice    notice
 	noticeGen int
-	showHelp  bool
 
 	width, height int
 	quitting      bool
@@ -3782,7 +3787,7 @@ Every action the CLI already has, on the keys the design gives the sidebar, gate
 - Modify: `go.mod`, `go.sum`
 
 **Interfaces:**
-- Consumes: `Actor`, `Model`, `startAction`'s callers (Task 5); `KeyMap.forRow` (Task 3).
+- Consumes: `Actor`, `Model` (Task 5); `KeyMap.forRow` (Task 3).
 - Produces:
   - `func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)`
   - `func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)`
@@ -4066,6 +4071,9 @@ func TestTeardownConfirms(t *testing.T) {
 	if out := plain(m.View().Content); !strings.Contains(out, "Tear down mercury") {
 		t.Errorf("the confirmation should name the sandbox:\n%s", out)
 	}
+	if out := plain(m.View().Content); !strings.Contains(out, "Keep it") {
+		t.Errorf("confirm buttons missing from view:\n%s", out)
+	}
 
 	m = answer(t, m, "y")
 	if len(a.down) != 1 || a.down[0].Name != "mercury" {
@@ -4300,12 +4308,14 @@ func newDownConfirm(sandbox string, width int) *huh.Form {
 	km.Quit = key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel"))
 	return huh.NewForm(
 		huh.NewGroup(
+			// Not Inline: at the main area's width (74 columns on a
+			// 100-column terminal) the inline form truncates before either
+			// button is visible.
 			huh.NewConfirm().
 				Key(confirmField).
 				Title(fmt.Sprintf("Tear down %s? Its clone, sessions and volumes go with it.", sandbox)).
 				Affirmative("Down it").
-				Negative("Keep it").
-				Inline(true),
+				Negative("Keep it"),
 		),
 	).WithKeyMap(km).WithShowHelp(false).WithShowErrors(false).WithWidth(width)
 }
@@ -4343,9 +4353,10 @@ func (m Model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 In `internal/controlplane/model.go`, add the form to the struct, beside `mode`:
 
 ```go
-	mode    uiMode
-	confirm *huh.Form
-	input   textinput.Model
+	mode     uiMode
+	confirm  *huh.Form
+	showHelp bool
+	input    textinput.Model
 ```
 
 and add `"charm.land/huh/v2"` to its imports.
@@ -4466,7 +4477,7 @@ func (m Model) footer() string {
 - [ ] **Step 8: Run the input tests**
 
 Run: `go test ./internal/controlplane/ -v`
-Expected: PASS — every test in the package, including the twelve added here.
+Expected: PASS — every test in the package, including the thirteen added here.
 
 - [ ] **Step 9: Check**
 
@@ -5082,6 +5093,7 @@ The one task where `cspace tui` changes. The command builds the v2 model, `inter
 - Modify: `internal/control/control.go`, `internal/control/host.go` (doc comments naming `internal/tui`)
 - Modify: `CLAUDE.md`
 - Modify: `docs/superpowers/specs/2026-09-17-control-plane-design.md` (the two step-3 layout resolutions)
+- Modify: `go.mod`, `go.sum` (Step 7's `go mod tidy` promotes the charm v2 modules and x/ansi to direct requirements)
 
 **Interfaces:**
 - Consumes: everything from Tasks 1-7.
@@ -5345,7 +5357,7 @@ It is committed with the code in the next step, so the two never disagree on the
 
 ```bash
 cd /Users/elliott/Projects/cspace-control-plane-3
-git add -A internal/cli internal/tui internal/control CLAUDE.md docs/superpowers/specs
+git add -A internal/cli internal/tui internal/control CLAUDE.md docs/superpowers/specs go.mod go.sum
 git commit -m "Switch cspace tui to the v2 dashboard and delete the v1 one"
 ```
 
@@ -5525,14 +5537,15 @@ Expected: within two seconds that row's glyph turns `✕`, its ports disappear, 
 
 - [ ] **Step 13: Verify a keybinding override**
 
-Run:
+Run (an existing user config is backed up first, so this cannot clobber one):
 ```bash
+[ -f ~/.cspace/config.json ] && cp ~/.cspace/config.json ~/.cspace/config.json.bak
 mkdir -p ~/.cspace && cat > ~/.cspace/config.json <<'JSON'
 {"tui": {"keys": {"attach": ["o"], "help": ["f1", "?"]}}}
 JSON
 ./bin/cspace-go tui
 ```
-Expected: the footer shows `o attach`, `o` attaches, Enter no longer does, and both `?` and `f1` open the help. The key names are whatever `KeyPressMsg.String()` prints, which for named keys is always lowercase — `"F1"` would match nothing at all. Remove the file afterwards (`rm ~/.cspace/config.json`) unless you want to keep it.
+Expected: the footer shows `o attach`, `o` attaches, Enter no longer does, and both `?` and `f1` open the help. The key names are whatever `KeyPressMsg.String()` prints, which for named keys is always lowercase — `"F1"` would match nothing at all. Restore the backup if one was made (`[ -f ~/.cspace/config.json.bak ] && mv ~/.cspace/config.json.bak ~/.cspace/config.json`), otherwise remove the file (`rm ~/.cspace/config.json`).
 
 - [ ] **Step 14: Verify the teardown confirmation, then tear down**
 
