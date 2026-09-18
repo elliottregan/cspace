@@ -325,3 +325,34 @@ func TestPreflightImageGateSkipsProjectOwnedImages(t *testing.T) {
 		})
 	}
 }
+
+// TestIsTerminalRejectsNonTTYCharDevices — /dev/null is a character device, so
+// the old os.ModeCharDevice test called it a terminal. Every non-interactive
+// caller runs with stdin </dev/null, and there the stale-image gate must warn
+// and boot, not "ask", read EOF, take its default and rebuild for ten minutes.
+func TestIsTerminalRejectsNonTTYCharDevices(t *testing.T) {
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = devNull.Close() }()
+
+	regular, err := os.Create(filepath.Join(t.TempDir(), "piped"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = regular.Close() }()
+
+	for _, tc := range []struct {
+		name string
+		f    *os.File
+	}{
+		{os.DevNull, devNull},
+		{"regular file", regular},
+		{"nil", nil},
+	} {
+		if isTerminal(tc.f) {
+			t.Errorf("isTerminal(%s) = true, want false", tc.name)
+		}
+	}
+}
