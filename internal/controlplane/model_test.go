@@ -72,6 +72,21 @@ func (f *fakeData) Events(string, string, int) ([]control.EventLine, error) {
 	return f.events, f.eventsErr
 }
 
+// forget drops what the fake has recorded so a test can count calls from a
+// known zero, after setup it is not asserting on.
+func (f *fakeData) forget() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.snapshotOpts, f.portsFor, f.agentFor = nil, nil, nil
+}
+
+// calls is how many times each query has been made.
+func (f *fakeData) calls() (snapshots, ports, agents int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.snapshotOpts), len(f.portsFor), len(f.agentFor)
+}
+
 // recordingActor records what the dashboard asked for and reports success.
 type recordingActor struct {
 	attach, down, interrupt, browser, up []control.Row
@@ -158,24 +173,85 @@ func TestInitKicksAllThreeCadences(t *testing.T) {
 	}
 }
 
+// tickProbeWindow is how long tickPolls waits for a tick's command to yield.
+// Comfortably shorter than fastInterval, the shortest re-arm there is.
+const tickProbeWindow = 300 * time.Millisecond
+
+// tickPolls is the poll commands a tick batched alongside its re-arm — an
+// empty slice when the tick skipped its poll.
+//
+// A tick that polls returns tea.Batch(re-arm, poll), whose command yields its
+// members immediately. A tick that skips returns the bare re-arm, because
+// tea.Batch collapses a one-member batch to that member — and running a
+// re-arm blocks for the whole interval. Blocking is therefore the observable
+// that says no poll was started, which is why the command runs off the test
+// goroutine with a window far shorter than the shortest interval. The poll is
+// identified by position: Update seeds its slice with the re-arm and appends
+// the poll after it.
+func tickPolls(t *testing.T, cmd tea.Cmd) []tea.Cmd {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("a tick must always re-arm, even when it skips its poll")
+	}
+	yielded := make(chan tea.Msg, 1)
+	go func() { yielded <- cmd() }()
+	select {
+	case msg := <-yielded:
+		batch, ok := msg.(tea.BatchMsg)
+		if !ok {
+			t.Fatalf("a polling tick should batch its re-arm with its poll, got %T", msg)
+		}
+		return batch[1:]
+	case <-time.After(tickProbeWindow):
+		return nil
+	}
+}
+
 // Every ticker re-arms itself even while it is skipping a poll, or the
-// dashboard would stop updating after the first slow query.
+// dashboard would stop updating after the first slow query — and a tick that
+// arrives while a poll is still in flight must re-arm and nothing else.
 func TestTickersAlwaysRearm(t *testing.T) {
 	d := &fakeData{snap: testSnapshot()}
 	m := newTestModel(d, &recordingActor{})
+	// newTestModel's baseline snapshot seeds the slow cadence out of band and
+	// leaves it in flight, so "the slow tick marked its poll in flight" would
+	// be true whatever the tick did. Land that seed, then count from zero.
+	mm, _ := m.Update(slowMsg{snap: d.snap,
+		ports: map[sandboxKey][]control.Port{}, portsErr: map[sandboxKey]error{}})
+	m = mm.(Model)
+	if m.pollingSlow {
+		t.Fatal("test setup: the seeded slow poll should have landed")
+	}
+	d.forget()
+
 	for _, msg := range []tea.Msg{fastTickMsg{}, mediumTickMsg{}, slowTickMsg{}} {
 		mm, cmd := m.Update(msg)
 		m = mm.(Model)
-		if cmd == nil {
-			t.Fatalf("%T produced no command", msg)
+		polls := tickPolls(t, cmd)
+		if len(polls) != 1 {
+			t.Fatalf("%T started %d polls, want exactly one alongside its re-arm", msg, len(polls))
 		}
+		drain(polls[0])
 	}
 	if !m.pollingFast || !m.pollingMedium || !m.pollingSlow {
 		t.Error("each tick should mark its own poll in flight")
 	}
+	snapshots, ports, agents := d.calls()
+	if snapshots != 2 || ports != 1 || agents != 1 {
+		t.Errorf("the three ticks made %d snapshots, %d ports and %d agent probes; want 2, 1, 1 — "+
+			"one poll each, the medium and slow ones both taking a snapshot", snapshots, ports, agents)
+	}
+
 	// A second tick while one is in flight must not start another.
-	mm, _ := m.Update(mediumTickMsg{})
+	mm, cmd := m.Update(mediumTickMsg{})
 	m = mm.(Model)
+	if polls := tickPolls(t, cmd); len(polls) != 0 {
+		t.Errorf("a tick started %d polls while one was already in flight, want just the re-arm", len(polls))
+	}
+	if got, _, _ := d.calls(); got != snapshots {
+		t.Errorf("SnapshotWith called %d times, want it unchanged at %d while a poll is in flight", got, snapshots)
+	}
+
 	mm, _ = m.Update(snapshotMsg{snap: d.snap})
 	m = mm.(Model)
 	if m.pollingMedium {
