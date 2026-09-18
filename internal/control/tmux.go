@@ -253,3 +253,17 @@ func clientAlreadyGone(out string) bool {
 	}
 	return false
 }
+
+// ListClients reports the ttys attached to one of the sandbox's tmux
+// sessions. It delegates to the Tmux driver so the package keeps one
+// implementation of the tmux plumbing; no server at all is not an error.
+func (c *Client) ListClients(ctx context.Context, project, sandbox, session string) ([]string, error) {
+	return c.tmux.ListClients(ctx, containerName(project, sandbox), session)
+}
+
+// DetachClient detaches one tmux client by its tty. A dead host side never
+// reaches the guest, so every pane close and every `cspace attach` exit must
+// detach explicitly; this is the Client-level entry to that call.
+func (c *Client) DetachClient(ctx context.Context, project, sandbox, tty string) error {
+	return c.tmux.DetachClient(ctx, containerName(project, sandbox), tty)
+}
