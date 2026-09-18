@@ -25,6 +25,12 @@ var _ Snapshotter = (*Client)(nil)
 // memory cap and usage, uptime, nested compose sidecars, the project's
 // browser sidecar and its health, and daemon health.
 func (c *Client) Snapshot(ctx context.Context) Snapshot {
+	if c.containers == nil {
+		return Snapshot{Err: ErrNoContainerCLI, TakenAt: c.now()}
+	}
+	if c.entries == nil {
+		return Snapshot{Err: ErrNoEntryStore, TakenAt: c.now()}
+	}
 	containers, listErr := c.containers.List(ctx)
 	entries, _ := c.entries.List() // missing file => empty slice, nil
 

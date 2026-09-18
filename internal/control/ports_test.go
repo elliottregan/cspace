@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -229,6 +230,35 @@ func TestClientPortsEndToEnd(t *testing.T) {
 	wantExec := execCall{name: "cspace-alpha-mercury", cmd: []string{"ss", "-tln"}}
 	if len(fc.execCalls) != 1 || !reflect.DeepEqual(fc.execCalls[0], wantExec) {
 		t.Errorf("exec calls = %+v, want exactly %+v", fc.execCalls, wantExec)
+	}
+}
+
+// Ports builds host paths off Options.Home (CloneDir); an empty Home must
+// fail closed rather than silently read a path relative to the process cwd.
+func TestClientPortsErrorsWithoutHome(t *testing.T) {
+	reg := &registry.Registry{Path: filepath.Join(t.TempDir(), "reg.json")}
+	c := New(Options{Containers: &fakeContainers{}, Entries: reg})
+	if _, err := c.Ports(context.Background(), "alpha", "mercury"); !errors.Is(err, ErrNoHome) {
+		t.Errorf("err = %v, want ErrNoHome", err)
+	}
+}
+
+// A Client built with no ContainerCLI must fail closed rather than nil-panic
+// on c.containers.Exec.
+func TestClientPortsErrorsWithoutContainerCLI(t *testing.T) {
+	reg := &registry.Registry{Path: filepath.Join(t.TempDir(), "reg.json")}
+	c := New(Options{Entries: reg, Home: t.TempDir()})
+	if _, err := c.Ports(context.Background(), "alpha", "mercury"); !errors.Is(err, ErrNoContainerCLI) {
+		t.Errorf("err = %v, want ErrNoContainerCLI", err)
+	}
+}
+
+// A Client built with no EntryStore must fail closed rather than nil-panic
+// on lookup's c.entries.Lookup.
+func TestClientPortsErrorsWithoutEntryStore(t *testing.T) {
+	c := New(Options{Containers: &fakeContainers{}, Home: t.TempDir()})
+	if _, err := c.Ports(context.Background(), "alpha", "mercury"); !errors.Is(err, ErrNoEntryStore) {
+		t.Errorf("err = %v, want ErrNoEntryStore", err)
 	}
 }
 
