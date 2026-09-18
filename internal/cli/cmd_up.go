@@ -114,7 +114,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// `agent` against a healthy sandbox. Placing it here also means a
 			// doomed boot costs nothing: no daemon spawn, no clone, no
 			// credential resolution.
-			if err := ensureSandboxAvailable(ctx, project, name); err != nil {
+			if err := ensureSandboxAvailable(ctx, cmd.ErrOrStderr(), project, name); err != nil {
 				return err
 			}
 
@@ -1290,6 +1290,14 @@ func validateSandboxName(project, name string) error {
 // existence without shelling out to the container CLI.
 var sandboxContainerExists = containerExists
 
+// sandboxContainerRunning is a package seam reporting whether a container
+// that exists is also running. Separate from sandboxContainerExists because
+// the collision guard treats the two states completely differently.
+var sandboxContainerRunning = containerRunning
+
+// sandboxContainerRemove is a package seam that deletes a container by name.
+var sandboxContainerRemove = containerRemove
+
 // ensureSandboxAvailable fails fast when a container already holds this
 // sandbox's name.
 //
@@ -1307,9 +1315,29 @@ var sandboxContainerExists = containerExists
 // An explicitly named sandbox bypassed that entirely, which is the path
 // agents use by convention — descriptive names like issue-142 rather than
 // planet names.
-func ensureSandboxAvailable(ctx context.Context, project, name string) error {
+func ensureSandboxAvailable(ctx context.Context, out io.Writer, project, name string) error {
 	containerName := fmt.Sprintf("cspace-%s-%s", project, name)
 	if !sandboxContainerExists(ctx, containerName) {
+		return nil
+	}
+	// A stopped container of the same name is not the thing this guard
+	// protects. Everything above is about a *running* sandbox: its baked
+	// control token, its attached session, the clone it is working in. A
+	// stopped microVM has none of that — its token is already dead — and
+	// `container run --name` still refuses the name, so refusing here makes
+	// a stopped sandbox unbootable by every path that cannot first run
+	// `cspace down`. The dashboard's boot key is exactly that path: the only
+	// rows it offers `u` on are the stopped ones, and `cspace down` removes
+	// the registry entry the row is made from, so no sequence of commands
+	// could get such a sandbox running again.
+	//
+	// Reclaim it instead. `cspace up` provisions everything downstream from
+	// scratch anyway.
+	if !sandboxContainerRunning(ctx, containerName) {
+		_, _ = fmt.Fprintf(out, "[cspace] reclaiming the stopped container %s\n", containerName)
+		if err := sandboxContainerRemove(ctx, containerName); err != nil {
+			return fmt.Errorf("remove the stopped container %s: %w", containerName, err)
+		}
 		return nil
 	}
 	return fmt.Errorf(
