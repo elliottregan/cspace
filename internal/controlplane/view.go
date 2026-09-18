@@ -100,22 +100,51 @@ func (m Model) tabsLine(width int) string {
 	return styleTabs.Render(title) + strings.Repeat(" ", gap) + style.Render(health)
 }
 
-// mainArea is the detail band for the selection. Rollout step 4 replaces
-// this with the focused pane and moves the band under the sidebar; the
-// renderer already takes its width, so that is a layout change, not a
-// rewrite.
+// mainArea is what sits under the tabs line: the help overlay when it is
+// open, the teardown confirmation while it is unanswered, otherwise the
+// detail band for the selection.
+//
+// The confirmation renders here rather than in the footer because a widget's
+// height depends on its theme, and the footer is exactly one line. Rollout
+// step 4 replaces this with the focused pane and moves the band under the
+// sidebar; renderDetail already takes its width, so that is a layout change
+// and not a rewrite.
 func (m Model) mainArea(width, height int) string {
+	style := styleMain.Height(height).MaxHeight(height)
+	switch {
+	case m.showHelp:
+		return style.Render(m.helpView(width - 2))
+	case m.mode == modeConfirmDown && m.confirm != nil:
+		return style.Render(m.confirm.View())
+	}
 	row := m.selectedRow()
 	k := keyOf(row)
-	body := renderDetail(row, m.live[k], m.ports[k], m.portsErr, m.events, m.eventsErr,
-		m.memory[row.Container], width-2)
-	return styleMain.Height(height).Render(body)
+	return style.Render(renderDetail(row, m.live[k], m.ports[k], m.portsErr, m.events, m.eventsErr,
+		m.memory[row.Container], width-2))
+}
+
+// helpView is the full binding list, plus the notes the footer has no room
+// for. Rendering it in the main area keeps the sidebar visible, so a person
+// can read the keys against the row they were about to act on.
+func (m Model) helpView(width int) string {
+	lines := []string{
+		styleTabs.Render("keys"),
+		"",
+		m.help.FullHelpView(m.keys.FullHelp()),
+		"",
+		styleDim.Render(fit("ctrl+c quits from anywhere · esc leaves a prompt", width)),
+		styleDim.Render(fit("keys the selected row cannot use are hidden from the footer", width)),
+		styleDim.Render(fit("bindings come from tui.keys in ~/.cspace/config.json", width)),
+	}
+	return strings.Join(lines, "\n")
 }
 
 // footer is the one line at the bottom: whatever the dashboard most needs to
 // say, and otherwise the short help for what the selection can do.
 func (m Model) footer() string {
 	switch {
+	case m.mode == modeInput:
+		return fit("send to "+m.selectedRow().Name+" › "+m.input.View(), m.width)
 	case m.action != "":
 		return m.spinner.View() + " " + m.action + "…"
 	case m.notice.text != "":
