@@ -1,6 +1,9 @@
 package controlplane
 
 import (
+	"slices"
+	"strings"
+
 	"charm.land/bubbles/v2/key"
 
 	"github.com/elliottregan/cspace/internal/control"
@@ -51,8 +54,11 @@ var defaultKeys = map[string][]string{
 }
 
 // actionHelp is the label and description each binding shows in the footer
-// and the help overlay. The label is written for a human ("↑/k"), not
-// derived from the keystrokes, so an overridden binding still reads well.
+// and the help overlay. The label is hand-written ("↑/k" rather than
+// "up/k") because it describes the DEFAULT keys; an action whose keys are
+// overridden gets its label derived from those keys instead, by helpLabel —
+// a footer that says "enter attach" when enter does nothing is worse than a
+// less pretty label.
 var actionHelp = map[string][2]string{
 	ActionMoveUp:         {"↑/k", "up"},
 	ActionMoveDown:       {"↓/j", "down"},
@@ -111,7 +117,7 @@ func NewKeyMap(overrides map[string][]string) KeyMap {
 		}
 		opts := []key.BindingOpt{key.WithKeys(keys...)}
 		if h, ok := actionHelp[action]; ok {
-			opts = append(opts, key.WithHelp(h[0], h[1]))
+			opts = append(opts, key.WithHelp(helpLabel(action, keys, h[0]), h[1]))
 		}
 		return key.NewBinding(opts...)
 	}
@@ -129,6 +135,21 @@ func NewKeyMap(overrides map[string][]string) KeyMap {
 		Quit:           binding(ActionQuit),
 		Leader:         binding(ActionLeader),
 	}
+}
+
+// helpLabel is the key label the footer and the help overlay show for one
+// action: the curated default when the action still has its default keys,
+// and the configured keys themselves when it does not.
+//
+// Deriving it always would turn "↑/k up" into "up/k up"; never deriving it
+// leaves the footer advertising a key the config has unbound, which is what
+// `{"tui":{"keys":{"attach":["o"]}}}` used to produce — a footer reading
+// "enter attach" beside an enter that did nothing.
+func helpLabel(action string, keys []string, fallback string) string {
+	if slices.Equal(keys, defaultKeys[action]) {
+		return fallback
+	}
+	return strings.Join(keys, "/")
 }
 
 // ShortHelp is the footer's one line, in the order a person reads it.
