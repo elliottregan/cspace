@@ -37,5 +37,21 @@
   },
   "credentials": {
     "runwayWarningHours": 4
+  },
+  "tui": {
+    "keys": {
+      "moveUp": ["up", "k"],
+      "moveDown": ["down", "j"],
+      "attach": ["enter"],
+      "send": ["m"],
+      "interrupt": ["i"],
+      "teardown": ["d"],
+      "browserRestart": ["b"],
+      "boot": ["u"],
+      "refresh": ["r"],
+      "help": ["?"],
+      "quit": ["q"],
+      "leader": ["ctrl+space"]
+    }
   }
 }

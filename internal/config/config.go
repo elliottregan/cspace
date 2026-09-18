@@ -35,6 +35,7 @@ type Config struct {
 	Browser     BrowserConfig          `json:"browser,omitempty"`
 	Agent       AgentConfig            `json:"agent,omitempty"`
 	Credentials CredentialsConfig      `json:"credentials,omitempty"`
+	TUI         TUIConfig              `json:"tui,omitempty"`
 
 	// ServiceURLs declares Traefik-routed project services whose URLs cspace
 	// should inject into the main container as env vars. Key is the subdomain
@@ -57,6 +58,18 @@ type Config struct {
 // meaningful setting.
 type CredentialsConfig struct {
 	RunwayWarningHours int `json:"runwayWarningHours"`
+}
+
+// TUIConfig configures `cspace tui`. Keys maps an action name — the names in
+// internal/controlplane's Action* constants — to the keystrokes that trigger
+// it. The strings are matched against bubbletea v2's KeyPressMsg.String(),
+// so they are things like "enter", "up", "?", "ctrl+space". An action absent
+// from the map keeps its built-in default; an unknown action name is
+// ignored. Because DeepMerge replaces arrays wholesale, setting one action's
+// list replaces that action's keystrokes and leaves every other action's
+// alone.
+type TUIConfig struct {
+	Keys map[string][]string `json:"keys,omitempty"`
 }
 
 // ProjectConfig holds project identification fields.
