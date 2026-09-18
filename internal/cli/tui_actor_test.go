@@ -33,7 +33,7 @@ func actorAgainst(t *testing.T, controlURL string) *tuiActor {
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	return newTUIActor(control.New(control.Options{Entries: reg}), nil, reg, t.TempDir())
+	return newTUIActor(control.New(control.Options{Entries: reg}), t.TempDir())
 }
 
 func TestTUIActorSendPostsToControlURL(t *testing.T) {
@@ -106,7 +106,7 @@ func TestTUIActorInterrupt500Surfaces(t *testing.T) {
 func TestTUIActorAttachAbortsWhenTheTmuxProbeFails(t *testing.T) {
 	withFakeExec(t, fakeExecer{err: errors.New("boom: transport down")})
 
-	a := newTUIActor(nil, nil, nil, "/home/x")
+	a := newTUIActor(nil, "/home/x")
 	row := tui.Row{
 		Kind:      tui.RowSandbox,
 		Project:   "alpha",

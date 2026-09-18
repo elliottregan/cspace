@@ -3,11 +3,11 @@ package tui
 import tea "github.com/charmbracelet/bubbletea"
 
 // Actor executes the side-effecting commands the dashboard offers. It is
-// consumer-defined here and implemented in internal/cli (where teardownSandbox,
-// attachArgs and the control-port HTTP client live), then injected — so this
-// package never imports internal/cli. Each method returns a tea.Cmd that
-// eventually emits an actionResultMsg (or, for Attach, resumes the program via
-// tea.ExecProcess before emitting one).
+// consumer-defined here and implemented in internal/cli, whose tuiActor
+// delegates to internal/control for everything but Attach, then injected —
+// so this package never imports internal/cli. Each method returns a tea.Cmd
+// that eventually emits an actionResultMsg (or, for Attach, resumes the
+// program via tea.ExecProcess before emitting one).
 type Actor interface {
 	Attach(row Row) tea.Cmd
 	Down(row Row) tea.Cmd
