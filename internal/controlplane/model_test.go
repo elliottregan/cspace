@@ -305,6 +305,46 @@ func TestMemoryUsageSurvivesAStatsFreeSnapshot(t *testing.T) {
 	}
 }
 
+// Event tails are read concurrently and nothing cancels an outstanding one,
+// so the read for the row that was selected a moment ago can land after the
+// read for the row selected now. The late one must be dropped rather than
+// render another sandbox's events under this sandbox's name.
+func TestLateEventsForAPreviousSelectionAreIgnored(t *testing.T) {
+	d := &fakeData{snap: testSnapshot()}
+	m := newTestModel(d, &recordingActor{})
+	if got := m.selectedRow().Name; got != "mercury" {
+		t.Fatalf("test setup: selected %q, want mercury", got)
+	}
+
+	// mercury's tail is in flight...
+	d.events = []control.EventLine{{Ts: "2026-09-18T10:00:00Z", Kind: "mercury-turn"}}
+	late := drain(m.eventsCmd())
+
+	// ...while the selection moves on and asks for the next row's.
+	m.moveSelection(1)
+	if got := m.selectedRow().Name; got != "issue-42" {
+		t.Fatalf("test setup: selected %q, want issue-42", got)
+	}
+	d.events = []control.EventLine{{Ts: "2026-09-18T10:00:01Z", Kind: "issue-42-turn"}}
+	fresh := drain(m.eventsCmd())
+
+	for _, msg := range late {
+		mm, _ := m.Update(msg)
+		m = mm.(Model)
+	}
+	if len(m.events) != 0 {
+		t.Errorf("events = %+v, want mercury's late tail dropped once issue-42 was selected", m.events)
+	}
+
+	for _, msg := range fresh {
+		mm, _ := m.Update(msg)
+		m = mm.(Model)
+	}
+	if len(m.events) != 1 || m.events[0].Kind != "issue-42-turn" {
+		t.Errorf("events = %+v, want the selected row's own tail applied", m.events)
+	}
+}
+
 // A Ports failure belongs to the sandbox it failed for. Targets come from the
 // previous snapshot, so any sandbox that stops between two slow ticks errors
 // its `ss` exec — and one shared portsErr used to render

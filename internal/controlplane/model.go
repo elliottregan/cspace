@@ -215,6 +215,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case eventsMsg:
+		// A tail read for the row that used to be selected can land after
+		// the one read for the row that is selected now — the reads are
+		// concurrent and neither cancels the other. Dropping the mismatched
+		// one is what stops another sandbox's events rendering under this
+		// sandbox's name until the next medium tick.
+		if msg.key != keyOf(m.selectedRow()) {
+			return m, nil
+		}
 		m.events, m.eventsErr = msg.lines, msg.err
 		return m, nil
 

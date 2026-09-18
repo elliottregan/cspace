@@ -73,7 +73,12 @@ type slowMsg struct {
 	portsErr map[sandboxKey]error
 }
 
+// eventsMsg is one sandbox's event tail. key names the sandbox it was read
+// for, captured when the Cmd was built: a tail requested for the previous
+// selection can land after the one requested for the new selection, and the
+// model has no other way to tell whose events it is holding.
 type eventsMsg struct {
+	key   sandboxKey
 	lines []control.EventLine
 	err   error
 }
@@ -169,12 +174,13 @@ func (m Model) slowCmd() tea.Cmd {
 // new name.
 func (m Model) eventsCmd() tea.Cmd {
 	row := m.selectedRow()
+	key := keyOf(row)
 	if row.Kind != control.RowSandbox {
-		return func() tea.Msg { return eventsMsg{} }
+		return func() tea.Msg { return eventsMsg{key: key} }
 	}
 	data, project, name := m.data, row.Project, row.Name
 	return func() tea.Msg {
 		lines, err := data.Events(project, name, eventTail)
-		return eventsMsg{lines: lines, err: err}
+		return eventsMsg{key: key, lines: lines, err: err}
 	}
 }
