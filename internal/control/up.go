@@ -23,7 +23,11 @@ func (c *Client) Up(ctx context.Context, sandbox string) error {
 	}
 	out, err := c.runCommand(ctx, c.projectRoot, exe, "up", sandbox)
 	if err != nil {
-		return fmt.Errorf("cspace up %s: %w (%s)", sandbox, err, strings.TrimSpace(out))
+		out = strings.TrimSpace(out)
+		if out == "" {
+			return fmt.Errorf("cspace up %s: %w", sandbox, err)
+		}
+		return fmt.Errorf("cspace up %s: %w (%s)", sandbox, err, out)
 	}
 	return nil
 }
@@ -36,6 +40,16 @@ func runHostCommand(ctx context.Context, dir, bin string, args ...string) (strin
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
+
+	// Stdin must not be nil: exec.Cmd then connects the child directly to
+	// the opened /dev/null *os.File, which is a character device — and
+	// cmd_up.go's isStdinTTY() treats any character device as a terminal.
+	// A Client.Up caller is always headless (the daemon, the TUI), so a
+	// stray prompt (e.g. the stale-image rebuild gate) must see EOF on a
+	// pipe, not what looks like an interactive terminal. Any io.Reader that
+	// is not an *os.File makes exec.Cmd allocate a real os.Pipe instead.
+	cmd.Stdin = bytes.NewReader(nil)
+
 	err := cmd.Run()
 	return buf.String(), err
 }
