@@ -27,6 +27,12 @@ type fakeData struct {
 	events    []control.EventLine
 	eventsErr error
 
+	// portsBy and portsErrBy answer per sandbox ("<project>/<name>"), for the
+	// cases where the whole point is that two sandboxes get different
+	// answers. Unset keys fall back to ports/portsErr.
+	portsBy    map[string][]control.Port
+	portsErrBy map[string]error
+
 	snapshotOpts []control.SnapshotOpts
 	portsFor     []string
 	agentFor     []string
@@ -51,7 +57,14 @@ func (f *fakeData) InteractiveState(string, string) control.InteractiveState { r
 func (f *fakeData) Ports(_ context.Context, project, sandbox string) ([]control.Port, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.portsFor = append(f.portsFor, project+"/"+sandbox)
+	target := project + "/" + sandbox
+	f.portsFor = append(f.portsFor, target)
+	if err, ok := f.portsErrBy[target]; ok {
+		return nil, err
+	}
+	if p, ok := f.portsBy[target]; ok {
+		return p, nil
+	}
 	return f.ports, f.portsErr
 }
 
@@ -289,6 +302,82 @@ func TestMemoryUsageSurvivesAStatsFreeSnapshot(t *testing.T) {
 	m = mm.(Model)
 	if _, ok := m.memory["cspace-alpha-mercury"]; ok {
 		t.Error("a stopped sandbox should not keep a remembered usage sample")
+	}
+}
+
+// A Ports failure belongs to the sandbox it failed for. Targets come from the
+// previous snapshot, so any sandbox that stops between two slow ticks errors
+// its `ss` exec — and one shared portsErr used to render
+// "ports unavailable: <that sandbox's error>" in every healthy sandbox's band
+// for up to a full slowInterval.
+func TestAPortsFailureIsScopedToItsOwnSandbox(t *testing.T) {
+	snap := testSnapshot()
+	snap.Rows[3].State = control.StateRunning // issue-42 is up too
+	d := &fakeData{
+		snap: snap,
+		portsBy: map[string][]control.Port{
+			"alpha/mercury": {{Port: 5173, Label: "web", URL: "http://mercury.alpha.cspace.test:5173/"}},
+		},
+		portsErrBy: map[string]error{
+			"alpha/issue-42": errors.New("container exec: no such process"),
+		},
+	}
+	m := newTestModel(d, &recordingActor{})
+	for _, msg := range drain(m.slowCmd()) {
+		mm, _ := m.Update(msg)
+		m = mm.(Model)
+	}
+
+	if got := m.selectedRow().Name; got != "mercury" {
+		t.Fatalf("test setup: selected %q, want mercury", got)
+	}
+	out := plain(m.View().Content)
+	if !strings.Contains(out, "http://mercury.alpha.cspace.test:5173/") {
+		t.Errorf("mercury's band should still list its URLs; got:\n%s", out)
+	}
+	if strings.Contains(out, "ports unavailable") {
+		t.Errorf("another sandbox's Ports failure blanked mercury's ports; got:\n%s", out)
+	}
+
+	m.moveSelection(1) // issue-42, the one that failed
+	if got := m.selectedRow().Name; got != "issue-42" {
+		t.Fatalf("test setup: selected %q, want issue-42", got)
+	}
+	out = plain(m.View().Content)
+	if !strings.Contains(out, "ports unavailable") {
+		t.Errorf("the sandbox whose probe failed should say so; got:\n%s", out)
+	}
+	if !strings.Contains(out, "no such process") {
+		t.Errorf("the band should carry its own probe's error; got:\n%s", out)
+	}
+}
+
+// Ports arrive on the slow cadence alone, so a sandbox that stops must lose
+// them on the snapshot that reports the stop rather than a slow tick later —
+// otherwise the band advertises URLs that answer nothing for up to 10s.
+func TestAStoppedSandboxLosesItsPortsImmediately(t *testing.T) {
+	d := &fakeData{snap: testSnapshot(), ports: []control.Port{
+		{Port: 5173, Label: "web", URL: "http://mercury.alpha.cspace.test:5173/"},
+	}}
+	m := newTestModel(d, &recordingActor{})
+	for _, msg := range drain(m.slowCmd()) {
+		mm, _ := m.Update(msg)
+		m = mm.(Model)
+	}
+	k := sandboxKey{Project: "alpha", Name: "mercury"}
+	if len(m.ports[k]) == 0 {
+		t.Fatal("test setup: the slow poll should have left mercury some ports")
+	}
+
+	stopped := testSnapshot()
+	stopped.Rows[1].State = control.StateStopped
+	mm, _ := m.Update(snapshotMsg{snap: stopped})
+	m = mm.(Model)
+	if _, ok := m.ports[k]; ok {
+		t.Errorf("ports = %v, want a stopped sandbox's ports dropped with the snapshot that stopped it", m.ports[k])
+	}
+	if out := plain(m.View().Content); strings.Contains(out, "5173") {
+		t.Errorf("the dashboard still shows a stopped sandbox's ports; got:\n%s", out)
 	}
 }
 

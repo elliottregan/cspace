@@ -125,7 +125,7 @@ func (m Model) mainArea(width, height int) string {
 	}
 	row := m.selectedRow()
 	k := keyOf(row)
-	return style.Render(renderDetail(row, m.live[k], m.ports[k], m.portsErr, m.events, m.eventsErr,
+	return style.Render(renderDetail(row, m.live[k], m.ports[k], m.portsErr[k], m.events, m.eventsErr,
 		m.memory[row.Container], width-2))
 }
 
