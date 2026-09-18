@@ -1,4 +1,4 @@
-package tui
+package control
 
 import (
 	"os"
@@ -75,13 +75,5 @@ func TestTailEventsMissingFileIsNotError(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("len = %d, want 0", len(got))
-	}
-}
-
-func TestSessionEventsPath(t *testing.T) {
-	got := SessionEventsPath("/home/x", "alpha", "mercury")
-	want := "/home/x/.cspace/sessions/alpha/mercury/primary/events.ndjson"
-	if got != want {
-		t.Errorf("path = %q, want %q", got, want)
 	}
 }

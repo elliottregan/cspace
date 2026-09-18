@@ -18,6 +18,7 @@ type (
 	DaemonHealth  = control.DaemonHealth
 	BrowserHealth = control.BrowserHealth
 	Snapshot      = control.Snapshot
+	EventLine     = control.EventLine
 
 	// Poller is the snapshot seam NewModel takes. Named for the dashboard's
 	// poll loop; satisfied by *control.Client.

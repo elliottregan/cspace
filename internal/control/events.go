@@ -1,10 +1,9 @@
-package tui
+package control
 
 import (
 	"bufio"
 	"encoding/json"
 	"os"
-	"path/filepath"
 )
 
 // EventLine is one parsed events.ndjson record, narrowed to what the detail
@@ -24,13 +23,6 @@ type eventRecord struct {
 		Type    string `json:"type"`
 		Subtype string `json:"subtype"`
 	} `json:"data"`
-}
-
-// SessionEventsPath is the host path of a sandbox's supervisor event log. The
-// "primary" segment is the supervisor's hardcoded SESSION_ID — do not make it
-// configurable. Mirrors the literal join cmd_up.go uses for the /sessions mount.
-func SessionEventsPath(home, project, sandbox string) string {
-	return filepath.Join(home, ".cspace", "sessions", project, sandbox, "primary", "events.ndjson")
 }
 
 // TailEvents returns the last n parsed lines of the events.ndjson at path.
@@ -72,4 +64,9 @@ func TailEvents(path string, n int) ([]EventLine, error) {
 		all = all[len(all)-n:]
 	}
 	return all, nil
+}
+
+// Events returns the tail of a sandbox's supervisor event log, newest last.
+func (c *Client) Events(project, sandbox string, n int) ([]EventLine, error) {
+	return TailEvents(SessionEventsPath(c.home, project, sandbox), n)
 }
