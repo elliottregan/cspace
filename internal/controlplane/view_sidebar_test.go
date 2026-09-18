@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -219,6 +220,53 @@ func TestRenderSidebarToleratesANonPositiveHeight(t *testing.T) {
 		if strings.TrimSpace(l) != "" {
 			t.Errorf("empty rows: expected only blank lines, got %q in:\n%s", l, plain(out))
 		}
+	}
+}
+
+// Once a sandbox's ports expand it into several lines, a row index is no
+// longer a line index: the window is computed against the anchor *line* the
+// selected row starts on. A fixture where the two coincide cannot catch that
+// confusion, so this one gives every row two ports — row 14 starts on line 42
+// — and asserts the selected row is both inside the window and actually on
+// screen.
+func TestSidebarWindowKeepsASelectionWithPortsVisible(t *testing.T) {
+	var rows []control.Row
+	ports := map[sandboxKey][]control.Port{}
+	for i := 0; i < 20; i++ {
+		name := fmt.Sprintf("sandbox-%02d", i)
+		rows = append(rows, control.Row{Kind: control.RowSandbox, Project: "alpha", Name: name,
+			Container: "cspace-alpha-" + name, State: control.StateRunning, Selectable: true})
+		ports[sandboxKey{Project: "alpha", Name: name}] = []control.Port{
+			{Port: 5173, Label: "web", URL: "http://" + name + ".alpha.cspace.test:5173/"},
+			{Port: 3210, Label: "api", URL: "http://" + name + ".alpha.cspace.test:3210/"},
+		}
+	}
+	const selected, height = 14, 9
+
+	lines := sidebarLines(rows, nil, ports, selected)
+	if len(lines) != 3*len(rows) {
+		t.Fatalf("test setup: %d lines for %d rows, want a row plus its two ports each", len(lines), len(rows))
+	}
+	anchor := -1
+	for i, l := range lines {
+		if l.row == selected {
+			anchor = i
+			break
+		}
+	}
+	if anchor != 3*selected {
+		t.Fatalf("test setup: row %d starts on line %d, want line %d", selected, anchor, 3*selected)
+	}
+
+	from, to := sidebarWindow(lines, selected, height)
+	if to-from != height {
+		t.Errorf("window %d..%d is %d lines, want %d", from, to, to-from, height)
+	}
+	if anchor < from || anchor >= to {
+		t.Errorf("the selected row's line %d fell outside window %d..%d", anchor, from, to)
+	}
+	if out := plain(renderSidebar(rows, nil, ports, selected, height)); !strings.Contains(out, rows[selected].Name) {
+		t.Errorf("the selected row must be on screen; got:\n%s", out)
 	}
 }
 
