@@ -63,10 +63,14 @@ type liveMsg struct{ states map[sandboxKey]liveState }
 
 type snapshotMsg struct{ snap control.Snapshot }
 
+// slowMsg carries the slow cadence's whole sample. portsErr is keyed like
+// ports: one sandbox's failed probe is that sandbox's problem, and folding
+// every target's error into one value made a single stopped sandbox blank
+// the port list of every healthy one on the host until the next slow tick.
 type slowMsg struct {
 	snap     control.Snapshot
 	ports    map[sandboxKey][]control.Port
-	portsErr error
+	portsErr map[sandboxKey]error
 }
 
 type eventsMsg struct {
@@ -147,18 +151,16 @@ func (m Model) slowCmd() tea.Cmd {
 
 		snap := data.SnapshotWith(ctx, control.SnapshotOpts{})
 		ports := make(map[sandboxKey][]control.Port, len(targets))
-		var firstErr error
+		errs := make(map[sandboxKey]error)
 		for _, k := range targets {
 			p, err := data.Ports(ctx, k.Project, k.Name)
 			if err != nil {
-				if firstErr == nil {
-					firstErr = err
-				}
+				errs[k] = err
 				continue
 			}
 			ports[k] = p
 		}
-		return slowMsg{snap: snap, ports: ports, portsErr: firstErr}
+		return slowMsg{snap: snap, ports: ports, portsErr: errs}
 	}
 }
 
