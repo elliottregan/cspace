@@ -6,6 +6,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -14,6 +15,11 @@ import (
 
 func main() {
 	if err := cli.Execute(); err != nil {
+		// A child's exit status is not a cspace error: exit with it silently.
+		var exitErr cli.ExitError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.Code)
+		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
