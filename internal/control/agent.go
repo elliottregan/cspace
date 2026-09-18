@@ -97,8 +97,14 @@ func (c *Client) Interrupt(ctx context.Context, project, sandbox string) error {
 }
 
 // lookup resolves a sandbox's registry entry, wrapping the failure so the
-// caller's error names the sandbox rather than a bare map miss.
+// caller's error names the sandbox rather than a bare map miss. Every action
+// that needs an entry (AgentStatus, Send, Interrupt, Ports) routes through
+// here, so this is also where they all degrade when the Client was built
+// with no EntryStore.
 func (c *Client) lookup(project, sandbox string) (registry.Entry, error) {
+	if c.entries == nil {
+		return registry.Entry{}, ErrNoEntryStore
+	}
 	e, err := c.entries.Lookup(project, sandbox)
 	if err != nil {
 		return registry.Entry{}, fmt.Errorf("look up sandbox %s/%s: %w", project, sandbox, err)

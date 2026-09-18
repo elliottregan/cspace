@@ -1,6 +1,7 @@
 package control
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -75,5 +76,14 @@ func TestTailEventsMissingFileIsNotError(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("len = %d, want 0", len(got))
+	}
+}
+
+// A Client built with no Home must fail closed rather than silently read an
+// events log path relative to the process cwd.
+func TestClientEventsErrorsWithoutHome(t *testing.T) {
+	c := New(Options{Containers: &fakeContainers{}})
+	if _, err := c.Events("alpha", "mercury", 8); !errors.Is(err, ErrNoHome) {
+		t.Errorf("err = %v, want ErrNoHome", err)
 	}
 }

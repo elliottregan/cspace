@@ -45,7 +45,13 @@ func ReadInteractiveState(path string) InteractiveState {
 	return s
 }
 
-// InteractiveState reads the sandbox's hook-written interactive session state.
+// InteractiveState reads the sandbox's hook-written interactive session
+// state. An empty Options.Home yields the zero value, the same "unknown"
+// result ReadInteractiveState gives a missing file — this method has no
+// error return, so there is nothing to fail closed with but that.
 func (c *Client) InteractiveState(project, sandbox string) InteractiveState {
+	if c.home == "" {
+		return InteractiveState{}
+	}
 	return ReadInteractiveState(AgentStatePath(c.home, project, sandbox))
 }

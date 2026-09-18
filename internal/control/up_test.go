@@ -31,7 +31,7 @@ func TestUpRunsThisBinaryInTheProjectRoot(t *testing.T) {
 }
 
 func TestUpSurfacesFailureWithOutput(t *testing.T) {
-	c := New(Options{Containers: &fakeContainers{}})
+	c := New(Options{Containers: &fakeContainers{}, ProjectRoot: "/Users/x/proj"})
 	c.executable = func() (string, error) { return "/usr/local/bin/cspace", nil }
 	c.runCommand = func(context.Context, string, string, ...string) (string, error) {
 		return "error: sandbox issue-42 already exists\n", errors.New("exit status 1")
@@ -43,10 +43,31 @@ func TestUpSurfacesFailureWithOutput(t *testing.T) {
 }
 
 func TestUpReportsAnUnresolvableBinary(t *testing.T) {
-	c := New(Options{Containers: &fakeContainers{}})
+	c := New(Options{Containers: &fakeContainers{}, ProjectRoot: "/Users/x/proj"})
 	c.executable = func() (string, error) { return "", errors.New("no such file") }
 	if err := c.Up(context.Background(), "issue-42"); err == nil {
 		t.Error("want an error when the running binary cannot be resolved")
+	}
+}
+
+// An empty ProjectRoot must fail Up before it touches the executable or
+// runCommand seams: exec.Cmd would otherwise treat an empty Dir as "inherit
+// this process's cwd", which is wrong for a long-lived control-plane caller
+// with no cwd of its own that means anything for a given project.
+func TestUpRequiresAProjectRoot(t *testing.T) {
+	var ranExecutable, ranCommand bool
+	c := New(Options{Containers: &fakeContainers{}})
+	c.executable = func() (string, error) { ranExecutable = true; return "/usr/local/bin/cspace", nil }
+	c.runCommand = func(context.Context, string, string, ...string) (string, error) {
+		ranCommand = true
+		return "", nil
+	}
+	err := c.Up(context.Background(), "issue-42")
+	if !errors.Is(err, ErrNoProjectRoot) {
+		t.Errorf("err = %v, want ErrNoProjectRoot", err)
+	}
+	if ranExecutable || ranCommand {
+		t.Error("Up must not touch the executable/runCommand seams without a ProjectRoot")
 	}
 }
 

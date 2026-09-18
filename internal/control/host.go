@@ -32,3 +32,17 @@ type Host interface {
 // built without one. Failing closed beats a nil-pointer panic in a UI that
 // only meant to read.
 var ErrNoHost = errors.New("control: no Host configured for this action")
+
+// ErrNoContainerCLI is returned wherever a Client needs its ContainerCLI
+// (Options.Containers) and was built without one — Snapshot, and any tmux
+// driver call routed through New's containerExecer/noContainerExecer choice.
+// Failing closed here is the same rule as ErrNoHost: a Client is legal to
+// build with a nil seam (a read-only caller may not need every one), so
+// every method that touches a nil seam must degrade to this error rather
+// than dereference it.
+var ErrNoContainerCLI = errors.New("control: no ContainerCLI configured")
+
+// ErrNoEntryStore is returned wherever a Client needs its EntryStore
+// (Options.Entries) and was built without one — Snapshot and lookup (and so
+// every action that calls lookup: AgentStatus, Send, Interrupt, Ports).
+var ErrNoEntryStore = errors.New("control: no EntryStore configured")

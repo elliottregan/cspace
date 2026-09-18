@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -128,6 +129,23 @@ func TestInterruptStatusHandling(t *testing.T) {
 				t.Errorf("err = %v, want it to contain %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// A Client built with no EntryStore must fail closed on every action that
+// resolves a sandbox through lookup, rather than nil-panic on
+// c.entries.Lookup.
+func TestActionsErrorWithoutEntryStore(t *testing.T) {
+	c := New(Options{Containers: &fakeContainers{}})
+
+	if _, err := c.AgentStatus(context.Background(), "alpha", "mercury"); !errors.Is(err, ErrNoEntryStore) {
+		t.Errorf("AgentStatus err = %v, want ErrNoEntryStore", err)
+	}
+	if err := c.Send(context.Background(), "alpha", "mercury", "", "hi"); !errors.Is(err, ErrNoEntryStore) {
+		t.Errorf("Send err = %v, want ErrNoEntryStore", err)
+	}
+	if err := c.Interrupt(context.Background(), "alpha", "mercury"); !errors.Is(err, ErrNoEntryStore) {
+		t.Errorf("Interrupt err = %v, want ErrNoEntryStore", err)
 	}
 }
 
