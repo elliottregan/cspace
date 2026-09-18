@@ -158,6 +158,34 @@ func sendBoxPrefix(name string) string {
 	return "send to " + name + " › "
 }
 
+// sendLabelMin is the fewest columns the send box's label is shortened to
+// before the line is allowed to overflow instead. At three, fit leaves two
+// runes and an ellipsis — still recognizably a label rather than part of the
+// message.
+const sendLabelMin = 3
+
+// sendBoxLine composes the send box's footer line: a plain label, then the
+// textinput's own view.
+//
+// The label is what gives, never the input. m.input.View() is already styled
+// ANSI, and fit() counts display cells while cutting runes — so fitting the
+// composed line could cut an escape sequence in half or drop the closing
+// reset and bleed the style into whatever the terminal draws next (the same
+// hazard tabsLine documents). sendInputWidth floors the input at eight
+// columns, so on a window narrow enough for that floor to bite, the label
+// shrinks past what it would otherwise take, down to sendLabelMin; beyond
+// that the line is allowed to be as wide as the floor demands.
+func sendBoxLine(label, input string, width int) string {
+	budget := width - lipgloss.Width(input)
+	if budget < sendLabelMin {
+		budget = sendLabelMin
+	}
+	if lipgloss.Width(label) > budget {
+		label = fit(label, budget)
+	}
+	return label + input
+}
+
 // sendInputWidth is how wide the send box's textinput may be: the footer line
 // less the label, the input's own two-column "> " prompt, and the one column
 // bubbles/v2 renders past Width() for the cursor.
@@ -181,7 +209,7 @@ func (m Model) footer() string {
 		// retarget the label out from under the row Send will actually act
 		// on (see updateConfirm's identical reasoning for the teardown
 		// confirm).
-		return fit(sendBoxPrefix(m.pending.Name)+m.input.View(), m.width)
+		return sendBoxLine(sendBoxPrefix(m.pending.Name), m.input.View(), m.width)
 	case m.action != "":
 		return m.spinner.View() + " " + m.action + "…"
 	case m.notice.text != "":

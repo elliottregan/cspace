@@ -88,13 +88,17 @@ func runHostCommand(ctx context.Context, dir, bin string, args ...string) (strin
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
 
-	// Stdin must not be nil: exec.Cmd then connects the child directly to
-	// the opened /dev/null *os.File, which is a character device — and
-	// cmd_up.go's isStdinTTY() treats any character device as a terminal.
-	// A Client.Up caller is always headless (the daemon, the TUI), so a
-	// stray prompt (e.g. the stale-image rebuild gate) must see EOF on a
-	// pipe, not what looks like an interactive terminal. Any io.Reader that
-	// is not an *os.File makes exec.Cmd allocate a real os.Pipe instead.
+	// Every Client.Up caller is headless — the daemon, the dashboard — so the
+	// child must never inherit an interactive stdin: a prompt it printed (the
+	// stale-image rebuild gate is the one that exists) would have no one to
+	// answer it, and whatever it read would be this process's input.
+	//
+	// A nil Stdin already gives the child /dev/null, which `cspace up` reads
+	// as non-interactive: its gate asks the kernel whether stdin is a tty
+	// (cmd_up.go's isTerminal), and /dev/null is not. This is belt and
+	// braces on top of that — an empty reader is an EOF nothing can mistake
+	// for a terminal, because exec.Cmd allocates a real pipe for any
+	// io.Reader that is not an *os.File.
 	cmd.Stdin = bytes.NewReader(nil)
 
 	err := cmd.Run()

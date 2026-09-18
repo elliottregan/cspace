@@ -70,7 +70,7 @@ func (m Model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !down {
 			return m, nil
 		}
-		return m.startAction("down", m.actor.Down(target))
+		return m.startAction(LabelDown, m.actor.Down(target))
 	case huh.StateAborted:
 		m.mode, m.confirm = modeNormal, nil
 		m.pending = control.Row{}

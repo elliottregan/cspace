@@ -93,8 +93,15 @@ func renderDetail(row control.Row, live liveState, ports []control.Port, portsEr
 
 	case control.RowSidecar, control.RowSystem:
 		add(lipglossStyle{}, "%s · %s", row.Name, stateLabel(row))
-		add(styleDim, "%s · %s · %s", row.Container, row.IP,
-			formatMemUsage(memoryUsedB, row.MemoryB))
+		// A stopped sidecar has no address. Drop the segment rather than
+		// print an empty one between two separators, the way the sandbox and
+		// browser branches above do.
+		if row.IP != "" {
+			add(styleDim, "%s · %s · %s", row.Container, row.IP,
+				formatMemUsage(memoryUsedB, row.MemoryB))
+		} else {
+			add(styleDim, "%s · %s", row.Container, formatMemUsage(memoryUsedB, row.MemoryB))
+		}
 
 	default:
 		add(styleDim, "select a sandbox")
