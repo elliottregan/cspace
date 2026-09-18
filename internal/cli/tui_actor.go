@@ -37,14 +37,21 @@ func newTUIActor(a *applecontainer.Adapter, r *registry.Registry, home string) *
 // claudes against one workspace. tea.ExecProcess suspends the dashboard and
 // runs the exec in the foreground; its callback is where the detach happens.
 func (t *tuiActor) Attach(row tui.Row) tea.Cmd {
-	ctx := context.Background()
+	// The Present probe and BeginAttach run synchronously here, in
+	// bubbletea's Update (internal/tui/model.go), before the tea.Cmd this
+	// returns ever runs — the v1 dashboard is replaced in a later rollout
+	// step, so bound them rather than redesign this path now: a wedged
+	// container or flock contention must not freeze the whole dashboard.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	spec := control.ClaudeAttach(row.Container, defaultTmux.Present(ctx, row.Container))
 	bin, argv, err := control.AttachArgv(spec)
 	if err != nil {
+		cancel()
 		return func() tea.Msg { return tui.Result("attach", err) }
 	}
 	att, err := control.BeginAttach(ctx, defaultTmux, row.Container,
 		control.ControlPlaneDir(t.home, row.Project, row.Name), spec.Session)
+	cancel()
 	if err != nil {
 		return func() tea.Msg { return tui.Result("attach", err) }
 	}

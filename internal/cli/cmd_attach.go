@@ -132,14 +132,19 @@ func attachInteractive(ctx context.Context, warn io.Writer, project, sandbox, co
 //
 // The child shares stdin/stdout/stderr — the real tty — so `container exec
 // -it` puts that terminal into raw mode itself and keystrokes reach the guest
-// as bytes rather than as host-side signals. The signals we do get are
-// forwarded rather than acted on: SIGINT and SIGTERM belong to the session
-// inside, SIGWINCH tells the container CLI to re-read the window size (host
-// pty resizes propagate into the guest from there), and SIGHUP means the
-// window is gone, so the child is ended and the caller's detach runs. Without
-// the Notify below, Go's default SIGINT handling would kill cspace out from
-// under the child and skip the detach entirely — which is the bug this whole
-// change exists to fix.
+// as bytes rather than as host-side signals. exec.Command is not given a
+// Setpgid, so the child stays in cspace's own process group and controlling
+// tty: the kernel delivers Ctrl-C (SIGINT) and window resizes (SIGWINCH) to
+// that whole foreground process group directly, the child included, so
+// relaying either one here would only deliver it twice. SIGINT is still in
+// the Notify set below, but only so Go's default handling — which would kill
+// cspace outright — doesn't fire before the child exits and Close can run;
+// once received it is otherwise ignored. SIGTERM is forwarded because it
+// arrives by pid, so only cspace gets it and the child would never see it
+// otherwise. SIGHUP means the terminal itself is gone: the child is signalled
+// and, after a grace period, killed, so Wait returns and the caller's detach
+// of the tmux client it left behind still runs while the container is
+// reachable.
 func runAttachChild(bin string, argv []string) (int, error) {
 	child := exec.Command(bin, argv[1:]...)
 	child.Stdin = os.Stdin
@@ -147,7 +152,7 @@ func runAttachChild(bin string, argv []string) (int, error) {
 	child.Stderr = os.Stderr
 
 	sigs := make(chan os.Signal, 8)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGWINCH, syscall.SIGHUP)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(sigs)
 
 	if err := child.Start(); err != nil {
@@ -161,15 +166,22 @@ func runAttachChild(bin string, argv []string) (int, error) {
 			case <-done:
 				return
 			case sig := <-sigs:
-				if sig == syscall.SIGHUP {
+				switch sig {
+				case syscall.SIGHUP:
 					// Nothing can be typed into the child any more. Ask it to
 					// go, then insist, so Wait returns and the detach runs
 					// while the container is still reachable.
 					_ = child.Process.Signal(syscall.SIGHUP)
 					time.AfterFunc(2*time.Second, func() { _ = child.Process.Kill() })
-					continue
+				case syscall.SIGINT:
+					// The kernel already delivered this to the child
+					// directly (same process group, same controlling tty).
+					// Nothing to relay — this case exists only to keep
+					// receiving it above from killing cspace.
+				default:
+					// SIGTERM: arrives by pid, so cspace has to pass it on.
+					_ = child.Process.Signal(sig)
 				}
-				_ = child.Process.Signal(sig)
 			}
 		}
 	}()
