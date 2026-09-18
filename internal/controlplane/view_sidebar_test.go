@@ -201,6 +201,27 @@ func TestRenderSidebarWindowsToTheHeight(t *testing.T) {
 	}
 }
 
+// A short terminal can hand the layout a negative row budget (height
+// computed from window dimensions minus fixed chrome). renderSidebar must
+// render nothing rather than pass a negative capacity to make() and panic.
+func TestRenderSidebarToleratesANonPositiveHeight(t *testing.T) {
+	for _, height := range []int{0, -3} {
+		out := renderSidebar(demoRows(), nil, nil, 1, height)
+		if out != "" {
+			t.Errorf("height %d: renderSidebar = %q, want \"\"", height, out)
+		}
+	}
+
+	// An empty row list must not panic either, and should render as blank
+	// padding lines only.
+	out := renderSidebar(nil, nil, nil, 0, 10)
+	for _, l := range strings.Split(plain(out), "\n") {
+		if strings.TrimSpace(l) != "" {
+			t.Errorf("empty rows: expected only blank lines, got %q in:\n%s", l, plain(out))
+		}
+	}
+}
+
 func TestSidebarWindowKeepsTheSelectionVisible(t *testing.T) {
 	lines := make([]sidebarLine, 50)
 	for i := range lines {
