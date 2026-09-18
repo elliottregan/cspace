@@ -23,7 +23,7 @@ Exact values, copied from the spec and from CLAUDE.md. Every task's requirements
 - **`make check` must be green at the end of every task** — it is `fmt-check vet lint test test-scripts`. `make lint` runs `shellcheck lib/runtime/scripts/*.sh scripts/*.sh`, which includes the `*.test.sh` files, so new bash must be shellcheck-clean.
 - **Run `make fmt` on touched Go files before `make check`.** The Go in this plan is written for reading, not byte-aligned to gofmt (trailing-comment columns especially), and `fmt-check` fails on a single misaligned comment.
 - **A hook must never exit non-zero.** A `PreToolUse` hook exiting 2 blocks the tool call. `cspace-agent-state.sh` ends in `exit 0` on every path.
-- **`cspace attach` keeps `--dangerously-skip-permissions`** and keeps writing `\033c` to stdout before handing over.
+- **`cspace attach` keeps `--dangerously-skip-permissions`** and keeps writing `\033c` to stdout before handing over (the reset is skipped when attach has printed a warning, so the warning stays readable).
 - The state file is `/sessions/agent-state.json` inside the sandbox, which is `~/.cspace/sessions/<project>/<sandbox>/agent-state.json` on the host (existing bind mount, no new mounts).
 - Attach bookkeeping lives at `~/.cspace/controlplane/<project>/<sandbox>/` — `attach.lock` (flock) and one `<session>.<tty>.json` record per live client.
 - Commit messages: short imperative sentences, e.g. "Fix EPIPE crash in supervisor and $DC reference in cmd_up". When a commit resolves a finding, append `(cs-finding:<slug>)`.

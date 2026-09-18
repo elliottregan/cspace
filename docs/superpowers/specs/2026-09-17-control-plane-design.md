@@ -316,7 +316,7 @@ The entrypoint's settings seed gains a `hooks` block whose every entry runs
 
 | Hook event | Matcher | State |
 |---|---|---|
-| `SessionStart` | | `starting` |
+| `SessionStart` | `startup\|resume\|clear` | `starting` |
 | `UserPromptSubmit` | | `working` |
 | `PostToolUse` | | `working` (a tool finished, Claude continues; also clears a `needs-input` once the question or permission was answered) |
 | `PreToolUse` | `AskUserQuestion` | `needs-input` |
@@ -328,7 +328,9 @@ The entrypoint's settings seed gains a `hooks` block whose every entry runs
 No event has two entries, so no two hooks race to write different states
 for one event. Hooks matching the same event run in parallel, which is why
 `PreToolUse` is matched only on `AskUserQuestion` and the generic "working"
-comes from `PostToolUse` instead.
+comes from `PostToolUse` instead. `SessionStart`'s matcher excludes `compact`
+and `fork` so a mid-turn context compaction or a session fork doesn't flip an
+already-`working` session back to `starting`.
 
 `/sessions` is the per-sandbox session directory already bind-mounted from
 `~/.cspace/sessions/<project>/<sandbox>/`, so the host reads the file
