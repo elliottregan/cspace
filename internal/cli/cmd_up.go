@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mattn/go-isatty"
+
 	"github.com/elliottregan/cspace/internal/config"
 	"github.com/elliottregan/cspace/internal/control"
 	"github.com/elliottregan/cspace/internal/credentials"
@@ -1641,11 +1643,23 @@ func imageIsStale(imgVersion string, hasLabel bool, cliVersion string) bool {
 // isStdinTTY reports whether os.Stdin is a terminal, so an interactive prompt
 // can actually read a reply. False in CI / piped contexts.
 func isStdinTTY() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
+	return isTerminal(os.Stdin)
+}
+
+// isTerminal reports whether f is a terminal.
+//
+// It asks the kernel (an isatty ioctl) rather than looking at the file mode:
+// os.ModeCharDevice is set for /dev/null too, so a mode test calls a prompt
+// answerable when stdin is </dev/null — which is how every non-interactive
+// caller (CI, cron, an agent shell) runs. The stale-image gate then "asks",
+// reads EOF, takes its default and starts a ten-minute rebuild nobody
+// consented to. See ensureSandboxImage: without a real prompt it must warn
+// and boot the existing image.
+func isTerminal(f *os.File) bool {
+	if f == nil {
 		return false
 	}
-	return (fi.Mode() & os.ModeCharDevice) != 0
+	return isatty.IsTerminal(f.Fd()) || isatty.IsCygwinTerminal(f.Fd())
 }
 
 // promptYesNo writes a yes/no question to stderr and reads a reply from stdin,
