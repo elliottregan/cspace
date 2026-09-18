@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/elliottregan/cspace/internal/registry"
@@ -87,6 +88,11 @@ type Options struct {
 	Home      string
 	Now       func() time.Time
 
+	// ResolverInstalled reports whether macOS routes *.cspace.test at the
+	// cspace daemon. Injected so tests don't depend on the host's /etc; nil
+	// means "check ResolverFile".
+	ResolverInstalled func() bool
+
 	// Host supplies the operations whose implementations still live in
 	// internal/cli. Nil is legal: read-only callers need no Host, and the
 	// actions that do fail with ErrNoHost.
@@ -104,6 +110,8 @@ type Client struct {
 	home       string
 	now        func() time.Time
 	host       Host
+
+	resolverInstalled func() bool
 
 	probeClient  *http.Client
 	actionClient *http.Client
@@ -127,16 +135,24 @@ func New(o Options) *Client {
 			tm.Exec = containerExecer{cli: o.Containers}
 		}
 	}
+	resolver := o.ResolverInstalled
+	if resolver == nil {
+		resolver = func() bool {
+			_, err := os.Stat(ResolverFile)
+			return err == nil
+		}
+	}
 	return &Client{
-		containers:    o.Containers,
-		tmux:          tm,
-		entries:       o.Entries,
-		daemonURL:     o.DaemonURL,
-		home:          o.Home,
-		now:           now,
-		host:          o.Host,
-		probeClient:   &http.Client{Timeout: probeTimeout},
-		actionClient:  &http.Client{Timeout: actionTimeout},
-		browserCDPURL: func(ip string) string { return fmt.Sprintf("http://%s:%d/json/version", ip, browserCDPPort) },
+		containers:        o.Containers,
+		tmux:              tm,
+		entries:           o.Entries,
+		daemonURL:         o.DaemonURL,
+		home:              o.Home,
+		now:               now,
+		host:              o.Host,
+		resolverInstalled: resolver,
+		probeClient:       &http.Client{Timeout: probeTimeout},
+		actionClient:      &http.Client{Timeout: actionTimeout},
+		browserCDPURL:     func(ip string) string { return fmt.Sprintf("http://%s:%d/json/version", ip, browserCDPPort) },
 	}
 }
