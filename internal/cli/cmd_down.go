@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/elliottregan/cspace/internal/control"
 	"github.com/elliottregan/cspace/internal/devcontainer"
 	"github.com/elliottregan/cspace/internal/registry"
 	"github.com/elliottregan/cspace/internal/sidecars"
@@ -213,6 +214,14 @@ func teardownSandbox(
 
 	_ = a.Stop(ctx, fmt.Sprintf("cspace-%s-%s", project, name))
 
+	// Attach bookkeeping: the lock file and any client records this
+	// sandbox's attaches ever wrote. Unlike sessions/clone/volumes this is
+	// not gated by wipeState — once the container is stopped there is no
+	// tmux server left for a record to describe, and the lock exists only
+	// to serialize concurrent attaches while the sandbox is up. A sandbox
+	// that never had an attach has no such directory, which is fine.
+	removeControlPlaneDir(out, project, name)
+
 	// Per-instance (opt-out / --no-shared-browser) sidecar: stop this sandbox's
 	// own browser. Idempotent and a no-op in the shared case (no such container).
 	stopBrowserSidecar(ctx, browserContainerName(project, name))
@@ -234,6 +243,26 @@ func teardownSandbox(
 	}
 
 	_, _ = fmt.Fprintf(out, "sandbox %s down\n", name)
+}
+
+// removeControlPlaneDir deletes a sandbox's attach bookkeeping —
+// ~/.cspace/controlplane/<project>/<name>/, the attach lock and any client
+// records — regardless of --keep-state: once the container this function's
+// caller just stopped is gone, there is no tmux server left for a record to
+// describe and the lock has nothing left to serialize. Best-effort like the
+// rest of teardown: os.RemoveAll already treats a directory that never
+// existed as success, so a sandbox that was never attached to produces no
+// warning here.
+func removeControlPlaneDir(out io.Writer, project, name string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		_, _ = fmt.Fprintf(out, "[cspace] warning: resolve home dir for control-plane cleanup: %v\n", err)
+		return
+	}
+	dir := control.ControlPlaneDir(home, project, name)
+	if err := os.RemoveAll(dir); err != nil {
+		_, _ = fmt.Fprintf(out, "[cspace] warning: remove control-plane dir %s: %v\n", dir, err)
+	}
 }
 
 // wipeSandboxState reclaims everything `cspace up` materialized for a

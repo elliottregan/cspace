@@ -51,3 +51,13 @@ client (identified as the one new tty across the attach, under a per-sandbox
 flock) before returning the child's exit status. Sandboxes built from an
 image without tmux still fall back to the direct exec and now warn that the
 session will be left behind.
+
+### 2026-09-18 — status: resolved
+The previous entry's "forwards SIGINT/SIGTERM/SIGWINCH" wording is
+superseded: `runAttachChild`'s child is never given a `Setpgid`, so it shares
+cspace's process group and controlling tty, and the kernel delivers SIGINT
+and SIGWINCH to it directly — cspace does not relay either. cspace forwards
+SIGTERM, which arrives by pid so only cspace receives it, and handles SIGHUP
+by signalling the child and force-killing it after a grace period, ending
+the child so the tmux-client detach can still run against a reachable
+container.
