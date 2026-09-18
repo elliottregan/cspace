@@ -100,7 +100,12 @@ type Model struct {
 	noticeGen int
 
 	width, height int
-	quitting      bool
+	// quitting is nothing in production — tea.Quit is what actually ends the
+	// program — but it is the observable two tests assert on: that `q` quits
+	// from the sidebar and does *not* from inside the send box, where the
+	// same key is text. It is a test seam, not dead state; deleting it takes
+	// the only check on that rule with it.
+	quitting bool
 }
 
 // New builds the dashboard over the query and action seams and the resolved
@@ -147,7 +152,7 @@ func (m Model) Init() tea.Cmd {
 // on the host for the whole boot. Watching a booting sandbox turn ○ and gain
 // its ports is exactly what the poll loop is for. The one-action-at-a-time
 // gate lives in handleNormalKey and is unaffected by this.
-func (m Model) paused() bool { return m.mode != modeNormal || m.action == "attach" }
+func (m Model) paused() bool { return m.mode != modeNormal || m.action == LabelAttach }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {

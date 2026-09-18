@@ -156,6 +156,30 @@ func TestRenderDetailBrowserHealth(t *testing.T) {
 	}
 }
 
+// A sidecar that is not running has no address. The segment is dropped, the
+// way the sandbox and browser branches drop theirs, rather than printed as an
+// empty field between two separators.
+func TestRenderDetailSidecarWithoutAnIP(t *testing.T) {
+	row := control.Row{Kind: control.RowSidecar, Project: "alpha", Name: "mercury-convex",
+		Container: "cspace-alpha-mercury-convex", State: control.StateStopped, MemoryB: 2 << 30}
+	out := plain(renderDetail(row, liveState{}, nil, nil, nil, nil, 0, 70))
+	if strings.Contains(out, "· ·") {
+		t.Errorf("an empty IP left a double separator behind; got:\n%s", out)
+	}
+	for _, want := range []string{"cspace-alpha-mercury-convex", "2G", "stopped"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the band should still show %q; got:\n%s", want, out)
+		}
+	}
+
+	// With an address, it is still there.
+	row.State, row.IP = control.StateRunning, "192.168.64.7"
+	out = plain(renderDetail(row, liveState{}, nil, nil, nil, nil, 0, 70))
+	if !strings.Contains(out, "192.168.64.7") {
+		t.Errorf("a running sidecar should still show its IP; got:\n%s", out)
+	}
+}
+
 // A ports probe that failed degrades that one line — the band keeps
 // rendering everything else it knows.
 func TestRenderDetailPortsError(t *testing.T) {

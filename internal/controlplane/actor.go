@@ -16,9 +16,10 @@ import (
 // builds. None of them may do I/O before the returned command runs: Update
 // calls these on the UI goroutine, and a probe or a lock taken there freezes
 // the whole dashboard. Every returned Cmd must eventually yield a message
-// built by Result or ResultWarn for the same label, because the dashboard
-// blocks further actions until it arrives; a nil Cmd means "nothing to do"
-// and must not be returned for an action the caller marked in flight.
+// built by Result or ResultWarn for the same label — the Label* constants
+// below, one per method — because the dashboard blocks further actions until
+// it arrives; a nil Cmd means "nothing to do" and must not be returned for an
+// action the caller marked in flight.
 type Actor interface {
 	Attach(row control.Row) tea.Cmd
 	Down(row control.Row) tea.Cmd
@@ -28,10 +29,25 @@ type Actor interface {
 	Up(row control.Row) tea.Cmd
 }
 
+// The label each action wears: the verb the footer shows while it runs and
+// the one every Result carries back. Exported because the Actor is
+// implemented in another package and both sides have to agree on the string
+// — a mismatch degrades quietly, since actionResultMsg clears the in-flight
+// action whatever its label says, leaving only a footer reading the wrong
+// verb.
+const (
+	LabelAttach         = "attach"
+	LabelDown           = "down"
+	LabelSend           = "send"
+	LabelInterrupt      = "interrupt"
+	LabelBrowserRestart = "browser restart"
+	LabelUp             = "up"
+)
+
 // actionResultMsg reports an Actor command's outcome. label is the short
-// verb the footer shows ("attach", "down", "send", "interrupt",
-// "browser restart", "up"); err is nil on success; warn carries a notice
-// from an action that succeeded but has something the person must read.
+// verb the footer shows (one of the Label* constants above); err is nil on
+// success; warn carries a notice from an action that succeeded but has
+// something the person must read.
 type actionResultMsg struct {
 	label string
 	warn  string

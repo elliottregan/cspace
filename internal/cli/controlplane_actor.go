@@ -82,11 +82,11 @@ func (a *cpActor) attachCommand(row control.Row) *attachExec {
 // left did not survive.
 func attachResult(ex *attachExec, err error) tea.Msg {
 	if err == nil && ex.noTmux {
-		return controlplane.ResultWarn("attach", fmt.Sprintf(
+		return controlplane.ResultWarn(controlplane.LabelAttach, fmt.Sprintf(
 			"%s has no tmux: that session did not survive this window, and claude may still be running inside it. Rebuild with `cspace image build`, then `cspace down %s && cspace up %s`.",
 			ex.row.Name, ex.row.Name, ex.row.Name))
 	}
-	return controlplane.Result("attach", err)
+	return controlplane.Result(controlplane.LabelAttach, err)
 }
 
 // attachExec is the tea.ExecCommand the dashboard suspends for. bubbletea
@@ -199,7 +199,7 @@ func (a *attachExec) Run() error {
 // happened and ended on its own terms (the person typed `exit`, `claude`
 // crashed, whatever) — only a failure to start or run it at all is. Without
 // this, attachResult would report an ordinary session end as
-// Result("attach", "exit status N") and, worse, silently drop the no-tmux
+// Result(LabelAttach, "exit status N") and, worse, silently drop the no-tmux
 // warning: attachResult only warns when err == nil.
 func attachRunErr(err error) error {
 	var exitErr *exec.ExitError
@@ -214,7 +214,7 @@ func (a *cpActor) Down(row control.Row) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), cpDownTimeout)
 		defer cancel()
-		return controlplane.Result("down", ctrl.Down(ctx, project, name))
+		return controlplane.Result(controlplane.LabelDown, ctrl.Down(ctx, project, name))
 	}
 }
 
@@ -223,7 +223,7 @@ func (a *cpActor) Send(row control.Row, text string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), cpSendTimeout)
 		defer cancel()
-		return controlplane.Result("send", ctrl.Send(ctx, project, name, "", text))
+		return controlplane.Result(controlplane.LabelSend, ctrl.Send(ctx, project, name, "", text))
 	}
 }
 
@@ -232,7 +232,7 @@ func (a *cpActor) Interrupt(row control.Row) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), cpInterruptTimeout)
 		defer cancel()
-		return controlplane.Result("interrupt", ctrl.Interrupt(ctx, project, name))
+		return controlplane.Result(controlplane.LabelInterrupt, ctrl.Interrupt(ctx, project, name))
 	}
 }
 
@@ -241,7 +241,7 @@ func (a *cpActor) RestartBrowser(row control.Row) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), cpBrowserTimeout)
 		defer cancel()
-		return controlplane.Result("browser restart", ctrl.RestartBrowser(ctx, project))
+		return controlplane.Result(controlplane.LabelBrowserRestart, ctrl.RestartBrowser(ctx, project))
 	}
 }
 
@@ -258,6 +258,6 @@ func (a *cpActor) Up(row control.Row) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), cpUpTimeout)
 		defer cancel()
-		return controlplane.Result("up", ctrl.Up(ctx, project, name))
+		return controlplane.Result(controlplane.LabelUp, ctrl.Up(ctx, project, name))
 	}
 }

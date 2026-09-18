@@ -71,7 +71,7 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	keys := m.keys.forRow(row, m.live[keyOf(row)])
 	switch {
 	case key.Matches(msg, keys.Attach):
-		return m.startAction("attach", m.actor.Attach(row))
+		return m.startAction(LabelAttach, m.actor.Attach(row))
 	case key.Matches(msg, keys.Teardown):
 		m.mode = modeConfirmDown
 		// pending pins the row the prompt was opened against: a poll can
@@ -93,11 +93,11 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.input.SetWidth(sendInputWidth(row.Name, m.width))
 		return m, m.input.Focus()
 	case key.Matches(msg, keys.Interrupt):
-		return m.startAction("interrupt", m.actor.Interrupt(row))
+		return m.startAction(LabelInterrupt, m.actor.Interrupt(row))
 	case key.Matches(msg, keys.BrowserRestart):
-		return m.startAction("browser restart", m.actor.RestartBrowser(row))
+		return m.startAction(LabelBrowserRestart, m.actor.RestartBrowser(row))
 	case key.Matches(msg, keys.Boot):
-		return m.startAction("up", m.actor.Up(row))
+		return m.startAction(LabelUp, m.actor.Up(row))
 	}
 	return m, nil
 }
@@ -131,7 +131,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if text == "" {
 			return m, nil
 		}
-		return m.startAction("send", m.actor.Send(target, text))
+		return m.startAction(LabelSend, m.actor.Send(target, text))
 	case "esc":
 		m.mode = modeNormal
 		m.pending = control.Row{}
