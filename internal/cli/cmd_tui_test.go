@@ -12,14 +12,14 @@ func TestNewTuiCmdBasics(t *testing.T) {
 	if cmd.Short == "" {
 		t.Error("Short must be set")
 	}
-	// --interval flag exists with a sane default
-	f := cmd.Flags().Lookup("interval")
-	if f == nil {
-		t.Fatal("--interval flag missing")
-		return
+	// The v1 --interval flag is gone: the v2 dashboard polls on three
+	// cadences and no single interval describes it.
+	if f := cmd.Flags().Lookup("interval"); f != nil {
+		t.Errorf("--interval should be gone in the v2 dashboard, got default %q", f.DefValue)
 	}
-	if f.DefValue != "2s" {
-		t.Errorf("--interval default = %q, want 2s", f.DefValue)
+	// The command takes no arguments: it shows every project on the host.
+	if err := cmd.Args(cmd, []string{"mercury"}); err == nil {
+		t.Error("tui should refuse positional arguments")
 	}
 }
 

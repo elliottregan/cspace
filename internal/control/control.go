@@ -11,11 +11,11 @@
 // / Up / ListClients / DetachClient actions — hangs off Client (client.go),
 // seamed on ContainerCLI (the substrate), EntryStore (the registry) and Host
 // (the internal/cli-owned operations this package cannot import) so it is
-// testable without any of them. internal/tui consumes this package through
-// type aliases (internal/tui/types.go) rather than keeping its own copies,
-// so a Row built there is the same type as one built here. The package
-// depends on internal/devcontainer for exactly one thing: Ports reads a
-// project's devcontainer.json portsAttributes for its port labels.
+// testable without any of them. internal/controlplane consumes these types
+// directly — a Row it renders is the one built here, not a copy — through
+// the Data interface it declares for itself. The package depends on
+// internal/devcontainer for exactly one thing: Ports reads a project's
+// devcontainer.json portsAttributes for its port labels.
 package control
 
 import "path/filepath"
