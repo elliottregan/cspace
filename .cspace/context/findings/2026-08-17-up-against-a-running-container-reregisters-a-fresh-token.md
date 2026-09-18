@@ -53,3 +53,21 @@ This also closes the explicit-name half of
 skipped taken names via pickPlanetName, and explicit names are now checked
 too — the path agents use by convention, since descriptive names like
 issue-142 are the documented recommendation for agent-spawned sandboxes.
+
+### 2026-09-18 — @agent — status: resolved
+The guarantee above briefly depended on a fail-open probe. Between
+`containerExists` (the guard's first inspect) and `containerRunning` (its
+second), any failure of the second inspect — a transient error, unparseable
+output, zero records — returned `false`, which the guard read as "stopped" and
+acted on with `container rm --force`. A running sandbox could therefore be
+destroyed by a hiccup, which is a worse outcome than the token loss this
+finding is about.
+
+The two probes are now one `containerState` inspect returning
+`(exists, state, err)`, and the reclaim rule is fail-closed: only a state the
+substrate actually reported as `stopped` reclaims. An inspect error, a record
+with no state word, and every other state (`running`, `stopping`, `creating`,
+anything a future CLI grows) refuse with this finding's "already exists"
+message and remove nothing. Covered by
+`TestEnsureSandboxAvailableOnlyReclaimsAStoppedContainer` (table) and
+`TestEnsureSandboxAvailableNeverRemovesARunningContainer`.

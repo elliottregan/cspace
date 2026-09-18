@@ -45,3 +45,12 @@ message — measure before choosing it.
 ### 2026-09-17 — status: open
 Filed from the control-plane design, which names this as a follow-up for
 rollout step 3.
+
+### 2026-09-18 — status: open
+Rollout step 3's final review recorded a second, sibling duplication:
+`cspace ports` (`internal/cli/cmd_ports.go`) and the dashboard's
+`control.Ports` (`internal/control/ports.go`) are two independent
+implementations of the same port-discovery/labeling rule this statusline
+already duplicates, and they gave different answers for the same sandbox in
+live verification. See
+`.cspace/context/findings/2026-09-18-cspace-ports-and-control-ports-are-two-implementations.md`.

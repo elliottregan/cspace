@@ -199,10 +199,19 @@ degraded (running, supervisor unreachable) `!`; a running sandbox shows the
 interactive session's state when a Claude pane or `cspace attach` session
 exists (`●` working, `○` idle, `▲` needs input), else the supervisor's state
 (`●` working, `○` idle), else `○`. Selecting a
-sandbox shows a detail band under the sidebar: uptime, memory, agent
-session and last event, URLs.
+sandbox shows a detail band: uptime, memory, agent session and last event,
+URLs.
 
 Tabs: one per open pane, titled `<project>/<sandbox> · <kind>`.
+
+Rollout step 3 places both of those differently, and step 4 moves them.
+With no panes to compete for it, the detail band occupies the main area —
+24 columns cannot hold a URL, and `renderDetail` takes its width as a
+parameter so that move is a layout change, not a rewrite. The reserved tabs
+row carries the selection's title and daemon health rather than sitting
+empty, because an empty line above the main area reads as a rendering bug
+and not as a promise. When panes land, the band moves under the sidebar and
+the row becomes the tabs it is named for.
 
 Main area, by tab kind:
 

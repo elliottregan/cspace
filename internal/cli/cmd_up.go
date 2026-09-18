@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -16,6 +17,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/mattn/go-isatty"
 
 	"github.com/elliottregan/cspace/internal/config"
 	"github.com/elliottregan/cspace/internal/control"
@@ -112,7 +115,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 			// `agent` against a healthy sandbox. Placing it here also means a
 			// doomed boot costs nothing: no daemon spawn, no clone, no
 			// credential resolution.
-			if err := ensureSandboxAvailable(ctx, project, name); err != nil {
+			if err := ensureSandboxAvailable(ctx, cmd.ErrOrStderr(), project, name); err != nil {
 				return err
 			}
 
@@ -696,6 +699,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				IP:               "",
 				StartedAt:        startedAt,
 				BrowserContainer: browserContainer,
+				ProjectRoot:      projectRoot,
 				State:            "starting",
 			}); regErr != nil {
 				err = fmt.Errorf("register entry: %w", regErr)
@@ -779,6 +783,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				IP:               ip,
 				StartedAt:        startedAt,
 				BrowserContainer: browserContainer,
+				ProjectRoot:      projectRoot,
 				State:            "starting",
 			}); regErr != nil {
 				_ = a.Stop(context.Background(), containerName)
@@ -1282,9 +1287,14 @@ func validateSandboxName(project, name string) error {
 	return nil
 }
 
-// sandboxContainerExists is a package seam so tests can script container
-// existence without shelling out to the container CLI.
-var sandboxContainerExists = containerExists
+// sandboxContainerState is a package seam so tests can script the substrate's
+// answer — existence, state, or a failure to read either — without shelling
+// out to the container CLI. One seam, because the collision guard has to make
+// its decision from one reading of the substrate.
+var sandboxContainerState = containerState
+
+// sandboxContainerRemove is a package seam that deletes a container by name.
+var sandboxContainerRemove = containerRemove
 
 // ensureSandboxAvailable fails fast when a container already holds this
 // sandbox's name.
@@ -1303,12 +1313,57 @@ var sandboxContainerExists = containerExists
 // An explicitly named sandbox bypassed that entirely, which is the path
 // agents use by convention — descriptive names like issue-142 rather than
 // planet names.
-func ensureSandboxAvailable(ctx context.Context, project, name string) error {
+//
+// The one state that is reclaimed — rather than refused — is "stopped", and
+// it is reclaimed by destroying the container, so the rule is fail-closed:
+// only a state the substrate actually reported as stopped reclaims. An
+// inspect that failed, a record with no state word, or any other state
+// ("running", "stopping", a mid-create container, a word a future CLI grows)
+// refuses. A `cspace up` that refuses costs a retry; one that force-removes a
+// live sandbox costs whatever the agent inside it was doing.
+func ensureSandboxAvailable(ctx context.Context, out io.Writer, project, name string) error {
 	containerName := fmt.Sprintf("cspace-%s-%s", project, name)
-	if !sandboxContainerExists(ctx, containerName) {
+	exists, state, err := sandboxContainerState(ctx, containerName)
+	if err != nil {
+		// An unreadable substrate is not evidence that the name is free, and
+		// it is certainly not evidence that whatever holds it can be thrown
+		// away. Refuse, and say why the state could not be read.
+		return fmt.Errorf("%s\n  (its state could not be read: %w)",
+			sandboxNameTakenMessage(project, name), err)
+	}
+	if !exists {
 		return nil
 	}
-	return fmt.Errorf(
+	// A stopped container of the same name is not the thing this guard
+	// protects. Everything above is about a *running* sandbox: its baked
+	// control token, its attached session, the clone it is working in. A
+	// stopped microVM has none of that — its token is already dead — and
+	// `container run --name` still refuses the name, so refusing here makes
+	// a stopped sandbox unbootable by every path that cannot first run
+	// `cspace down`. The dashboard's boot key is exactly that path: the only
+	// rows it offers `u` on are the stopped ones, and `cspace down` removes
+	// the registry entry the row is made from, so no sequence of commands
+	// could get such a sandbox running again.
+	//
+	// Reclaim it instead. `cspace up` provisions everything downstream from
+	// scratch anyway.
+	if strings.EqualFold(strings.TrimSpace(state), containerStateStopped) {
+		_, _ = fmt.Fprintf(out,
+			"[cspace] reclaiming the name %s: removing the stopped container, which destroys it "+
+				"and anything written into it outside the bind mounts\n", containerName)
+		if err := sandboxContainerRemove(ctx, containerName); err != nil {
+			return fmt.Errorf("remove the stopped container %s: %w", containerName, err)
+		}
+		return nil
+	}
+	return errors.New(sandboxNameTakenMessage(project, name))
+}
+
+// sandboxNameTakenMessage is what `cspace up` says when it will not take a
+// name: one message for "a running container holds it" and for "the substrate
+// would not say what holds it", because the remedy is the same either way.
+func sandboxNameTakenMessage(project, name string) string {
+	return fmt.Sprintf(
 		"sandbox %s already exists for project %s.\n"+
 			"  attach to it:  cspace attach %s\n"+
 			"  or replace it: cspace down %s && cspace up %s",
@@ -1639,11 +1694,23 @@ func imageIsStale(imgVersion string, hasLabel bool, cliVersion string) bool {
 // isStdinTTY reports whether os.Stdin is a terminal, so an interactive prompt
 // can actually read a reply. False in CI / piped contexts.
 func isStdinTTY() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
+	return isTerminal(os.Stdin)
+}
+
+// isTerminal reports whether f is a terminal.
+//
+// It asks the kernel (an isatty ioctl) rather than looking at the file mode:
+// os.ModeCharDevice is set for /dev/null too, so a mode test calls a prompt
+// answerable when stdin is </dev/null — which is how every non-interactive
+// caller (CI, cron, an agent shell) runs. The stale-image gate then "asks",
+// reads EOF, takes its default and starts a ten-minute rebuild nobody
+// consented to. See ensureSandboxImage: without a real prompt it must warn
+// and boot the existing image.
+func isTerminal(f *os.File) bool {
+	if f == nil {
 		return false
 	}
-	return (fi.Mode() & os.ModeCharDevice) != 0
+	return isatty.IsTerminal(f.Fd()) || isatty.IsCygwinTerminal(f.Fd())
 }
 
 // promptYesNo writes a yes/no question to stderr and reads a reply from stdin,

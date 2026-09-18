@@ -10,10 +10,10 @@ import (
 // implementations still live in internal/cli, which control must not import.
 // Whoever builds the Client supplies one.
 //
-// This is the same direction as internal/tui's Actor — the consumer declares
-// the narrow interface it needs and the package that has the implementation
-// satisfies it — so the dependency graph stays acyclic while there is still
-// exactly one implementation of each operation.
+// This is the same direction as internal/controlplane's Actor — the consumer
+// declares the narrow interface it needs and the package that has the
+// implementation satisfies it — so the dependency graph stays acyclic while
+// there is still exactly one implementation of each operation.
 type Host interface {
 	// Teardown stops and removes a sandbox, wiping its clone, sessions and
 	// volumes when wipeState is true, and writes progress plus any

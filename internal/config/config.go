@@ -9,6 +9,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,6 +21,14 @@ import (
 )
 
 const appPrefix = "cspace"
+
+// ErrNoProject is the sentinel FindProjectRoot wraps into its returned error
+// when dir is not inside a git repository at all — as opposed to a directory
+// that is a project but whose config failed to parse. Load wraps
+// FindProjectRoot's error with %w, so errors.Is(err, ErrNoProject) reaches
+// through that chain too; callers use it to tell "no project here" apart
+// from a real config error worth reporting.
+var ErrNoProject = errors.New("not in a git repository")
 
 var gitRepoRe = regexp.MustCompile(`github\.com[:/](.+)$`)
 
@@ -35,6 +44,7 @@ type Config struct {
 	Browser     BrowserConfig          `json:"browser,omitempty"`
 	Agent       AgentConfig            `json:"agent,omitempty"`
 	Credentials CredentialsConfig      `json:"credentials,omitempty"`
+	TUI         TUIConfig              `json:"tui,omitempty"`
 
 	// ServiceURLs declares Traefik-routed project services whose URLs cspace
 	// should inject into the main container as env vars. Key is the subdomain
@@ -57,6 +67,18 @@ type Config struct {
 // meaningful setting.
 type CredentialsConfig struct {
 	RunwayWarningHours int `json:"runwayWarningHours"`
+}
+
+// TUIConfig configures `cspace tui`. Keys maps an action name — the names in
+// internal/controlplane's Action* constants — to the keystrokes that trigger
+// it. The strings are matched against bubbletea v2's KeyPressMsg.String(),
+// so they are things like "enter", "up", "?", "ctrl+space". An action absent
+// from the map keeps its built-in default; an unknown action name is
+// ignored. Because DeepMerge replaces arrays wholesale, setting one action's
+// list replaces that action's keystrokes and leaves every other action's
+// alone.
+type TUIConfig struct {
+	Keys map[string][]string `json:"keys,omitempty"`
 }
 
 // ProjectConfig holds project identification fields.
@@ -229,7 +251,7 @@ func FindProjectRoot(dir string) (string, error) {
 
 		parent := filepath.Dir(current)
 		if parent == current {
-			return "", fmt.Errorf("not in a git repository (searched from %s)", absDir)
+			return "", fmt.Errorf("%w (searched from %s)", ErrNoProject, absDir)
 		}
 		current = parent
 	}

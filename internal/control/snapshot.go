@@ -12,19 +12,26 @@ import (
 	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
 )
 
-// Snapshotter collects one Snapshot of host state. The dashboard takes this
-// interface rather than *Client so its model tests can inject a canned
-// snapshot.
-type Snapshotter interface {
-	Snapshot(ctx context.Context) Snapshot
+// SnapshotOpts tunes one Snapshot.
+type SnapshotOpts struct {
+	// SkipStats omits the `container stats` sample. That sample costs ~2s
+	// against Apple Container 1.3 — two orders of magnitude more than every
+	// other source in a snapshot — so a caller polling on a short cadence
+	// asks for it on a slower cadence of its own instead. Rows then carry
+	// MemoryUsedB 0, exactly as a failed stats probe already leaves them,
+	// and render their cap alone.
+	SkipStats bool
 }
-
-var _ Snapshotter = (*Client)(nil)
 
 // Snapshot reports every sandbox on the host grouped by project: lifecycle,
 // memory cap and usage, uptime, nested compose sidecars, the project's
 // browser sidecar and its health, and daemon health.
 func (c *Client) Snapshot(ctx context.Context) Snapshot {
+	return c.SnapshotWith(ctx, SnapshotOpts{})
+}
+
+// SnapshotWith is Snapshot with the options above.
+func (c *Client) SnapshotWith(ctx context.Context, opts SnapshotOpts) Snapshot {
 	if c.containers == nil {
 		return Snapshot{Err: ErrNoContainerCLI, TakenAt: c.now()}
 	}
@@ -34,20 +41,22 @@ func (c *Client) Snapshot(ctx context.Context) Snapshot {
 	containers, listErr := c.containers.List(ctx)
 	entries, _ := c.entries.List() // missing file => empty slice, nil
 
-	// `container stats` costs ~2s against Apple Container 1.3 — two orders of
-	// magnitude more than `container ls` (~0.03s) — so it runs concurrently
-	// with the HTTP probes instead of adding its cost to theirs. Run
-	// sequentially it would push a snapshot toward the caller's context
-	// ceiling and start timing the whole thing out.
+	// When stats are wanted they run concurrently with the HTTP probes
+	// rather than adding their ~2s to them: run sequentially they would
+	// push a snapshot toward the caller's context ceiling and start timing
+	// the whole thing out. A nil map is a legal read target, so the
+	// skip path needs no other branch.
 	var (
 		stats   map[string]applecontainer.ContainerStats
 		statsWG sync.WaitGroup
 	)
-	statsWG.Add(1)
-	go func() {
-		defer statsWG.Done()
-		stats = c.fetchStats(ctx)
-	}()
+	if !opts.SkipStats {
+		statsWG.Add(1)
+		go func() {
+			defer statsWG.Done()
+			stats = c.fetchStats(ctx)
+		}()
+	}
 
 	statuses := c.fetchStatuses(ctx, entries)
 	browserHealth := c.fetchBrowserHealth(ctx, containers)

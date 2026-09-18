@@ -127,6 +127,13 @@ type Options struct {
 	// reads .cspace.json and .devcontainer from.
 	ProjectRoot string
 
+	// Project is the project the launching process is in — the one
+	// ProjectRoot belongs to. Up consults it before letting ProjectRoot
+	// answer for a project the registry does not know. Empty means
+	// "ProjectRoot answers for any project", which is the single-project
+	// behaviour a caller that sets only ProjectRoot gets.
+	Project string
+
 	// Host supplies the operations whose implementations still live in
 	// internal/cli. Nil is legal: read-only callers need no Host, and the
 	// actions that do fail with ErrNoHost.
@@ -147,6 +154,7 @@ type Client struct {
 
 	resolverInstalled func() bool
 
+	project     string
 	projectRoot string
 
 	// executable and runCommand are the process seams Up uses, fields so a
@@ -194,6 +202,7 @@ func New(o Options) *Client {
 		now:               now,
 		host:              o.Host,
 		resolverInstalled: resolver,
+		project:           o.Project,
 		projectRoot:       o.ProjectRoot,
 		executable:        os.Executable,
 		runCommand:        runHostCommand,
@@ -202,3 +211,11 @@ func New(o Options) *Client {
 		browserCDPURL:     func(ip string) string { return fmt.Sprintf("http://%s:%d/json/version", ip, BrowserCDPPort) },
 	}
 }
+
+// Tmux is this Client's in-sandbox tmux driver: the one exec transport and
+// the one memoized per-sandbox presence probe this package uses. Exposed so
+// a caller that needs the driver itself — the dashboard's attach, which
+// probes for tmux and then hands BeginAttach a driver — uses this Client's
+// rather than standing up a second one over its own `container` CLI. New
+// always builds one, so this is never nil.
+func (c *Client) Tmux() *Tmux { return c.tmux }

@@ -29,6 +29,13 @@ type Entry struct {
 	IP               string    `json:"ip,omitempty"`
 	StartedAt        time.Time `json:"started_at"`
 	BrowserContainer string    `json:"browser_container,omitempty"`
+	// ProjectRoot is the host directory `cspace up` ran in — the tree its
+	// boot flow read .cspace.json and .devcontainer from. Recorded so a
+	// process with a different cwd, or none worth having (the daemon, the
+	// control plane), can boot another sandbox for this project without
+	// guessing where the project lives. Empty on entries written before
+	// this field existed; readers fall back rather than fail.
+	ProjectRoot string `json:"project_root,omitempty"`
 	// State is the entry-internal lifecycle: "starting" while cspace up is
 	// still booting the sandbox, "ready" once /health responded 200. Empty
 	// State on legacy entries (written before this field existed) is treated

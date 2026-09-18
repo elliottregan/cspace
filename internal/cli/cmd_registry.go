@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -278,6 +280,108 @@ func runRegistryPrune(out io.Writer, dryRun bool) error {
 			_, _ = fmt.Fprintf(out, "pruned %d dead entries; cleared browser_container on %d alive entries\n",
 				pruneCount, clearedBrowserCount)
 		}
+	}
+	return nil
+}
+
+// containerStateStopped is the substrate's word for a container that exists
+// but is not running. `container inspect` carries it at status.state; every
+// other word the CLI reports ("running", "stopping", and whatever states it
+// grows) is something else, and callers that ask in order to decide whether
+// to destroy something must treat it as such.
+const containerStateStopped = "stopped"
+
+// containerState inspects a container once and reports whether it exists and
+// what state the substrate says it is in.
+//
+// One inspect, not two. Asking "does it exist?" and then "is it running?"
+// leaves a window where the second call fails transiently and the caller
+// reads that as "not running" — which, for the collision guard, means
+// force-removing a live sandbox. With a single call the outcome is either a
+// state that was actually read or an error, and there is no third answer to
+// misread.
+//
+// The three returns are mutually exclusive:
+//
+//   - (false, "", nil): the container does not exist; the name is free.
+//   - (true, state, nil): it exists, and `state` is what the substrate said
+//     (possibly "" if the record carried no state word).
+//   - (false, "", err): the substrate could not be read. Nothing may be
+//     inferred about the container from this — in particular not that it is
+//     absent, and not that it is safe to remove.
+//
+// A missing container exits non-zero on 1.x ("Error: container not found:
+// <name>"); 0.12.x exited 0 with the body "[]". Both are handled.
+func containerState(ctx context.Context, name string) (exists bool, state string, err error) {
+	cmd := exec.CommandContext(ctx, "container", "inspect", name)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if runErr := cmd.Run(); runErr != nil {
+		if isContainerNotFound(stderr.String()) {
+			return false, "", nil
+		}
+		return false, "", fmt.Errorf("container inspect %s: %w (stderr: %s)",
+			name, runErr, strings.TrimSpace(stderr.String()))
+	}
+	var records []struct {
+		Status struct {
+			State string `json:"state"`
+		} `json:"status"`
+	}
+	if jsonErr := json.Unmarshal(stdout.Bytes(), &records); jsonErr != nil {
+		return false, "", fmt.Errorf("parse `container inspect %s` output: %w "+
+			"(cspace tested with Apple Container 1.x)", name, jsonErr)
+	}
+	if len(records) == 0 {
+		return false, "", nil
+	}
+	return true, records[0].Status.State, nil
+}
+
+// isContainerNotFound recognizes the substrate's "no such container" message,
+// which is the one non-zero exit that means the name is free rather than that
+// the substrate is unwell. Anchored to the two exact phrases Apple Container
+// 1.3.0 prints (verified live against the installed CLI) rather than a bare
+// "not found", which also shows up inside unrelated substrate errors — e.g.
+// "connection not found: XPC failure" — and would misread those as "the name
+// is free":
+//
+//   - `container inspect` of a missing container: "Error: container not
+//     found: <name>".
+//   - `container rm`/`delete` of a missing container: "Error: internalError:
+//     ... (cause: "notFound: "container with ID <name> not found"")" — the
+//     human-readable clause reads "container with ID ... not found", not the
+//     contiguous phrase "container not found", so this is matched via the
+//     "notFound:" cause label instead.
+func isContainerNotFound(stderr string) bool {
+	s := strings.ToLower(stderr)
+	return strings.Contains(s, "container not found") || strings.Contains(s, "notfound")
+}
+
+// containerRemove deletes a container by name. Idempotent: a name that is
+// already gone is the outcome the caller wanted.
+//
+// No --force: the only caller is the reclaim path in ensureSandboxAvailable,
+// which by design reaches this function only after containerState reported
+// the container "stopped". --force is documented (`container rm --help`) as
+// "Delete containers even if they are running" — it exists solely to let rm
+// remove a running container, which is exactly what this path must never do.
+// Leaving it off means that if two `cspace up <name>` raced past the state
+// check, the substrate's own refusal to delete a running container
+// ("invalidState: container ... is running and can not be deleted", verified
+// live against Apple Container 1.3.0) is a second, independent guard rather
+// than something this call would override.
+func containerRemove(ctx context.Context, name string) error {
+	cmd := exec.CommandContext(ctx, "container", "rm", name)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if isContainerNotFound(stderr.String()) {
+			return nil
+		}
+		return fmt.Errorf("container rm %s: %w (stderr: %s)",
+			name, err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
 }

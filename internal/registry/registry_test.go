@@ -2,7 +2,9 @@ package registry
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -199,6 +201,54 @@ func TestFreePort(t *testing.T) {
 	}
 	if p < 1024 || p > 65535 {
 		t.Fatalf("expected ephemeral port, got %d", p)
+	}
+}
+
+func TestEntryRoundTripsTheProjectRoot(t *testing.T) {
+	r := &Registry{Path: filepath.Join(t.TempDir(), "sandbox-registry.json")}
+	if err := r.Register(Entry{
+		Project:     "myproj",
+		Name:        "mercury",
+		ControlURL:  "http://192.168.64.5:6201",
+		ProjectRoot: "/Users/x/code/myproj",
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	got, err := r.Lookup("myproj", "mercury")
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if got.ProjectRoot != "/Users/x/code/myproj" {
+		t.Errorf("ProjectRoot = %q, want /Users/x/code/myproj", got.ProjectRoot)
+	}
+
+	// The on-disk key is snake_case like every other field; the daemon
+	// serves this file over HTTP, so the name is part of the wire format.
+	data, err := os.ReadFile(r.Path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(data), `"project_root": "/Users/x/code/myproj"`) {
+		t.Errorf("registry file missing project_root:\n%s", data)
+	}
+}
+
+// An entry written before this field existed must still load, with an empty
+// root rather than an error — control.Up falls back for exactly that case.
+func TestLegacyEntryWithoutAProjectRootLoads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sandbox-registry.json")
+	legacy := `{"myproj:mercury":{"control_url":"http://192.168.64.5:6201","started_at":"2026-09-18T00:00:00Z"}}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	r := &Registry{Path: path}
+	got, err := r.Lookup("myproj", "mercury")
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if got.ProjectRoot != "" {
+		t.Errorf("ProjectRoot = %q, want empty for a legacy entry", got.ProjectRoot)
 	}
 }
 

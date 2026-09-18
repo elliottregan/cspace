@@ -2,7 +2,7 @@
 title: registry entries do not record the project root, so the control plane cannot `up` a sandbox of another project
 date: 2026-09-18
 kind: finding
-status: open
+status: resolved
 category: observation
 tags: control-plane, registry
 ---
@@ -59,3 +59,15 @@ Filed during the final-review fix wave for plan 2 (control API extraction),
 which ruled `Up` stays single-project for this branch and required this
 finding as the recorded follow-up (`internal/control/up.go`'s `Up` doc
 comment references it).
+
+### 2026-09-18 — status: resolved
+Fix candidate 1 shipped with rollout step 3: `registry.Entry` gained
+`project_root`, written by both of `cmd_up.go`'s `Register` calls from the
+`projectRoot` the boot flow already resolved. `control.Client.Up` is now
+`Up(ctx, project, sandbox)` and resolves the root through
+`projectRootFor`: the registry first (entries scanned in sandbox-name order
+so two checkouts of one project give a deterministic answer), then the
+launching process's own `Options.ProjectRoot` when the project matches
+`Options.Project` or the Client never named one. An unknown project returns
+`ErrNoProjectRoot` naming it rather than booting the wrong checkout.
+Legacy entries carry no root and fall through to that same fallback.
