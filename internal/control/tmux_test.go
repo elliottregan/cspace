@@ -160,3 +160,20 @@ func TestDetachClientReportsFailure(t *testing.T) {
 		t.Error("DetachClient() returned nil for a non-zero tmux exit")
 	}
 }
+
+// TestDetachClientErrorIncludesTmuxOutput — the whole point of surfacing a
+// non-zero exit is to say why. A caller staring at "exit 1" with no further
+// text cannot tell "no such client" from "no such session" from anything
+// else tmux might say.
+func TestDetachClientErrorIncludesTmuxOutput(t *testing.T) {
+	f := &fakeExec{reply: func(int, []string) (string, int, error) {
+		return "can't find client /dev/pts/9", 1, nil
+	}}
+	err := testTmux(f).DetachClient(context.Background(), "cspace-demo-mercury", "/dev/pts/9")
+	if err == nil {
+		t.Fatal("DetachClient() returned nil for a non-zero tmux exit")
+	}
+	if !strings.Contains(err.Error(), "can't find client /dev/pts/9") {
+		t.Errorf("error = %q, want it to contain tmux's own message", err.Error())
+	}
+}

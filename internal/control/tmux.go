@@ -19,6 +19,13 @@ import (
 // A non-zero exit status is NOT an error: tmux uses it to say ordinary things
 // like "no server running". Only a transport failure (the CLI missing, the
 // context cancelled) returns err.
+//
+// The returned string is the command's stdout. When the command exits
+// non-zero, its stderr (trimmed) is appended after stdout, separated by a
+// newline when both are non-empty, so a caller that wants to know why a
+// command failed (DetachClient) can read it from there. This is safe for
+// every caller in this package: ListClients only parses the string on exit
+// 0, and Present ignores it entirely.
 type Execer interface {
 	Exec(ctx context.Context, container string, cmdline []string) (stdout string, exitCode int, err error)
 }
@@ -38,13 +45,28 @@ func (CLIExecer) Exec(ctx context.Context, container string, cmdline []string) (
 	err := cmd.Run()
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
-		return stdout.String(), exitErr.ExitCode(), nil
+		return combineOutput(stdout.String(), stderr.String()), exitErr.ExitCode(), nil
 	}
 	if err != nil {
 		return stdout.String(), -1, fmt.Errorf("container exec %s: %w: %s",
 			container, err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), 0, nil
+}
+
+// combineOutput implements Execer's non-zero-exit contract: stdout as-is,
+// with stderr (trimmed) appended after it, separated by a newline only when
+// both are non-empty.
+func combineOutput(stdout, stderr string) string {
+	stderr = strings.TrimSpace(stderr)
+	switch {
+	case stderr == "":
+		return stdout
+	case stdout == "":
+		return stderr
+	default:
+		return stdout + "\n" + stderr
+	}
 }
 
 // Tmux drives the tmux server inside a sandbox from the host.
@@ -81,6 +103,10 @@ func NewTmux() *Tmux {
 // attach and every pane would otherwise pay for the probe. A sandbox built
 // from an image that predates this feature answers false, and callers fall
 // back to a direct exec with a warning.
+//
+// The memoization is not single-flight: two goroutines racing to be the
+// first to touch the same container can both miss the cache and each pay for
+// one probe before either result is stored.
 func (t *Tmux) Present(ctx context.Context, container string) bool {
 	t.mu.Lock()
 	if cached, ok := t.present[container]; ok {
@@ -129,11 +155,14 @@ func (t *Tmux) ListClients(ctx context.Context, container, session string) ([]st
 // tmux client it left behind stays attached indefinitely — measured still
 // attached until an explicit detach-client was run from a fresh exec.
 func (t *Tmux) DetachClient(ctx context.Context, container, tty string) error {
-	_, code, err := t.Exec.Exec(ctx, container, []string{"tmux", "detach-client", "-t", tty})
+	out, code, err := t.Exec.Exec(ctx, container, []string{"tmux", "detach-client", "-t", tty})
 	if err != nil {
 		return err
 	}
 	if code != 0 {
+		if out = strings.TrimSpace(out); out != "" {
+			return fmt.Errorf("tmux detach-client -t %s in %s: exit %d: %s", tty, container, code, out)
+		}
 		return fmt.Errorf("tmux detach-client -t %s in %s: exit %d", tty, container, code)
 	}
 	return nil
