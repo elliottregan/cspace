@@ -234,6 +234,15 @@ func TestSendBoxEmptyAndCancel(t *testing.T) {
 		t.Errorf("an empty send should do nothing: sends=%+v action=%q", a.sends, m.action)
 	}
 
+	// Whitespace-only is empty too, once trimmed: nothing worth sending.
+	m = step(t, m, "m")
+	m.input.SetValue("   ")
+	m = step(t, m, "enter")
+	if len(a.sends) != 0 || m.mode != modeNormal || m.action != "" {
+		t.Errorf("a whitespace-only send should do nothing: sends=%+v mode=%v action=%q",
+			a.sends, m.mode, m.action)
+	}
+
 	m = step(t, m, "m")
 	m.input.SetValue("discarded")
 	m = step(t, m, "esc")
@@ -294,6 +303,39 @@ func TestTeardownCancels(t *testing.T) {
 	}
 }
 
+// A poll can land and move the selection while the teardown confirmation is
+// still open (restoreSelection runs unconditionally in applySnapshot; only
+// the *tick* handlers that start a new poll respect paused()). The
+// confirmation must act on the sandbox it was opened against, not on
+// whatever ends up selected by the time it is answered.
+func TestTeardownActsOnTheRowThePromptNamed(t *testing.T) {
+	a := &recordingActor{}
+	m := newTestModel(&fakeData{snap: testSnapshot()}, a)
+
+	m = step(t, m, "d") // opens the confirm on mercury, the initial selection
+	if m.mode != modeConfirmDown || m.pending.Name != "mercury" {
+		t.Fatalf("test setup: mode = %v, pending = %+v, want the confirm open on mercury",
+			m.mode, m.pending)
+	}
+
+	// A snapshot lands while the prompt is open. mercury's old slot (index 1)
+	// is now a different sandbox, venus, and restoreSelection lands there
+	// since mercury's identity is gone from the row set.
+	moved := testSnapshot()
+	moved.Rows[1] = control.Row{Kind: control.RowSandbox, Project: "alpha", Name: "venus",
+		Container: "cspace-alpha-venus", State: control.StateRunning, Selectable: true}
+	mm, _ := m.Update(snapshotMsg{snap: moved})
+	m = mm.(Model)
+	if got := m.selectedRow().Name; got != "venus" {
+		t.Fatalf("test setup: selection = %q after the snapshot, want venus", got)
+	}
+
+	m = answer(t, m, "y")
+	if len(a.down) != 1 || a.down[0].Name != "mercury" {
+		t.Errorf("down calls = %+v, want one for mercury (the row the prompt named), not the row later selected", a.down)
+	}
+}
+
 func TestHelpOverlayToggles(t *testing.T) {
 	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
 	m = step(t, m, "?")
@@ -307,9 +349,47 @@ func TestHelpOverlayToggles(t *testing.T) {
 	if !strings.Contains(out, "mercury") {
 		t.Error("the sidebar stays visible behind the help overlay")
 	}
+	// m.help is sized to the whole 100-column window; the overlay renders
+	// into the narrower main area, so every line must still fit inside the
+	// window it is actually drawn in.
+	for i, l := range strings.Split(out, "\n") {
+		if w := len([]rune(l)); w > 100 {
+			t.Errorf("help overlay line %d is wider than the window (%d): %q", i, w, l)
+		}
+	}
 	m = step(t, m, "?")
 	if strings.Contains(plain(m.View().Content), "~/.cspace/config.json") {
 		t.Error("the help overlay should toggle off")
+	}
+}
+
+// The overlay must close on any key, not just `?` — otherwise a key that
+// also dispatches an action (d, for the teardown confirm) would both close
+// help and fire that action against a main area the overlay had been
+// covering, with no confirmation ever drawn.
+func TestAnyKeyClosesTheHelpOverlayWithoutDispatching(t *testing.T) {
+	a := &recordingActor{}
+	m := newTestModel(&fakeData{snap: testSnapshot()}, a)
+
+	m = step(t, m, "?")
+	if !m.showHelp {
+		t.Fatal("test setup: ? should open the help overlay")
+	}
+
+	m = step(t, m, "d")
+	if m.showHelp {
+		t.Error("d should have closed the help overlay")
+	}
+	if m.mode != modeNormal || m.confirm != nil {
+		t.Errorf("d should not have been dispatched: mode=%v confirm=%v", m.mode, m.confirm)
+	}
+	if len(a.down) != 0 {
+		t.Errorf("d should not have been dispatched: down calls = %+v", a.down)
+	}
+
+	m = step(t, m, "?")
+	if !m.showHelp {
+		t.Error("? should still open the help overlay from normal mode")
 	}
 }
 
@@ -329,5 +409,45 @@ func TestQuitKeyAndErrorNoticeDismissal(t *testing.T) {
 	}
 	if _, ok := cmd().(tea.QuitMsg); !ok {
 		t.Errorf("q produced %T, want tea.QuitMsg", cmd())
+	}
+}
+
+// The Actor contract (actor.go) says a nil Cmd means "nothing to do" and
+// must not be returned for an action the caller marked in flight.
+// startAction enforces the model's side of that: given one anyway, it must
+// not mark an action in flight that will never get an actionResultMsg to
+// clear it — that would spin the footer's spinner forever.
+func TestStartActionIgnoresANilCommand(t *testing.T) {
+	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
+	mm, cmd := m.startAction("attach", nil)
+	m = mm.(Model)
+	if m.action != "" {
+		t.Errorf("action = %q, want it left unset for a nil command", m.action)
+	}
+	if cmd != nil {
+		t.Errorf("startAction with a nil command returned %v, want nil", cmd)
+	}
+}
+
+// mainWidthFor is what both View and the teardown confirmation's width
+// computation go through, so they can never disagree; this locks its floor
+// at a window too narrow for the sidebar to leave 20 columns on its own.
+//
+// The confirmation's own width isn't asserted here beyond this: huh.Form (and
+// its Group/Confirm field) keep their width unexported with no getter, so
+// what the form actually received cannot be read back without reaching into
+// huh's internals — which would couple this test to huh's layout rather than
+// to cspace's own arithmetic. mainWidthFor(30)-2 == 18 is exactly the "width
+// handed to the form at a 30-column window" the review asked to assert; this
+// is that assertion at the boundary where it is actually observable.
+func TestMainWidthForFloorsANarrowWindow(t *testing.T) {
+	if got := mainWidthFor(30); got != 20 {
+		t.Errorf("mainWidthFor(30) = %d, want the 20-column floor", got)
+	}
+	if got := mainWidthFor(30) - 2; got != 18 {
+		t.Errorf("the width the teardown confirm would be built with at 30 columns = %d, want 18", got)
+	}
+	if got := mainWidthFor(100); got != 76 {
+		t.Errorf("mainWidthFor(100) = %d, want 76", got)
 	}
 }
