@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -214,5 +215,56 @@ func TestAttachResultCarriesTheNoTmuxWarning(t *testing.T) {
 	if err := controlplane.ResultErr(attachResult(&attachExec{row: row, noTmux: true},
 		errors.New("exit status 1"))); err == nil {
 		t.Error("an exec failure must still surface as an error")
+	}
+}
+
+// Fix round 1, finding 1: runAttachChild (cmd_attach.go) treats a child that
+// ran and exited non-zero as a normal return, not an attach failure — the
+// session happened and ended on its own terms. attachRunErr has to match
+// that, or attachResult reports an ordinary session end as
+// Result("attach", "exit status N") and silently drops the no-tmux warning
+// (attachResult only warns when err == nil).
+//
+// This exercises attachRunErr directly rather than through attachCommand +
+// Run: AttachArgv resolves "container" via exec.LookPath, which is on this
+// machine's PATH, so a real Run() would shell out to the actual Apple
+// Container CLI — exactly the real-sandbox I/O internal/cli's tests must not
+// do. A real *exec.ExitError from a trivial child process is hermetic and
+// proves the same normalization.
+func TestAttachRunErrTreatsANonZeroExitAsNormalReturn(t *testing.T) {
+	runErr := exec.Command("sh", "-c", "exit 3").Run()
+	var exitErr *exec.ExitError
+	if !errors.As(runErr, &exitErr) {
+		t.Fatalf("exec.Command(\"sh\", \"-c\", \"exit 3\").Run() = %v (%T), want an *exec.ExitError", runErr, runErr)
+	}
+	if got := attachRunErr(runErr); got != nil {
+		t.Errorf("attachRunErr(%v) = %v, want nil — a child that ran and exited non-zero is not an attach failure", runErr, got)
+	}
+}
+
+func TestAttachRunErrSurfacesAStartFailure(t *testing.T) {
+	startErr := errors.New("boom: fork/exec container: no such file or directory")
+	if got := attachRunErr(startErr); got != startErr {
+		t.Errorf("attachRunErr(%v) = %v, want the same error unchanged", startErr, got)
+	}
+}
+
+// Fix round 1, finding 3: a row can reach Attach with no container yet (the
+// sandbox is registered but never booted). Run must refuse before the tmux
+// probe, which would otherwise report a misleading transport-shaped error
+// ("cannot reach sandbox … to probe for tmux") instead of naming the real
+// problem.
+func TestControlPlaneActorAttachGuardsAnEmptyContainer(t *testing.T) {
+	a := newControlPlaneActor(control.New(control.Options{}), t.TempDir())
+	row := control.Row{Kind: control.RowSandbox, Project: "alpha", Name: "mercury"}
+
+	ex := a.attachCommand(row)
+	ex.SetStdin(strings.NewReader(""))
+	ex.SetStdout(io.Discard)
+	ex.SetStderr(io.Discard)
+
+	err := ex.Run()
+	if err == nil || !strings.Contains(err.Error(), "mercury") || !strings.Contains(err.Error(), "no container yet") {
+		t.Errorf("Run() = %v, want an error naming the sandbox and that it has no container yet", err)
 	}
 }
