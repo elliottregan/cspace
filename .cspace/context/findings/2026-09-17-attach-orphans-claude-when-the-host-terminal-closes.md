@@ -2,7 +2,7 @@
 title: exec'd processes survive their host terminal closing, so cspace attach orphans claude
 date: 2026-09-17
 kind: finding
-status: open
+status: resolved
 category: bug
 tags: attach, apple-container, tmux, lifecycle, control-plane
 ---
@@ -43,3 +43,11 @@ gone. That is the fallback path, and it warns.
 ## Updates
 ### 2026-09-17 — status: open
 Filed from the control-plane design's substrate probes.
+
+### 2026-09-17 — status: resolved
+`cspace attach` now runs `container exec` as a foreground child, forwards
+SIGINT/SIGTERM/SIGWINCH and ends the child on SIGHUP, and detaches its tmux
+client (identified as the one new tty across the attach, under a per-sandbox
+flock) before returning the child's exit status. Sandboxes built from an
+image without tmux still fall back to the direct exec and now warn that the
+session will be left behind.

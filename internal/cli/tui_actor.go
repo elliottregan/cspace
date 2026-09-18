@@ -32,13 +32,31 @@ func newTUIActor(a *applecontainer.Adapter, r *registry.Registry, home string) *
 	return &tuiActor{adapter: a, registry: r, home: home, client: &http.Client{Timeout: 10 * time.Second}}
 }
 
+// Attach joins the sandbox's tmux session through the same control-plane path
+// `cspace attach` uses, so the two share one session rather than running two
+// claudes against one workspace. tea.ExecProcess suspends the dashboard and
+// runs the exec in the foreground; its callback is where the detach happens.
 func (t *tuiActor) Attach(row tui.Row) tea.Cmd {
-	bin, argv, err := control.AttachArgv(control.ClaudeAttach(row.Container, true))
+	ctx := context.Background()
+	spec := control.ClaudeAttach(row.Container, defaultTmux.Present(ctx, row.Container))
+	bin, argv, err := control.AttachArgv(spec)
+	if err != nil {
+		return func() tea.Msg { return tui.Result("attach", err) }
+	}
+	att, err := control.BeginAttach(ctx, defaultTmux, row.Container,
+		control.ControlPlaneDir(t.home, row.Project, row.Name), spec.Session)
 	if err != nil {
 		return func() tea.Msg { return tui.Result("attach", err) }
 	}
 	cmd := exec.Command(bin, argv[1:]...)
-	return tea.ExecProcess(cmd, func(err error) tea.Msg { return tui.Result("attach", err) })
+	return tea.ExecProcess(cmd, func(execErr error) tea.Msg {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if closeErr := att.Close(closeCtx); closeErr != nil && execErr == nil {
+			execErr = closeErr
+		}
+		return tui.Result("attach", execErr)
+	})
 }
 
 func (t *tuiActor) Down(row tui.Row) tea.Cmd {
