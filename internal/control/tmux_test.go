@@ -3,30 +3,11 @@ package control
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
-
-// fakeContainerBinary puts an executable named "container" at the front of
-// PATH for the duration of the test, standing in for the real Apple
-// Container CLI so CLIExecer.Exec (which shells out to it by name) can be
-// tested without it. script is the body of a POSIX shell script; it sees
-// argv as "$@" the way a real `container exec <container> <cmdline…>` call
-// would.
-func fakeContainerBinary(t *testing.T, script string) {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "container")
-	body := "#!/bin/sh\n" + script + "\n"
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-		t.Fatalf("write fake container binary: %v", err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
 
 // fakeExec is the substrate stand-in for every test in this package: it
 // records each command it was asked to run and replies from a script keyed by
@@ -66,17 +47,22 @@ func testTmux(f *fakeExec) *Tmux {
 	return tm
 }
 
+// wantProbeCmd is the exact probe argv Present sends: always 0 exit, always
+// exactly "yes" or "no" on stdout, so presence never has to be read off the
+// exit code or off the `container` CLI's own error wording.
+var wantProbeCmd = []string{"sh", "-c", "command -v tmux >/dev/null 2>&1 && echo yes || echo no"}
+
 // TestPresentProbesOnceAndMemoizes — an image cannot grow tmux while its
 // container runs, so the probe is worth exactly one exec per sandbox. Every
 // attach would otherwise pay for it.
 func TestPresentProbesOnceAndMemoizes(t *testing.T) {
 	f := &fakeExec{reply: func(int, []string) (string, int, error) {
-		return "/usr/bin/tmux\n", 0, nil
+		return "yes\n", 0, nil
 	}}
 	tm := testTmux(f)
 
 	if ok, err := tm.Present(context.Background(), "cspace-demo-mercury"); err != nil || !ok {
-		t.Fatalf("Present() = (%v, %v), want (true, nil) for a container whose probe exits 0", ok, err)
+		t.Fatalf("Present() = (%v, %v), want (true, nil) for a probe that prints yes", ok, err)
 	}
 	if ok, err := tm.Present(context.Background(), "cspace-demo-mercury"); err != nil || !ok {
 		t.Fatalf("memoized Present() = (%v, %v), want (true, nil)", ok, err)
@@ -85,20 +71,29 @@ func TestPresentProbesOnceAndMemoizes(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("probed %d times, want 1: %v", len(calls), calls)
 	}
-	want := []string{"sh", "-c", "command -v tmux"}
-	if strings.Join(calls[0], " ") != strings.Join(want, " ") {
-		t.Errorf("probe = %v, want %v", calls[0], want)
+	if strings.Join(calls[0], " ") != strings.Join(wantProbeCmd, " ") {
+		t.Errorf("probe = %v, want %v", calls[0], wantProbeCmd)
 	}
 }
 
-// TestPresentFalseOnMissingBinary — an image built before cspace shipped
-// tmux. The caller falls back to the direct exec and warns.
-func TestPresentFalseOnMissingBinary(t *testing.T) {
+// TestPresentCachesNoAnswer — an image built before cspace shipped tmux
+// prints "no", not just any non-zero exit; the caller falls back to the
+// direct exec and warns, and it is worth remembering just as much as "yes"
+// is — the probe still runs exactly once.
+func TestPresentCachesNoAnswer(t *testing.T) {
 	f := &fakeExec{reply: func(int, []string) (string, int, error) {
-		return "", 1, nil // `command -v tmux` found nothing
+		return "no\n", 0, nil
 	}}
-	if ok, err := testTmux(f).Present(context.Background(), "cspace-demo-mercury"); err != nil || ok {
-		t.Errorf("Present() = (%v, %v), want (false, nil) when the probe exits non-zero", ok, err)
+	tm := testTmux(f)
+
+	if ok, err := tm.Present(context.Background(), "cspace-demo-mercury"); err != nil || ok {
+		t.Fatalf("Present() = (%v, %v), want (false, nil) when the probe prints no", ok, err)
+	}
+	if ok, err := tm.Present(context.Background(), "cspace-demo-mercury"); err != nil || ok {
+		t.Fatalf("memoized Present() = (%v, %v), want (false, nil)", ok, err)
+	}
+	if got := len(f.recorded()); got != 1 {
+		t.Fatalf("probed %d times, want 1: %v", got, f.recorded())
 	}
 }
 
@@ -106,9 +101,9 @@ func TestPresentFalseOnMissingBinary(t *testing.T) {
 func TestPresentMemoizesPerContainer(t *testing.T) {
 	f := &fakeExec{reply: func(n int, _ []string) (string, int, error) {
 		if n == 0 {
-			return "/usr/bin/tmux\n", 0, nil
+			return "yes\n", 0, nil
 		}
-		return "", 1, nil
+		return "no\n", 0, nil
 	}}
 	tm := testTmux(f)
 	if ok, err := tm.Present(context.Background(), "cspace-demo-mercury"); err != nil || !ok {
@@ -120,17 +115,17 @@ func TestPresentMemoizesPerContainer(t *testing.T) {
 }
 
 // TestPresentTransportErrorIsNotCached — a transport failure (the `container`
-// CLI missing, the context cancelled) is not tmux's own answer and must not
-// be remembered as "no tmux": that would wrongly strand every later attach
-// to this container on the no-tmux fallback even once the transport
-// recovers.
+// CLI missing, the context cancelled: the command could not even be
+// started) is not tmux's own answer and must not be remembered as "no
+// tmux": that would wrongly strand every later attach to this container on
+// the no-tmux fallback even once the transport recovers.
 func TestPresentTransportErrorIsNotCached(t *testing.T) {
 	wantErr := errors.New("boom: transport down")
 	f := &fakeExec{reply: func(n int, _ []string) (string, int, error) {
 		if n == 0 {
 			return "", -1, wantErr
 		}
-		return "/usr/bin/tmux\n", 0, nil
+		return "yes\n", 0, nil
 	}}
 	tm := testTmux(f)
 
@@ -146,6 +141,71 @@ func TestPresentTransportErrorIsNotCached(t *testing.T) {
 	}
 	if got := len(f.recorded()); got != 2 {
 		t.Fatalf("probed %d times, want 2 — a transport error must not be cached", got)
+	}
+}
+
+// TestPresentUnreachableContainerErrorsAndIsNotCached — finding from Task 9's
+// review round 1: a stopped or removed container makes `container exec`
+// itself fail before it ever reaches the guest shell, which CLIExecer
+// reports as an ordinary non-zero exit carrying the CLI's own message (e.g.
+// "Error: container … is not running") in the combined output, not as an
+// Execer-level error. That text is not "no" — Present must fail the probe
+// with an error rather than silently read an unrecognized answer as "no
+// tmux", and must not cache a failed probe, so a later call (once the
+// container is reachable again) gets to decide for real.
+func TestPresentUnreachableContainerErrorsAndIsNotCached(t *testing.T) {
+	const cliMessage = "Error: container cspace-demo-mercury is not running"
+	f := &fakeExec{reply: func(n int, _ []string) (string, int, error) {
+		if n == 0 {
+			return cliMessage, 1, nil
+		}
+		return "yes\n", 0, nil
+	}}
+	tm := testTmux(f)
+
+	ok, err := tm.Present(context.Background(), "cspace-demo-mercury")
+	if err == nil {
+		t.Fatal("Present() error = nil, want the unreachable-container probe failure surfaced")
+	}
+	if ok {
+		t.Error("Present() ok = true, want false alongside the error")
+	}
+	if !strings.Contains(err.Error(), cliMessage) || !strings.Contains(err.Error(), "exit 1") {
+		t.Errorf("error = %q, want it to name the exit code and include the CLI's own message", err.Error())
+	}
+
+	ok, err = tm.Present(context.Background(), "cspace-demo-mercury")
+	if err != nil || !ok {
+		t.Fatalf("Present() second call = (%v, %v), want (true, nil) now that the probe answers yes", ok, err)
+	}
+	if got := len(f.recorded()); got != 2 {
+		t.Fatalf("probed %d times, want 2 — a failed probe must not be cached", got)
+	}
+}
+
+// TestPresentUnexpectedOutputErrorsAndIsNotCached — an exit-0 probe that
+// prints neither "yes" nor "no" (empty output, truncated output, …) is not
+// a decided answer either; Present must fail rather than guess, and must
+// not cache the failure.
+func TestPresentUnexpectedOutputErrorsAndIsNotCached(t *testing.T) {
+	f := &fakeExec{reply: func(n int, _ []string) (string, int, error) {
+		if n == 0 {
+			return "", 0, nil
+		}
+		return "yes\n", 0, nil
+	}}
+	tm := testTmux(f)
+
+	if ok, err := tm.Present(context.Background(), "cspace-demo-mercury"); err == nil || ok {
+		t.Fatalf("Present() = (%v, %v), want (false, non-nil) for an exit-0 probe with unexpected output", ok, err)
+	}
+
+	ok, err := tm.Present(context.Background(), "cspace-demo-mercury")
+	if err != nil || !ok {
+		t.Fatalf("Present() second call = (%v, %v), want (true, nil) now that the probe answers yes", ok, err)
+	}
+	if got := len(f.recorded()); got != 2 {
+		t.Fatalf("probed %d times, want 2 — a failed probe must not be cached", got)
 	}
 }
 
@@ -254,52 +314,5 @@ func TestDetachClientRecognizesAGoneClient(t *testing.T) {
 				t.Errorf("DetachClient() error = %v, want it to wrap ErrClientGone for tmux output %q", err, out)
 			}
 		})
-	}
-}
-
-// TestCLIExecerReportsUnreachableContainerAsTransportError — finding from
-// Task 9's manual verification (Step 13): a stopped or removed container
-// makes `container exec` itself fail, before it ever reaches the guest.
-// Apple Container 1.3.0 reports that as a non-zero exit with a stderr line
-// it writes itself, prefixed "Error: " ("Error: get failed: container …
-// not found", "Error: container … is not running") — indistinguishable
-// from an ordinary guest non-zero exit unless Exec looks at the prefix.
-// Present() must see this as a transport error (Execer's own contract), not
-// silently read it as "no tmux" and send attachInteractive down the
-// no-tmux fallback while naming the wrong problem.
-func TestCLIExecerReportsUnreachableContainerAsTransportError(t *testing.T) {
-	cases := []struct {
-		name   string
-		stderr string
-	}{
-		{"removed", "Error: get failed: container cspace-demo-mercury not found"},
-		{"stopped", "Error: container cspace-demo-mercury is not running"},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			fakeContainerBinary(t, "echo '"+c.stderr+"' >&2\nexit 1")
-			_, _, err := CLIExecer{}.Exec(context.Background(), "cspace-demo-mercury", []string{"sh", "-c", "command -v tmux"})
-			if err == nil {
-				t.Fatal("Exec() error = nil, want the unreachable-container failure surfaced")
-			}
-			if !strings.Contains(err.Error(), c.stderr) {
-				t.Errorf("error = %q, want it to contain the CLI's own message %q", err.Error(), c.stderr)
-			}
-		})
-	}
-}
-
-// TestCLIExecerTreatsGuestNonZeroExitAsOrdinary — the flip side: a guest
-// command (the shell's `command -v`, tmux itself) exiting non-zero is not a
-// transport failure and must not be promoted into one, or Present() would
-// never see a legitimate "no tmux" answer again.
-func TestCLIExecerTreatsGuestNonZeroExitAsOrdinary(t *testing.T) {
-	fakeContainerBinary(t, "exit 1") // `command -v tmux` found nothing: silent, exit 1
-	_, code, err := CLIExecer{}.Exec(context.Background(), "cspace-demo-mercury", []string{"sh", "-c", "command -v tmux"})
-	if err != nil {
-		t.Fatalf("Exec() error = %v, want nil for an ordinary guest non-zero exit", err)
-	}
-	if code != 1 {
-		t.Errorf("code = %d, want 1", code)
 	}
 }
