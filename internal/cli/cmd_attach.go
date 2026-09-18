@@ -99,7 +99,7 @@ func attachInteractive(ctx context.Context, warn io.Writer, project, sandbox, co
 	}
 
 	home, homeErr := os.UserHomeDir()
-	att, bookkeepingWarned, err := beginAttachOrWarn(ctx, warn, home, homeErr, project, sandbox, containerName, spec.Session)
+	att, bookkeepingWarned, err := beginAttachOrWarn(ctx, warn, defaultTmux, home, homeErr, project, sandbox, containerName, spec.Session)
 	if err != nil {
 		return err
 	}
@@ -159,8 +159,8 @@ func attachInteractive(ctx context.Context, warn io.Writer, project, sandbox, co
 //
 //   - homeErr non-nil (home is then ignored) — resolving the host home
 //     directory failed, so there is nowhere to put the lock/records at all.
-//     Callers that already know their home directory (the TUI resolves it
-//     once at startup and refuses to launch if that fails) pass nil here.
+//     Callers that already know their home directory (the dashboard resolves
+//     it once at startup and refuses to launch if that fails) pass nil here.
 //   - BeginAttach itself reporting control.ErrBookkeepingUnavailable — the
 //     control-plane directory or its lock file could not be created/opened
 //     (a permissions problem, a full disk).
@@ -170,23 +170,28 @@ func attachInteractive(ctx context.Context, warn io.Writer, project, sandbox, co
 // guessing the wrong tty out from under a concurrent attach is exactly what
 // the lock exists to prevent.
 //
+// tm is the tmux driver to book the attach against. `cspace attach` passes
+// this package's process-wide defaultTmux; the dashboard passes its control
+// Client's own driver, so the memoized presence probe and the exec transport
+// are shared with every other query that Client makes rather than duplicated.
+//
 // The returned bool reports whether a warning was written to warn, so the
 // caller can skip its post-attach screen reset rather than erase it.
-func beginAttachOrWarn(ctx context.Context, warn io.Writer, home string, homeErr error, project, sandbox, container, session string) (*control.Attachment, bool, error) {
+func beginAttachOrWarn(ctx context.Context, warn io.Writer, tm *control.Tmux, home string, homeErr error, project, sandbox, container, session string) (*control.Attachment, bool, error) {
 	const bookkeepingWarning = "warning: attach bookkeeping unavailable: %v; this session's tmux client will not be detached automatically\n"
 
 	if homeErr != nil {
 		_, _ = fmt.Fprintf(warn, bookkeepingWarning, homeErr)
-		att, err := control.BeginAttach(ctx, defaultTmux, container, "", "")
+		att, err := control.BeginAttach(ctx, tm, container, "", "")
 		return att, true, err
 	}
 
 	dir := control.ControlPlaneDir(home, project, sandbox)
-	att, err := control.BeginAttach(ctx, defaultTmux, container, dir, session)
+	att, err := control.BeginAttach(ctx, tm, container, dir, session)
 	if err != nil {
 		if errors.Is(err, control.ErrBookkeepingUnavailable) {
 			_, _ = fmt.Fprintf(warn, bookkeepingWarning, err)
-			att, err := control.BeginAttach(ctx, defaultTmux, container, "", "")
+			att, err := control.BeginAttach(ctx, tm, container, "", "")
 			return att, true, err
 		}
 		return nil, false, err
