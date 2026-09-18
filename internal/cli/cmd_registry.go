@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -278,6 +280,43 @@ func runRegistryPrune(out io.Writer, dryRun bool) error {
 			_, _ = fmt.Fprintf(out, "pruned %d dead entries; cleared browser_container on %d alive entries\n",
 				pruneCount, clearedBrowserCount)
 		}
+	}
+	return nil
+}
+
+// containerRunning reports whether a container exists AND is running.
+// `container inspect` carries the state at status.state; anything other than
+// "running" (stopped, and whatever future states the CLI grows) counts as
+// not running, because the callers all ask this to decide whether something
+// live would be disturbed.
+func containerRunning(ctx context.Context, name string) bool {
+	out, err := exec.CommandContext(ctx, "container", "inspect", name).Output()
+	if err != nil {
+		return false
+	}
+	var records []struct {
+		Status struct {
+			State string `json:"state"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(out, &records); err != nil || len(records) == 0 {
+		return false
+	}
+	return records[0].Status.State == "running"
+}
+
+// containerRemove deletes a container by name. Idempotent: a name that is
+// already gone is the outcome the caller wanted.
+func containerRemove(ctx context.Context, name string) error {
+	cmd := exec.CommandContext(ctx, "container", "rm", "--force", name)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if strings.Contains(stderr.String(), "notFound") {
+			return nil
+		}
+		return fmt.Errorf("container rm --force %s: %w (stderr: %s)",
+			name, err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
 }
