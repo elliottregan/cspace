@@ -27,9 +27,12 @@ const actionTimeout = 10 * time.Second
 // doesn't open an unbounded burst of sockets per snapshot.
 const maxProbeConcurrency = 8
 
-// browserCDPPort is the Chrome DevTools HTTP port the browser sidecar
+// BrowserCDPPort is the Chrome DevTools HTTP port the browser sidecar
 // exposes; the snapshot's health probe is GET http://<ip>:9222/json/version.
-const browserCDPPort = 9222
+// Exported so internal/cli's browser-sidecar code (which builds the same
+// URLs from the host side) has one definition to import instead of its own
+// copy of the port number.
+const BrowserCDPPort = 9222
 
 // ContainerCLI is the slice of *applecontainer.Adapter control needs. An
 // interface so tests inject canned results without the `container` CLI.
@@ -196,6 +199,6 @@ func New(o Options) *Client {
 		runCommand:        runHostCommand,
 		probeClient:       &http.Client{Timeout: probeTimeout},
 		actionClient:      &http.Client{Timeout: actionTimeout},
-		browserCDPURL:     func(ip string) string { return fmt.Sprintf("http://%s:%d/json/version", ip, browserCDPPort) },
+		browserCDPURL:     func(ip string) string { return fmt.Sprintf("http://%s:%d/json/version", ip, BrowserCDPPort) },
 	}
 }
