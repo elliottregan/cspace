@@ -93,6 +93,10 @@ type Options struct {
 	// means "check ResolverFile".
 	ResolverInstalled func() bool
 
+	// ProjectRoot is the working directory `cspace up` runs in — the tree it
+	// reads .cspace.json and .devcontainer from.
+	ProjectRoot string
+
 	// Host supplies the operations whose implementations still live in
 	// internal/cli. Nil is legal: read-only callers need no Host, and the
 	// actions that do fail with ErrNoHost.
@@ -112,6 +116,13 @@ type Client struct {
 	host       Host
 
 	resolverInstalled func() bool
+
+	projectRoot string
+
+	// executable and runCommand are the process seams Up uses, fields so a
+	// test drives it without spawning anything.
+	executable func() (string, error)
+	runCommand func(ctx context.Context, dir, bin string, args ...string) (string, error)
 
 	probeClient  *http.Client
 	actionClient *http.Client
@@ -151,6 +162,9 @@ func New(o Options) *Client {
 		now:               now,
 		host:              o.Host,
 		resolverInstalled: resolver,
+		projectRoot:       o.ProjectRoot,
+		executable:        os.Executable,
+		runCommand:        runHostCommand,
 		probeClient:       &http.Client{Timeout: probeTimeout},
 		actionClient:      &http.Client{Timeout: actionTimeout},
 		browserCDPURL:     func(ip string) string { return fmt.Sprintf("http://%s:%d/json/version", ip, browserCDPPort) },
