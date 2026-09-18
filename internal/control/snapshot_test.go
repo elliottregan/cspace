@@ -15,6 +15,13 @@ import (
 	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
 )
 
+// execCall is one recorded Exec, so a test can assert both the container it
+// targeted and the argv it ran.
+type execCall struct {
+	name string
+	cmd  []string
+}
+
 // fakeContainers is the ContainerCLI seam: canned results so control's tests
 // never shell out to the real `container` CLI.
 type fakeContainers struct {
@@ -22,6 +29,12 @@ type fakeContainers struct {
 	err      error
 	stats    []applecontainer.ContainerStats
 	statsErr error
+
+	execOut    string
+	execStderr string
+	execExit   int
+	execErr    error
+	execCalls  []execCall
 }
 
 func (f *fakeContainers) List(context.Context) ([]applecontainer.ContainerSummary, error) {
@@ -32,8 +45,9 @@ func (f *fakeContainers) Stats(context.Context) ([]applecontainer.ContainerStats
 	return f.stats, f.statsErr
 }
 
-func (f *fakeContainers) Exec(context.Context, string, []string, substrate.ExecOpts) (substrate.ExecResult, error) {
-	return substrate.ExecResult{}, nil
+func (f *fakeContainers) Exec(_ context.Context, name string, cmd []string, _ substrate.ExecOpts) (substrate.ExecResult, error) {
+	f.execCalls = append(f.execCalls, execCall{name: name, cmd: cmd})
+	return substrate.ExecResult{Stdout: f.execOut, Stderr: f.execStderr, ExitCode: f.execExit}, f.execErr
 }
 
 func writeRegistry(t *testing.T, project, name, controlURL, token string) *registry.Registry {
