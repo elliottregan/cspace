@@ -130,7 +130,7 @@ func TestAttachInteractiveAbortsWhenTheTmuxProbeFails(t *testing.T) {
 // degrade to a warning and an inert attachment, not refuse the whole attach.
 func TestBeginAttachOrWarnFallsBackWhenHomeUnavailable(t *testing.T) {
 	var buf bytes.Buffer
-	att, err := beginAttachOrWarn(context.Background(), &buf,
+	att, warned, err := beginAttachOrWarn(context.Background(), &buf,
 		"", errors.New("$HOME is not defined"),
 		"proj", "sandbox-home-fail", "cspace-proj-sandbox-home-fail", control.SessionClaude)
 	if err != nil {
@@ -138,6 +138,9 @@ func TestBeginAttachOrWarnFallsBackWhenHomeUnavailable(t *testing.T) {
 	}
 	if att == nil {
 		t.Fatal("beginAttachOrWarn() returned a nil Attachment")
+	}
+	if !warned {
+		t.Error("beginAttachOrWarn() warned = false, want true when bookkeeping degrades")
 	}
 	if !strings.Contains(buf.String(), "attach bookkeeping unavailable") {
 		t.Errorf("warning = %q, want it to mention bookkeeping being unavailable", buf.String())
@@ -157,7 +160,7 @@ func TestBeginAttachOrWarnFallsBackWhenControlPlaneDirUnusable(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	att, err := beginAttachOrWarn(context.Background(), &buf,
+	att, warned, err := beginAttachOrWarn(context.Background(), &buf,
 		fakeHome, nil,
 		"proj", "sandbox-dir-fail", "cspace-proj-sandbox-dir-fail", control.SessionClaude)
 	if err != nil {
@@ -165,6 +168,9 @@ func TestBeginAttachOrWarnFallsBackWhenControlPlaneDirUnusable(t *testing.T) {
 	}
 	if att == nil {
 		t.Fatal("beginAttachOrWarn() returned a nil Attachment")
+	}
+	if !warned {
+		t.Error("beginAttachOrWarn() warned = false, want true when bookkeeping degrades")
 	}
 	if !strings.Contains(buf.String(), "attach bookkeeping unavailable") {
 		t.Errorf("warning = %q, want it to mention bookkeeping being unavailable", buf.String())

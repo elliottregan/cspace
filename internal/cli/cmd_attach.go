@@ -71,6 +71,7 @@ hands-on work.`,
 // (cs-finding:2026-09-17-attach-orphans-claude-when-the-host-terminal-closes)
 func attachInteractive(ctx context.Context, warn io.Writer, project, sandbox, containerName string, wantTmux bool) error {
 	useTmux := false
+	warned := false
 	if wantTmux {
 		probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		present, presentErr := defaultTmux.Present(probeCtx, containerName)
@@ -87,6 +88,7 @@ func attachInteractive(ctx context.Context, warn io.Writer, project, sandbox, co
 			_, _ = fmt.Fprintf(warn,
 				"warning: this sandbox has no tmux, so the session will not survive this window closing — and `claude` will keep running inside the sandbox when it does. Rebuild the image with `cspace image build`, then `cspace down %s && cspace up %s`.\n",
 				sandbox, sandbox)
+			warned = true
 		}
 	}
 
@@ -97,19 +99,20 @@ func attachInteractive(ctx context.Context, warn io.Writer, project, sandbox, co
 	}
 
 	home, homeErr := os.UserHomeDir()
-	att, err := beginAttachOrWarn(ctx, warn, home, homeErr, project, sandbox, containerName, spec.Session)
+	att, bookkeepingWarned, err := beginAttachOrWarn(ctx, warn, home, homeErr, project, sandbox, containerName, spec.Session)
 	if err != nil {
 		return err
 	}
+	warned = warned || bookkeepingWarned
 
-	// Skip the reset when the no-tmux fallback warning above was just
-	// printed to stderr: \033c clears scrollback too, and claude's
-	// immediate repaint would erase the warning before the user has a
-	// chance to read it. Still reset on the tmux path (nothing printed
-	// above to protect) and on the explicit --no-tmux path (wantTmux is
-	// already false, so fellBack is false and nothing was printed either).
-	fellBack := wantTmux && !useTmux
-	if isStdoutTTY() && !fellBack {
+	// Skip the reset whenever this attach has already printed a warning to
+	// `warn` (the no-tmux fallback above, or beginAttachOrWarn's bookkeeping
+	// warning): \033c clears scrollback too, and claude's immediate repaint
+	// would erase the warning before the user has a chance to read it. Still
+	// reset when nothing was printed — the ordinary tmux path, and the
+	// explicit --no-tmux path (wantTmux is already false, so nothing above
+	// runs).
+	if isStdoutTTY() && !warned {
 		_, _ = os.Stdout.WriteString("\033c")
 	}
 
@@ -166,12 +169,16 @@ func attachInteractive(ctx context.Context, warn io.Writer, project, sandbox, co
 // BeginAttach reports that as a plain error and this still refuses, since
 // guessing the wrong tty out from under a concurrent attach is exactly what
 // the lock exists to prevent.
-func beginAttachOrWarn(ctx context.Context, warn io.Writer, home string, homeErr error, project, sandbox, container, session string) (*control.Attachment, error) {
+//
+// The returned bool reports whether a warning was written to warn, so the
+// caller can skip its post-attach screen reset rather than erase it.
+func beginAttachOrWarn(ctx context.Context, warn io.Writer, home string, homeErr error, project, sandbox, container, session string) (*control.Attachment, bool, error) {
 	const bookkeepingWarning = "warning: attach bookkeeping unavailable: %v; this session's tmux client will not be detached automatically\n"
 
 	if homeErr != nil {
 		_, _ = fmt.Fprintf(warn, bookkeepingWarning, homeErr)
-		return control.BeginAttach(ctx, defaultTmux, container, "", "")
+		att, err := control.BeginAttach(ctx, defaultTmux, container, "", "")
+		return att, true, err
 	}
 
 	dir := control.ControlPlaneDir(home, project, sandbox)
@@ -179,11 +186,12 @@ func beginAttachOrWarn(ctx context.Context, warn io.Writer, home string, homeErr
 	if err != nil {
 		if errors.Is(err, control.ErrBookkeepingUnavailable) {
 			_, _ = fmt.Fprintf(warn, bookkeepingWarning, err)
-			return control.BeginAttach(ctx, defaultTmux, container, "", "")
+			att, err := control.BeginAttach(ctx, defaultTmux, container, "", "")
+			return att, true, err
 		}
-		return nil, err
+		return nil, false, err
 	}
-	return att, nil
+	return att, false, nil
 }
 
 // runAttachChild runs the attach argv wired straight to this process's
