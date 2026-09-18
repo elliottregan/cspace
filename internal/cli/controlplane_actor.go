@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -27,11 +28,11 @@ const (
 	attachProbeTimeout       = 10 * time.Second
 	attachBookkeepingTimeout = 20 * time.Second
 	attachDetachTimeout      = 15 * time.Second
-	downTimeout              = 60 * time.Second
-	sendTimeout              = 30 * time.Second
-	interruptTimeout         = 30 * time.Second
-	browserTimeout           = 90 * time.Second
-	upTimeout                = 10 * time.Minute
+	cpDownTimeout            = 60 * time.Second
+	cpSendTimeout            = 30 * time.Second
+	cpInterruptTimeout       = 30 * time.Second
+	cpBrowserTimeout         = 90 * time.Second
+	cpUpTimeout              = 10 * time.Minute
 )
 
 // cpActor implements controlplane.Actor by delegating to internal/control,
@@ -117,6 +118,13 @@ func (a *attachExec) SetStderr(w io.Writer) { a.stderr = w }
 // guest-side client: a host-side exit never reaches tmux, which would
 // otherwise keep the client attached indefinitely.
 func (a *attachExec) Run() error {
+	if a.row.Container == "" {
+		// A row can reach here with no container when its sandbox is
+		// registered but not booted — refuse before the probe names a
+		// container that was never going to answer, so the footer says
+		// what's actually wrong instead of a transport-shaped error.
+		return fmt.Errorf("sandbox %s has no container yet", a.row.Name)
+	}
 	probeCtx, probeCancel := context.WithTimeout(context.Background(), attachProbeTimeout)
 	present, err := a.ctrl.Tmux().Present(probeCtx, a.row.Container)
 	probeCancel()
@@ -156,9 +164,17 @@ func (a *attachExec) Run() error {
 		return err
 	}
 
+	// Unlike runAttachChild (cmd_attach.go), this exec forwards no signals:
+	// bubbletea's Program owns the terminal, and its own signal handling,
+	// for as long as this Run is in flight — exactly as it did under the v1
+	// dashboard's tea.ExecProcess. If the host terminal itself closes
+	// mid-attach, the child goes with it and this attachment's record is
+	// left behind for the startup sweep rollout step 4 adds, rather than the
+	// SIGHUP-triggered detach cmd_attach.go's own signal handling gives
+	// itself.
 	child := exec.Command(bin, argv[1:]...)
 	child.Stdin, child.Stdout, child.Stderr = a.stdin, a.stdout, a.stderr
-	runErr := child.Run()
+	runErr := attachRunErr(child.Run())
 
 	// The detach gets its own context: whatever ended the session may have
 	// cancelled everything else, and this is the one thing that must still
@@ -171,10 +187,26 @@ func (a *attachExec) Run() error {
 	return runErr
 }
 
+// attachRunErr normalizes the foreground child's exit the same way
+// runAttachChild (cmd_attach.go) treats `cspace attach`'s own: a child that
+// started, ran, and exited non-zero is not an attach failure — the session
+// happened and ended on its own terms (the person typed `exit`, `claude`
+// crashed, whatever) — only a failure to start or run it at all is. Without
+// this, attachResult would report an ordinary session end as
+// Result("attach", "exit status N") and, worse, silently drop the no-tmux
+// warning: attachResult only warns when err == nil.
+func attachRunErr(err error) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return nil
+	}
+	return err
+}
+
 func (a *cpActor) Down(row control.Row) tea.Cmd {
 	ctrl, project, name := a.ctrl, row.Project, row.Name
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), downTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), cpDownTimeout)
 		defer cancel()
 		return controlplane.Result("down", ctrl.Down(ctx, project, name))
 	}
@@ -183,7 +215,7 @@ func (a *cpActor) Down(row control.Row) tea.Cmd {
 func (a *cpActor) Send(row control.Row, text string) tea.Cmd {
 	ctrl, project, name := a.ctrl, row.Project, row.Name
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), cpSendTimeout)
 		defer cancel()
 		return controlplane.Result("send", ctrl.Send(ctx, project, name, "", text))
 	}
@@ -192,7 +224,7 @@ func (a *cpActor) Send(row control.Row, text string) tea.Cmd {
 func (a *cpActor) Interrupt(row control.Row) tea.Cmd {
 	ctrl, project, name := a.ctrl, row.Project, row.Name
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), interruptTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), cpInterruptTimeout)
 		defer cancel()
 		return controlplane.Result("interrupt", ctrl.Interrupt(ctx, project, name))
 	}
@@ -201,7 +233,7 @@ func (a *cpActor) Interrupt(row control.Row) tea.Cmd {
 func (a *cpActor) RestartBrowser(row control.Row) tea.Cmd {
 	ctrl, project := a.ctrl, row.Project
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), browserTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), cpBrowserTimeout)
 		defer cancel()
 		return controlplane.Result("browser restart", ctrl.RestartBrowser(ctx, project))
 	}
@@ -218,7 +250,7 @@ func (a *cpActor) RestartBrowser(row control.Row) tea.Cmd {
 func (a *cpActor) Up(row control.Row) tea.Cmd {
 	ctrl, project, name := a.ctrl, row.Project, row.Name
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), upTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), cpUpTimeout)
 		defer cancel()
 		return controlplane.Result("up", ctrl.Up(ctx, project, name))
 	}
