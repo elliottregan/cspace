@@ -16,7 +16,9 @@ import (
 // across the bottom.
 func (m Model) View() tea.View {
 	if m.width == 0 || m.height == 0 {
-		return tea.NewView("starting cspace tui…")
+		v := tea.NewView("starting cspace tui…")
+		v.AltScreen = true
+		return v
 	}
 
 	bodyHeight := m.height - 1 // the footer
@@ -66,6 +68,29 @@ func (m Model) tabsLine(width int) string {
 		health, style = "daemon "+m.daemon.Version, styleDim
 	}
 
+	// On a narrow window there is not room for both: shrink the title first
+	// (daemon health is the more important of the two to keep intact), then
+	// — since styleTabs' one-column padding on each side isn't in that
+	// budget — clamp health too if the line still doesn't fit. Both fits
+	// land on the plain text before either is styled: fitting an
+	// already-rendered string would risk truncating mid-escape-sequence and
+	// dropping the style's closing reset, bleeding it into whatever the
+	// terminal draws next.
+	if ansi.StringWidth(title)+1+ansi.StringWidth(health) > width {
+		budget := width - ansi.StringWidth(health) - 1
+		if budget < 0 {
+			budget = 0
+		}
+		title = fit(title, budget)
+	}
+	titleBlock := ansi.StringWidth(title) + 2 // styleTabs' padding, one column each side
+	if healthBudget := width - titleBlock - 1; ansi.StringWidth(health) > healthBudget {
+		if healthBudget < 0 {
+			healthBudget = 0
+		}
+		health = fit(health, healthBudget)
+	}
+
 	// styleTabs pads by one column on each side; account for that so the
 	// right-hand text lands on the last column.
 	gap := width - ansi.StringWidth(title) - 2 - ansi.StringWidth(health)
@@ -99,7 +124,7 @@ func (m Model) footer() string {
 		}
 		return styleOK.Render(fit(m.notice.text, m.width))
 	case m.snapErr != nil:
-		return styleErr.Render(fit(fmt.Sprintf("container ls failed: %v — showing the last poll (%s); run cspace doctor",
+		return styleErr.Render(fit(fmt.Sprintf("snapshot failed: %v — showing the last poll (%s); run cspace doctor",
 			m.snapErr, formatAge(m.lastSnap, m.now())), m.width))
 	}
 	row := m.selectedRow()

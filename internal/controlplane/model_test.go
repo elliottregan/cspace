@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/elliottregan/cspace/internal/control"
 )
@@ -196,6 +197,34 @@ func TestCadencesAskForTheRightSnapshot(t *testing.T) {
 	}
 }
 
+// A fresh dashboard would otherwise show no ports for up to a full
+// slowInterval: Init fires all three ticks at t=0 while m.rows is still
+// empty, so the very first slow poll has no targets. Seeding the slow
+// cadence from the first successful snapshot — which already knows the row
+// set — means ports and stats show up right after that snapshot lands
+// instead of waiting out the regular 10s chain.
+func TestFirstSnapshotTriggersAnImmediateSlowPoll(t *testing.T) {
+	d := &fakeData{snap: testSnapshot(), ports: []control.Port{
+		{Port: 5173, Label: "web", URL: "http://mercury.alpha.cspace.test:5173/"},
+	}}
+	m := New(d, &recordingActor{}, NewKeyMap(nil))
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	m = mm.(Model)
+	_ = m.Init() // the cadences start; their own ticks are irrelevant here
+
+	_, cmd := m.Update(snapshotMsg{snap: d.snap})
+	drain(cmd)
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.portsFor) == 0 {
+		t.Fatal("the first successful snapshot should trigger an immediate slow poll")
+	}
+	if d.portsFor[0] != "alpha/mercury" {
+		t.Errorf("ports asked for %v, want alpha/mercury", d.portsFor)
+	}
+}
+
 // control.Ports execs `ss` inside the sandbox and errors for one that is not
 // running, so the slow ticker must only ask about running or degraded rows.
 func TestSlowPollOnlyAsksPortsOfRunningSandboxes(t *testing.T) {
@@ -275,15 +304,27 @@ func TestSnapshotErrorKeepsTheLastKnownRows(t *testing.T) {
 	if len(m.rows) != before {
 		t.Errorf("rows = %d after a failed poll, want the last-known %d", len(m.rows), before)
 	}
+	// control leaves Daemon zeroed on its own error paths, so a failed poll
+	// must not be allowed to flip the tabs line from healthy to
+	// unreachable — the daemon itself did not go anywhere.
+	if !m.daemon.Reachable {
+		t.Errorf("daemon = %+v, want the last-known health preserved", m.daemon)
+	}
 	out := plain(m.View().Content)
 	if !strings.Contains(out, "mercury") {
 		t.Error("the sidebar must keep rendering the last-known rows")
+	}
+	if !strings.Contains(out, "snapshot failed") {
+		t.Errorf("the footer should name what failed; got:\n%s", out)
 	}
 	if !strings.Contains(out, "apiserver down") {
 		t.Errorf("the footer should carry the poll error; got:\n%s", out)
 	}
 	if !strings.Contains(out, "ago") {
 		t.Errorf("the footer should mark how stale the rows are; got:\n%s", out)
+	}
+	if !strings.Contains(out, "daemon 1.0.0-rc.48") {
+		t.Errorf("the tabs line should still show the last-known daemon health; got:\n%s", out)
 	}
 }
 
@@ -336,6 +377,54 @@ func TestSelectionFallsBackWhenTheRowDisappears(t *testing.T) {
 	m = mm.(Model)
 	if !m.selectedRow().Selectable {
 		t.Errorf("selection landed on a non-selectable row: %+v", m.selectedRow())
+	}
+}
+
+// When a busy host's row set collapses while the selection sat deep in the
+// old list, the old index can land past the end of the new one entirely —
+// restoreSelection's outward search probes only m.selected±d, and every one
+// of those probes is out of range. It must not fall straight to index 0 (a
+// project header): a last linear scan should still find a selectable row.
+func TestSelectionFallsBackToASelectableRowWhenRowsShrinkPastTheOldIndex(t *testing.T) {
+	d := &fakeData{snap: control.Snapshot{
+		TakenAt: time.Unix(1_000_000, 0),
+		Rows: []control.Row{
+			{Kind: control.RowProject, Project: "alpha", Name: "alpha"},
+			{Kind: control.RowSandbox, Project: "alpha", Name: "mercury", State: control.StateRunning, Selectable: true},
+			{Kind: control.RowSidecar, Project: "alpha", Name: "mercury-convex"},
+			{Kind: control.RowSandbox, Project: "alpha", Name: "issue-42", State: control.StateStopped, Selectable: true},
+			{Kind: control.RowBrowser, Project: "alpha", Name: "browser (shared)", State: control.StateRunning, Selectable: true},
+			{Kind: control.RowProject, Project: "beta", Name: "beta"},
+			{Kind: control.RowSandbox, Project: "beta", Name: "venus", State: control.StateRunning, Selectable: true},
+			{Kind: control.RowSidecar, Project: "beta", Name: "venus-db"},
+			{Kind: control.RowSandbox, Project: "beta", Name: "earth", State: control.StateRunning, Selectable: true}, // index 8
+			{Kind: control.RowBrowser, Project: "beta", Name: "browser (shared)", State: control.StateRunning, Selectable: true},
+		},
+	}}
+	m := newTestModel(d, &recordingActor{})
+	m.selected = 8 // "beta/earth"
+	if got := m.selectedRow().Name; got != "earth" {
+		t.Fatalf("test setup: selected = %q, want earth", got)
+	}
+
+	shrunk := control.Snapshot{
+		TakenAt: time.Unix(1_000_010, 0),
+		Rows: []control.Row{
+			{Kind: control.RowProject, Project: "alpha", Name: "alpha"},
+			{Kind: control.RowSandbox, Project: "alpha", Name: "mercury", State: control.StateRunning, Selectable: true},
+			{Kind: control.RowSandbox, Project: "alpha", Name: "issue-42", State: control.StateStopped, Selectable: true},
+			{Kind: control.RowSandbox, Project: "alpha", Name: "other", State: control.StateRunning, Selectable: true},
+		},
+	}
+	mm, _ := m.Update(snapshotMsg{snap: shrunk})
+	m = mm.(Model)
+
+	got := m.selectedRow()
+	if !got.Selectable {
+		t.Errorf("selection landed on a non-selectable row: %+v", got)
+	}
+	if got.Kind != control.RowSandbox {
+		t.Errorf("selection landed on kind %v, want a sandbox row: %+v", got.Kind, got)
 	}
 }
 
@@ -463,6 +552,40 @@ func TestViewGeometry(t *testing.T) {
 	}
 	if !m.View().AltScreen {
 		t.Error("the dashboard runs in the alternate screen")
+	}
+}
+
+// Before the first WindowSizeMsg lands, View has no geometry to lay out and
+// falls back to a placeholder — but that frame still has to run in the
+// alternate screen like every other one, or it can be painted on the normal
+// screen and left behind in scrollback once the real layout takes over.
+func TestPreSizeViewRunsInTheAlternateScreen(t *testing.T) {
+	m := New(&fakeData{}, &recordingActor{}, NewKeyMap(nil))
+	v := m.View()
+	if !strings.Contains(v.Content, "starting cspace tui") {
+		t.Errorf("pre-size view content = %q, want the placeholder", v.Content)
+	}
+	if !v.AltScreen {
+		t.Error("the pre-size view should also run in the alternate screen")
+	}
+}
+
+// tabsLine clamps its gap to a minimum of 1 but, before this fix, never
+// truncated title or health — so a narrow window (a project/sandbox title
+// alongside "daemon <version>") could render a couple of cells wider than
+// the pane. Reproduces the design's own example: W=57 -> mainWidth 33,
+// "alpha/mercury" + "daemon 1.0.0-rc.48" don't fit with even a 1-cell gap
+// once styleTabs' own padding is counted.
+func TestTabsLineFitsANarrowWindow(t *testing.T) {
+	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
+	const mainWidth = 57 - sidebarWidth // 33
+
+	line := plain(m.tabsLine(mainWidth))
+	if w := ansi.StringWidth(line); w > mainWidth {
+		t.Errorf("tabs line width = %d, want <= %d: %q", w, mainWidth, line)
+	}
+	if !strings.Contains(line, "daemon") {
+		t.Errorf("tabs line should still show daemon health; got %q", line)
 	}
 }
 

@@ -71,6 +71,13 @@ type Model struct {
 	pollingMedium bool
 	pollingSlow   bool
 
+	// slowSeeded marks that the slow cadence's first poll has already been
+	// kicked off out of band, by the first successful snapshot rather than
+	// by slowTickMsg. Without it, a freshly started dashboard shows no ports
+	// for a full slowInterval — the first snapshot has sandboxes worth
+	// asking about well before the first 10s tick arrives.
+	slowSeeded bool
+
 	mode    uiMode
 	input   textinput.Model
 	action  string // in-flight action label; "" when idle
@@ -167,7 +174,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case snapshotMsg:
 		m.pollingMedium = false
 		m.applySnapshot(msg.snap)
-		return m, m.eventsCmd()
+		cmds := []tea.Cmd{m.eventsCmd()}
+		// Seed the slow cadence right after the first successful snapshot
+		// rather than waiting out the first slowInterval: ports and stats
+		// would otherwise stay blank for up to 10s after a fresh start,
+		// even though the row set worth asking about is already known.
+		// This runs once; the regular 10s tick chain is untouched.
+		if msg.snap.Err == nil && !m.slowSeeded && !m.pollingSlow && len(sandboxTargets(m.rows)) > 0 {
+			m.slowSeeded = true
+			m.pollingSlow = true
+			cmds = append(cmds, m.slowCmd())
+		}
+		return m, tea.Batch(cmds...)
 
 	case slowMsg:
 		m.pollingSlow = false
@@ -232,14 +250,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // applySnapshot folds a poll's rows into the model. A failed `container ls`
 // keeps the last-known rows and only records the error: the footer marks how
-// stale they are, and the sidebar never blanks.
+// stale they are, and the sidebar never blanks. control leaves Daemon zeroed
+// on its error paths too, so m.daemon is only updated on success — otherwise
+// a snapshot failure would flip the tabs line from "daemon 1.0.0-rc.48" to
+// "daemon unreachable" on every poll error, which is not what happened.
 func (m *Model) applySnapshot(snap control.Snapshot) {
 	prev := m.selectedRow()
-	m.daemon = snap.Daemon
 	m.snapErr = snap.Err
 	if snap.Err != nil {
 		return
 	}
+	m.daemon = snap.Daemon
 	m.rows = snap.Rows
 	m.lastSnap = snap.TakenAt
 	m.memory = mergeMemory(m.memory, snap.Rows)
@@ -295,6 +316,12 @@ func (m *Model) moveSelection(dir int) {
 // identity after a new snapshot. When that row is gone — a teardown, say —
 // it moves to the nearest remaining selectable row, searching outward from
 // the old index rather than jumping to the top.
+//
+// The old index can land past the end of a shrunk row set entirely (a busy
+// host's rows collapsing while the selection sat deep in the list), in which
+// case every probe in the outward search is out of range. Rather than fall
+// straight to index 0 — a project header, not a sandbox — a last linear scan
+// picks the first selectable row that exists at all.
 func (m *Model) restoreSelection(prev control.Row) {
 	for i, r := range m.rows {
 		if r.Selectable && r.Kind == prev.Kind && r.Project == prev.Project && r.Name == prev.Name {
@@ -309,6 +336,12 @@ func (m *Model) restoreSelection(prev control.Row) {
 				m.selected = idx
 				return
 			}
+		}
+	}
+	for i, r := range m.rows {
+		if r.Selectable {
+			m.selected = i
+			return
 		}
 	}
 	m.selected = 0
