@@ -28,3 +28,11 @@ func SessionEventsPath(home, project, sandbox string) string {
 func AgentStatePath(home, project, sandbox string) string {
 	return filepath.Join(SessionDir(home, project, sandbox), "agent-state.json")
 }
+
+// CloneDir is a sandbox's own git clone on the host — the tree bind-mounted
+// into the container as /workspace. Project configuration is read from here,
+// never from the caller's cwd: a control-plane window shows sandboxes from
+// several projects at once, and `cspace down` already learned this lesson.
+func CloneDir(home, project, sandbox string) string {
+	return filepath.Join(home, ".cspace", "clones", project, sandbox)
+}
