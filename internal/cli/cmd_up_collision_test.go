@@ -213,6 +213,9 @@ func TestIsContainerNotFoundRecognizesTheSubstrateMessages(t *testing.T) {
 		"Error: apiserver is not running\n",
 		"",
 		"Error: internal error",
+		// A bare "not found" also shows up inside unrelated substrate
+		// errors; only the anchored phrases above may read as "free".
+		"connection not found: XPC failure",
 	}
 	for _, s := range live {
 		if isContainerNotFound(s) {
