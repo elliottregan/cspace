@@ -47,8 +47,12 @@ and network firewalls, then run autonomous Claude agents against GitHub issues.`
 			// but tolerate failure — the TUI falls back to help when cfg is
 			// nil. `cspace doctor` is informational and runnable from any
 			// directory; the per-credential probes degrade gracefully when
-			// cfg is nil (no project secrets file is checked).
-			tolerateErr := (cmd.Name() == "cspace" && cmd.Parent() == nil) || cmd.Name() == "doctor"
+			// cfg is nil (no project secrets file is checked). `cspace tui`
+			// shows every project on the host and resolves each one's root
+			// from the registry, so it must start from a directory that is
+			// no project at all.
+			tolerateErr := (cmd.Name() == "cspace" && cmd.Parent() == nil) ||
+				cmd.Name() == "doctor" || cmd.Name() == "tui"
 
 			if err := loadConfig(); err != nil {
 				if tolerateErr {

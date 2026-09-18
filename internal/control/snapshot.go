@@ -12,15 +12,6 @@ import (
 	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
 )
 
-// Snapshotter collects one Snapshot of host state. The dashboard takes this
-// interface rather than *Client so its model tests can inject a canned
-// snapshot.
-type Snapshotter interface {
-	Snapshot(ctx context.Context) Snapshot
-}
-
-var _ Snapshotter = (*Client)(nil)
-
 // SnapshotOpts tunes one Snapshot.
 type SnapshotOpts struct {
 	// SkipStats omits the `container stats` sample. That sample costs ~2s
