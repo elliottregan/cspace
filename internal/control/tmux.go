@@ -36,6 +36,15 @@ type Execer interface {
 type CLIExecer struct{}
 
 // Exec implements Execer.
+//
+// A process that starts and exits non-zero is not automatically "the guest
+// command failed": `container exec` itself exits non-zero, without ever
+// reaching the guest, when the named container cannot be found or is not
+// running (e.g. "Error: get failed: container … not found", "Error:
+// container … is not running") — that is a transport failure by Execer's
+// contract, not tmux (or the shell) saying no. containerUnreachable tells
+// the two apart: the `container` CLI's own diagnostics are always prefixed
+// "Error: ", where tmux's and the shell's non-zero exits never are.
 func (CLIExecer) Exec(ctx context.Context, container string, cmdline []string) (string, int, error) {
 	args := append([]string{"exec", container}, cmdline...)
 	cmd := exec.CommandContext(ctx, "container", args...)
@@ -45,6 +54,10 @@ func (CLIExecer) Exec(ctx context.Context, container string, cmdline []string) (
 	err := cmd.Run()
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
+		if containerUnreachable(stderr.String()) {
+			return stdout.String(), exitErr.ExitCode(), fmt.Errorf("container exec %s: %s",
+				container, strings.TrimSpace(stderr.String()))
+		}
 		return combineOutput(stdout.String(), stderr.String()), exitErr.ExitCode(), nil
 	}
 	if err != nil {
@@ -52,6 +65,18 @@ func (CLIExecer) Exec(ctx context.Context, container string, cmdline []string) (
 			container, err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), 0, nil
+}
+
+// containerUnreachable reports whether stderr is the `container` CLI's own
+// complaint that it never reached the named container — missing or
+// stopped — rather than output from whatever `container exec` ran inside
+// it. Observed on Apple Container 1.3.0: "Error: get failed: container …
+// not found" and "Error: container … is not running"; both, like every
+// top-level error this CLI prints, start with "Error: ". Nothing this
+// package execs inside a guest (a shell builtin probe, tmux's own
+// subcommands) ever produces output with that prefix.
+func containerUnreachable(stderr string) bool {
+	return strings.HasPrefix(strings.TrimSpace(stderr), "Error: ")
 }
 
 // combineOutput implements Execer's non-zero-exit contract: stdout as-is,
