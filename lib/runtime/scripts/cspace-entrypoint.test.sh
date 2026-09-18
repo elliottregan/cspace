@@ -24,6 +24,12 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 0
 fi
 
+# ── the AGENT_STATE_CMD assignment stays literal ───────────────────────────
+# So this constant and the Dockerfile's COPY destination
+# (/usr/local/bin/cspace-agent-state.sh) can't drift apart silently.
+grep -q '^AGENT_STATE_CMD=/usr/local/bin/cspace-agent-state.sh$' "$SCRIPT" \
+  || fail "cspace-entrypoint.sh's AGENT_STATE_CMD assignment is missing or changed"
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -130,9 +136,13 @@ jq -e '.hooks.Notification[0].matcher == "idle_prompt"' "$TMP/settings.json" >/d
   || fail "Notification is not narrowed to idle_prompt"
 jq -e '.hooks.PostToolUse[0].matcher == "*"' "$TMP/settings.json" >/dev/null \
   || fail "PostToolUse does not match every tool"
+# SessionStart fires on compact and fork too; without this narrowing either
+# would flip an already-working session's state back to "starting".
+jq -e '.hooks.SessionStart[0].matcher == "startup|resume|clear"' "$TMP/settings.json" >/dev/null \
+  || fail "SessionStart is not narrowed to startup|resume|clear"
 
-# ── the six non-matcher events carry no matcher key at all ────────────────
-jq -e '[.hooks.SessionStart[0], .hooks.UserPromptSubmit[0], .hooks.PermissionRequest[0], .hooks.Stop[0], .hooks.StopFailure[0], .hooks.SessionEnd[0]] | all(has("matcher") | not)' "$TMP/settings.json" >/dev/null \
+# ── the five non-matcher events carry no matcher key at all ───────────────
+jq -e '[.hooks.UserPromptSubmit[0], .hooks.PermissionRequest[0], .hooks.Stop[0], .hooks.StopFailure[0], .hooks.SessionEnd[0]] | all(has("matcher") | not)' "$TMP/settings.json" >/dev/null \
   || fail "a non-matcher event carries a matcher key"
 
 # ── the gate closed: a non-executable file ─────────────────────────────────

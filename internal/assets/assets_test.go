@@ -316,3 +316,65 @@ func TestDockerfileInstallsTmux(t *testing.T) {
 		t.Error("Dockerfile's apt-get install block does not list tmux")
 	}
 }
+
+// TestEveryRuntimeSourceFileIsEmbedded is the symmetric drift guard to
+// TestDockerfileCopiesEveryEmbeddedRuntimeFile: that test walks the already-
+// embedded tree and catches a file with no Dockerfile COPY, but says nothing
+// about a file under lib/runtime/ that the Makefile's sync-embedded step
+// never copies into internal/assets/embedded/runtime/ in the first place —
+// such a file would be silently absent from both the embedded tree and any
+// image built outside a source checkout, with no test noticing. This walks
+// the real lib/runtime/ source tree on disk and asserts every non-test file
+// in it made it into RuntimeFS().
+func TestEveryRuntimeSourceFileIsEmbedded(t *testing.T) {
+	root := repoRootForAssetsTest(t)
+	runtimeFS, err := RuntimeFS()
+	if err != nil {
+		t.Fatalf("RuntimeFS() error: %v", err)
+	}
+
+	srcDir := filepath.Join(root, "lib", "runtime")
+	err = filepath.WalkDir(srcDir, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() {
+			return walkErr
+		}
+		if strings.HasSuffix(p, ".test.sh") {
+			return nil
+		}
+		rel, relErr := filepath.Rel(srcDir, p)
+		if relErr != nil {
+			return relErr
+		}
+		rel = filepath.ToSlash(rel)
+		if _, statErr := fs.Stat(runtimeFS, rel); statErr != nil {
+			t.Errorf("lib/runtime/%s is not in the embedded runtime tree — the Makefile's "+
+				"sync-embedded step never copies it, so `cspace image build` will not ship it "+
+				"either, even though nothing errors", rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking lib/runtime: %v", err)
+	}
+}
+
+// repoRootForAssetsTest walks up from the package directory to find the
+// module root (where go.mod lives), so the test can reach lib/runtime/ on
+// disk regardless of the working directory `go test` uses.
+func repoRootForAssetsTest(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("could not find repo root (go.mod) from " + dir)
+		}
+		dir = parent
+	}
+}

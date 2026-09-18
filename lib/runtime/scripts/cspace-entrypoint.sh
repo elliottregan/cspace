@@ -110,7 +110,9 @@ statusline_cmd="/usr/local/bin/cspace-statusline.sh"
 # That is why the generic "working" comes from PostToolUse (a tool finished,
 # Claude continues) and PreToolUse is narrowed to AskUserQuestion. Stop does
 # not fire on a user interrupt, which is why the host also keeps an
-# output-activity heuristic on top of this file.
+# output-activity heuristic on top of this file. SessionStart is narrowed to
+# startup|resume|clear so a mid-session compact or fork doesn't flip an
+# already-working session back to "starting".
 #
 # Emitted only when the state script is actually in the image: a project that
 # pins its own image has no /usr/local/bin/cspace-agent-state.sh, and hooks
@@ -125,7 +127,7 @@ cspace_hooks_block() {
     [ -x "$cmd" ] || return 0
     cat <<HOOKS
   "hooks": {
-    "SessionStart": [{ "hooks": [{ "type": "command", "command": "${cmd} starting" }] }],
+    "SessionStart": [{ "matcher": "startup|resume|clear", "hooks": [{ "type": "command", "command": "${cmd} starting" }] }],
     "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "${cmd} working" }] }],
     "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "${cmd} working" }] }],
     "PreToolUse": [{ "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": "${cmd} needs-input" }] }],
