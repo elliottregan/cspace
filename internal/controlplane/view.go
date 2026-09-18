@@ -152,6 +152,25 @@ func (m Model) helpView(width int) string {
 	return strings.Join(lines, "\n")
 }
 
+// sendBoxPrefix is the label the send box wears, and the thing that decides
+// how much of the footer line is left for the input itself.
+func sendBoxPrefix(name string) string {
+	return "send to " + name + " › "
+}
+
+// sendInputWidth is how wide the send box's textinput may be: the footer line
+// less the label, the input's own two-column "> " prompt, and the one column
+// bubbles/v2 renders past Width() for the cursor.
+//
+// bubbles/v2 needs this set. Its placeholderView builds a rune slice of
+// Width()+1, so with the default Width of 0 it renders exactly one character
+// of the placeholder — "message" shows as "m", which reads as the keystroke
+// that opened the box having leaked into it. A set width also makes a long
+// turn scroll horizontally instead of overflowing the line.
+func sendInputWidth(name string, windowWidth int) int {
+	return max(8, windowWidth-lipgloss.Width(sendBoxPrefix(name))-3)
+}
+
 // footer is the one line at the bottom: whatever the dashboard most needs to
 // say, and otherwise the short help for what the selection can do.
 func (m Model) footer() string {
@@ -162,7 +181,7 @@ func (m Model) footer() string {
 		// retarget the label out from under the row Send will actually act
 		// on (see updateConfirm's identical reasoning for the teardown
 		// confirm).
-		return fit("send to "+m.pending.Name+" › "+m.input.View(), m.width)
+		return fit(sendBoxPrefix(m.pending.Name)+m.input.View(), m.width)
 	case m.action != "":
 		return m.spinner.View() + " " + m.action + "…"
 	case m.notice.text != "":

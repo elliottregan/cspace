@@ -90,6 +90,7 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeInput
 		m.pending = row // see the Teardown case above
 		m.input.SetValue("")
+		m.input.SetWidth(sendInputWidth(row.Name, m.width))
 		return m, m.input.Focus()
 	case key.Matches(msg, keys.Interrupt):
 		return m.startAction("interrupt", m.actor.Interrupt(row))
