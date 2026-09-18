@@ -43,8 +43,10 @@ type AgentStatus struct {
 }
 
 // Row is one line in the dashboard. Container is the full container name
-// (cspace-<project>-<name>); "" for project headers. ControlURL/Token drive
-// actions on sandbox rows and are never rendered (Token is a live secret).
+// (cspace-<project>-<name>); "" for project headers. A sandbox row's control
+// URL and token are never carried here — actions look them up fresh from the
+// EntryStore by (Project, Name) instead, so a live secret never has to pass
+// through the render path.
 type Row struct {
 	Kind      RowKind
 	Project   string
@@ -61,8 +63,6 @@ type Row struct {
 	Uptime      time.Duration
 	Agent       AgentStatus   // meaningful only for RowSandbox
 	Browser     BrowserHealth // meaningful only for RowBrowser
-	ControlURL  string
-	Token       string
 	Selectable  bool
 }
 

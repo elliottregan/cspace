@@ -2,6 +2,7 @@ package control
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -51,23 +52,29 @@ func TestCorrelateGroupsSortsAndNests(t *testing.T) {
 	if snap.Rows[0].Selectable || snap.Rows[2].Selectable || snap.Rows[4].Selectable {
 		t.Error("project/sidecar/system rows must not be selectable")
 	}
-	// Token must travel in the row model so actions can use it (never rendered).
-	if !containsToken(snap) {
-		t.Error("sandbox Token must be carried in the row model for actions")
-	}
+	// The row model carries no secret: actions look a sandbox's token up
+	// fresh from the EntryStore by (Project, Name) rather than having it
+	// pass through Row, which the dashboard renders.
+	assertNoTokenField(t, snap.Rows[1])
 	// The browser row carries its last-known health probe result.
 	if br := snap.Rows[3]; !br.Browser.Reachable || br.Browser.Version != "Chrome/140" {
 		t.Errorf("browser row health = %+v, want reachable Chrome/140", br.Browser)
 	}
 }
 
-func containsToken(s Snapshot) bool {
-	for _, r := range s.Rows {
-		if r.Token == "tok" {
-			return true
+// assertNoTokenField fails if Row ever grows a Token or ControlURL field
+// again. Go's type system already makes r.Token / r.ControlURL a compile
+// error today; reflect.TypeOf lets this test keep guarding the property —
+// "a live secret does not travel through the row model" — even against a
+// future field added under either name.
+func assertNoTokenField(t *testing.T, r Row) {
+	t.Helper()
+	rt := reflect.TypeOf(r)
+	for i := 0; i < rt.NumField(); i++ {
+		if name := rt.Field(i).Name; name == "Token" || name == "ControlURL" {
+			t.Errorf("Row.%s must not exist: a live secret must not travel through the row model", name)
 		}
 	}
-	return false
 }
 
 func TestCorrelateDegradedWhenSupervisorUnreachable(t *testing.T) {
