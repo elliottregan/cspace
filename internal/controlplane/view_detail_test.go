@@ -101,7 +101,7 @@ func TestRenderDetailSandbox(t *testing.T) {
 	}
 	ports := []control.Port{{Port: 5173, Label: "web", URL: "http://mercury.alpha.cspace.test:5173/"}}
 	events := []control.EventLine{
-		{Ts: "2026-09-18T14:02:11Z", Kind: "sdk", Type: "assistant", Subtype: "text"},
+		{Ts: "2026-09-18T14:02:11Z", Kind: "sdk-event", Type: "assistant", Subtype: "text"},
 	}
 
 	out := plain(renderDetail(row, live, ports, nil, events, nil, 1717986918, 70))
@@ -110,7 +110,7 @@ func TestRenderDetailSandbox(t *testing.T) {
 		"agent: working", "session primary", "queue 2", "assistant/text",
 		"claude: needs-input", "PreToolUse",
 		"5173", "web", "http://mercury.alpha.cspace.test:5173/",
-		"14:02:11",
+		"14:02:11", "sdk-event", "assistant/text",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("detail missing %q; got:\n%s", want, out)
@@ -195,6 +195,36 @@ func TestRenderDetailFitsItsWidth(t *testing.T) {
 	for _, line := range strings.Split(plain(renderDetail(row, liveState{}, nil, nil, nil, nil, 0, 40)), "\n") {
 		if len([]rune(line)) > 40 {
 			t.Errorf("line wider than 40: %q", line)
+		}
+	}
+}
+
+// TestRenderDetailEventsNameTheirKind — the supervisor's own events
+// (supervisor-start, user-turn, interrupt, sdk-ended) carry no data.type, so a
+// band that rendered only the type printed a bare timestamp for every one of
+// them. That is all a freshly booted sandbox has to show.
+func TestRenderDetailEventsNameTheirKind(t *testing.T) {
+	row := control.Row{Kind: control.RowSandbox, Project: "alpha", Name: "mercury",
+		State: control.StateRunning}
+	events := []control.EventLine{
+		{Ts: "2026-09-18T21:04:23Z", Kind: "supervisor-start"},
+		{Ts: "2026-09-18T21:05:01Z", Kind: "user-turn"},
+		{Ts: "2026-09-18T21:05:02Z", Kind: "sdk-event", Type: "assistant"},
+		{Ts: "2026-09-18T21:05:09Z", Kind: "sdk-event", Type: "result", Subtype: "success"},
+	}
+	out := plain(renderDetail(row, liveState{}, nil, nil, events, nil, 0, 70))
+	for _, want := range []string{
+		"supervisor-start", "user-turn", "sdk-event", "assistant", "result/success",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("event tail missing %q; got:\n%s", want, out)
+		}
+	}
+	// A bare timestamp with nothing after it is the bug this guards.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "21:0") &&
+			strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "21:04:23")) == "" {
+			t.Errorf("event line renders as a bare timestamp: %q", line)
 		}
 	}
 }
