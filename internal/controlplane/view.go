@@ -157,7 +157,12 @@ func (m Model) helpView(width int) string {
 func (m Model) footer() string {
 	switch {
 	case m.mode == modeInput:
-		return fit("send to "+m.selectedRow().Name+" › "+m.input.View(), m.width)
+		// m.pending, not m.selectedRow(): the send box names the sandbox it
+		// was opened against, and a poll landing while it is open must not
+		// retarget the label out from under the row Send will actually act
+		// on (see updateConfirm's identical reasoning for the teardown
+		// confirm).
+		return fit("send to "+m.pending.Name+" › "+m.input.View(), m.width)
 	case m.action != "":
 		return m.spinner.View() + " " + m.action + "…"
 	case m.notice.text != "":
