@@ -12,6 +12,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/elliottregan/cspace/internal/control"
 	"github.com/elliottregan/cspace/internal/registry"
 	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
 	"github.com/elliottregan/cspace/internal/tui"
@@ -32,7 +33,7 @@ func newTUIActor(a *applecontainer.Adapter, r *registry.Registry, home string) *
 }
 
 func (t *tuiActor) Attach(row tui.Row) tea.Cmd {
-	bin, argv, err := attachArgs(row.Container)
+	bin, argv, err := control.AttachArgv(control.ClaudeAttach(row.Container, true))
 	if err != nil {
 		return func() tea.Msg { return tui.Result("attach", err) }
 	}
