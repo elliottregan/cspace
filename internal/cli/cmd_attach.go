@@ -73,8 +73,16 @@ func attachInteractive(ctx context.Context, warn io.Writer, project, sandbox, co
 	useTmux := false
 	if wantTmux {
 		probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		useTmux = defaultTmux.Present(probeCtx, containerName)
+		present, presentErr := defaultTmux.Present(probeCtx, containerName)
 		cancel()
+		if presentErr != nil {
+			// A transport error means we could not learn whether tmux is
+			// there, not that it isn't — falling back to a direct exec
+			// would just hit the same transport failure a moment later, so
+			// there is nothing useful to fall back to.
+			return fmt.Errorf("cannot reach sandbox %s to probe for tmux: %w", sandbox, presentErr)
+		}
+		useTmux = present
 		if !useTmux {
 			_, _ = fmt.Fprintf(warn,
 				"warning: this sandbox has no tmux, so the session will not survive this window closing — and `claude` will keep running inside the sandbox when it does. Rebuild the image with `cspace image build`, then `cspace down %s && cspace up %s`.\n",
@@ -88,24 +96,38 @@ func attachInteractive(ctx context.Context, warn io.Writer, project, sandbox, co
 		return err
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("resolve home directory: %w", err)
-	}
-	att, err := control.BeginAttach(ctx, defaultTmux, containerName,
-		control.ControlPlaneDir(home, project, sandbox), spec.Session)
+	home, homeErr := os.UserHomeDir()
+	att, err := beginAttachOrWarn(ctx, warn, home, homeErr, project, sandbox, containerName, spec.Session)
 	if err != nil {
 		return err
 	}
 
-	// Clear the terminal before claude takes over so the user gets a
-	// clean screen instead of opening claude on top of their pre-
-	// cspace-up shell history. \033c is the full reset (clear screen +
-	// scrollback + cursor home + reset attributes); claude immediately
-	// repaints over it. Stdout-only — stderr stays usable for diagnostics.
-	if isStdoutTTY() {
+	// Skip the reset when the no-tmux fallback warning above was just
+	// printed to stderr: \033c clears scrollback too, and claude's
+	// immediate repaint would erase the warning before the user has a
+	// chance to read it. Still reset on the tmux path (nothing printed
+	// above to protect) and on the explicit --no-tmux path (wantTmux is
+	// already false, so fellBack is false and nothing was printed either).
+	fellBack := wantTmux && !useTmux
+	if isStdoutTTY() && !fellBack {
 		_, _ = os.Stdout.WriteString("\033c")
 	}
+
+	// SIGINT/SIGTERM/SIGHUP must not kill cspace between here and the end of
+	// Close: runAttachChild has its own signal.Notify covering only the
+	// child's lifetime, and its deferred signal.Stop fires the moment the
+	// child exits — exactly when Close's up-to-15s detach exec starts.
+	// Without an overlapping registration here, one of those signals
+	// arriving during that window would fall back to Go's default
+	// disposition (terminate) and the tmux-client detach would never run.
+	// This registration does not need to act on anything: runAttachChild's
+	// own handler already forwards what needs forwarding while the child is
+	// alive, and Close does not respond to host signals at all — it just
+	// has to survive one. Multiple signal.Notify registrations for the same
+	// signal coexist fine; this one is never drained, which is deliberate.
+	sigs := make(chan os.Signal, 8)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigs)
 
 	code, runErr := runAttachChild(bin, argv)
 
@@ -125,6 +147,43 @@ func attachInteractive(ctx context.Context, warn io.Writer, project, sandbox, co
 		return ExitError{Code: code}
 	}
 	return nil
+}
+
+// beginAttachOrWarn opens the attach's control-plane bookkeeping
+// (control.BeginAttach) under the given home directory, downgrading two
+// classes of failure to a one-line warning plus an inert attachment instead
+// of refusing the whole attach:
+//
+//   - homeErr non-nil (home is then ignored) — resolving the host home
+//     directory failed, so there is nowhere to put the lock/records at all.
+//     Callers that already know their home directory (the TUI resolves it
+//     once at startup and refuses to launch if that fails) pass nil here.
+//   - BeginAttach itself reporting control.ErrBookkeepingUnavailable — the
+//     control-plane directory or its lock file could not be created/opened
+//     (a permissions problem, a full disk).
+//
+// A busy lock (another attach's window still open) is not downgraded:
+// BeginAttach reports that as a plain error and this still refuses, since
+// guessing the wrong tty out from under a concurrent attach is exactly what
+// the lock exists to prevent.
+func beginAttachOrWarn(ctx context.Context, warn io.Writer, home string, homeErr error, project, sandbox, container, session string) (*control.Attachment, error) {
+	const bookkeepingWarning = "warning: attach bookkeeping unavailable: %v; this session's tmux client will not be detached automatically\n"
+
+	if homeErr != nil {
+		_, _ = fmt.Fprintf(warn, bookkeepingWarning, homeErr)
+		return control.BeginAttach(ctx, defaultTmux, container, "", "")
+	}
+
+	dir := control.ControlPlaneDir(home, project, sandbox)
+	att, err := control.BeginAttach(ctx, defaultTmux, container, dir, session)
+	if err != nil {
+		if errors.Is(err, control.ErrBookkeepingUnavailable) {
+			_, _ = fmt.Fprintf(warn, bookkeepingWarning, err)
+			return control.BeginAttach(ctx, defaultTmux, container, "", "")
+		}
+		return nil, err
+	}
+	return att, nil
 }
 
 // runAttachChild runs the attach argv wired straight to this process's

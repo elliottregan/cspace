@@ -104,24 +104,34 @@ func NewTmux() *Tmux {
 // from an image that predates this feature answers false, and callers fall
 // back to a direct exec with a warning.
 //
+// A transport failure (the `container` CLI missing, the context cancelled)
+// returns a non-nil error and is never cached: only a decided answer — the
+// probe actually ran and exited 0 or not — is worth remembering for the life
+// of the process. Caching a transport hiccup as "no tmux" would wrongly
+// force every later attach to this container down the no-tmux fallback path
+// even once the transport recovers.
+//
 // The memoization is not single-flight: two goroutines racing to be the
 // first to touch the same container can both miss the cache and each pay for
 // one probe before either result is stored.
-func (t *Tmux) Present(ctx context.Context, container string) bool {
+func (t *Tmux) Present(ctx context.Context, container string) (bool, error) {
 	t.mu.Lock()
 	if cached, ok := t.present[container]; ok {
 		t.mu.Unlock()
-		return cached
+		return cached, nil
 	}
 	t.mu.Unlock()
 
 	_, code, err := t.Exec.Exec(ctx, container, []string{"sh", "-c", "command -v tmux"})
-	ok := err == nil && code == 0
+	if err != nil {
+		return false, err
+	}
+	ok := code == 0
 
 	t.mu.Lock()
 	t.present[container] = ok
 	t.mu.Unlock()
-	return ok
+	return ok, nil
 }
 
 // ListClients returns the ttys currently attached to one tmux session.
@@ -148,6 +158,26 @@ func (t *Tmux) ListClients(ctx context.Context, container, session string) ([]st
 	return ttys, nil
 }
 
+// ErrClientGone marks a DetachClient failure that means the client (and
+// often the whole session or server) was already gone before the detach ran
+// — not a real failure to report. This is the common case, not a rare one:
+// when `claude` exits normally, tmux tears its session and client down
+// before the host-side `container exec` that ran it even returns, so the
+// detach this package runs afterward always finds them gone. Callers treat
+// it as a successful detach.
+var ErrClientGone = errors.New("tmux client already gone")
+
+// clientGoneMarkers are the tmux error texts that mean "there was nothing
+// left to detach" rather than a real failure. Matched as a substring of the
+// combined stdout+stderr Execer hands back, case-sensitively — these are
+// tmux's own fixed strings, not user input.
+var clientGoneMarkers = []string{
+	"can't find client",
+	"no server running",
+	"can't find session",
+	"no such session",
+}
+
 // DetachClient ends one client's attachment to its session.
 //
 // This is the call that makes a closed window actually stop being attached:
@@ -160,10 +190,28 @@ func (t *Tmux) DetachClient(ctx context.Context, container, tty string) error {
 		return err
 	}
 	if code != 0 {
-		if out = strings.TrimSpace(out); out != "" {
+		out = strings.TrimSpace(out)
+		if clientAlreadyGone(out) {
+			if out != "" {
+				return fmt.Errorf("%w: %s", ErrClientGone, out)
+			}
+			return ErrClientGone
+		}
+		if out != "" {
 			return fmt.Errorf("tmux detach-client -t %s in %s: exit %d: %s", tty, container, code, out)
 		}
 		return fmt.Errorf("tmux detach-client -t %s in %s: exit %d", tty, container, code)
 	}
 	return nil
+}
+
+// clientAlreadyGone reports whether a non-zero detach-client's output says
+// the client (or its session, or the whole server) was already gone.
+func clientAlreadyGone(out string) bool {
+	for _, marker := range clientGoneMarkers {
+		if strings.Contains(out, marker) {
+			return true
+		}
+	}
+	return false
 }

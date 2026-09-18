@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -55,11 +56,11 @@ func TestPresentProbesOnceAndMemoizes(t *testing.T) {
 	}}
 	tm := testTmux(f)
 
-	if !tm.Present(context.Background(), "cspace-demo-mercury") {
-		t.Fatal("Present() = false for a container whose probe exits 0")
+	if ok, err := tm.Present(context.Background(), "cspace-demo-mercury"); err != nil || !ok {
+		t.Fatalf("Present() = (%v, %v), want (true, nil) for a container whose probe exits 0", ok, err)
 	}
-	if !tm.Present(context.Background(), "cspace-demo-mercury") {
-		t.Fatal("memoized Present() = false")
+	if ok, err := tm.Present(context.Background(), "cspace-demo-mercury"); err != nil || !ok {
+		t.Fatalf("memoized Present() = (%v, %v), want (true, nil)", ok, err)
 	}
 	calls := f.recorded()
 	if len(calls) != 1 {
@@ -77,8 +78,8 @@ func TestPresentFalseOnMissingBinary(t *testing.T) {
 	f := &fakeExec{reply: func(int, []string) (string, int, error) {
 		return "", 1, nil // `command -v tmux` found nothing
 	}}
-	if testTmux(f).Present(context.Background(), "cspace-demo-mercury") {
-		t.Error("Present() = true when the probe exits non-zero")
+	if ok, err := testTmux(f).Present(context.Background(), "cspace-demo-mercury"); err != nil || ok {
+		t.Errorf("Present() = (%v, %v), want (false, nil) when the probe exits non-zero", ok, err)
 	}
 }
 
@@ -91,11 +92,41 @@ func TestPresentMemoizesPerContainer(t *testing.T) {
 		return "", 1, nil
 	}}
 	tm := testTmux(f)
-	if !tm.Present(context.Background(), "cspace-demo-mercury") {
-		t.Error("first container: Present() = false")
+	if ok, err := tm.Present(context.Background(), "cspace-demo-mercury"); err != nil || !ok {
+		t.Errorf("first container: Present() = (%v, %v), want (true, nil)", ok, err)
 	}
-	if tm.Present(context.Background(), "cspace-demo-venus") {
-		t.Error("second container: Present() = true, want its own probe to decide")
+	if ok, err := tm.Present(context.Background(), "cspace-demo-venus"); err != nil || ok {
+		t.Errorf("second container: Present() = (%v, %v), want its own probe to decide (false, nil)", ok, err)
+	}
+}
+
+// TestPresentTransportErrorIsNotCached — a transport failure (the `container`
+// CLI missing, the context cancelled) is not tmux's own answer and must not
+// be remembered as "no tmux": that would wrongly strand every later attach
+// to this container on the no-tmux fallback even once the transport
+// recovers.
+func TestPresentTransportErrorIsNotCached(t *testing.T) {
+	wantErr := errors.New("boom: transport down")
+	f := &fakeExec{reply: func(n int, _ []string) (string, int, error) {
+		if n == 0 {
+			return "", -1, wantErr
+		}
+		return "/usr/bin/tmux\n", 0, nil
+	}}
+	tm := testTmux(f)
+
+	if _, err := tm.Present(context.Background(), "cspace-demo-mercury"); !errors.Is(err, wantErr) {
+		t.Fatalf("Present() error = %v, want %v", err, wantErr)
+	}
+	ok, err := tm.Present(context.Background(), "cspace-demo-mercury")
+	if err != nil {
+		t.Fatalf("Present() second call error = %v, want nil now that the probe succeeded", err)
+	}
+	if !ok {
+		t.Error("Present() second call = false, want true")
+	}
+	if got := len(f.recorded()); got != 2 {
+		t.Fatalf("probed %d times, want 2 — a transport error must not be cached", got)
 	}
 }
 
@@ -163,17 +194,46 @@ func TestDetachClientReportsFailure(t *testing.T) {
 
 // TestDetachClientErrorIncludesTmuxOutput — the whole point of surfacing a
 // non-zero exit is to say why. A caller staring at "exit 1" with no further
-// text cannot tell "no such client" from "no such session" from anything
-// else tmux might say.
+// text cannot tell what tmux actually objected to. Uses a genuine (non-gone)
+// failure text — "can't find client" is now recognized as ErrClientGone, so
+// it no longer exercises this path (see TestDetachClientRecognizesAGoneClient).
 func TestDetachClientErrorIncludesTmuxOutput(t *testing.T) {
 	f := &fakeExec{reply: func(int, []string) (string, int, error) {
-		return "can't find client /dev/pts/9", 1, nil
+		return "permission denied", 1, nil
 	}}
 	err := testTmux(f).DetachClient(context.Background(), "cspace-demo-mercury", "/dev/pts/9")
 	if err == nil {
 		t.Fatal("DetachClient() returned nil for a non-zero tmux exit")
 	}
-	if !strings.Contains(err.Error(), "can't find client /dev/pts/9") {
+	if !strings.Contains(err.Error(), "permission denied") {
 		t.Errorf("error = %q, want it to contain tmux's own message", err.Error())
+	}
+	if errors.Is(err, ErrClientGone) {
+		t.Error("error wraps ErrClientGone for a genuine failure, not an already-gone client")
+	}
+}
+
+// TestDetachClientRecognizesAGoneClient — finding: Important 1. When
+// `claude` exits normally, tmux tears its session and client down before
+// `container exec` returns, so DetachClient's own exec always finds them
+// gone. That is success, not a failure a caller should warn about.
+func TestDetachClientRecognizesAGoneClient(t *testing.T) {
+	cases := []string{
+		"no server running on /tmp/tmux-1000/default",
+		"can't find client /dev/pts/9",
+		"can't find session: cspace-claude",
+		"no such session: cspace-claude",
+	}
+	for _, out := range cases {
+		out := out
+		t.Run(out, func(t *testing.T) {
+			f := &fakeExec{reply: func(int, []string) (string, int, error) {
+				return out, 1, nil
+			}}
+			err := testTmux(f).DetachClient(context.Background(), "cspace-demo-mercury", "/dev/pts/9")
+			if !errors.Is(err, ErrClientGone) {
+				t.Errorf("DetachClient() error = %v, want it to wrap ErrClientGone for tmux output %q", err, out)
+			}
+		})
 	}
 }
