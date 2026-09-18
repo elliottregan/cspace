@@ -9,6 +9,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,6 +21,14 @@ import (
 )
 
 const appPrefix = "cspace"
+
+// ErrNoProject is the sentinel FindProjectRoot wraps into its returned error
+// when dir is not inside a git repository at all — as opposed to a directory
+// that is a project but whose config failed to parse. Load wraps
+// FindProjectRoot's error with %w, so errors.Is(err, ErrNoProject) reaches
+// through that chain too; callers use it to tell "no project here" apart
+// from a real config error worth reporting.
+var ErrNoProject = errors.New("not in a git repository")
 
 var gitRepoRe = regexp.MustCompile(`github\.com[:/](.+)$`)
 
@@ -242,7 +251,7 @@ func FindProjectRoot(dir string) (string, error) {
 
 		parent := filepath.Dir(current)
 		if parent == current {
-			return "", fmt.Errorf("not in a git repository (searched from %s)", absDir)
+			return "", fmt.Errorf("%w (searched from %s)", ErrNoProject, absDir)
 		}
 		current = parent
 	}
