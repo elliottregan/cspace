@@ -92,3 +92,14 @@ func TestClientInteractiveStateAndEventsReadTheSessionDir(t *testing.T) {
 		t.Errorf("Events = %+v", lines)
 	}
 }
+
+// A Client built with no Home has no session directory to read; unlike
+// Events (which has an error return), InteractiveState fails closed to its
+// zero ("unknown") value instead.
+func TestClientInteractiveStateWithoutHomeIsZeroValue(t *testing.T) {
+	c := New(Options{Containers: &fakeContainers{}})
+	got := c.InteractiveState("alpha", "mercury")
+	if got.Known() {
+		t.Errorf("InteractiveState = %+v, want the zero value", got)
+	}
+}

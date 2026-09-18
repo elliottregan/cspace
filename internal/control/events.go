@@ -68,5 +68,8 @@ func TailEvents(path string, n int) ([]EventLine, error) {
 
 // Events returns the tail of a sandbox's supervisor event log, newest last.
 func (c *Client) Events(project, sandbox string, n int) ([]EventLine, error) {
+	if c.home == "" {
+		return nil, ErrNoHome
+	}
 	return TailEvents(SessionEventsPath(c.home, project, sandbox), n)
 }

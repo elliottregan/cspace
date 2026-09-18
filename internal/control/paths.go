@@ -1,6 +1,9 @@
 package control
 
-import "path/filepath"
+import (
+	"errors"
+	"path/filepath"
+)
 
 // The host-side layout cspace materializes per sandbox. Every path here
 // mirrors a literal cmd_up.go uses when it builds the container's mounts —
@@ -9,6 +12,15 @@ import "path/filepath"
 // ControlPlaneDir (~/.cspace/controlplane/<project>/<sandbox>, the attach lock
 // and client records) is the fourth member of this layout and already lives in
 // control.go — do not redeclare it here.
+
+// ErrNoHome is returned by the Client methods that build one of these paths
+// (Events, Ports) when the Client was built with an empty Options.Home.
+// filepath.Join silently accepts an empty first element and produces a path
+// relative to whatever the process's cwd happens to be, which is wrong in a
+// way nothing would notice until it read the wrong sandbox's files — so
+// these methods check first and fail closed instead. InteractiveState has no
+// error return; it takes the same empty-Home case to its zero value instead.
+var ErrNoHome = errors.New("control: no Home configured")
 
 // SessionDir is the host directory bind-mounted into a sandbox as /sessions.
 func SessionDir(home, project, sandbox string) string {

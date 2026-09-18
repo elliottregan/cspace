@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/elliottregan/cspace/internal/registry"
@@ -39,27 +40,50 @@ type ContainerCLI interface {
 }
 
 // containerExecer adapts a ContainerCLI to the Execer that tmux.go's driver
-// takes, so this package has one exec transport. CLIExecer stays the default
-// only for callers that build no Client (the `cspace attach` path).
+// takes, so this package has one exec transport when a Client owns a
+// ContainerCLI. New builds one whenever Options.Containers is set; a Client
+// built without one gets noContainerExecer instead, which fails closed
+// rather than falling back to CLIExecer's real `container` CLI. CLIExecer
+// itself stays the default only where a *Tmux is built directly by NewTmux
+// with no Client at all — cmd_attach.go's `defaultTmux`.
 type containerExecer struct{ cli ContainerCLI }
 
 var _ Execer = containerExecer{}
 
-// Exec implements Execer. A non-zero exit is not an error — tmux says
-// ordinary things like "no server running" that way — and the adapter
-// already folds *exec.ExitError into ExitCode, so the code passes straight
-// through. combineOutput (tmux.go) folds a non-zero exit's stderr into the
-// returned string, matching Execer's contract; only a transport failure (the
-// command could not even be started) returns a non-nil error.
+// Exec implements Execer, including its combined-output contract: stdout as
+// given on a clean exit; on a non-zero exit, stdout with that exit's trimmed
+// stderr folded in by combineOutput (tmux.go). A non-zero exit is not an
+// error here — tmux says ordinary things like "no server running" that way,
+// and the adapter already folds *exec.ExitError into ExitCode, so it passes
+// straight through as data. Only a transport failure (the command could not
+// even be started) returns a non-nil error, with that same trimmed stderr
+// folded into its text, matching CLIExecer's transport-failure branch.
 func (e containerExecer) Exec(ctx context.Context, container string, cmdline []string) (string, int, error) {
 	res, err := e.cli.Exec(ctx, container, cmdline, substrate.ExecOpts{})
 	if err != nil {
+		if stderr := strings.TrimSpace(res.Stderr); stderr != "" {
+			return res.Stdout, -1, fmt.Errorf("%w: %s", err, stderr)
+		}
 		return res.Stdout, -1, err
 	}
 	if res.ExitCode != 0 {
 		return combineOutput(res.Stdout, res.Stderr), res.ExitCode, nil
 	}
 	return res.Stdout, 0, nil
+}
+
+// noContainerExecer stands in for Execer when a Client is built with no
+// ContainerCLI. Every call fails closed with ErrNoContainerCLI, without
+// touching the host — so Present/ListClients/DetachClient degrade to an
+// error instead of a Tmux driver silently falling back to CLIExecer's real
+// `container` CLI underneath a caller that never configured one.
+type noContainerExecer struct{}
+
+var _ Execer = noContainerExecer{}
+
+// Exec implements Execer.
+func (noContainerExecer) Exec(context.Context, string, []string) (string, int, error) {
+	return "", -1, ErrNoContainerCLI
 }
 
 // EntryStore is the slice of *registry.Registry control needs. An interface
@@ -70,8 +94,11 @@ type EntryStore interface {
 	Lookup(project, name string) (registry.Entry, error)
 }
 
-// Options configures a Client. Containers and Entries are required for every
-// query; DaemonURL is the host daemon's HTTP base (e.g.
+// Options configures a Client. Every field is optional and every seam it
+// backs fails closed on its own when left unset — a nil Containers or
+// Entries, an empty Home or ProjectRoot, a nil Host — rather than panicking,
+// so a caller that only needs some of what Client does can build a partial
+// one. DaemonURL is the host daemon's HTTP base (e.g.
 // "http://127.0.0.1:6280"); Home is the host home directory that the session
 // and clone trees hang off; Now is injected for testable timestamps and
 // defaults to time.Now.
@@ -144,6 +171,8 @@ func New(o Options) *Client {
 		tm = NewTmux()
 		if o.Containers != nil {
 			tm.Exec = containerExecer{cli: o.Containers}
+		} else {
+			tm.Exec = noContainerExecer{}
 		}
 	}
 	resolver := o.ResolverInstalled

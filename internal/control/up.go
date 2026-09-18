@@ -3,10 +3,19 @@ package control
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
 )
+
+// ErrNoProjectRoot is returned by Up when the Client was built with an empty
+// Options.ProjectRoot. exec.Cmd treats an empty Dir as "inherit this
+// process's cwd" — silently correct for a one-off CLI invocation, silently
+// wrong for a long-lived control-plane process, which has no cwd of its own
+// that means anything. New deliberately does not default ProjectRoot (no
+// os.Getwd fallback): a caller that wants Up must say which project.
+var ErrNoProjectRoot = errors.New("control: no ProjectRoot configured for Up")
 
 // Up boots a sandbox by running this same cspace binary's `up` command from
 // the project's root.
@@ -16,7 +25,18 @@ import (
 // internal/cli — so control shells out to the binary it is already running
 // inside, exactly as a person would. Everything the boot flow needs (config,
 // devcontainer, compose) it reads from Options.ProjectRoot.
+//
+// Up is single-project by construction: it always boots into the one
+// Options.ProjectRoot its Client was built with. `cspace up` derives the
+// project it boots from its own cwd, and a registry entry carries no project
+// root of its own for a running sandbox — so nothing today lets a control
+// plane resolve, let alone Up, a sandbox belonging to a project other than
+// this Client's own. See
+// .cspace/context/findings/2026-09-18-registry-entries-do-not-record-a-project-root.md.
 func (c *Client) Up(ctx context.Context, sandbox string) error {
+	if c.projectRoot == "" {
+		return ErrNoProjectRoot
+	}
 	exe, err := c.executable()
 	if err != nil {
 		return fmt.Errorf("resolve the running cspace binary: %w", err)

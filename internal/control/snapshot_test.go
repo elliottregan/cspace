@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -45,6 +46,8 @@ func (f *fakeContainers) Stats(context.Context) ([]applecontainer.ContainerStats
 	return f.stats, f.statsErr
 }
 
+// execCalls is appended to without a lock: nothing in these tests calls Exec
+// concurrently, so it stays unsynchronized on purpose.
 func (f *fakeContainers) Exec(_ context.Context, name string, cmd []string, _ substrate.ExecOpts) (substrate.ExecResult, error) {
 	f.execCalls = append(f.execCalls, execCall{name: name, cmd: cmd})
 	return substrate.ExecResult{Stdout: f.execOut, Stderr: f.execStderr, ExitCode: f.execExit}, f.execErr
@@ -115,6 +118,38 @@ func TestSnapshotListErrorCarriedAndDaemonUnreachable(t *testing.T) {
 	}
 	if snap.Daemon.Reachable {
 		t.Error("daemon should be unreachable")
+	}
+}
+
+// A Client built with no ContainerCLI must fail closed rather than nil-panic
+// on c.containers.List.
+func TestSnapshotErrorsWithoutContainerCLI(t *testing.T) {
+	reg := &registry.Registry{Path: filepath.Join(t.TempDir(), "reg.json")}
+	takenAt := time.Unix(42, 0)
+	c := New(Options{Entries: reg, Now: func() time.Time { return takenAt }})
+	snap := c.Snapshot(context.Background())
+	if !errors.Is(snap.Err, ErrNoContainerCLI) {
+		t.Errorf("Err = %v, want ErrNoContainerCLI", snap.Err)
+	}
+	if !snap.TakenAt.Equal(takenAt) {
+		t.Errorf("TakenAt = %v, want %v", snap.TakenAt, takenAt)
+	}
+	if snap.Rows != nil {
+		t.Errorf("Rows = %+v, want none", snap.Rows)
+	}
+}
+
+// A Client built with no EntryStore must fail closed rather than nil-panic
+// on c.entries.List.
+func TestSnapshotErrorsWithoutEntryStore(t *testing.T) {
+	takenAt := time.Unix(42, 0)
+	c := New(Options{Containers: &fakeContainers{}, Now: func() time.Time { return takenAt }})
+	snap := c.Snapshot(context.Background())
+	if !errors.Is(snap.Err, ErrNoEntryStore) {
+		t.Errorf("Err = %v, want ErrNoEntryStore", snap.Err)
+	}
+	if !snap.TakenAt.Equal(takenAt) {
+		t.Errorf("TakenAt = %v, want %v", snap.TakenAt, takenAt)
 	}
 }
 

@@ -50,3 +50,15 @@ func TestClientDetachClientClassifiesClientGone(t *testing.T) {
 		t.Errorf("err = %v, want errors.Is(err, ErrClientGone)", err)
 	}
 }
+
+// A Client built with neither Tmux nor Containers must not fall back to
+// CLIExecer's real `container` CLI: New wires its tmux driver over
+// noContainerExecer instead, which fails every call with ErrNoContainerCLI
+// without shelling out at all — the bug this guards against would otherwise
+// reach the host the moment ListClients (or Present, or DetachClient) ran.
+func TestClientListClientsErrorsWithoutContainerCLI(t *testing.T) {
+	c := New(Options{})
+	if _, err := c.ListClients(context.Background(), "alpha", "mercury", SessionClaude); !errors.Is(err, ErrNoContainerCLI) {
+		t.Errorf("err = %v, want ErrNoContainerCLI", err)
+	}
+}

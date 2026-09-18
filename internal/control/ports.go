@@ -41,6 +41,12 @@ var internalPorts = map[int]bool{6201: true, 53: true}
 // live listeners from an `ss -tln` exec, the statusline's curation rule, and
 // a URL per port.
 func (c *Client) Ports(ctx context.Context, project, sandbox string) ([]Port, error) {
+	if c.home == "" {
+		return nil, ErrNoHome
+	}
+	if c.containers == nil {
+		return nil, ErrNoContainerCLI
+	}
 	entry, err := c.lookup(project, sandbox)
 	if err != nil {
 		return nil, err
@@ -48,7 +54,7 @@ func (c *Client) Ports(ctx context.Context, project, sandbox string) ([]Port, er
 	res, err := c.containers.Exec(ctx, containerName(project, sandbox),
 		[]string{"ss", "-tln"}, substrate.ExecOpts{})
 	if err != nil {
-		return nil, fmt.Errorf("list listeners in %s: %w", sandbox, err)
+		return nil, fmt.Errorf("exec in %s failed: %w", sandbox, err)
 	}
 	if res.ExitCode != 0 {
 		return nil, fmt.Errorf("list listeners in %s: ss exited %d: %s",
