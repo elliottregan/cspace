@@ -15,7 +15,10 @@ import (
 // Every method returns a tea.Cmd that eventually emits the message Result
 // builds. None of them may do I/O before the returned command runs: Update
 // calls these on the UI goroutine, and a probe or a lock taken there freezes
-// the whole dashboard.
+// the whole dashboard. Every returned Cmd must eventually yield a message
+// built by Result or ResultWarn for the same label, because the dashboard
+// blocks further actions until it arrives; a nil Cmd means "nothing to do"
+// and must not be returned for an action the caller marked in flight.
 type Actor interface {
 	Attach(row control.Row) tea.Cmd
 	Down(row control.Row) tea.Cmd
