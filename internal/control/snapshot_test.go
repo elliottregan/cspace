@@ -30,6 +30,10 @@ type fakeContainers struct {
 	err      error
 	stats    []applecontainer.ContainerStats
 	statsErr error
+	// statsCalls counts Stats calls. Snapshot samples stats on its own
+	// goroutine but waits for it before returning, so a plain int read
+	// after Snapshot returns is properly ordered.
+	statsCalls int
 
 	execOut    string
 	execStderr string
@@ -43,6 +47,7 @@ func (f *fakeContainers) List(context.Context) ([]applecontainer.ContainerSummar
 }
 
 func (f *fakeContainers) Stats(context.Context) ([]applecontainer.ContainerStats, error) {
+	f.statsCalls++
 	return f.stats, f.statsErr
 }
 
@@ -191,5 +196,81 @@ func TestSnapshotProbesBrowserHealth(t *testing.T) {
 	}
 	if _, ok := m["cspace-beta-browser"]; ok {
 		t.Error("stopped browser should not be probed")
+	}
+}
+
+// The medium ticker polls twice a second-and-a-half; `container stats` costs
+// ~2s. SkipStats is what keeps that cadence affordable, so it must actually
+// skip the call, not just discard its result.
+func TestSnapshotWithSkipStatsDoesNotSampleStats(t *testing.T) {
+	cli := &fakeContainers{
+		out: []applecontainer.ContainerSummary{
+			{Name: "cspace-alpha-mercury", State: "running", IP: "192.168.64.5", MemoryB: 16 << 30},
+		},
+		stats: []applecontainer.ContainerStats{
+			{Name: "cspace-alpha-mercury", MemoryUsedB: 1 << 30},
+		},
+	}
+	reg := writeRegistry(t, "alpha", "mercury", "", "")
+	c := New(Options{Containers: cli, Entries: reg, Now: func() time.Time { return time.Unix(1_000_000, 0) }})
+
+	snap := c.SnapshotWith(context.Background(), SnapshotOpts{SkipStats: true})
+	if cli.statsCalls != 0 {
+		t.Errorf("Stats called %d times, want 0", cli.statsCalls)
+	}
+	var found bool
+	for _, r := range snap.Rows {
+		if r.Kind == RowSandbox && r.Name == "mercury" {
+			found = true
+			if r.MemoryUsedB != 0 {
+				t.Errorf("MemoryUsedB = %d, want 0 with no sample", r.MemoryUsedB)
+			}
+			if r.MemoryB != 16<<30 {
+				t.Errorf("MemoryB = %d, want the cap to survive", r.MemoryB)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no mercury row in %+v", snap.Rows)
+	}
+}
+
+// The default is unchanged: Snapshot still samples, and the sample still
+// lands on the row, because the slow ticker and every existing caller
+// depend on it.
+func TestSnapshotSamplesStatsByDefault(t *testing.T) {
+	cli := &fakeContainers{
+		out: []applecontainer.ContainerSummary{
+			{Name: "cspace-alpha-mercury", State: "running", IP: "192.168.64.5", MemoryB: 16 << 30},
+		},
+		stats: []applecontainer.ContainerStats{
+			{Name: "cspace-alpha-mercury", MemoryUsedB: 1 << 30},
+		},
+	}
+	reg := writeRegistry(t, "alpha", "mercury", "", "")
+	c := New(Options{Containers: cli, Entries: reg, Now: func() time.Time { return time.Unix(1_000_000, 0) }})
+
+	snap := c.Snapshot(context.Background())
+	if cli.statsCalls != 1 {
+		t.Errorf("Stats called %d times, want 1", cli.statsCalls)
+	}
+	for _, r := range snap.Rows {
+		if r.Kind == RowSandbox && r.Name == "mercury" && r.MemoryUsedB != 1<<30 {
+			t.Errorf("MemoryUsedB = %d, want the sample", r.MemoryUsedB)
+		}
+	}
+}
+
+// The dashboard's attach must probe for tmux and hand BeginAttach the same
+// driver the Client uses, so the memoized presence probe and the exec
+// transport are shared rather than duplicated.
+func TestTmuxReturnsTheClientsDriver(t *testing.T) {
+	tm := NewTmux()
+	c := New(Options{Containers: &fakeContainers{}, Tmux: tm})
+	if c.Tmux() != tm {
+		t.Error("Tmux() should hand back the injected driver")
+	}
+	if New(Options{Containers: &fakeContainers{}}).Tmux() == nil {
+		t.Error("Tmux() should never be nil: New always builds one")
 	}
 }

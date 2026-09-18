@@ -211,3 +211,11 @@ func New(o Options) *Client {
 		browserCDPURL:     func(ip string) string { return fmt.Sprintf("http://%s:%d/json/version", ip, BrowserCDPPort) },
 	}
 }
+
+// Tmux is this Client's in-sandbox tmux driver: the one exec transport and
+// the one memoized per-sandbox presence probe this package uses. Exposed so
+// a caller that needs the driver itself — the dashboard's attach, which
+// probes for tmux and then hands BeginAttach a driver — uses this Client's
+// rather than standing up a second one over its own `container` CLI. New
+// always builds one, so this is never nil.
+func (c *Client) Tmux() *Tmux { return c.tmux }
