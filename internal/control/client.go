@@ -127,6 +127,13 @@ type Options struct {
 	// reads .cspace.json and .devcontainer from.
 	ProjectRoot string
 
+	// Project is the project the launching process is in — the one
+	// ProjectRoot belongs to. Up consults it before letting ProjectRoot
+	// answer for a project the registry does not know. Empty means
+	// "ProjectRoot answers for any project", which is the single-project
+	// behaviour a caller that sets only ProjectRoot gets.
+	Project string
+
 	// Host supplies the operations whose implementations still live in
 	// internal/cli. Nil is legal: read-only callers need no Host, and the
 	// actions that do fail with ErrNoHost.
@@ -147,6 +154,7 @@ type Client struct {
 
 	resolverInstalled func() bool
 
+	project     string
 	projectRoot string
 
 	// executable and runCommand are the process seams Up uses, fields so a
@@ -194,6 +202,7 @@ func New(o Options) *Client {
 		now:               now,
 		host:              o.Host,
 		resolverInstalled: resolver,
+		project:           o.Project,
 		projectRoot:       o.ProjectRoot,
 		executable:        os.Executable,
 		runCommand:        runHostCommand,

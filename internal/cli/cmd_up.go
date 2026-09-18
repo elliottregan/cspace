@@ -696,6 +696,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				IP:               "",
 				StartedAt:        startedAt,
 				BrowserContainer: browserContainer,
+				ProjectRoot:      projectRoot,
 				State:            "starting",
 			}); regErr != nil {
 				err = fmt.Errorf("register entry: %w", regErr)
@@ -779,6 +780,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				IP:               ip,
 				StartedAt:        startedAt,
 				BrowserContainer: browserContainer,
+				ProjectRoot:      projectRoot,
 				State:            "starting",
 			}); regErr != nil {
 				_ = a.Stop(context.Background(), containerName)
