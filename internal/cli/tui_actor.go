@@ -55,7 +55,7 @@ func (t *tuiActor) Attach(row tui.Row) tea.Cmd {
 	// an inert attachment; it just has nowhere safe to say so. t.home was
 	// already resolved (and hard-failed on, if unresolvable) at `cspace tui`
 	// startup, so it is passed with a nil homeErr rather than re-resolved.
-	att, _, err := beginAttachOrWarn(ctx, io.Discard, t.home, nil, row.Project, row.Name, row.Container, spec.Session)
+	att, _, err := beginAttachOrWarn(ctx, io.Discard, defaultTmux, t.home, nil, row.Project, row.Name, row.Container, spec.Session)
 	cancel()
 	if err != nil {
 		return func() tea.Msg { return tui.Result("attach", err) }
