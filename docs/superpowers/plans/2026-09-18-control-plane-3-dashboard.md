@@ -20,7 +20,7 @@
   - `charm.land/lipgloss/v2 v2.0.6`
   - `charm.land/bubbles/v2 v2.2.1`
   - `charm.land/huh/v2 v2.0.3`
-  - `github.com/charmbracelet/x/ansi v0.11.7` — go.mod at HEAD pins **v0.11.6** as an indirect; `bubbles/v2 v2.2.1` requires v0.11.7, so adding bubbles raises it, and Task 4's `go get` makes it direct for the tests' `ansi.Strip`.
+  - `github.com/charmbracelet/x/ansi v0.11.8` — go.mod at HEAD pins **v0.11.6** as an indirect; `bubbles/v2 v2.2.1` requires v0.11.7 and `lipgloss/v2 v2.0.6`'s own go.mod requires v0.11.8 (found during Task 4: `go get` refuses the v2.0.6 + v0.11.7 pair outright), so the graph settles on v0.11.8. Task 4's `go get` makes it direct for the tests' `ansi.Strip`.
   - **The v2 versions arrive in two steps, not one.** `bubbles/v2 v2.2.1`'s own go.mod asks for `bubbletea/v2 v2.0.8` and `lipgloss/v2 v2.0.5`, so Task 3's `go get` lands those; Task 4 raises lipgloss to v2.0.6 and Task 5 raises bubbletea to v2.0.9. The versions above are what the module graph settles on by the end of Task 5, which is what the plan's code is written against.
   - `github.com/charmbracelet/bubbletea v1.3.10` and `github.com/charmbracelet/lipgloss v1.1.0` **stay** — `internal/overlay` is on them. A module may require both majors; the import paths differ entirely (`charm.land/…/v2` vs `github.com/charmbracelet/…`).
   - `charm.land/glamour/v2`, `github.com/charmbracelet/x/vt` and `github.com/creack/pty` belong to rollout step 4. Do not add them.
@@ -1521,7 +1521,7 @@ cd /Users/elliott/Projects/cspace-control-plane-3
 go get charm.land/lipgloss/v2@v2.0.6
 go get github.com/charmbracelet/x/ansi@v0.11.7
 ```
-Expected: `lipgloss/v2` is raised from the v2.0.5 bubbles asked for to v2.0.6, and `x/ansi` stays at v0.11.7. Both are still marked `// indirect` at this point: `go get` records a requirement but does not reclassify it, and nothing in this package imports either one until Step 5. They move into the direct block at the next `go mod tidy` (Task 8's Step 7); until then the `// indirect` comment is stale but harmless — it is advisory, and the build reads only the version. Do not hand-edit it, and do not run `go mod tidy` here to tidy it away: nothing imports `bubbles/v2` outside `keys.go` yet and tidy would churn the file for nothing.
+Expected: `lipgloss/v2` is raised from the v2.0.5 bubbles asked for to v2.0.6, and `x/ansi` lands at v0.11.8 (lipgloss v2.0.6 requires it; asking for v0.11.7 alongside is refused by `go get`, so request `lipgloss/v2@v2.0.6` and let x/ansi float). Both are still marked `// indirect` at this point: `go get` records a requirement but does not reclassify it, and nothing in this package imports either one until Step 5. They move into the direct block at the next `go mod tidy` (Task 8's Step 7); until then the `// indirect` comment is stale but harmless — it is advisory, and the build reads only the version. Do not hand-edit it, and do not run `go mod tidy` here to tidy it away: nothing imports `bubbles/v2` outside `keys.go` yet and tidy would churn the file for nothing.
 
 - [ ] **Step 2: Write the failing sidebar test**
 
