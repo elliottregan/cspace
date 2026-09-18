@@ -183,6 +183,11 @@ func sidebarWindow(lines []sidebarLine, selected, height int) (from, to int) {
 // show. Rendering a fixed number of lines is what stops a busy host from
 // pushing the detail band and the footer off a short terminal.
 func renderSidebar(rows []control.Row, live map[sandboxKey]liveState, ports map[sandboxKey][]control.Port, selected, height int) string {
+	// A short terminal can hand the layout a negative row budget; render
+	// nothing rather than pass a negative capacity to make() and panic.
+	if height < 0 {
+		height = 0
+	}
 	lines := sidebarLines(rows, live, ports, selected)
 	from, to := sidebarWindow(lines, selected, height)
 	out := make([]string, 0, height)
