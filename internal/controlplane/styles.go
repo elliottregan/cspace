@@ -28,6 +28,14 @@ var (
 			Width(sidebarWidth).MaxWidth(sidebarWidth).
 			Border(lipgloss.NormalBorder(), false, true, false, false).
 			BorderForeground(lipgloss.Color("#444444"))
+
+	// styleTabs titles the reserved tabs line and the help overlay. The
+	// one-column padding on each side is what tabsLine's arithmetic
+	// accounts for.
+	styleTabs = lipgloss.NewStyle().Bold(true).Padding(0, 1)
+
+	// styleMain pads the main area off the sidebar's rule.
+	styleMain = lipgloss.NewStyle().Padding(0, 1)
 )
 
 // lipglossStyle is lipgloss.Style under a local name, so view code can hand
