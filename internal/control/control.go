@@ -5,8 +5,8 @@
 //
 // This is step 1's slice of it: the attach argv, the tmux plumbing, and the
 // per-sandbox client bookkeeping. The Snapshot / AgentStatus / Ports / Events
-// queries and the Down / Send / Interrupt / RestartBrowser / Up actions move
-// here in later steps.
+// queries and the Down / Send / Interrupt / RestartBrowser / Up actions live
+// on Client (client.go).
 package control
 
 import "path/filepath"

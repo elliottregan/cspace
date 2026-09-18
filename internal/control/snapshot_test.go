@@ -1,4 +1,4 @@
-package tui
+package control
 
 import (
 	"context"
@@ -11,22 +11,29 @@ import (
 	"time"
 
 	"github.com/elliottregan/cspace/internal/registry"
+	"github.com/elliottregan/cspace/internal/substrate"
 	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
 )
 
-type fakeLister struct {
+// fakeContainers is the ContainerCLI seam: canned results so control's tests
+// never shell out to the real `container` CLI.
+type fakeContainers struct {
 	out      []applecontainer.ContainerSummary
 	err      error
 	stats    []applecontainer.ContainerStats
 	statsErr error
 }
 
-func (f fakeLister) List(context.Context) ([]applecontainer.ContainerSummary, error) {
+func (f *fakeContainers) List(context.Context) ([]applecontainer.ContainerSummary, error) {
 	return f.out, f.err
 }
 
-func (f fakeLister) Stats(context.Context) ([]applecontainer.ContainerStats, error) {
+func (f *fakeContainers) Stats(context.Context) ([]applecontainer.ContainerStats, error) {
 	return f.stats, f.statsErr
+}
+
+func (f *fakeContainers) Exec(context.Context, string, []string, substrate.ExecOpts) (substrate.ExecResult, error) {
+	return substrate.ExecResult{}, nil
 }
 
 func writeRegistry(t *testing.T, project, name, controlURL, token string) *registry.Registry {
@@ -42,7 +49,7 @@ func writeRegistry(t *testing.T, project, name, controlURL, token string) *regis
 	return r
 }
 
-func TestPollFansOutStatusAndCorrelates(t *testing.T) {
+func TestSnapshotFansOutStatusAndCorrelates(t *testing.T) {
 	var gotAuth string
 	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		gotAuth = req.Header.Get("Authorization")
@@ -57,13 +64,16 @@ func TestPollFansOutStatusAndCorrelates(t *testing.T) {
 	defer daemon.Close()
 
 	reg := writeRegistry(t, "alpha", "mercury", control.URL, "tok-xyz")
-	lister := fakeLister{out: []applecontainer.ContainerSummary{
-		{Name: "cspace-alpha-mercury", State: "running", IP: "10.0.0.1"},
-	}}
-	now := func() time.Time { return time.Unix(1_000_000, 0) }
-	p := NewPoller(lister, reg, daemon.URL, now)
+	c := New(Options{
+		Containers: &fakeContainers{out: []applecontainer.ContainerSummary{
+			{Name: "cspace-alpha-mercury", State: "running", IP: "10.0.0.1"},
+		}},
+		Entries:   reg,
+		DaemonURL: daemon.URL,
+		Now:       func() time.Time { return time.Unix(1_000_000, 0) },
+	})
 
-	snap := p.Poll(context.Background())
+	snap := c.Snapshot(context.Background())
 
 	if gotAuth != "Bearer tok-xyz" {
 		t.Errorf("status Authorization = %q, want Bearer tok-xyz", gotAuth)
@@ -77,21 +87,24 @@ func TestPollFansOutStatusAndCorrelates(t *testing.T) {
 	}
 }
 
-func TestPollListErrorCarriedAndDaemonUnreachable(t *testing.T) {
+func TestSnapshotListErrorCarriedAndDaemonUnreachable(t *testing.T) {
 	reg := &registry.Registry{Path: filepath.Join(t.TempDir(), "reg.json")}
-	lister := fakeLister{err: os.ErrPermission}
-	now := func() time.Time { return time.Unix(0, 0) }
-	p := NewPoller(lister, reg, "http://127.0.0.1:1", now) // unreachable daemon
-	snap := p.Poll(context.Background())
+	c := New(Options{
+		Containers: &fakeContainers{err: os.ErrPermission},
+		Entries:    reg,
+		DaemonURL:  "http://127.0.0.1:1", // unreachable daemon
+		Now:        func() time.Time { return time.Unix(0, 0) },
+	})
+	snap := c.Snapshot(context.Background())
 	if snap.Err == nil {
-		t.Error("want Err carried from lister failure")
+		t.Error("want Err carried from the container lister's failure")
 	}
 	if snap.Daemon.Reachable {
 		t.Error("daemon should be unreachable")
 	}
 }
 
-func TestPollProbesBrowserHealth(t *testing.T) {
+func TestSnapshotProbesBrowserHealth(t *testing.T) {
 	// A CDP /json/version stub standing in for the browser sidecar.
 	cdp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path != "/json/version" {
@@ -103,10 +116,15 @@ func TestPollProbesBrowserHealth(t *testing.T) {
 	defer cdp.Close()
 
 	reg := &registry.Registry{Path: filepath.Join(t.TempDir(), "reg.json")}
-	p := NewPoller(fakeLister{}, reg, "http://127.0.0.1:1", func() time.Time { return time.Unix(0, 0) })
+	c := New(Options{
+		Containers: &fakeContainers{},
+		Entries:    reg,
+		DaemonURL:  "http://127.0.0.1:1",
+		Now:        func() time.Time { return time.Unix(0, 0) },
+	})
 	// Redirect the CDP probe at the stub (production uses the fixed :9222 port,
 	// which httptest can't bind — the browserCDPURL seam exists for exactly this).
-	p.browserCDPURL = func(ip string) string { return cdp.URL + "/json/version" }
+	c.browserCDPURL = func(ip string) string { return cdp.URL + "/json/version" }
 
 	// A running "-browser" container is probed and mapped by container name;
 	// a non-browser container and a stopped browser are skipped.
@@ -115,7 +133,7 @@ func TestPollProbesBrowserHealth(t *testing.T) {
 		{Name: "cspace-alpha-mercury", State: "running", IP: "10.0.0.1"},
 		{Name: "cspace-beta-browser", State: "stopped", IP: ""},
 	}
-	m := p.fetchBrowserHealth(context.Background(), containers)
+	m := c.fetchBrowserHealth(context.Background(), containers)
 	if got := m["cspace-alpha-browser"]; !got.Reachable || got.Version != "Chrome/140.0" {
 		t.Errorf("browser health = %+v, want reachable Chrome/140.0", got)
 	}

@@ -1,4 +1,4 @@
-package tui
+package control
 
 import (
 	"context"
@@ -7,66 +7,32 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/elliottregan/cspace/internal/registry"
 	"github.com/elliottregan/cspace/internal/substrate/applecontainer"
 )
 
-// probeTimeout bounds each control-port / daemon HTTP call. Short so a wedged
-// supervisor degrades one row rather than stalling the whole poll.
-const probeTimeout = 800 * time.Millisecond
-
-// maxProbeConcurrency caps the status fan-out so a host with many sandboxes
-// doesn't open an unbounded burst of sockets per tick.
-const maxProbeConcurrency = 8
-
-// Poller collects one Snapshot of host state.
-type Poller interface {
-	Poll(ctx context.Context) Snapshot
+// Snapshotter collects one Snapshot of host state. The dashboard takes this
+// interface rather than *Client so its model tests can inject a canned
+// snapshot.
+type Snapshotter interface {
+	Snapshot(ctx context.Context) Snapshot
 }
 
-// containerLister is the slice of *applecontainer.Adapter the poller needs;
-// an interface so tests inject a fake without the container CLI.
-type containerLister interface {
-	List(ctx context.Context) ([]applecontainer.ContainerSummary, error)
-	Stats(ctx context.Context) ([]applecontainer.ContainerStats, error)
-}
+var _ Snapshotter = (*Client)(nil)
 
-type realPoller struct {
-	lister    containerLister
-	registry  *registry.Registry
-	daemonURL string
-	client    *http.Client
-	now       func() time.Time
-	// browserCDPURL builds the CDP version-probe URL from a sidecar IP. A field
-	// (not a hardcoded string) so tests can point it at an httptest server;
-	// production uses the fixed :9222 DevTools port.
-	browserCDPURL func(ip string) string
-}
-
-// NewPoller builds the real poller. daemonURL is the host daemon base
-// (e.g. "http://127.0.0.1:6280"). now is injected for testable timestamps.
-func NewPoller(lister containerLister, reg *registry.Registry, daemonURL string, now func() time.Time) *realPoller {
-	return &realPoller{
-		lister:        lister,
-		registry:      reg,
-		daemonURL:     daemonURL,
-		client:        &http.Client{Timeout: probeTimeout},
-		now:           now,
-		browserCDPURL: func(ip string) string { return "http://" + ip + ":9222/json/version" },
-	}
-}
-
-func (p *realPoller) Poll(ctx context.Context) Snapshot {
-	containers, listErr := p.lister.List(ctx)
-	entries, _ := p.registry.List() // missing file => empty slice, nil
+// Snapshot reports every sandbox on the host grouped by project: lifecycle,
+// memory cap and usage, uptime, nested compose sidecars, the project's
+// browser sidecar and its health, and daemon health.
+func (c *Client) Snapshot(ctx context.Context) Snapshot {
+	containers, listErr := c.containers.List(ctx)
+	entries, _ := c.entries.List() // missing file => empty slice, nil
 
 	// `container stats` costs ~2s against Apple Container 1.3 — two orders of
 	// magnitude more than `container ls` (~0.03s) — so it runs concurrently
 	// with the HTTP probes instead of adding its cost to theirs. Run
-	// sequentially it would push a poll toward the model's 5s context ceiling
-	// (pollNowCmd) and start timing the whole snapshot out.
+	// sequentially it would push a snapshot toward the caller's context
+	// ceiling and start timing the whole thing out.
 	var (
 		stats   map[string]applecontainer.ContainerStats
 		statsWG sync.WaitGroup
@@ -74,24 +40,24 @@ func (p *realPoller) Poll(ctx context.Context) Snapshot {
 	statsWG.Add(1)
 	go func() {
 		defer statsWG.Done()
-		stats = p.fetchStats(ctx)
+		stats = c.fetchStats(ctx)
 	}()
 
-	statuses := p.fetchStatuses(ctx, entries)
-	browserHealth := p.fetchBrowserHealth(ctx, containers)
-	daemon := p.fetchDaemon(ctx)
+	statuses := c.fetchStatuses(ctx, entries)
+	browserHealth := c.fetchBrowserHealth(ctx, containers)
+	daemon := c.fetchDaemon(ctx)
 	statsWG.Wait()
 
-	return Correlate(p.now(), containers, entries, statuses, browserHealth, stats, daemon, listErr)
+	return Correlate(c.now(), containers, entries, statuses, browserHealth, stats, daemon, listErr)
 }
 
 // fetchStats samples live per-container resource usage. A stats failure is
 // swallowed to an empty map rather than surfaced: usage is decoration on rows
 // that are already correct without it, so a wedged stats call must not blank
 // the dashboard the way a failed `container ls` legitimately does.
-func (p *realPoller) fetchStats(ctx context.Context) map[string]applecontainer.ContainerStats {
+func (c *Client) fetchStats(ctx context.Context) map[string]applecontainer.ContainerStats {
 	out := map[string]applecontainer.ContainerStats{}
-	samples, err := p.lister.Stats(ctx)
+	samples, err := c.containers.Stats(ctx)
 	if err != nil {
 		return out
 	}
@@ -102,44 +68,43 @@ func (p *realPoller) fetchStats(ctx context.Context) map[string]applecontainer.C
 }
 
 // fetchBrowserHealth probes each running browser sidecar's Chrome DevTools
-// endpoint (GET http://<ip>:9222/json/version) concurrently (bounded). Chrome's
-// CDP HTTP endpoint accepts an IP-literal Host, so a host-side probe by the
-// sidecar's vmnet IP works. Only successful probes land in the map; absence =>
-// unreachable. Symmetric to fetchStatuses/fetchDaemon; keeps internal/tui free
-// of any internal/cli import.
-func (p *realPoller) fetchBrowserHealth(ctx context.Context, containers []applecontainer.ContainerSummary) map[string]BrowserHealth {
+// endpoint (GET http://<ip>:9222/json/version) concurrently (bounded).
+// Chrome's CDP HTTP endpoint accepts an IP-literal Host, so a host-side probe
+// by the sidecar's vmnet IP works. Only successful probes land in the map;
+// absence => unreachable.
+func (c *Client) fetchBrowserHealth(ctx context.Context, containers []applecontainer.ContainerSummary) map[string]BrowserHealth {
 	out := make(map[string]BrowserHealth)
 	var mu sync.Mutex
 	sem := make(chan struct{}, maxProbeConcurrency)
 	var wg sync.WaitGroup
-	for _, c := range containers {
-		if !strings.HasSuffix(c.Name, "-browser") || c.State != "running" || c.IP == "" {
+	for _, ct := range containers {
+		if !strings.HasSuffix(ct.Name, "-browser") || ct.State != "running" || ct.IP == "" {
 			continue
 		}
 		wg.Add(1)
-		go func(c applecontainer.ContainerSummary) {
+		go func(ct applecontainer.ContainerSummary) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			h, ok := p.probeBrowser(ctx, c.IP)
+			h, ok := c.probeBrowser(ctx, ct.IP)
 			if !ok {
 				return
 			}
 			mu.Lock()
-			out[c.Name] = h
+			out[ct.Name] = h
 			mu.Unlock()
-		}(c)
+		}(ct)
 	}
 	wg.Wait()
 	return out
 }
 
-func (p *realPoller) probeBrowser(ctx context.Context, ip string) (BrowserHealth, bool) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.browserCDPURL(ip), nil)
+func (c *Client) probeBrowser(ctx context.Context, ip string) (BrowserHealth, bool) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.browserCDPURL(ip), nil)
 	if err != nil {
 		return BrowserHealth{}, false
 	}
-	resp, err := p.client.Do(req)
+	resp, err := c.probeClient.Do(req)
 	if err != nil {
 		return BrowserHealth{}, false
 	}
@@ -157,7 +122,7 @@ func (p *realPoller) probeBrowser(ctx context.Context, ip string) (BrowserHealth
 // fetchStatuses probes each entry's GET /status concurrently (bounded). Only
 // successful probes land in the map; absence => unreachable (Correlate reads
 // that as degraded when the container is running, stopped otherwise).
-func (p *realPoller) fetchStatuses(ctx context.Context, entries []registry.Entry) map[string]AgentStatus {
+func (c *Client) fetchStatuses(ctx context.Context, entries []registry.Entry) map[string]AgentStatus {
 	out := make(map[string]AgentStatus, len(entries))
 	var mu sync.Mutex
 	sem := make(chan struct{}, maxProbeConcurrency)
@@ -171,7 +136,7 @@ func (p *realPoller) fetchStatuses(ctx context.Context, entries []registry.Entry
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			st, ok := p.probeStatus(ctx, e)
+			st, ok := c.probeStatus(ctx, e)
 			if !ok {
 				return
 			}
@@ -184,7 +149,10 @@ func (p *realPoller) fetchStatuses(ctx context.Context, entries []registry.Entry
 	return out
 }
 
-func (p *realPoller) probeStatus(ctx context.Context, e registry.Entry) (AgentStatus, bool) {
+// probeStatus is one authenticated GET /status against a sandbox's control
+// port. ok is false when the probe failed (timeout, refused, non-2xx,
+// undecodable body) — the caller decides what that means.
+func (c *Client) probeStatus(ctx context.Context, e registry.Entry) (AgentStatus, bool) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.ControlURL+"/status", nil)
 	if err != nil {
 		return AgentStatus{}, false
@@ -192,7 +160,7 @@ func (p *realPoller) probeStatus(ctx context.Context, e registry.Entry) (AgentSt
 	if e.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+e.Token)
 	}
-	resp, err := p.client.Do(req)
+	resp, err := c.probeClient.Do(req)
 	if err != nil {
 		return AgentStatus{}, false
 	}
@@ -222,12 +190,12 @@ func (p *realPoller) probeStatus(ctx context.Context, e registry.Entry) (AgentSt
 	}, true
 }
 
-func (p *realPoller) fetchDaemon(ctx context.Context) DaemonHealth {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.daemonURL+"/health", nil)
+func (c *Client) fetchDaemon(ctx context.Context) DaemonHealth {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.daemonURL+"/health", nil)
 	if err != nil {
 		return DaemonHealth{}
 	}
-	resp, err := p.client.Do(req)
+	resp, err := c.probeClient.Do(req)
 	if err != nil {
 		return DaemonHealth{}
 	}

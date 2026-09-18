@@ -13,7 +13,7 @@ import (
 
 type fakePoller struct{ snap Snapshot }
 
-func (f fakePoller) Poll(context.Context) Snapshot { return f.snap }
+func (f fakePoller) Snapshot(context.Context) Snapshot { return f.snap }
 
 type recordingActor struct {
 	downCalls      []Row
