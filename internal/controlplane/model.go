@@ -8,6 +8,7 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
 
 	"github.com/elliottregan/cspace/internal/control"
 )
@@ -78,10 +79,12 @@ type Model struct {
 	// asking about well before the first 10s tick arrives.
 	slowSeeded bool
 
-	mode    uiMode
-	input   textinput.Model
-	action  string // in-flight action label; "" when idle
-	spinner spinner.Model
+	mode     uiMode
+	confirm  *huh.Form
+	showHelp bool
+	input    textinput.Model
+	action   string // in-flight action label; "" when idle
+	spinner  spinner.Model
 
 	notice    notice
 	noticeGen int
@@ -243,7 +246,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		}
-		return m, nil
+		return m.handleKey(msg)
+	}
+
+	// Anything the branches above did not consume goes to whichever widget
+	// currently owns the keyboard — a textinput's cursor blink, a form's
+	// own timers. The tick and data messages are handled above, so a widget
+	// can never swallow a poll's re-arm.
+	switch m.mode {
+	case modeInput:
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
+	case modeConfirmDown:
+		if m.confirm != nil {
+			return m.updateConfirm(msg)
+		}
 	}
 	return m, nil
 }
