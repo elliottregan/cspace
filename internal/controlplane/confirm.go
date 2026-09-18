@@ -6,6 +6,8 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
+
+	"github.com/elliottregan/cspace/internal/control"
 )
 
 // confirmField is the form key the teardown answer is read back under.
@@ -43,9 +45,16 @@ func newDownConfirm(sandbox string, width int) *huh.Form {
 // updateConfirm feeds the form and acts on its outcome. huh reports both
 // answers through State: Completed carries the value (which may be "no"),
 // Aborted is esc.
+//
+// The Down call resolves m.pending — the row the confirmation was opened
+// against, set by handleNormalKey's Teardown case — never m.selectedRow():
+// a poll can land and move the selection while the form is still open, and
+// the teardown has to act on the sandbox it named, not on whatever is
+// selected by the time it is answered.
 func (m Model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.confirm == nil { // defensive: no form, no mode
 		m.mode = modeNormal
+		m.pending = control.Row{}
 		return m, nil
 	}
 	form, cmd := m.confirm.Update(msg)
@@ -55,13 +64,16 @@ func (m Model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.confirm.State {
 	case huh.StateCompleted:
 		down := m.confirm.GetBool(confirmField)
+		target := m.pending
 		m.mode, m.confirm = modeNormal, nil
+		m.pending = control.Row{}
 		if !down {
 			return m, nil
 		}
-		return m.startAction("down", m.actor.Down(m.selectedRow()))
+		return m.startAction("down", m.actor.Down(target))
 	case huh.StateAborted:
 		m.mode, m.confirm = modeNormal, nil
+		m.pending = control.Row{}
 		return m, nil
 	}
 	return m, cmd

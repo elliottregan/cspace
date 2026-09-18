@@ -25,10 +25,7 @@ func (m Model) View() tea.View {
 	if bodyHeight < 1 {
 		bodyHeight = 1
 	}
-	mainWidth := m.width - sidebarWidth
-	if mainWidth < 20 {
-		mainWidth = 20
-	}
+	mainWidth := mainWidthFor(m.width)
 
 	side := styleSidebar.Height(bodyHeight).Render(
 		renderSidebar(m.rows, m.live, m.ports, m.selected, bodyHeight))
@@ -45,6 +42,15 @@ func (m Model) View() tea.View {
 		m.footer()))
 	v.AltScreen = true
 	return v
+}
+
+// mainWidthFor is the main area's width for a given window width: the window
+// less the sidebar, floored at 20 columns so a very narrow terminal still
+// gets a usable pane. View and any key handler that has to size a widget to
+// match the main area (the teardown confirmation) both go through this, so
+// they can never disagree about how wide "the main area" is.
+func mainWidthFor(width int) int {
+	return max(20, width-sidebarWidth)
 }
 
 // tabsLine is the row of pane tabs the design reserves above the main area.
@@ -126,11 +132,18 @@ func (m Model) mainArea(width, height int) string {
 // helpView is the full binding list, plus the notes the footer has no room
 // for. Rendering it in the main area keeps the sidebar visible, so a person
 // can read the keys against the row they were about to act on.
+//
+// m.help is sized to the whole terminal (Update's WindowSizeMsg case calls
+// SetWidth with msg.Width), which is wider than the area this renders into —
+// so FullHelpView is driven from a local copy sized to the width actually
+// passed in, not m.help itself.
 func (m Model) helpView(width int) string {
+	h := m.help
+	h.SetWidth(width)
 	lines := []string{
 		styleTabs.Render("keys"),
 		"",
-		m.help.FullHelpView(m.keys.FullHelp()),
+		h.FullHelpView(m.keys.FullHelp()),
 		"",
 		styleDim.Render(fit("ctrl+c quits from anywhere · esc leaves a prompt", width)),
 		styleDim.Render(fit("keys the selected row cannot use are hidden from the footer", width)),

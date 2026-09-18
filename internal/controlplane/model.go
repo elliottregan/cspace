@@ -79,8 +79,15 @@ type Model struct {
 	// asking about well before the first 10s tick arrives.
 	slowSeeded bool
 
-	mode     uiMode
-	confirm  *huh.Form
+	mode    uiMode
+	confirm *huh.Form
+	// pending is the row a prompt (the send box or the teardown
+	// confirmation) was opened against. Its completion path acts on this,
+	// not on selectedRow(): moveSelection or a snapshot landing while the
+	// prompt is open must not retarget an action already named at a
+	// specific sandbox. Set when entering modeInput/modeConfirmDown,
+	// cleared on every exit from either mode.
+	pending  control.Row
 	showHelp bool
 	input    textinput.Model
 	action   string // in-flight action label; "" when idle
