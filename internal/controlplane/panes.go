@@ -47,6 +47,14 @@ const openTimeout = 30 * time.Second
 // plus the engine's own teardown, whose kill grace is two seconds.
 const closeTimeout = 20 * time.Second
 
+// sweepTimeout bounds the whole startup sweep, run once from Init before any
+// pane can open. It is deliberately its own, more generous budget rather
+// than a reuse of openTimeout: the sweep may have to wait out several
+// sandboxes' own attach-lock contention (control's attachLockWait) on top of
+// several bounded execs per sandbox directory, so a single pane-open's
+// budget would risk cutting a legitimate sweep off mid-sandbox.
+const sweepTimeout = 60 * time.Second
+
 // The labels the footer shows while a pane is opening or closing, and that
 // the corresponding results carry back.
 const (
@@ -69,6 +77,14 @@ type Opened struct {
 	Warning string
 }
 
+// SweepOutcome is what a PaneHost's Sweep reports: the subset of
+// control.SweepResult's counts the operator can act on or at least ought to
+// be told about. Kept never crosses this boundary — a kept record is nothing
+// happening, and the dashboard has nothing to show for it.
+type SweepOutcome struct {
+	Detached, Deleted, Errors int
+}
+
 // PaneHost opens panes and runs their attach bookkeeping. Like Data and
 // Actor it is declared here by the consumer and implemented in internal/cli,
 // which is what keeps this package from importing it — and keeps
@@ -79,9 +95,9 @@ type Opened struct {
 // goes through a tea.Cmd.
 type PaneHost interface {
 	Open(ctx context.Context, kind Kind, row control.Row, cols, rows int) (Opened, error)
-	// Sweep reaps the client records of attaches whose host process is gone.
-	// It returns how many records it dealt with.
-	Sweep(ctx context.Context) (int, error)
+	// Sweep reaps the client records of attaches whose host process is gone
+	// and reports what it did.
+	Sweep(ctx context.Context) (SweepOutcome, error)
 }
 
 // nopPaneHost is the host a Model built without one gets: every open fails
@@ -92,7 +108,7 @@ type nopPaneHost struct{}
 func (nopPaneHost) Open(context.Context, Kind, control.Row, int, int) (Opened, error) {
 	return Opened{}, errors.New("no pane host configured")
 }
-func (nopPaneHost) Sweep(context.Context) (int, error) { return 0, nil }
+func (nopPaneHost) Sweep(context.Context) (SweepOutcome, error) { return SweepOutcome{}, nil }
 
 // tab is one entry in the tabs row: a live pane, or the supervisor view.
 //
@@ -188,8 +204,8 @@ type (
 	// sweepMsg reports the startup sweep, which is advisory: what it found
 	// was already broken, and there is nothing for a person to do about it.
 	sweepMsg struct {
-		n   int
-		err error
+		outcome SweepOutcome
+		err     error
 	}
 )
 
@@ -198,10 +214,10 @@ type (
 func (m Model) sweepCmd() tea.Cmd {
 	host := m.host
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), openTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), sweepTimeout)
 		defer cancel()
-		n, err := host.Sweep(ctx)
-		return sweepMsg{n: n, err: err}
+		outcome, err := host.Sweep(ctx)
+		return sweepMsg{outcome: outcome, err: err}
 	}
 }
 

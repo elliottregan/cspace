@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/help"
@@ -297,19 +298,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Tick(noticeLifetime, func(time.Time) tea.Msg { return noticeExpireMsg{gen: gen} })
 
 	case sweepMsg:
-		// Advisory: a swept record was already stale. Only a failure is
-		// worth a line, and only a quiet one. isErr, because this branch
-		// schedules no expiry — a notice that is neither timed nor
-		// dismissible sits in the footer for the rest of the session.
+		// Advisory: a swept record was already stale. Only a failure to run
+		// the sweep at all is worth a sticky line — isErr, because that
+		// branch schedules no expiry, and a notice that is neither timed nor
+		// dismissible would otherwise sit in the footer for the rest of the
+		// session. A successful sweep that nonetheless found unfinished work
+		// (SweepOutcome.Errors — a record it could not decide, not a call
+		// that failed outright) is still just information, so it takes the
+		// same timed notice a Detached/Deleted count does; there is nothing
+		// for the operator to do about any of these three besides know.
 		if msg.err != nil {
 			m.notice = notice{text: "attach sweep: " + msg.err.Error(), isErr: true}
-		} else if msg.n > 0 {
-			m.notice = notice{text: fmt.Sprintf("swept %d stale tmux client(s)", msg.n)}
-			m.noticeGen++
-			gen := m.noticeGen
-			return m, tea.Tick(noticeLifetime, func(time.Time) tea.Msg { return noticeExpireMsg{gen: gen} })
+			return m, nil
 		}
-		return m, nil
+		o := msg.outcome
+		if o.Detached == 0 && o.Deleted == 0 && o.Errors == 0 {
+			return m, nil
+		}
+		var parts []string
+		if o.Detached > 0 {
+			parts = append(parts, fmt.Sprintf("detached %d", o.Detached))
+		}
+		if o.Deleted > 0 {
+			parts = append(parts, fmt.Sprintf("deleted %d", o.Deleted))
+		}
+		if o.Errors > 0 {
+			noun := "error"
+			if o.Errors != 1 {
+				noun = "errors"
+			}
+			parts = append(parts, fmt.Sprintf("%d %s", o.Errors, noun))
+		}
+		m.notice = notice{text: "startup sweep: " + strings.Join(parts, ", ")}
+		m.noticeGen++
+		gen := m.noticeGen
+		return m, tea.Tick(noticeLifetime, func(time.Time) tea.Msg { return noticeExpireMsg{gen: gen} })
 
 	case noticeExpireMsg:
 		if msg.gen == m.noticeGen && !m.notice.isErr {
