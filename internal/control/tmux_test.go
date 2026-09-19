@@ -299,6 +299,12 @@ func TestDetachClientErrorIncludesTmuxOutput(t *testing.T) {
 func TestDetachClientRecognizesAGoneClient(t *testing.T) {
 	cases := []string{
 		"no server running on /tmp/tmux-1000/default",
+		// tmux 3.3a's wording for the same thing, which is what Debian —
+		// and therefore the sandbox image — ships. Found by Task 8's live
+		// verification: every answer from a sandbox that has not been
+		// attached to since boot arrives in this form.
+		"error connecting to /tmp/tmux-1000/default (No such file or directory)",
+		"error connecting to /tmp/tmux-1000/default (Connection refused)",
 		"can't find client /dev/pts/9",
 		"can't find session: cspace-claude",
 		"no such session: cspace-claude",
@@ -312,6 +318,34 @@ func TestDetachClientRecognizesAGoneClient(t *testing.T) {
 			err := testTmux(f).DetachClient(context.Background(), "cspace-demo-mercury", "/dev/pts/9")
 			if !errors.Is(err, ErrClientGone) {
 				t.Errorf("DetachClient() error = %v, want it to wrap ErrClientGone for tmux output %q", err, out)
+			}
+		})
+	}
+}
+
+// The mirror of the case above: the `container` CLI's own transport
+// complaints must never be read as tmux answering, or the startup sweep
+// deletes the only handle it has on a client that is still attached. The
+// no-server pattern is anchored on a whole line ending in tmux's
+// parenthesised errno precisely so these cannot match it.
+func TestDetachClientDoesNotMistakeTheContainerCLIForTmux(t *testing.T) {
+	cases := []string{
+		"Error: get failed: container cspace-demo-mercury not found",
+		"Error: container is not running",
+		"Error: error connecting to the container runtime",
+	}
+	for _, out := range cases {
+		out := out
+		t.Run(out, func(t *testing.T) {
+			f := &fakeExec{reply: func(int, []string) (string, int, error) {
+				return out, 1, nil
+			}}
+			err := testTmux(f).DetachClient(context.Background(), "cspace-demo-mercury", "/dev/pts/9")
+			if err == nil {
+				t.Fatalf("DetachClient() = nil, want a failure for %q", out)
+			}
+			if errors.Is(err, ErrClientGone) {
+				t.Errorf("DetachClient() error = %v, want a real failure — %q is not tmux answering", err, out)
 			}
 		})
 	}
