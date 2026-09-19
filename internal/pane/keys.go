@@ -23,13 +23,33 @@ import (
 //     none of that state is reachable from outside the package.
 //  2. Shift+Tab with kitty off is x/vt's, which emits ESC [ Z.
 //  3. With kitty on, a modified key takes the CSI-u form: the four legacy
-//     keys by their fixed codepoints, printable keys by their rune.
-//  4. Without kitty, a modified arrow / Home / End / F1-F4 takes the xterm
-//     CSI 1 ; mod <final> form, and the tilde family CSI n ; mod ~.
+//     keys by their fixed codepoints, printable keys by their rune — but
+//     only when something besides Shift is held. The kitty spec only
+//     escape-codes Esc, alt+key, ctrl+key, ctrl+alt+key and shift+alt+key;
+//     a bare Shift+<printable> is still plain text (rule 7 below) because
+//     the terminal already applied the shift to it. Code is documented as
+//     the BASE, unshifted codepoint (bubbletea's and ultraviolet's Key.Code:
+//     shift+a leaves Code == 'a' and reports the shift in Mod), so the
+//     CSI-u codepoint for e.g. Ctrl+Shift+A is 'a' (97), not 'A' — no
+//     case-folding needed here.
+//  4. A modified arrow / Home / End / F1-F4 takes the xterm CSI 1 ; mod
+//     <final> form, and the tilde family CSI n ; mod ~ — regardless of
+//     kitty: the protocol keeps the cursor/function-key letter and tilde
+//     forms even under the disambiguate flag, it just adds the modifier
+//     parameter the same way xterm does.
 //  5. Without kitty, a modified legacy key degrades to its plain byte (with
 //     an ESC prefix when Alt is held), which is what a terminal that cannot
 //     express the modifier does.
-//  6. A printable key held with Shift alone is its own text: the terminal
+//  6. Without kitty, a modified Ctrl+<letter> that x/vt does not already
+//     encode degrades to its control byte the same way. x/vt's own SendKey
+//     matches an exact struct literal per letter (Code plus Mod == ModCtrl,
+//     with Alt already stripped and re-added as an ESC prefix), so it owns
+//     plain Ctrl+<letter> and Ctrl+Alt+<letter> — but the extra Shift bit on
+//     Ctrl+Shift+<letter> matches none of its cases and the key vanishes
+//     entirely. This is exactly the gap rule 6 exists to close; it declines
+//     whenever x/vt's own combination (Ctrl, optionally with Alt) already
+//     covers the key.
+//  7. A printable key held with Shift alone is its own text: the terminal
 //     already applied the shift, and x/vt would drop it for Mod != 0.
 //
 // ok == false means "x/vt has this one"; the adapter falls through to
@@ -46,7 +66,7 @@ func encodeKey(k KeyEvent, kitty bool) (string, bool) {
 		if cp, ok := kittyCodepoint(k.Code); ok {
 			return csiU(cp, k.Mod), true
 		}
-		if isPrintable(k.Code) {
+		if isPrintable(k.Code) && k.Mod&^ModShift != 0 {
 			return csiU(int(k.Code), k.Mod), true
 		}
 	}
@@ -65,7 +85,16 @@ func encodeKey(k KeyEvent, kitty bool) (string, bool) {
 		return b, true
 	}
 
-	if k.Mod == ModShift && k.Text != "" { // rule 6
+	if !kitty && k.Mod&ModCtrl != 0 && k.Mod&^(ModCtrl|ModAlt) != 0 { // rule 6
+		if b, ok := ctrlLetterByte(k.Code); ok {
+			if k.Mod&ModAlt != 0 {
+				return "\x1b" + string(b), true
+			}
+			return string(b), true
+		}
+	}
+
+	if k.Mod == ModShift && k.Text != "" { // rule 7
 		return k.Text, true
 	}
 	return "", false
@@ -116,6 +145,18 @@ func kittyCodepoint(code rune) (int, bool) {
 		return 127, true
 	case KeyEscape:
 		return 27, true
+	}
+	return 0, false
+}
+
+// ctrlLetterByte is the classic Ctrl+<letter> control byte (the letter with
+// bits 5 and 6 cleared), the same formula a real terminal uses for
+// Ctrl+Shift+C — the case that matters here, since x/vt owns plain
+// Ctrl+<letter> itself (see rule 6) and this is only reached for the
+// combination it does not.
+func ctrlLetterByte(code rune) (byte, bool) {
+	if code >= 'a' && code <= 'z' || code >= 'A' && code <= 'Z' {
+		return byte(code) & 0x1f, true
 	}
 	return 0, false
 }

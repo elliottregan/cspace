@@ -60,6 +60,12 @@ func TestEncodeKey(t *testing.T) {
 		// because a Claude pane always has kitty on and this is the key the
 		// live verification presses.
 		{"kitty ctrl+c", KeyEvent{Code: 'c', Mod: ModCtrl, Text: "c"}, true, "\x1b[99;5u", true},
+		// bubbletea's Key.Code (and ultraviolet's, which it aliases) is
+		// documented as the BASE, unshifted codepoint: pressing shift+a
+		// leaves Code == 'a' and reports the shift in Mod, not in Code. So
+		// the CSI-u codepoint for a Ctrl+Shift+letter combo is the lowercase
+		// rune, not the shifted one — no case-folding needed here.
+		{"kitty ctrl+shift+a uses the base codepoint", KeyEvent{Code: 'a', Mod: ModCtrl | ModShift}, true, "\x1b[97;6u", true},
 		// Kitty still leaves the unmodified keys alone: a real terminal only
 		// switches to CSI-u once there is something to disambiguate.
 		{"kitty plain enter", KeyEvent{Code: KeyEnter}, true, "", false},
@@ -71,6 +77,18 @@ func TestEncodeKey(t *testing.T) {
 		{"alt+enter keeps its esc", KeyEvent{Code: KeyEnter, Mod: ModAlt}, false, "\x1b\r", true},
 		{"ctrl+shift+enter degrades", KeyEvent{Code: KeyEnter, Mod: ModCtrl | ModShift}, false, "\r", true},
 
+		// x/vt's own SendKey matches an exact struct literal per letter
+		// (Code + Mod == ModCtrl, Alt already stripped) — so it owns plain
+		// Ctrl+<letter> and Ctrl+Alt+<letter>, but the extra Shift bit on
+		// Ctrl+Shift+<letter> matches none of its cases and the key vanishes.
+		// The overlay owns exactly that gap: the same control byte
+		// (letter & 0x1f) a real terminal sends for Ctrl+Shift+C.
+		{"ctrl+shift+c degrades to its control byte", KeyEvent{Code: 'c', Mod: ModCtrl | ModShift}, false, "\x03", true},
+		// Plain Ctrl+<letter> is x/vt's alone: the overlay must decline it
+		// rather than double-encode it. TestVTEmulatorSendsAModifiedKeyThroughTheOverlay
+		// proves x/vt still delivers \x01 for this one end to end.
+		{"ctrl+a is x/vt's alone", KeyEvent{Code: 'a', Mod: ModCtrl}, false, "", false},
+
 		// A printable key with only Shift held is its own text. x/vt's
 		// default branch drops it because Mod != 0; the terminal that
 		// produced it already applied the shift.
@@ -78,6 +96,16 @@ func TestEncodeKey(t *testing.T) {
 		// ...but with no text there is nothing to send, so leave it to x/vt
 		// rather than inventing bytes.
 		{"shift with no text", KeyEvent{Code: 'a', Mod: ModShift}, false, "", false},
+
+		// Shift alone never escapes a text-producing key, kitty or not: the
+		// kitty spec only escape-codes Esc/alt+key/ctrl+key/ctrl+alt+key/
+		// shift+alt+key, so a bare Shift+letter or Shift+digit is still its
+		// own plain text — rule 3's printable branch must not claim it just
+		// because Mod != 0.
+		{"kitty shift+a is text, not CSI-u", KeyEvent{Code: 'a', Mod: ModShift, Text: "A"}, true, "A", true},
+		{"kitty shift+1 is text, not CSI-u", KeyEvent{Code: '1', Mod: ModShift, Text: "!"}, true, "!", true},
+		{"shift+a is text (kitty off)", KeyEvent{Code: 'a', Mod: ModShift, Text: "A"}, false, "A", true},
+		{"shift+1 is text (kitty off)", KeyEvent{Code: '1', Mod: ModShift, Text: "!"}, false, "!", true},
 	}
 
 	for _, tc := range cases {
@@ -134,4 +162,11 @@ func TestVTEmulatorSendsAModifiedKeyThroughTheOverlay(t *testing.T) {
 	// mode-sensitively. The overlay must not claim it.
 	e.SendKey(KeyEvent{Code: KeyEnter})
 	r.waitFor(t, "\r")
+
+	// ...and plain Ctrl+A is x/vt's own case (Code + ModCtrl matches its
+	// switch literal), so the overlay must decline it too — proving the
+	// end-to-end path still delivers the byte x/vt encodes, not just that
+	// encodeKey reports "not mine" in isolation.
+	e.SendKey(KeyEvent{Code: 'a', Mod: ModCtrl})
+	r.waitFor(t, "\x01")
 }
