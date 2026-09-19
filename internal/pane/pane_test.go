@@ -2,9 +2,13 @@ package pane
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -42,6 +46,26 @@ func openTestPane(t *testing.T, script string, cols, rows int) *Pane {
 		_ = p.Close(ctx)
 	})
 	return p
+}
+
+// groupMembers counts live processes named name in process group pgid, via
+// pgrep. Used to poll for a child having actually forked its own
+// descendants rather than guessing a fixed delay.
+func groupMembers(t *testing.T, pgid int, name string) int {
+	t.Helper()
+	out, err := exec.Command("pgrep", "-g", strconv.Itoa(pgid), name).Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return 0 // pgrep's own "nothing matched" exit code
+		}
+		t.Fatalf("pgrep: %v", err)
+	}
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" {
+		return 0
+	}
+	return len(strings.Split(trimmed, "\n"))
 }
 
 // waitForScreen polls the rendered screen until it contains want. The pane
@@ -255,9 +279,11 @@ func TestPaneCloseHonoursContextAgainstAWaiterThatNeverFinishes(t *testing.T) {
 	}
 
 	release := make(chan struct{})
+	stub := newStubEmulator()
 	p := &Pane{
-		emu:        newVTEmulator(40, 6),
+		emu:        stub,
 		cmd:        &neverWaits{Cmd: real, release: release},
+		kill:       syscall.Kill,
 		ptmx:       ptmx,
 		writes:     make(chan []byte, writeQueue),
 		dirty:      make(chan struct{}, 1),
@@ -302,7 +328,58 @@ func TestPaneCloseHonoursContextAgainstAWaiterThatNeverFinishes(t *testing.T) {
 	if second := p.Close(context.Background()); second != closeErr {
 		t.Errorf("second Close = %v, want the exact same error as the first (%v)", second, closeErr)
 	}
+	// Close gave up on the waiter and never reached its own emu.Close()
+	// call, but it must still have released the emulator best-effort on
+	// that early-return path — otherwise a pane whose child is wedged holds
+	// x/vt's 4 MiB parser buffer for the rest of the process's life.
+	if !stub.wasClosed() {
+		t.Error("Close gave up on the waiter but never released the emulator")
+	}
 }
+
+// stubEmulator is a minimal Emulator whose Read blocks — like the real
+// adapter's unbuffered pipe — until Close is called, and which records
+// whether Close ran. Used only to observe that shutdown releases the
+// emulator on its ctx-timeout path, which an opaque real vtEmulator cannot
+// show directly.
+type stubEmulator struct {
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func newStubEmulator() *stubEmulator { return &stubEmulator{closed: make(chan struct{})} }
+
+func (s *stubEmulator) Write(p []byte) (int, error) { return len(p), nil }
+func (s *stubEmulator) Resize(int, int)             {}
+func (s *stubEmulator) Render() string              { return "" }
+func (s *stubEmulator) CursorPosition() (int, int)  { return 0, 0 }
+func (s *stubEmulator) SendKey(KeyEvent)            {}
+func (s *stubEmulator) Paste(string)                {}
+func (s *stubEmulator) Scrollback() Scrollback      { return stubScrollback{} }
+
+func (s *stubEmulator) Read(p []byte) (int, error) {
+	<-s.closed
+	return 0, io.EOF
+}
+
+func (s *stubEmulator) Close() error {
+	s.closeOnce.Do(func() { close(s.closed) })
+	return nil
+}
+
+func (s *stubEmulator) wasClosed() bool {
+	select {
+	case <-s.closed:
+		return true
+	default:
+		return false
+	}
+}
+
+type stubScrollback struct{}
+
+func (stubScrollback) Len() int        { return 0 }
+func (stubScrollback) Line(int) string { return "" }
 
 // neverWaits wraps a real, killable *exec.Cmd so its Wait blocks until the
 // test releases it, independent of what actually happens to the real
@@ -337,8 +414,18 @@ func TestPaneCloseKillsEveryMemberOfTheChildsProcessGroup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	pgid := p.cmd.Pid()                // Setsid makes the direct child its own group leader
-	time.Sleep(300 * time.Millisecond) // let bash actually fork both sleeps
+	pgid := p.cmd.Pid() // Setsid makes the direct child its own group leader
+	// Poll for both sleeps to actually exist rather than guessing a fixed
+	// delay: a slow scheduler could still leave one unforked at any fixed
+	// sleep, which would make Close's cleanup trivially "complete" without
+	// ever proving the backgrounded one was reached.
+	deadline := time.Now().Add(5 * time.Second)
+	for groupMembers(t, pgid, "sleep") < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("bash never forked both sleeps in group %d", pgid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -346,7 +433,7 @@ func TestPaneCloseKillsEveryMemberOfTheChildsProcessGroup(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	deadline := time.Now().Add(time.Second)
+	deadline = time.Now().Add(time.Second)
 	for {
 		err := syscall.Kill(-pgid, 0)
 		if err == syscall.ESRCH {
@@ -359,7 +446,68 @@ func TestPaneCloseKillsEveryMemberOfTheChildsProcessGroup(t *testing.T) {
 	}
 }
 
+func TestPaneClosingAnAlreadyExitedChildSendsNoSignal(t *testing.T) {
+	// A child that exited long before Close is the exact case endChild's
+	// own "already reaped" comment exists for: the pid it left behind may
+	// already belong to a stranger, so Close must not signal it — not with
+	// SIGHUP, not with killGroup's follow-up SIGKILL. That can't be proven
+	// by inspecting a real process group afterward (there is nothing left
+	// to inspect), so this records every call through the injectable kill
+	// seam instead.
+	sh := shell(t)
+	p, err := Open(Command{Path: sh, Args: []string{"bash", "-c", "exit 0"}}, 40, 6)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, _, ok := p.Exited(); ok {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, _, ok := p.Exited(); !ok {
+		t.Fatal("the pane never reported the child's exit")
+	}
+
+	var mu sync.Mutex
+	var sent []string
+	p.kill = func(pid int, sig syscall.Signal) error {
+		mu.Lock()
+		sent = append(sent, sig.String())
+		mu.Unlock()
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := p.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sent) != 0 {
+		t.Errorf("Close signalled an already-exited child: %v", sent)
+	}
+}
+
+func TestPaneResizeAfterCloseReturnsAnError(t *testing.T) {
+	p := openTestPane(t, `sleep 30`, 40, 6)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := p.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := p.Resize(80, 24); err == nil {
+		t.Error("Resize after Close: want an error, got nil")
+	}
+}
+
 func TestPaneReportsASignalDeath(t *testing.T) {
+	// A foreign signal — sent by the test directly, never through Close —
+	// must be reported as the failure it is, unlike a death Close itself
+	// causes (TestPaneCloseReportsANilErrorForItsOwnSignalDeath).
 	p := openTestPane(t, `sleep 30`, 40, 6)
 	pid := p.cmd.Pid()
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
@@ -371,8 +519,11 @@ func TestPaneReportsASignalDeath(t *testing.T) {
 			if code != -1 {
 				t.Errorf("code = %d, want -1", code)
 			}
-			if err == nil || !strings.Contains(err.Error(), "killed") {
-				t.Errorf("err = %v, want an error naming the signal", err)
+			// Contains("killed") alone would pass against the format
+			// string's own literal even if the signal itself were wrong;
+			// the signal's own name is the part that has to be right.
+			if err == nil || !strings.Contains(err.Error(), syscall.SIGKILL.String()) {
+				t.Errorf("err = %v, want an error naming %s", err, syscall.SIGKILL)
 			}
 			return
 		}
@@ -381,17 +532,42 @@ func TestPaneReportsASignalDeath(t *testing.T) {
 	t.Fatal("the pane never reported the child's exit")
 }
 
+func TestPaneCloseReportsANilErrorForItsOwnSignalDeath(t *testing.T) {
+	// endChild ends a running child with SIGHUP (or SIGKILL); that is not a
+	// foreign failure, and Exited must not report it as one — a control
+	// plane rendering every pane the operator closed as "killed by hangup"
+	// is exactly the bug this guards against.
+	p := openTestPane(t, `sleep 30`, 40, 6)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := p.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	code, err, ok := p.Exited()
+	if !ok {
+		t.Fatal("Exited: the child was not reported as exited after Close")
+	}
+	if code != -1 {
+		t.Errorf("code = %d, want -1", code)
+	}
+	if err != nil {
+		t.Errorf("err = %v, want nil (Exited's doc: -1 with a nil error means Close closed the pane)", err)
+	}
+}
+
 func TestPaneResizeSignalsDirty(t *testing.T) {
 	p := openTestPane(t, `sleep 30`, 40, 6)
-	// Let startup settle and drain whatever it queued, so the signal waited
-	// for below can only be Resize's own.
-	time.Sleep(100 * time.Millisecond)
-	for drained := false; !drained; {
+	// A single fixed sleep-then-drain cannot tell Resize's own signal apart
+	// from a late startup signal that just happens to land after it: drain
+	// until nothing arrives for a stretch, so whatever comes next can only
+	// be caused by the Resize call below.
+	for {
 		select {
 		case <-p.Dirty():
-		default:
-			drained = true
+			continue
+		case <-time.After(100 * time.Millisecond):
 		}
+		break
 	}
 	if err := p.Resize(80, 24); err != nil {
 		t.Fatalf("Resize: %v", err)
