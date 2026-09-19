@@ -127,9 +127,18 @@ func (e *vtEmulator) SendKey(k KeyEvent) {
 		e.term.SendText(seq)
 		return
 	}
+	// Masked the same way encodeKey's rule 0 masks — and only here, not
+	// before the call above, which needs to know a bit WAS dropped to route
+	// a text-producing key to its text. x/vt matches whole key structs and
+	// its default branch emits bytes only when Mod == 0, so one of
+	// ultraviolet's five inexpressible bits (Hyper, Super, or a CapsLock/
+	// NumLock/ScrollLock state, any of which its kitty decoder sets from
+	// the host terminal's own report) riding along would make the key
+	// produce nothing at all.
+	//
 	// Text is deliberately not forwarded: x/vt matches whole key structs, so
 	// a non-empty Text makes every special key fall through its switch.
-	e.term.SendKey(uv.KeyPressEvent{Code: k.Code, Mod: uv.KeyMod(k.Mod)})
+	e.term.SendKey(uv.KeyPressEvent{Code: k.Code, Mod: uv.KeyMod(k.Mod & encodableMods)})
 }
 
 func (e *vtEmulator) Scrollback() Scrollback { return vtScrollback{e} }
