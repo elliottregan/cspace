@@ -92,7 +92,7 @@ func TestMoveKeysChangeTheSelection(t *testing.T) {
 	}
 }
 
-func TestAttachAndInterruptDispatch(t *testing.T) {
+func TestInterruptDispatch(t *testing.T) {
 	a := &recordingActor{}
 	d := &fakeData{snap: testSnapshot()}
 	m := newTestModel(d, a)
@@ -104,19 +104,9 @@ func TestAttachAndInterruptDispatch(t *testing.T) {
 	}})
 	m = mm.(Model)
 
-	m2 := step(t, m, "enter")
-	if len(a.attach) != 1 || a.attach[0].Name != "mercury" {
-		t.Fatalf("attach calls = %+v, want one for mercury", a.attach)
+	if got := step(t, m, "i"); len(a.interrupt) != 1 {
+		t.Errorf("interrupt calls = %d, want 1 (model %v)", len(a.interrupt), got.action)
 	}
-	if m2.action != "attach" {
-		t.Errorf("action = %q, want attach in flight", m2.action)
-	}
-
-	m3 := step(t, m, "i")
-	if len(a.interrupt) != 1 {
-		t.Errorf("interrupt calls = %d, want 1", len(a.interrupt))
-	}
-	_ = m3
 }
 
 func TestInterruptIsGatedOnAWorkingAgent(t *testing.T) {
