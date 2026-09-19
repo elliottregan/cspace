@@ -445,3 +445,167 @@ func TestAnyClickDismissesAnErrorNotice(t *testing.T) {
 		}
 	}
 }
+
+// wheel delivers one notch. up is +1 in the model's own direction — toward
+// older output, toward the row above.
+func wheel(t *testing.T, m Model, x, y int, up bool) Model {
+	t.Helper()
+	button := tea.MouseWheelDown
+	if up {
+		button = tea.MouseWheelUp
+	}
+	mm, _ := m.Update(tea.MouseWheelMsg{X: x, Y: y, Button: button})
+	return mm.(Model)
+}
+
+func TestWheelOverTheSidebarMovesTheSelection(t *testing.T) {
+	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
+	m.selected = 1 // mercury
+	m.focus = focusMain
+
+	down := wheel(t, m, 4, 3, false)
+	if down.selected != 3 {
+		t.Errorf("selected = %d, want the next selectable row (3)", down.selected)
+	}
+	if down.focus != focusMain {
+		t.Error("the wheel moved the focus; it is a look, not a commitment")
+	}
+	up := wheel(t, down, 4, 3, true)
+	if up.selected != 1 {
+		t.Errorf("selected = %d, want back at mercury (1)", up.selected)
+	}
+}
+
+func TestWheelOverATmuxBackedPaneRefusesLikeLeaderBracket(t *testing.T) {
+	h := &fakeHost{t: t}
+	m := openOne(t, h) // `sleep 30`: nothing on the alternate screen, and no scrollback
+
+	byKey := leader(t, m, "[")
+	byWheel := wheel(t, m, m.geom.main.x+4, m.geom.main.y+4, true)
+
+	if byWheel.scrolling {
+		t.Error("the wheel armed scroll mode on a pane with no scrollback")
+	}
+	if byWheel.notice.text != byKey.notice.text {
+		t.Errorf("wheel says %q, leader [ says %q — they must say the same thing",
+			byWheel.notice.text, byKey.notice.text)
+	}
+	if !byWheel.notice.isErr {
+		t.Error("the refusal should stay until the next keypress")
+	}
+	if !strings.Contains(byWheel.notice.text, "PgUp") {
+		t.Errorf("the refusal must say where the history is: %q", byWheel.notice.text)
+	}
+}
+
+// A pane whose child prints to the NORMAL screen, which the fake host's
+// `history` child does and a real tmux-backed pane never does. openOne
+// presses enter, so this is a Claude-kind tab — but the fake runs /bin/sh
+// for every kind, so it stands in for a host shell. The distinction the
+// refusal test above turns on is tmux and the alternate screen, not the
+// tab's kind.
+func TestWheelOnAPaneWithScrollbackEntersScrollModeAndScrolls(t *testing.T) {
+	h := &fakeHost{t: t, history: true}
+	m := openOne(t, h)
+	waitForHistory(t, m.tabs[0], 2*wheelLines)
+
+	up := wheel(t, m, m.geom.main.x+4, m.geom.main.y+4, true)
+	if !up.scrolling {
+		t.Fatal("the wheel did not enter scroll mode on a pane with scrollback")
+	}
+	if up.scroll != wheelLines {
+		t.Errorf("scroll = %d, want one notch (%d)", up.scroll, wheelLines)
+	}
+	further := wheel(t, up, up.geom.main.x+4, up.geom.main.y+4, true)
+	if further.scroll != 2*wheelLines {
+		t.Errorf("scroll = %d, want two notches", further.scroll)
+	}
+	back := wheel(t, further, further.geom.main.x+4, further.geom.main.y+4, false)
+	if back.scroll != wheelLines {
+		t.Errorf("scroll = %d after a notch down, want one notch", back.scroll)
+	}
+}
+
+func TestWheelDownOnALivePaneDoesNotArmScrollMode(t *testing.T) {
+	h := &fakeHost{t: t, history: true}
+	m := openOne(t, h)
+	waitForHistory(t, m.tabs[0], 1)
+
+	got := wheel(t, m, m.geom.main.x+4, m.geom.main.y+4, false)
+	if got.scrolling {
+		t.Error("wheeling down from the live screen armed scroll mode; there is nothing below it")
+	}
+}
+
+func TestWheelOverThePaneWithTheSidebarFocusedDoesNotArmScrollMode(t *testing.T) {
+	h := &fakeHost{t: t, history: true}
+	m := openOne(t, h)
+	waitForHistory(t, m.tabs[0], 2*wheelLines)
+	m.focus = focusSidebar
+
+	got := wheel(t, m, m.geom.main.x+4, m.geom.main.y+4, true)
+	if got.scrolling {
+		t.Error("the wheel armed scroll mode while the keyboard was on the sidebar: " +
+			"only handlePaneKey leaves that mode, and the sidebar's keys never reach it, " +
+			"so the pane would sit under a banner promising that any key returns to live")
+	}
+	if got.focus != focusSidebar {
+		t.Error("the wheel moved the focus")
+	}
+}
+
+func TestWheelOverASupervisorTabScrollsItsViewport(t *testing.T) {
+	h := &fakeHost{t: t}
+	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
+	m = stepPump(t, m, "a")
+	mustTabs(t, m, 1)
+	sup := m.tabs[0].sup
+	if sup == nil {
+		t.Fatal("the supervisor tab has no view")
+	}
+	sup.vp.SetContent(strings.Repeat("line\n", 200))
+	sup.vp.GotoBottom()
+	before := sup.vp.YOffset()
+	if before == 0 {
+		t.Fatal("the viewport did not scroll to the bottom")
+	}
+
+	wheel(t, m, m.geom.main.x+4, m.geom.main.y+4, true)
+	if sup.vp.YOffset() >= before {
+		t.Errorf("YOffset = %d, want less than %d", sup.vp.YOffset(), before)
+	}
+}
+
+func TestWheelNeverReachesTheChild(t *testing.T) {
+	h := &fakeHost{t: t, echo: true}
+	m := openOne(t, h)
+	for i := 0; i < 5; i++ {
+		m = wheel(t, m, m.geom.main.x+4, m.geom.main.y+4, true)
+		m = wheel(t, m, m.geom.main.x+4, m.geom.main.y+4, false)
+	}
+	// A key the child WILL echo, sent after all ten notches, is the
+	// barrier: once "z" is on the screen the pty has delivered everything
+	// queued before it, so an absent escape sequence is absent rather than
+	// merely late. A sleep would only prove the test was patient.
+	m = step(t, m, "z")
+	waitForPaneScreen(t, m.tabs[0], "z")
+	// `cat -v` prints ESC as ^[ , so a forwarded SGR report would read
+	// "^[[<64;...".
+	if screen := plain(m.tabs[0].p.Render()); strings.Contains(screen, "^[[<") {
+		t.Errorf("a mouse sequence reached the child: %q", screen)
+	}
+}
+
+func TestWheelIsInertUnderAModalAndTheHelpOverlay(t *testing.T) {
+	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
+	before := m.selected
+
+	help := step(t, m, "?")
+	if got := wheel(t, help, 4, 3, false); got.selected != before {
+		t.Error("the wheel moved the selection behind the help overlay")
+	}
+	box := step(t, m, "m")
+	if got := wheel(t, box, 4, 3, false); got.selected != before {
+		t.Error("the wheel moved the selection behind the send box")
+	}
+}

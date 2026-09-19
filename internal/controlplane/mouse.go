@@ -136,3 +136,102 @@ func (m Model) focusTab(i int) Model {
 	m.scrolling, m.scroll = false, 0
 	return m
 }
+
+// wheelLines is how far one notch moves a scrollback or a viewport. Three
+// is what a terminal's own wheel does; one line per notch makes reading a
+// long pane feel broken, and a page per notch overshoots.
+const wheelLines = 3
+
+// handleWheel routes one notch. It never moves the focus: a wheel is a
+// look, not a commitment, and a person reading the sidebar while typing
+// into a pane should stay typing into the pane.
+func (m Model) handleWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	var dir int
+	switch msg.Button {
+	case tea.MouseWheelUp:
+		dir = 1 // toward older output, toward the row above
+	case tea.MouseWheelDown:
+		dir = -1
+	default:
+		// MouseWheelLeft / MouseWheelRight: nothing here scrolls sideways.
+		return m, nil
+	}
+	if m.mode != modeNormal || m.showHelp {
+		// A modal or the overlay owns the screen; there is nothing behind
+		// it the person can see to scroll.
+		return m, nil
+	}
+
+	g := m.geom
+	switch {
+	case g.sidebar.contains(msg.X, msg.Y):
+		// The list is windowed on the selection (sidebarWindow), so moving
+		// the selection IS scrolling the sidebar — and it is the move the
+		// person can act on afterwards, which a detached scroll offset
+		// would not be.
+		m.moveSelection(-dir)
+		return m, m.eventsCmd()
+
+	case g.main.contains(msg.X, msg.Y):
+		return m.wheelMain(dir)
+	}
+	return m, nil
+}
+
+// wheelMain is the wheel over the main area: the focused pane's scrollback,
+// or the supervisor view's viewport.
+//
+// Nothing is forwarded to the child. A pane whose history lives inside the
+// child — every tmux-backed one, which is every sandbox pane — gets the
+// same refusal leader [ gives, rather than silence that reads as a dropped
+// event.
+func (m Model) wheelMain(dir int) (tea.Model, tea.Cmd) {
+	t := m.focusedTab()
+	if t == nil {
+		return m, nil
+	}
+	if t.sup != nil {
+		// Not a pane and not scrollback: the supervisor view is a viewport
+		// over the event tail, and pgup/pgdn already move it. The wheel is
+		// the same gesture with a smaller step.
+		if dir > 0 {
+			t.sup.vp.ScrollUp(wheelLines)
+		} else {
+			t.sup.vp.ScrollDown(wheelLines)
+		}
+		return m, nil
+	}
+	if t.p == nil {
+		return m, nil
+	}
+	if t.p.ScrollbackLen() == 0 {
+		// Checked before the direction, so a wheel either way over a
+		// tmux-backed pane says the same thing. Silence in one direction
+		// and an explanation in the other would read as a bug in the
+		// explanation.
+		m.notice = noScrollbackNotice()
+		return m, nil
+	}
+	if m.scrolling {
+		m.scroll = clampScroll(m.scroll+dir*wheelLines, t.p.ScrollbackLen())
+		return m, nil
+	}
+	if dir < 0 {
+		// Live already: there is nowhere below the live screen to go, and
+		// arming scroll mode to sit at offset 0 would swallow the next key.
+		return m, nil
+	}
+	if m.focus != focusMain {
+		// Scroll mode is escapable only through handlePaneKey, which the
+		// keyboard reaches only while the main area has focus. Arming it
+		// from here would leave the pane under a banner that says any key
+		// returns to live while every key went to the sidebar instead,
+		// with leader g the only way out. A wheel is a look: it does not
+		// take the focus, so it does not arm a mode that needs it either.
+		return m, nil
+	}
+	// Exactly what leader [ does, plus the notch that asked for it.
+	m.scrolling = true
+	m.scroll = clampScroll(wheelLines, t.p.ScrollbackLen())
+	return m, nil
+}
