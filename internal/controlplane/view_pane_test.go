@@ -36,6 +36,31 @@ func TestRenderTabsTruncatesFromTheLeftAndCounts(t *testing.T) {
 	}
 }
 
+// The terminal cursor is the dashboard's claim about where typing goes, so
+// it may only sit on a pane the operator can actually see. The help
+// overlay and the two modals all render over the main area while the focus
+// stays on the pane behind them — mainArea's own switch is the list — so a
+// cursor placed by focus alone ends up blinking on top of the help text.
+func TestTheCursorIsNotPlacedUnderAnOverlay(t *testing.T) {
+	h := &fakeHost{t: t}
+	m := openOne(t, h)
+	if m.View().Cursor == nil {
+		t.Fatal("a focused live pane has no cursor at all")
+	}
+
+	m.showHelp = true
+	if m.View().Cursor != nil {
+		t.Error("the cursor is placed at the pane under the help overlay")
+	}
+	m.showHelp = false
+
+	m.mode = modePicker
+	m.picker = newPanePicker(40)
+	if m.View().Cursor != nil {
+		t.Error("the cursor is placed at the pane under the new-pane picker")
+	}
+}
+
 func TestEmptyMainAreaNamesTheKeysThatOpenAPane(t *testing.T) {
 	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, &fakeHost{t: t})
 	got := plain(m.paneArea(60, 10))

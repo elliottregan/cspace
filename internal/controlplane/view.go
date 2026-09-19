@@ -50,8 +50,12 @@ func (m Model) View() tea.View {
 
 	// The cursor belongs to the focused pane and only when the keyboard is
 	// pointed at it: a cursor blinking in a pane the keys do not reach is a
-	// lie about where typing goes.
-	if t := m.focusedTab(); t != nil && t.p != nil && m.focus == focusMain && !m.scrolling {
+	// lie about where typing goes. The help overlay and the modals
+	// (mainArea's first three cases) cover the pane while leaving the focus
+	// on it, so they have to be excluded too — otherwise the cursor sits on
+	// top of the help text at the position of a pane nobody can see.
+	if t := m.focusedTab(); t != nil && t.p != nil && m.focus == focusMain &&
+		!m.scrolling && !m.showHelp && m.mode == modeNormal {
 		if _, _, exited := t.p.Exited(); !exited {
 			x, y := t.p.Cursor()
 			v.Cursor = tea.NewCursor(x+sidebarWidth+1, y+1)
@@ -123,7 +127,8 @@ func (m Model) helpView(width int) string {
 		h.FullHelpView(m.keys.PaneFullHelp()),
 		"",
 		styleDim.Render(fit("every other key goes to the focused pane; ⌃Space is the leader", width)),
-		styleDim.Render(fit("ctrl+c quits from anywhere · esc leaves a prompt", width)),
+		styleDim.Render(fit("ctrl+c quits, except in a live pane where it goes to the program", width)),
+		styleDim.Render(fit("esc leaves a prompt", width)),
 		styleDim.Render(fit("keys the selected row cannot use are hidden from the footer", width)),
 		styleDim.Render(fit("bindings come from tui.keys in ~/.cspace/config.json", width)),
 	}

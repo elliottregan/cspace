@@ -368,6 +368,51 @@ func TestCtrlCGoesToTheChildWhenAPaneHasFocus(t *testing.T) {
 	}
 }
 
+// A live child is the only thing that earns the exemption, because
+// interrupting it is the only thing the key would do. A supervisor tab has
+// no process and its textarea binds no ctrl+c, so the key used to do
+// nothing whatsoever from there.
+func TestCtrlCQuitsFromASupervisorTab(t *testing.T) {
+	h := &fakeHost{t: t}
+	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
+	m = stepPump(t, m, "a")
+	if tb := m.focusedTab(); tb == nil || tb.sup == nil || m.focus != focusMain {
+		t.Fatal("no focused supervisor tab")
+	}
+	if got := step(t, m, "ctrl+c"); !got.quitting {
+		t.Error("ctrl+c did nothing in a supervisor tab; leader q was the only way out")
+	}
+}
+
+// ...and an exited pane is the other one: handlePaneKey's exited guard
+// drops every key, so Ctrl+C routed "to the pane" reached nothing at all.
+func TestCtrlCQuitsOnAnExitedPane(t *testing.T) {
+	h := &fakeHost{t: t, exits: true}
+	m := openOne(t, h)
+	waitForExit(t, m.tabs[0])
+	if got := step(t, m, "ctrl+c"); !got.quitting {
+		t.Error("ctrl+c did nothing on an exited pane; leader q was the only way out")
+	}
+}
+
+// The supervisor's send box is where a stack trace or a diff goes, and a
+// paste is how it gets there. The PasteMsg arm used to return before the
+// textarea — which handles PasteMsg itself — ever saw one.
+func TestPasteReachesTheSupervisorSendBox(t *testing.T) {
+	h := &fakeHost{t: t}
+	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
+	m = stepPump(t, m, "a")
+	tb := m.focusedTab()
+	if tb == nil || tb.sup == nil {
+		t.Fatal("no supervisor tab")
+	}
+	mm, _ := m.Update(tea.PasteMsg{Content: "panic: nil map"})
+	m = mm.(Model)
+	if got := m.focusedTab().sup.input.Value(); !strings.Contains(got, "panic: nil map") {
+		t.Errorf("the send box holds %q after a paste, want the pasted text", got)
+	}
+}
+
 func TestHelpMentionsTheLeader(t *testing.T) {
 	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, &fakeHost{t: t})
 	m.showHelp = true

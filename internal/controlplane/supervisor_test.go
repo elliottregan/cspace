@@ -73,6 +73,14 @@ func TestSupervisorEnterSendsAndEscInterrupts(t *testing.T) {
 	a := &recordingActor{}
 	h := &fakeHost{t: t}
 	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, a, h)
+	// mercury's snapshot agent is idle, and interrupt is gated on a working
+	// one exactly as the sidebar's `i` is — the fast ticker reporting it
+	// working is what enables the key here too.
+	mm, _ := m.Update(liveMsg{states: map[sandboxKey]liveState{
+		{Project: "alpha", Name: "mercury"}: {
+			Agent: control.AgentStatus{Reachable: true, State: "working"}},
+	}})
+	m = mm.(Model)
 	m = stepPump(t, m, "a") // open the supervisor tab on mercury
 	if m.focusedTab() == nil || m.focusedTab().sup == nil {
 		t.Fatal("no supervisor tab")
@@ -103,11 +111,69 @@ func TestSupervisorEnterSendsAndEscInterrupts(t *testing.T) {
 	}
 
 	// Once the send's result lands the gate opens and esc interrupts.
-	mm, _ := m.Update(Result(LabelSend, nil))
+	mm, _ = m.Update(Result(LabelSend, nil))
 	m = mm.(Model)
 	m = step(t, m, "esc")
 	if len(a.interrupt) != 1 {
 		t.Errorf("interrupts = %d, want 1", len(a.interrupt))
+	}
+}
+
+// unreachableSnapshot is testSnapshot with mercury's supervisor down — the
+// state the spec's error handling names, which the ordinary snapshot (a
+// reachable, idle agent) cannot express.
+func unreachableSnapshot() control.Snapshot {
+	snap := testSnapshot()
+	rows := append([]control.Row(nil), snap.Rows...)
+	for i := range rows {
+		if rows[i].Kind == control.RowSandbox && rows[i].Name == "mercury" {
+			rows[i].Agent = control.AgentStatus{}
+		}
+	}
+	snap.Rows = rows
+	return snap
+}
+
+// Spec, Error handling: "Supervisor unreachable: send and interrupt are
+// disabled on that row rather than failing on press". The sidebar gets that
+// by disabling the binding; this route is a switch on the key string, so it
+// checks the same predicates by hand — and it must not throw the typed text
+// away doing it.
+func TestSupervisorSendAndInterruptAreGatedOnReachability(t *testing.T) {
+	a := &recordingActor{}
+	m := newTestModelWithHost(&fakeData{snap: unreachableSnapshot()}, a, &fakeHost{t: t})
+	m = stepPump(t, m, "a")
+	if m.focusedTab() == nil || m.focusedTab().sup == nil {
+		t.Fatal("no supervisor tab")
+	}
+
+	for _, r := range "hello" {
+		m = step(t, m, string(r))
+	}
+	m = step(t, m, "enter")
+	if len(a.sends) != 0 {
+		t.Errorf("sends = %+v to an unreachable supervisor, want none", a.sends)
+	}
+	if m.action != "" {
+		t.Errorf("action = %q, want nothing in flight", m.action)
+	}
+	if !m.notice.isErr || m.notice.text == "" {
+		t.Error("the refusal was silent; the footer has to say why nothing was sent")
+	}
+	if got := m.focusedTab().sup.input.Value(); got != "hello" {
+		t.Errorf("the box holds %q, want the turn kept for a retry", got)
+	}
+
+	// mercury's agent is reachable but idle in the ordinary snapshot, which
+	// is the interrupt-only half of the same rule.
+	m = newTestModelWithHost(&fakeData{snap: testSnapshot()}, a, &fakeHost{t: t})
+	m = stepPump(t, m, "a")
+	m = step(t, m, "esc")
+	if len(a.interrupt) != 0 {
+		t.Errorf("interrupts = %d on an idle agent, want 0", len(a.interrupt))
+	}
+	if !m.notice.isErr {
+		t.Error("the refusal was silent")
 	}
 }
 

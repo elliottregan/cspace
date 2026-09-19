@@ -10,6 +10,7 @@ import (
 
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/elliottregan/cspace/internal/control"
 	"github.com/elliottregan/cspace/internal/pane"
@@ -47,9 +48,14 @@ type fakeHost struct {
 	// exits makes the child die the moment it starts, for the tests that
 	// watch a pane end on its own rather than by the operator's key.
 	exits bool
-	// nilPane makes Open report success with a zero Opened — no Pane, no
-	// error — the shape a PaneHost must not be trusted to avoid on its own.
+	// nilPane makes Open report success with no Pane and no error — the
+	// shape a PaneHost must not be trusted to avoid on its own. It still
+	// hands back a detacher, because the real host books the attach before
+	// it opens the pane: that is the thing nothing else can release.
 	nilPane bool
+	// noPaneDetach is the detacher a nilPane open handed out, kept so a
+	// test can assert the model closed it.
+	noPaneDetach *fakeDetacher
 }
 
 func (h *fakeHost) Open(_ context.Context, kind Kind, row control.Row, cols, rows int) (Opened, error) {
@@ -59,7 +65,8 @@ func (h *fakeHost) Open(_ context.Context, kind Kind, row control.Row, cols, row
 		return Opened{}, h.openErr
 	}
 	if h.nilPane {
-		return Opened{}, nil
+		h.noPaneDetach = &fakeDetacher{}
+		return Opened{Detach: h.noPaneDetach}, nil
 	}
 	script := "sleep 30"
 	switch {
@@ -223,7 +230,17 @@ func TestAFailedOpenBecomesAFooterErrorAndNoTab(t *testing.T) {
 func TestAnOpenWithNoPaneBecomesAFooterErrorAndNoTab(t *testing.T) {
 	h := &fakeHost{t: t, nilPane: true}
 	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
-	m = stepPump(t, m, "enter")
+
+	mm, cmd := m.Update(press("enter"))
+	m = mm.(Model)
+	opened, ok := runCmd(t, cmd).(paneOpenedMsg)
+	if !ok {
+		t.Fatal("enter did not open a pane")
+	}
+	mm, cmd = m.Update(opened)
+	m = mm.(Model)
+	drain(cmd) // the release below is a command, not an inline Close
+
 	if len(m.tabs) != 0 {
 		t.Errorf("tabs = %d, want none after an open with no pane", len(m.tabs))
 	}
@@ -232,6 +249,14 @@ func TestAnOpenWithNoPaneBecomesAFooterErrorAndNoTab(t *testing.T) {
 	}
 	if m.action != "" {
 		t.Error("the action gate is still held after an open with no pane")
+	}
+	// The host booked the attach before it failed to hand back a pane, and
+	// no tab exists for leader x or quit to reach that booking through —
+	// so the only place it can be released is here.
+	if h.noPaneDetach.closed != 1 {
+		t.Errorf("the stranded attachment was closed %d times, want 1: its lock and "+
+			"client record are held for the life of the process otherwise",
+			h.noPaneDetach.closed)
 	}
 }
 
@@ -303,6 +328,45 @@ func TestAnExitedPaneReapsItself(t *testing.T) {
 	// rate rather than park.
 	if _, again := m.Update(paneOutputMsg{id: tb.id}); again != nil {
 		t.Error("an exited pane re-armed its output wait")
+	}
+}
+
+// A Claude pane takes seconds to appear, so a window resize landing while
+// the open is in flight is an ordinary event — and the WindowSizeMsg arm
+// can only resize the tabs that exist. The pane that arrives afterwards
+// carries the geometry it was opened at until something else resizes it,
+// which is a pane drawing at the old width inside a box at the new one.
+func TestAPaneOpenedDuringAResizeGetsTheCurrentLayout(t *testing.T) {
+	h := &fakeHost{t: t}
+	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
+
+	mm, cmd := m.Update(press("enter"))
+	m = mm.(Model)
+
+	// The window changes while the host is still opening.
+	mm, _ = m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	m = mm.(Model)
+	wantCols, wantRows := m.paneSize()
+
+	opened, ok := runCmd(t, cmd).(paneOpenedMsg)
+	if !ok {
+		t.Fatal("enter did not open a pane")
+	}
+	mm, _ = m.Update(opened)
+	m = mm.(Model)
+	mustTabs(t, m, 1)
+
+	// The emulator's own geometry, read the only way it is observable from
+	// outside: Render draws the whole screen, so its line count is the row
+	// count and each line is exactly as wide as the screen.
+	lines := strings.Split(plain(m.tabs[0].p.Render()), "\n")
+	if len(lines) != wantRows {
+		t.Errorf("the new pane renders %d rows, want the current layout's %d",
+			len(lines), wantRows)
+	}
+	if got := ansi.StringWidth(lines[0]); got != wantCols {
+		t.Errorf("the new pane renders %d columns, want the current layout's %d",
+			got, wantCols)
 	}
 }
 
