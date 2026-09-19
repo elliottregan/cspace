@@ -306,6 +306,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = notice{text: LabelOpenPane + " failed: " + msg.err.Error(), isErr: true}
 			return m, nil
 		}
+		if msg.opened.Pane == nil {
+			// A PaneHost that reports success with no pane would otherwise
+			// become a tab with a nil p — every place that reads it already
+			// treats nil as "no process" (KindSupervisor's own tabs), so
+			// nothing downstream would crash, but the tab could never draw,
+			// resize, redraw or close: a zombie the operator can neither use
+			// nor get rid of. Treat it as the failure it is instead.
+			m.notice = notice{text: LabelOpenPane + " failed: host returned no pane", isErr: true}
+			return m, nil
+		}
 		project, sandbox := msg.row.Project, msg.row.Name
 		if msg.kind == KindHostShell {
 			// It was opened from whatever row happened to be selected and
@@ -340,7 +350,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if t == nil || t.p == nil {
 			return m, nil
 		}
-		if _, _, exited := t.p.Exited(); exited {
+		_, _, exited := t.p.Exited()
+		if exited {
 			// The child ended on its own, and this signal — the waiter's
 			// final markDirty — is the last one this pane will ever emit:
 			// Dirty is closed by Pane.Close and by nothing else. Tear the
@@ -353,7 +364,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if !t.closing {
+		// t.p.Closed() is the structural backstop Exited() alone cannot
+		// promise: a Close that gave up on a wedged waiter (4a) — or, once
+		// Task 7's host owns Close on its own paths, any close this tab's
+		// own bookkeeping never saw — leaves Dirty already closed while
+		// Exited() still reports the child live. Re-arming on that pane
+		// would spin the redraw loop at the tick rate forever, waiting on a
+		// channel nothing will ever refill again.
+		if !t.closing && !exited && !t.p.Closed() {
 			return m, awaitOutput(t)
 		}
 		return m, nil

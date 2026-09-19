@@ -104,8 +104,12 @@ func TestInterruptDispatch(t *testing.T) {
 	}})
 	m = mm.(Model)
 
-	if got := step(t, m, "i"); len(a.interrupt) != 1 {
+	got := step(t, m, "i")
+	if len(a.interrupt) != 1 {
 		t.Errorf("interrupt calls = %d, want 1 (model %v)", len(a.interrupt), got.action)
+	}
+	if got.action != LabelInterrupt {
+		t.Errorf("action = %q, want %q in flight", got.action, LabelInterrupt)
 	}
 }
 
