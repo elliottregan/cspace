@@ -9,6 +9,25 @@ import (
 	"github.com/elliottregan/cspace/internal/pane"
 )
 
+// noScrollbackNotice is the refusal a pane with no history gives, shared by
+// leader [ and the wheel so the two can never drift into saying different
+// things about the same pane.
+//
+// This is the permanent state of every Claude and shell pane, not a rare
+// one. tmux switches the terminal to the ALTERNATE screen the moment it
+// starts (measured against the image's tmux 3.3a: its first bytes are
+// ESC[?1049h), and nothing written to the alternate screen ever enters
+// scrollback. The history is real, but it is on the child's side — tmux's
+// copy-mode holds it, and Claude Code scrolls its own transcript with
+// PgUp/PgDn, which reach the child precisely because this mode is off. See
+// the scroll-mode-never-reaches-a-tmux-backed-panes-history finding.
+func noScrollbackNotice() notice {
+	return notice{
+		text:  "nothing to scroll: this pane has no scrollback — its child keeps its own history (PgUp/PgDn go to it)",
+		isErr: true,
+	}
+}
+
 // handleLeaderKey dispatches the key after the leader.
 //
 // The leader is already disarmed by the caller, so every path here is a
@@ -74,21 +93,8 @@ func (m Model) handleLeaderKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			// through, and the mode is not inert — it swallows the next
 			// keypress as the one that returns to live, so arming it here
 			// costs a keystroke and shows a counter that can only ever say
-			// "0 lines back".
-			//
-			// This is the permanent state of every Claude and shell pane,
-			// not a rare one. tmux switches the terminal to the ALTERNATE
-			// screen the moment it starts (measured against the image's
-			// tmux 3.3a: its first bytes are ESC[?1049h), and nothing
-			// written to the alternate screen ever enters scrollback. The
-			// history is real, but it is on the child's side — tmux's
-			// copy-mode holds it, and Claude Code scrolls its own
-			// transcript with PgUp/PgDn, which reach the child precisely
-			// because this mode is off.
-			m.notice = notice{
-				text:  "nothing to scroll: this pane has no scrollback — its child keeps its own history (PgUp/PgDn go to it)",
-				isErr: true,
-			}
+			// "0 lines back". The wheel gives the same refusal.
+			m.notice = noScrollbackNotice()
 			return m, nil
 		}
 		m.scrolling = true
