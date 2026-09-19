@@ -208,8 +208,9 @@ func TestKeyOfIdentifiesTheSandbox(t *testing.T) {
 	}
 }
 
-// The leader is declared so the config shape is stable for rollout step 4,
-// but nothing in step 3 dispatches it and it must not appear in help.
+// The leader is dispatched now, but it is deliberately absent from both help
+// views: it is a prefix, not a key of its own, and the leader footer names
+// it separately.
 func TestLeaderIsDeclaredButNotAdvertised(t *testing.T) {
 	k := NewKeyMap(nil)
 	if len(k.Leader.Keys()) == 0 {
@@ -217,13 +218,13 @@ func TestLeaderIsDeclaredButNotAdvertised(t *testing.T) {
 	}
 	for _, b := range k.ShortHelp() {
 		if reflect.DeepEqual(b.Keys(), k.Leader.Keys()) {
-			t.Error("the leader must not appear in short help until panes land")
+			t.Error("the leader is a prefix, not a key of its own, and must not appear in short help")
 		}
 	}
 	for _, col := range k.FullHelp() {
 		for _, b := range col {
 			if reflect.DeepEqual(b.Keys(), k.Leader.Keys()) {
-				t.Error("the leader must not appear in full help until panes land")
+				t.Error("the leader is a prefix, not a key of its own, and must not appear in full help")
 			}
 		}
 	}

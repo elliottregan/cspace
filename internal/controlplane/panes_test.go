@@ -149,13 +149,9 @@ func TestEnterOpensAClaudePaneAndSecondEnterFocusesIt(t *testing.T) {
 	if m.focus != focusMain {
 		t.Error("opening a pane did not move focus to the main area")
 	}
-	// Enter goes to the PaneHost now, never to the Actor: the step-3 attach
-	// dispatch is gone from this task on (Task 7 removes Actor.Attach
-	// itself), and a stray call here would mean the old path is still live
-	// underneath the new one.
-	if len(a.attach) != 0 {
-		t.Errorf("actor.Attach calls = %d, want 0 — Enter opens a pane now", len(a.attach))
-	}
+	// Enter goes to the PaneHost now, never to the Actor: Actor no longer
+	// declares Attach at all, so the old step-3 dispatch this once guarded
+	// against cannot exist any more, even by accident.
 
 	// A second Enter on the same row focuses the tab it already has rather
 	// than starting a second Claude against one workspace.

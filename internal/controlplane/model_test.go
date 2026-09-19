@@ -89,8 +89,8 @@ func (f *fakeData) calls() (snapshots, ports, agents int) {
 
 // recordingActor records what the dashboard asked for and reports success.
 type recordingActor struct {
-	attach, down, interrupt, browser, up []control.Row
-	sends                                []struct {
+	down, interrupt, browser, up []control.Row
+	sends                        []struct {
 		row  control.Row
 		text string
 	}
@@ -98,10 +98,6 @@ type recordingActor struct {
 
 func (a *recordingActor) result(label string) tea.Cmd {
 	return func() tea.Msg { return Result(label, nil) }
-}
-func (a *recordingActor) Attach(r control.Row) tea.Cmd {
-	a.attach = append(a.attach, r)
-	return a.result("attach")
 }
 func (a *recordingActor) Down(r control.Row) tea.Cmd {
 	a.down = append(a.down, r)
@@ -719,7 +715,7 @@ func TestActionWarningStaysInTheFooter(t *testing.T) {
 	}
 }
 
-// Only attach suspends the dashboard. A ten-minute `up` must not freeze
+// Only an open pane pauses the dashboard. A ten-minute `up` must not freeze
 // every row on the host while it runs — watching the booting sandbox is the
 // point of the poll loop.
 func TestPollingContinuesWhileALongActionRuns(t *testing.T) {
@@ -733,11 +729,11 @@ func TestPollingContinuesWhileALongActionRuns(t *testing.T) {
 		t.Error("the medium ticker should still poll while `up` is in flight")
 	}
 
-	m.pollingMedium, m.action = false, "attach"
+	m.pollingMedium, m.action = false, LabelOpenPane
 	mm, _ = m.Update(mediumTickMsg{})
 	m = mm.(Model)
 	if m.pollingMedium {
-		t.Error("attach owns the terminal: its poll must be skipped")
+		t.Error("a pane open holds the row it is opening against: its poll must be skipped")
 	}
 }
 
@@ -770,7 +766,7 @@ func TestViewGeometry(t *testing.T) {
 	if !strings.Contains(out, "5173") {
 		t.Error("the ports the slow poll found should be on screen")
 	}
-	if !strings.Contains(lines[len(lines)-1], "attach") {
+	if !strings.Contains(lines[len(lines)-1], "claude pane") {
 		t.Errorf("the last line should be the footer's short help; got %q", lines[len(lines)-1])
 	}
 	if !m.View().AltScreen {

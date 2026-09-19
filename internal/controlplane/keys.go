@@ -88,7 +88,7 @@ var defaultKeys = map[string][]string{
 var actionHelp = map[string][2]string{
 	ActionMoveUp:         {"↑/k", "up"},
 	ActionMoveDown:       {"↓/j", "down"},
-	ActionAttach:         {"enter", "attach"},
+	ActionAttach:         {"enter", "claude pane"},
 	ActionSend:           {"m", "send a turn"},
 	ActionInterrupt:      {"i", "interrupt"},
 	ActionTeardown:       {"d", "tear down"},

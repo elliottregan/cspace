@@ -7,10 +7,11 @@
 // injected — so this package never imports internal/cli, and internal/control
 // stays the one implementation of "what is running" and "do this to it".
 //
-// Rollout step 3 has no panes: the main area holds the detail band for the
-// selected row, and attach suspends the whole program into `container exec`
-// the way the v1 dashboard did. The tabs line, the leader binding and the
-// detail renderer's width parameter are the seams rollout step 4 grows into.
+// Rollout step 4 grew the seams step 3 left: the main area holds the focused
+// pane (internal/pane, opened through the PaneHost seam), the detail band
+// moved under the sidebar, and the leader binding dispatches. Attach no
+// longer suspends the program — a Claude session runs in a pane inside the
+// window.
 package controlplane
 
 import "github.com/elliottregan/cspace/internal/control"
