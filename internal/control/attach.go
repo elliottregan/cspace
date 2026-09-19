@@ -305,3 +305,257 @@ func lockAttach(ctx context.Context, dir string, wait time.Duration) (*os.File, 
 		time.Sleep(25 * time.Millisecond)
 	}
 }
+
+// SweepResult counts what one sweep did.
+//
+// Every record the sweep looked at is either kept or deleted, so
+// Kept+Deleted is the number of records it saw. Detached counts the subset
+// of the deleted whose tmux client had to be detached first — it is not a
+// separate outcome, and adding it to Deleted double-counts.
+//
+// Errors is the count of unfinished work, and it has two sources: a record
+// kept because something could not be asked rather than because the
+// evidence said to keep it, and a directory that could not be listed at all
+// (whose records were therefore never seen, and so appear in neither Kept
+// nor Deleted). Either way a sweep with Errors > 0 has work left that the
+// next sweep will have to redo, which is the only claim this field makes.
+type SweepResult struct {
+	Kept     int // records left in place
+	Detached int // clients tmux still listed, now detached (a subset of Deleted)
+	Deleted  int // record files removed
+	Errors   int // unfinished work: a record that could not be decided, or a directory that could not be read
+}
+
+// SweepClientRecords is step 4 of the design's detach protocol: for every
+// client record under ~/.cspace/controlplane/ whose host process is gone,
+// detach the client tmux still lists and delete the record.
+//
+// It is the backstop for the two ways a client outlives its owner: the
+// control plane or a `cspace attach` crashing before its own Close ran, and
+// a host terminal closing hard. Run it once at startup, before any pane
+// opens — a stale record is inert, but the tmux client it names is not, and
+// a sandbox accumulating attached clients is one whose next attach shares a
+// screen with a ghost.
+//
+// Every record is processed in one pass, including several in one sandbox's
+// directory: a crash strands one record per pane that was open, and reaping
+// only the first would need as many restarts as there were panes.
+//
+// **A record is deleted only on evidence, and every delete is its own
+// branch naming the evidence it has:**
+//
+//   - the file does not parse — it names no client, so it can only be litter;
+//   - the host pid is dead and an *authoritative* container list does not
+//     have this container — there is no tmux server left to talk to, so the
+//     record is deleted without an exec that would only fail slowly;
+//   - the host pid is dead and tmux answered that it does not list this tty
+//     — the client is already detached, so only the record is left;
+//   - the host pid is dead, tmux listed the tty, and the detach succeeded
+//     (or said the client was already gone).
+//
+// Everything else keeps the record: a live pid, a container list that could
+// not be believed (liveContainers' second return), a `list-clients` exec
+// that failed, and a detach that failed. The asymmetry is the whole design.
+// A record kept one sweep too long costs one exec next time; a record
+// deleted without evidence throws away the only handle any later sweep has
+// on a client that may still be attached, and nothing can reap it after
+// that. Absence of an answer is never an answer.
+func (c *Client) SweepClientRecords(ctx context.Context) (SweepResult, error) {
+	var res SweepResult
+	if c.home == "" {
+		return res, ErrNoHome
+	}
+	root := controlPlaneRoot(c.home)
+
+	projects, err := os.ReadDir(root)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return res, nil // nothing has ever attached
+		}
+		return res, fmt.Errorf("read %s: %w", root, err)
+	}
+
+	live, known := c.liveContainers(ctx)
+	for _, project := range projects {
+		if !project.IsDir() {
+			continue
+		}
+		sandboxes, err := os.ReadDir(filepath.Join(root, project.Name()))
+		if err != nil {
+			// Counted, not swallowed: whatever records are under here were
+			// not looked at, so this sweep left work behind — which is
+			// exactly what SweepResult.Errors means.
+			res.Errors++
+			continue
+		}
+		for _, sandbox := range sandboxes {
+			if !sandbox.IsDir() {
+				continue
+			}
+			dir := filepath.Join(root, project.Name(), sandbox.Name())
+			container := containerName(project.Name(), sandbox.Name())
+			// "Known gone" needs both halves: a list that can be believed
+			// *and* this container missing from it. A list that failed says
+			// nothing at all, and the sweep falls through to asking tmux —
+			// which for a container that really is gone costs one failed
+			// exec per session and keeps the records for the next sweep.
+			c.sweepDir(ctx, dir, container, known && !live[container], &res)
+		}
+	}
+	return res, nil
+}
+
+// sweepDir handles one sandbox's records. containerKnownGone is true only
+// when an authoritative container list did not mention this container; a
+// list that could not be taken arrives here as false, because "gone" and
+// "unanswered" authorise different things.
+func (c *Client) sweepDir(ctx context.Context, dir, container string, containerKnownGone bool, res *SweepResult) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		// Same rule as the per-project read above: a directory that could
+		// not be listed is work this sweep did not do.
+		res.Errors++
+		return
+	}
+
+	// One list-clients per session, not per record: a sandbox with a Claude
+	// pane and a shell pane has two sessions and any number of records.
+	//
+	// `answered` is the second half of the evidence. ListClients returns an
+	// error only when the exec itself failed — an unreachable container —
+	// and returns an empty list with a nil error when tmux answered that
+	// there is no such session or no server. Those two look identical in the
+	// tty set and mean opposite things, so the set alone can never be read.
+	type listing struct {
+		ttys     map[string]bool
+		answered bool
+	}
+	listed := map[string]listing{}
+	clientsFor := func(session string) listing {
+		if got, ok := listed[session]; ok {
+			return got
+		}
+		got := listing{ttys: map[string]bool{}}
+		ttys, err := c.tmux.ListClients(ctx, container, session)
+		if err == nil {
+			got.answered = true
+			for _, tty := range ttys {
+				got.ttys[tty] = true
+			}
+		}
+		listed[session] = got
+		return got
+	}
+
+	// remove is the only place a record file is unlinked, so every delete in
+	// this function is one of the four evidence branches below. A failed
+	// unlink leaves the record, which is the kept-plus-error outcome.
+	remove := func(path string) {
+		if os.Remove(path) == nil {
+			res.Deleted++
+			return
+		}
+		res.Kept++
+		res.Errors++
+	}
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".json") {
+			continue // attach.lock, and anything else that is not a record
+		}
+		path := filepath.Join(dir, name)
+
+		rec, err := readClientRecord(path)
+		if err != nil {
+			// Evidence: the file names no client, so there is nothing it
+			// could be a handle on. Litter.
+			remove(path)
+			continue
+		}
+		if c.processAlive(rec.PID) {
+			// Evidence: the process that owns this client is running. Its
+			// own Close detaches and deletes; the sweep must not race it.
+			res.Kept++
+			continue
+		}
+		if containerKnownGone {
+			// Evidence: the container is not there, so neither is the tmux
+			// server. Delete without an exec.
+			remove(path)
+			continue
+		}
+
+		clients := clientsFor(rec.Session)
+		if !clients.answered {
+			// No evidence either way: the exec failed, so this container is
+			// unreachable, not gone. This is the branch the whole shape of
+			// the function exists for — deleting here is what would wipe
+			// live clients' records on one bad `container ls` plus one
+			// failed exec.
+			res.Kept++
+			res.Errors++
+			continue
+		}
+		if !clients.ttys[rec.TTY] {
+			// Evidence: tmux answered and does not list this tty, so the
+			// client is already detached and only the record is left.
+			remove(path)
+			continue
+		}
+		if err := c.tmux.DetachClient(ctx, container, rec.TTY); err != nil && !errors.Is(err, ErrClientGone) {
+			// Leave the record: the next sweep is the retry, and deleting
+			// it would hide a client that is still attached. ErrClientGone
+			// is not a failure — it means the detach had already happened.
+			res.Kept++
+			res.Errors++
+			continue
+		}
+		// Evidence: the client was listed and is now detached.
+		res.Detached++
+		remove(path)
+	}
+}
+
+// readClientRecord parses one record file.
+func readClientRecord(path string) (ClientRecord, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ClientRecord{}, err
+	}
+	var rec ClientRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return ClientRecord{}, err
+	}
+	if rec.TTY == "" || rec.Session == "" || rec.PID <= 0 {
+		return ClientRecord{}, errors.New("control: incomplete client record")
+	}
+	return rec, nil
+}
+
+// liveContainers is the set of container names the substrate currently has,
+// running or not — and whether that set can be believed.
+//
+// The second return is the whole point of the function's shape. An empty map
+// and an unanswerable question look identical, and a caller that reads "not
+// in the map" as "the container is gone, delete the record without even
+// trying to detach" would, on a substrate with no ContainerCLI or one
+// transient `container ls` failure at `cspace tui` startup, delete every
+// client record under ~/.cspace/controlplane/ — including the ones naming
+// clients that really are attached, after which nothing can ever reap them,
+// because the record is the only handle the next sweep has. false means
+// "ask again next time".
+func (c *Client) liveContainers(ctx context.Context) (map[string]bool, bool) {
+	out := map[string]bool{}
+	if c.containers == nil {
+		return out, false
+	}
+	list, err := c.containers.List(ctx)
+	if err != nil {
+		return out, false
+	}
+	for _, ct := range list {
+		out[ct.Name] = true
+	}
+	return out, true
+}

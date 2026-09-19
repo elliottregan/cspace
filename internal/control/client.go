@@ -2,10 +2,12 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/elliottregan/cspace/internal/registry"
@@ -138,6 +140,11 @@ type Options struct {
 	// internal/cli. Nil is legal: read-only callers need no Host, and the
 	// actions that do fail with ErrNoHost.
 	Host Host
+
+	// ProcessAlive reports whether a host pid is still running. Injected so
+	// the sweep's tests do not depend on what happens to be running on the
+	// machine; nil asks the operating system.
+	ProcessAlive func(pid int) bool
 }
 
 // Client answers cspace's control queries and runs its control actions. It is
@@ -151,6 +158,8 @@ type Client struct {
 	home       string
 	now        func() time.Time
 	host       Host
+
+	processAlive func(pid int) bool
 
 	resolverInstalled func() bool
 
@@ -193,6 +202,10 @@ func New(o Options) *Client {
 			return err == nil
 		}
 	}
+	alive := o.ProcessAlive
+	if alive == nil {
+		alive = processAlive
+	}
 	return &Client{
 		containers:        o.Containers,
 		tmux:              tm,
@@ -201,6 +214,7 @@ func New(o Options) *Client {
 		home:              o.Home,
 		now:               now,
 		host:              o.Host,
+		processAlive:      alive,
 		resolverInstalled: resolver,
 		project:           o.Project,
 		projectRoot:       o.ProjectRoot,
@@ -219,3 +233,15 @@ func New(o Options) *Client {
 // rather than standing up a second one over its own `container` CLI. New
 // always builds one, so this is never nil.
 func (c *Client) Tmux() *Tmux { return c.tmux }
+
+// processAlive reports whether a pid is still running. Signal 0 performs the
+// error checking without sending anything, which is the portable way to ask;
+// EPERM means the process exists and belongs to someone else, which for this
+// purpose is still alive.
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}

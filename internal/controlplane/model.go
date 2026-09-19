@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"fmt"
 	"time"
 
 	"charm.land/bubbles/v2/help"
@@ -164,6 +165,7 @@ func New(data Data, actor Actor, host PaneHost, keys KeyMap) Model {
 // first real tick.
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
+		m.sweepCmd(),
 		func() tea.Msg { return fastTickMsg{} },
 		func() tea.Msg { return mediumTickMsg{} },
 		func() tea.Msg { return slowTickMsg{} },
@@ -293,6 +295,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.noticeGen++
 		gen := m.noticeGen
 		return m, tea.Tick(noticeLifetime, func(time.Time) tea.Msg { return noticeExpireMsg{gen: gen} })
+
+	case sweepMsg:
+		// Advisory: a swept record was already stale. Only a failure is
+		// worth a line, and only a quiet one. isErr, because this branch
+		// schedules no expiry — a notice that is neither timed nor
+		// dismissible sits in the footer for the rest of the session.
+		if msg.err != nil {
+			m.notice = notice{text: "attach sweep: " + msg.err.Error(), isErr: true}
+		} else if msg.n > 0 {
+			m.notice = notice{text: fmt.Sprintf("swept %d stale tmux client(s)", msg.n)}
+			m.noticeGen++
+			gen := m.noticeGen
+			return m, tea.Tick(noticeLifetime, func(time.Time) tea.Msg { return noticeExpireMsg{gen: gen} })
+		}
+		return m, nil
 
 	case noticeExpireMsg:
 		if msg.gen == m.noticeGen && !m.notice.isErr {
