@@ -185,7 +185,25 @@ type (
 		id  int
 		err error
 	}
+	// sweepMsg reports the startup sweep, which is advisory: what it found
+	// was already broken, and there is nothing for a person to do about it.
+	sweepMsg struct {
+		n   int
+		err error
+	}
 )
+
+// sweepCmd reaps the client records of attaches whose host process is gone.
+// It runs once, from Init, before any pane can open.
+func (m Model) sweepCmd() tea.Cmd {
+	host := m.host
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), openTimeout)
+		defer cancel()
+		n, err := host.Sweep(ctx)
+		return sweepMsg{n: n, err: err}
+	}
+}
 
 // openOrFocus focuses the tab for (kind, row) if it exists, and otherwise
 // starts opening one.
