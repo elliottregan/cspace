@@ -168,7 +168,7 @@ func newTestModelWithHost(d *fakeData, a Actor, h PaneHost) Model {
 	return mm.(Model)
 }
 
-func TestInitKicksAllThreeCadences(t *testing.T) {
+func TestInitKicksThreeCadencesAndTheStartupSweep(t *testing.T) {
 	m := New(&fakeData{snap: testSnapshot()}, &recordingActor{}, nopPaneHost{}, NewKeyMap(nil))
 	cmd := m.Init()
 	if cmd == nil {
@@ -179,8 +179,8 @@ func TestInitKicksAllThreeCadences(t *testing.T) {
 	if !ok {
 		t.Fatalf("Init should batch its ticks, got %T", cmd())
 	}
-	if len(batch) != 3 {
-		t.Errorf("Init started %d cadences, want 3", len(batch))
+	if len(batch) != 4 {
+		t.Errorf("Init started %d commands, want 4 — three cadences plus the sweep", len(batch))
 	}
 }
 
