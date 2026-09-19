@@ -57,15 +57,20 @@ import (
 //  5. Without kitty, a modified legacy key degrades to its plain byte (with
 //     an ESC prefix when Alt is held), which is what a terminal that cannot
 //     express the modifier does.
-//  6. Without kitty, a modified Ctrl+<letter> that x/vt does not already
+//  6. Without kitty, a modified Ctrl+<key> that x/vt does not already
 //     encode degrades to its control byte the same way. x/vt's own SendKey
-//     matches an exact struct literal per letter (Code plus Mod == ModCtrl,
+//     matches an exact struct literal per key (Code plus Mod == ModCtrl,
 //     with Alt already stripped and re-added as an ESC prefix), so it owns
-//     plain Ctrl+<letter> and Ctrl+Alt+<letter> — but the extra Shift bit on
-//     Ctrl+Shift+<letter> matches none of its cases and the key vanishes
+//     plain Ctrl+<key> and Ctrl+Alt+<key> for every letter and for
+//     `@ [ \ ] ^ _` and space — but the extra Shift or Meta bit on
+//     Ctrl+Shift+<key> matches none of its cases and the key vanishes
 //     entirely. This is exactly the gap rule 6 exists to close; it declines
 //     whenever x/vt's own combination (Ctrl, optionally with Alt) already
-//     covers the key.
+//     covers the key. A Ctrl-held printable that ctrlLetterByte does not
+//     recognize at all (Ctrl+/, Ctrl+-, a digit, …) has no legacy byte to
+//     degrade to in the first place — see legacyLosesModifier, which is
+//     what routes that case to rule 3 under encForced instead of leaving
+//     rule 6 to decline it silently.
 //  7. Without kitty, Shift+Alt+<printable> sends ESC followed by the
 //     produced text. x/vt strips the Alt bit and prepends ESC itself, but
 //     what is left — Mod == ModShift — matches none of its case literals, so
@@ -90,7 +95,8 @@ func encodeKey(k KeyEvent, enc keyEncoding) (string, bool) {
 
 	// Whether THIS key takes the CSI-u form. A negotiated kitty session
 	// gets the whole protocol; a forced one gets it only where the legacy
-	// bytes would arrive with a modifier missing.
+	// bytes would arrive with a modifier missing, or would not arrive at
+	// all.
 	kitty := enc == encKitty || (enc == encForced && legacyLosesModifier(k))
 
 	if k.Mod == 0 {
@@ -163,19 +169,22 @@ const (
 	// guessed at.
 	encKitty
 	// encForced: pane.ExtendedKeys, i.e. a child sitting behind a tmux that
-	// ate its negotiation. CSI-u only where legacy would drop a modifier;
-	// see legacyLosesModifier.
+	// ate its negotiation. CSI-u only where legacy would drop a modifier or
+	// send nothing at all; see legacyLosesModifier.
 	encForced
 )
 
 // legacyLosesModifier reports whether the legacy encoding above would send
-// this key with one of its modifiers missing from the bytes. It is the whole
-// definition of encForced — the CSI-u form is used here and nowhere else, so
-// every key a legacy terminal expresses faithfully keeps the bytes it has
-// always sent.
+// this key with one of its modifiers missing from the bytes, OR would send
+// nothing at all — the stronger form of the same failure, and the one
+// N1 (2026-09-18 review-fixwave.md) found this function silent about: a
+// Ctrl-held punctuation key that neither x/vt nor this package's rule 6 can
+// encode does not "lose a modifier", it loses the whole keystroke. It is
+// the whole definition of encForced — the CSI-u form is used here and
+// nowhere else, so every key a legacy terminal expresses faithfully keeps
+// the bytes it has always sent.
 //
-// Exactly two of encodeKey's rules lose a bit, and they are the two whose
-// own comments say "degrades":
+// Three of encodeKey's rules — or the absence of one — lose something:
 //
 //   - rule 5, the four keys whose classic form is a bare control byte
 //     (Enter, Tab, Backspace, Escape). There is nowhere in "\r" to put a
@@ -184,18 +193,23 @@ const (
 //     rule 5 prefixes ESC, which is how a terminal has expressed Alt since
 //     the VT100 and what readline and Claude Code both decode, so Alt
 //     alone loses nothing and Alt+Enter keeps "\x1b\r".
-//   - rule 6, Ctrl+<letter> with Shift or Meta also held: the control byte
-//     it degrades to is the same one plain Ctrl+<letter> sends, so the
-//     extra bit vanishes without trace.
+//   - rule 6, Ctrl+<key> with Shift or Meta also held, for a key
+//     ctrlLetterByte recognizes: the control byte it degrades to is the
+//     same one plain Ctrl+<key> sends, so the extra bit vanishes without
+//     trace.
+//   - no rule at all, for a Ctrl-held printable ctrlLetterByte does not
+//     recognize (Ctrl+/, Ctrl+-, a digit, …), with or without an extra
+//     bit. Neither x/vt's SendKey nor rule 6 has a byte for it, so legacy
+//     sends nothing whatsoever rather than a degraded form of something.
 //
 // Everything else is faithful and is left exactly as it was. Shift+Tab is
 // rule 2's ESC[Z — a distinct sequence that says "shift" out loud, and the
 // key the first cut of ExtendedKeys silently changed (it is the permission
 // -mode cycle in a Claude pane). Modified arrows, Home, End and the
 // function keys take rule 4's xterm forms, which carry the modifier as a
-// parameter. Plain Ctrl+<letter> and Alt+<ascii> are x/vt's own and both
-// express their modifier. A shifted printable is the text the terminal
-// already shifted.
+// parameter. Plain Ctrl+<key> and Alt+<ascii> are x/vt's own, for every key
+// ctrlLetterByte recognizes, and both express their modifier. A shifted
+// printable is the text the terminal already shifted.
 //
 // Callers must mask (rule 0) before asking: an inexpressible bit left on
 // would make this answer for a modifier nothing downstream can encode.
@@ -209,9 +223,20 @@ func legacyLosesModifier(k KeyEvent) bool {
 	if _, ok := legacyByte[k.Code]; ok {
 		return true // rule 5: the modifier has nowhere to go
 	}
-	if k.Mod&ModCtrl != 0 && k.Mod&^(ModCtrl|ModAlt) != 0 { // rule 6
-		_, ok := ctrlLetterByte(k.Code)
-		return ok
+	if k.Mod&ModCtrl != 0 {
+		_, known := ctrlLetterByte(k.Code)
+		if k.Mod&^(ModCtrl|ModAlt) != 0 { // rule 6: an extra bit the byte can't carry
+			if known {
+				return true // degrades to the byte plain Ctrl+<key> already sends
+			}
+			return isPrintable(k.Code) // no legacy byte exists for this key at all
+		}
+		if !known {
+			// Plain Ctrl(+Alt): x/vt owns every key ctrlLetterByte
+			// recognizes, faithfully — except this one, which neither of
+			// us has a byte for.
+			return isPrintable(k.Code)
+		}
 	}
 	return false
 }
@@ -280,13 +305,21 @@ func kittyCodepoint(code rune) (int, bool) {
 	return 0, false
 }
 
-// ctrlLetterByte is the classic Ctrl+<letter> control byte (the letter with
-// bits 5 and 6 cleared), the same formula a real terminal uses for
-// Ctrl+Shift+C — the case that matters here, since x/vt owns plain
-// Ctrl+<letter> itself (see rule 6) and this is only reached for the
-// combination it does not.
+// ctrlLetterByte is the classic control byte (the character with bits 5 and
+// 6 cleared) for the full set a real terminal derives one from: every
+// letter, and the six punctuation keys `@ [ \ ] ^ _` plus space — the
+// formula `code & 0x1f` already produces the right byte for all of them
+// (0x00, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x00). x/vt's own SendKey already
+// owns the plain (Ctrl, optionally Ctrl+Alt) form of everything here except
+// '@' — see x/vt's key.go — so this is reached for the combination it does
+// not: rule 6's Ctrl+Shift+<key> degrade, and legacyLosesModifier's "no
+// legacy byte at all" case for a Ctrl-held printable this set does not
+// recognize (Ctrl+/, Ctrl+-, a digit, …).
 func ctrlLetterByte(code rune) (byte, bool) {
-	if code >= 'a' && code <= 'z' || code >= 'A' && code <= 'Z' {
+	switch {
+	case code >= 'a' && code <= 'z', code >= 'A' && code <= 'Z':
+		return byte(code) & 0x1f, true
+	case code == '@', code == '[', code == '\\', code == ']', code == '^', code == '_', code == ' ':
 		return byte(code) & 0x1f, true
 	}
 	return 0, false
