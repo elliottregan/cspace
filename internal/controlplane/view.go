@@ -20,6 +20,7 @@ func (m Model) View() tea.View {
 	if m.width == 0 || m.height == 0 {
 		v := tea.NewView("starting cspace tui…")
 		v.AltScreen = true
+		v.MouseMode = tea.MouseModeCellMotion
 		return v
 	}
 
@@ -47,6 +48,17 @@ func (m Model) View() tea.View {
 		lipgloss.JoinHorizontal(lipgloss.Top, side, main),
 		m.footer()))
 	v.AltScreen = true
+
+	// Cell motion, not all motion: it reports clicks, releases, the wheel
+	// and drags, which is everything the design asks for, and it is the
+	// better supported of the two. In bubbletea v2 this is a property of
+	// the view — there is no program option and no command — so it is set
+	// on every frame, including the starting one above.
+	//
+	// The cost is the terminal's own selection: with mouse reporting on,
+	// a drag belongs to the program. Ghostty and friends still select on
+	// shift+drag, and the help overlay says so.
+	v.MouseMode = tea.MouseModeCellMotion
 
 	// The cursor belongs to the focused pane and only when the keyboard is
 	// pointed at it: a cursor blinking in a pane the keys do not reach is a
