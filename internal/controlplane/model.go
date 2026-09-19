@@ -431,15 +431,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			p:       msg.opened.Pane,
 			detach:  msg.opened.Detach,
 		})
-		cmds := []tea.Cmd{awaitOutput(m.tabs[m.focused])}
-		if msg.opened.Detach != nil {
-			// A tmux-backed pane only. The nudge exists for the frame tmux
-			// paints when it reattaches a session that already has a size,
-			// and a pane with no detacher — a host shell — is a process
-			// this dashboard just spawned at the right size, with nothing
-			// stale to paint over.
-			cmds = append(cmds, nudgeRepaint(m.tabs[m.focused].id))
-		}
+		wait := awaitOutput(m.tabs[m.focused])
 		if msg.opened.Warning != "" {
 			// Through ResultWarn rather than written into m.notice here:
 			// "it worked, now read this" already has a mechanism, and the
@@ -447,13 +439,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// sticky lives. A second copy of that rule is a second place to
 			// forget it.
 			warning := msg.opened.Warning
-			cmds = append(cmds, func() tea.Msg { return ResultWarn(LabelOpenPane, warning) })
+			return m, tea.Batch(wait, func() tea.Msg { return ResultWarn(LabelOpenPane, warning) })
 		}
-		return m, tea.Batch(cmds...)
-
-	case paneNudgeMsg:
-		m.nudgePane(msg.id)
-		return m, nil
+		return m, wait
 
 	case paneOutputMsg:
 		// The redraw is the Update itself; the rest is deciding whether to
