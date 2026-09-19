@@ -38,7 +38,11 @@ const (
 // Args is an argv in the exec convention — Args[0] is the program's name, not
 // its path — which is what control.AttachArgv already produces for a
 // container exec. Env is appended to this process's environment, so a later
-// entry shadows an inherited one. An empty Dir inherits the caller's.
+// entry shadows an inherited one. An empty Dir inherits the caller's. Path
+// need not be absolute: a bare name with no path separator (e.g. "sh") is
+// resolved against $PATH with exec.LookPath, the same as exec.Command does —
+// the *exec.Cmd this package builds internally is constructed by hand and
+// gets no such resolution for free.
 type Command struct {
 	Path string
 	Args []string
@@ -79,8 +83,20 @@ func HostShell() Command {
 // goroutine, and a wedged child must cost its own input, not the window.
 type Pane struct {
 	emu  Emulator
-	cmd  *exec.Cmd
+	cmd  endable
 	ptmx *os.File
+
+	// ptmxMu guards Resize's ioctl against ptmx.Close(). It exists only for
+	// that pair: pty.Setsize reaches the raw descriptor through
+	// (*os.File).Fd(), which — unlike Read and Write — bypasses the
+	// reference-counted synchronization os.File normally uses to protect a
+	// syscall from a concurrent Close, so the two race on the *os.File's own
+	// bookkeeping (caught by `make test-race` once Close could run
+	// concurrently with Resize, which is exactly the interleaving the
+	// engine exists for). It does NOT guard Read or Write, which stay
+	// lock-free on purpose — see Close's doc for why a lock there would
+	// reintroduce the deadlock this package exists to avoid.
+	ptmxMu sync.RWMutex
 
 	writes chan []byte
 	dirty  chan struct{}
@@ -102,25 +118,74 @@ type Pane struct {
 	closeErr  error
 }
 
+// endable is what the teardown handshake needs from the running child:
+// enough to learn its pid and reap it. *exec.Cmd satisfies it through
+// cmdHandle below; a test substitutes one whose Wait never returns to
+// exercise Close honouring its context against a child that has gone into
+// an uninterruptible wait — a documented Apple Container failure mode that
+// cannot be reproduced with a real process, because SIGKILL cannot be
+// trapped.
+type endable interface {
+	Pid() int // 0 if the process never started
+	Wait() error
+}
+
+// cmdHandle adapts *exec.Cmd to endable.
+type cmdHandle struct{ *exec.Cmd }
+
+func (c cmdHandle) Pid() int {
+	if c.Process == nil {
+		return 0
+	}
+	return c.Process.Pid
+}
+
 // Open starts cmd on a new pseudo-terminal of the given size and begins
 // interpreting its output.
 func Open(cmd Command, cols, rows int) (*Pane, error) {
+	if err := validateOpen(cmd, cols, rows); err != nil {
+		return nil, err
+	}
+	// Validate before building the emulator: x/vt's constructor allocates a
+	// fixed 4 MiB parser buffer eagerly, and a bad Command or size should
+	// fail before paying for it.
 	return open(cmd, cols, rows, newVTEmulator(cols, rows))
+}
+
+// validateOpen is Open's precondition check. open re-runs it for a caller
+// that builds its own emulator and skips Open.
+func validateOpen(cmd Command, cols, rows int) error {
+	if cmd.Path == "" || len(cmd.Args) == 0 {
+		return errors.New("pane: empty command")
+	}
+	if cols <= 0 || rows <= 0 {
+		return fmt.Errorf("pane: bad size %dx%d", cols, rows)
+	}
+	return nil
 }
 
 // open is Open with the emulator injected, so a replacement implementation
 // can be driven through the whole engine by a test.
 func open(cmd Command, cols, rows int, emu Emulator) (*Pane, error) {
-	if cmd.Path == "" || len(cmd.Args) == 0 {
+	if err := validateOpen(cmd, cols, rows); err != nil {
 		_ = emu.Close()
-		return nil, errors.New("pane: empty command")
-	}
-	if cols <= 0 || rows <= 0 {
-		_ = emu.Close()
-		return nil, fmt.Errorf("pane: bad size %dx%d", cols, rows)
+		return nil, err
 	}
 
-	child := &exec.Cmd{Path: cmd.Path, Args: cmd.Args, Dir: cmd.Dir}
+	path := cmd.Path
+	if !strings.ContainsRune(path, os.PathSeparator) {
+		// Built by hand below rather than through exec.Command, so it gets
+		// none of the implicit $PATH resolution a bare name like "sh" would
+		// otherwise get.
+		resolved, err := exec.LookPath(path)
+		if err != nil {
+			_ = emu.Close()
+			return nil, fmt.Errorf("pane: look up %s: %w", path, err)
+		}
+		path = resolved
+	}
+
+	child := &exec.Cmd{Path: path, Args: cmd.Args, Dir: cmd.Dir}
 	child.Env = append(os.Environ(), cmd.Env...)
 
 	ptmx, err := pty.StartWithSize(child, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
@@ -131,7 +196,7 @@ func open(cmd Command, cols, rows int, emu Emulator) (*Pane, error) {
 
 	p := &Pane{
 		emu:        emu,
-		cmd:        child,
+		cmd:        cmdHandle{child},
 		ptmx:       ptmx,
 		writes:     make(chan []byte, writeQueue),
 		dirty:      make(chan struct{}, 1),
@@ -163,16 +228,22 @@ func (p *Pane) Paste(text string) { p.emu.Paste(text) }
 // Resize retells both halves: the emulator, so Render reflows, and the pty,
 // so the child gets SIGWINCH and re-queries its size. The emulator goes
 // first deliberately — by the time the child reacts to the signal, the
-// screen it is about to repaint is already the new shape.
+// screen it is about to repaint is already the new shape. It signals Dirty
+// itself: the reflow changes what Render returns even before the child
+// paints anything new.
 //
 // The error is the ioctl's. A pane whose pty has gone returns one here; the
 // caller fans a resize out over every pane and must not let one failure stop
-// the rest.
+// the rest. ptmxMu's read lock is what keeps that ioctl from racing a
+// concurrent Close; see ptmxMu's own doc.
 func (p *Pane) Resize(cols, rows int) error {
 	if cols <= 0 || rows <= 0 {
 		return fmt.Errorf("pane: bad size %dx%d", cols, rows)
 	}
 	p.emu.Resize(cols, rows)
+	p.markDirty()
+	p.ptmxMu.RLock()
+	defer p.ptmxMu.RUnlock()
 	return pty.Setsize(p.ptmx, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
 }
 
@@ -225,8 +296,10 @@ func (p *Pane) ScrollbackView(offset, rows int) string {
 }
 
 // Exited reports the child's exit once the waiter has seen it. ok is false
-// while the child is still running. err is non-nil only when the wait itself
-// failed, never for an ordinary non-zero exit — that is what code is for.
+// while the child is still running. err is non-nil when the wait itself
+// failed or the child died by signal (code is -1 for the latter, naming the
+// signal), but never for an ordinary non-zero exit — that is what code is
+// for.
 func (p *Pane) Exited() (code int, err error, ok bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -237,14 +310,34 @@ func (p *Pane) Exited() (code int, err error, ok bool) {
 // not reading. Non-zero means a key or a paste was lost.
 func (p *Pane) Dropped() uint64 { return p.dropped.Load() }
 
-// Close runs the teardown handshake and joins every goroutine. It is
-// idempotent and safe to call on a pane whose child has already exited.
+// Close runs the teardown handshake and joins every goroutine, honouring
+// ctx: a join that does not complete before ctx is done makes Close return
+// an error naming the goroutine that would not join, and leaves the rest
+// parked exactly where they were — in the pty, in the emulator's own pipe —
+// until the child eventually dies on its own; nothing here forcibly unparks
+// them beyond what endChild and killGroup already tried. Close is
+// idempotent: the first call's result, success or error, is what every
+// later call returns too, via sync.Once — a Close that gave up is not
+// retried by calling it again.
 //
-// The order is: stop accepting input, end the child's process group and reap
-// it, close the pty — which both returns a writer parked on a child that
-// stopped reading AND gives the output pump its EOF — then close the
-// emulator, which is what returns the drain's blocked Read, and join the
-// drain.
+// The order is: stop accepting input, end the child's process group and
+// reap it, kill whatever is left of that group, close the pty, then close
+// the emulator and join the drain.
+//
+// What actually returns a writer parked in ptmx.Write, or the output pump
+// parked in ptmx.Read, is the CHILD DYING — reaped just above — not the pty
+// close that follows it. creack/pty's master descriptor is a plain blocking
+// fd outside Go's runtime poller, so ptmx.Close() only marks it closed: a
+// probe against this host found a goroutine parked in Write and one parked
+// in Read still blocked 4s after Close returned, and both released the
+// instant the child was killed. ptmx.Close() here is cleanup of the master
+// descriptor, not the unblocking mechanism — but it still has to run, and
+// be joined, before the emulator's Close, so that no pump call into
+// emu.Write is still in flight when that runs. On Linux, which has no
+// tty-revoke equivalent to macOS's, a setsid grandchild that ignored SIGHUP
+// and still holds the pty's slave side open could leave the pump parked
+// even after the direct child is reaped — which is what killGroup's second,
+// unconditional SIGKILL to the group is for.
 //
 // The design asks for the drain to be stopped BEFORE the emulator is closed,
 // so that no Read is in flight when Close runs. That is not reachable from
@@ -263,31 +356,58 @@ func (p *Pane) shutdown(ctx context.Context) error {
 	close(p.stopWriter)
 
 	p.endChild(ctx)
-	<-p.waitDone
+	if err := p.join(ctx, p.waitDone, "waiter"); err != nil {
+		return err
+	}
 
-	// The pty closes BEFORE the writer is joined, and that order is
-	// load-bearing rather than cosmetic. writer() only observes stopWriter
-	// between two writes; once it is parked inside ptmx.Write on a child
-	// that has stopped reading — the exact case this package exists to
-	// survive — nothing returns it but the child dying or this Close.
-	// Joining first would hang the whole teardown on a wedged pane, and in
-	// the control plane that is the UI goroutine.
+	// The direct child is reaped, but a group member that ignored the
+	// SIGHUP endChild sent it — bash gives a backgrounded job SIG_IGN for
+	// SIGHUP, for instance — is still alive and could still be holding the
+	// pty's slave side open. SIGKILL cannot be ignored, so this closes that
+	// gap.
+	p.killGroup()
+
+	p.ptmxMu.Lock()
 	_ = p.ptmx.Close()
-	<-p.writerDone
-	<-p.pumpDone
+	p.ptmxMu.Unlock()
+	if err := p.join(ctx, p.writerDone, "writer"); err != nil {
+		return err
+	}
+	if err := p.join(ctx, p.pumpDone, "pump"); err != nil {
+		return err
+	}
 
-	err := p.emu.Close()
-	<-p.drainDone
-	return err
+	emuErr := p.emu.Close()
+	if err := p.join(ctx, p.drainDone, "drain"); err != nil {
+		return err
+	}
+	return emuErr
+}
+
+// join waits for one teardown goroutine to finish, or for ctx to expire
+// first — which is what keeps a wedged, unkillable child (a documented
+// Apple Container failure mode: a container exec stuck in an
+// uninterruptible wait) from freezing the caller, often the UI goroutine,
+// forever.
+func (p *Pane) join(ctx context.Context, done <-chan struct{}, who string) error {
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("pane: close: %s did not stop: %w", who, ctx.Err())
+	}
 }
 
 // endChild hangs the child up and then insists, and it signals the process
 // GROUP rather than the process: pty.StartWithSize starts the child with
 // Setsid, so it leads its own session and group and its own children — a
-// shell's jobs, a container exec's helpers — are in that group. Signalling
-// the process alone is what leaves them behind.
+// shell's jobs, a container exec's helpers — are in that group. SIGHUP can
+// be ignored, though — bash gives a backgrounded job SIG_IGN for it, for
+// instance — so this alone does not guarantee every group member dies;
+// shutdown's killGroup, run once the direct child is confirmed reaped, is
+// what closes that gap with a signal nothing can ignore.
 func (p *Pane) endChild(ctx context.Context) {
-	if p.cmd.Process == nil {
+	if p.cmd.Pid() == 0 {
 		return
 	}
 	// Already reaped: cmd.Wait has returned, so the kernel is free to hand
@@ -299,7 +419,7 @@ func (p *Pane) endChild(ctx context.Context) {
 		return
 	default:
 	}
-	pgid := p.cmd.Process.Pid // Setsid makes the child its own group leader
+	pgid := p.cmd.Pid() // Setsid makes the child its own group leader
 	_ = syscall.Kill(-pgid, syscall.SIGHUP)
 	select {
 	case <-p.waitDone:
@@ -308,6 +428,18 @@ func (p *Pane) endChild(ctx context.Context) {
 	case <-time.After(killGrace):
 	}
 	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+}
+
+// killGroup sends one final, unconditional SIGKILL to the child's process
+// group. It runs once the direct child is confirmed reaped, and it is what
+// actually guarantees no group member outlives Close: endChild's SIGHUP can
+// be ignored, but SIGKILL cannot. ESRCH — nothing left to signal — is the
+// expected outcome once the reap really did leave the group empty, and is
+// ignored the same way every other signal-delivery failure in this file is.
+func (p *Pane) killGroup() {
+	if pgid := p.cmd.Pid(); pgid != 0 {
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	}
 }
 
 // writer is the only goroutine that writes the pty. It stops on the teardown
@@ -368,13 +500,22 @@ func (p *Pane) pump() {
 // close the emulator: an exited pane keeps its last screen until the control
 // plane closes it, which is what lets the UI show the exit reason over the
 // frame the child left behind.
+//
+// A signal death (endChild's own SIGHUP/SIGKILL, or anything else) is not an
+// ordinary exit: exec.ExitError.ExitCode() already reports -1 for one, but
+// folding it into the nil-error, code-only shape Exited() otherwise reports
+// would lose which signal it was. WaitStatus.Signaled()/Signal() recover it.
 func (p *Pane) waiter() {
 	defer close(p.waitDone)
 	err := p.cmd.Wait()
 	code := 0
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
-		code, err = exitErr.ExitCode(), nil
+		if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			code, err = -1, fmt.Errorf("pane: child killed by %v", ws.Signal())
+		} else {
+			code, err = exitErr.ExitCode(), nil
+		}
 	}
 	p.mu.Lock()
 	p.exited, p.exitCode, p.exitErr = true, code, err
