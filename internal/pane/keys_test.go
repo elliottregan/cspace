@@ -66,6 +66,10 @@ func TestEncodeKey(t *testing.T) {
 		// the CSI-u codepoint for a Ctrl+Shift+letter combo is the lowercase
 		// rune, not the shifted one — no case-folding needed here.
 		{"kitty ctrl+shift+a uses the base codepoint", KeyEvent{Code: 'a', Mod: ModCtrl | ModShift}, true, "\x1b[97;6u", true},
+		// Shift+Alt+<printable> is escape-coded under kitty like any other
+		// key with something besides Shift held — rule 3 already covers it,
+		// this just pins the modifier arithmetic (1 + shift(1) + alt(2) = 4).
+		{"kitty shift+alt+a is CSI-u", KeyEvent{Code: 'a', Mod: ModShift | ModAlt, Text: "A"}, true, "\x1b[97;4u", true},
 		// Kitty still leaves the unmodified keys alone: a real terminal only
 		// switches to CSI-u once there is something to disambiguate.
 		{"kitty plain enter", KeyEvent{Code: KeyEnter}, true, "", false},
@@ -76,6 +80,15 @@ func TestEncodeKey(t *testing.T) {
 		{"shift+backspace degrades", KeyEvent{Code: KeyBackspace, Mod: ModShift}, false, "\x7f", true},
 		{"alt+enter keeps its esc", KeyEvent{Code: KeyEnter, Mod: ModAlt}, false, "\x1b\r", true},
 		{"ctrl+shift+enter degrades", KeyEvent{Code: KeyEnter, Mod: ModCtrl | ModShift}, false, "\r", true},
+
+		// x/vt strips Alt, prepends ESC, and is then left matching Mod ==
+		// ModShift against case literals that all require Mod == 0 or
+		// ModCtrl — none match, so its default branch appends nothing and
+		// the child receives a bare ESC with the letter lost. A real
+		// terminal sends ESC followed by the text the shift already
+		// produced, so the overlay owns exactly that.
+		{"shift+alt+a keeps its letter", KeyEvent{Code: 'a', Mod: ModShift | ModAlt, Text: "A"}, false, "\x1bA", true},
+		{"shift+alt+1 keeps its symbol", KeyEvent{Code: '1', Mod: ModShift | ModAlt, Text: "!"}, false, "\x1b!", true},
 
 		// x/vt's own SendKey matches an exact struct literal per letter
 		// (Code + Mod == ModCtrl, Alt already stripped) — so it owns plain
