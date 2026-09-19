@@ -53,14 +53,27 @@ func TestPanesUnderConcurrentUse(t *testing.T) {
 				time.Sleep(time.Millisecond)
 			}
 		}()
+		wg.Add(1)
+		go func() { // Close arriving mid-flight, from its own goroutine (as
+			// in the control plane, where it runs on the UI goroutine while
+			// input/resize/render keep coming from elsewhere) is the
+			// interleaving the handshake exists for. Closing only after
+			// every other goroutine has already stopped, as this used to,
+			// never let -race see Close race a live SendKey/Render/Resize
+			// at all.
+			defer wg.Done()
+			time.Sleep(20 * time.Millisecond)
+			if err := p.Close(ctx); err != nil {
+				t.Errorf("Close: %v", err)
+			}
+		}()
 	}
 	wg.Wait()
 
-	for _, p := range ps {
-		if err := p.Close(ctx); err != nil {
-			t.Errorf("Close: %v", err)
-		}
-	}
+	// Every input/resize/render call above ran, and kept running, against a
+	// pane that Close was concurrently tearing down or had already torn
+	// down; none of them may block or panic doing it.
+
 	// One last render after teardown must not panic and must still show the
 	// child's last screen: an exited pane keeps what it painted.
 	if got := stripANSI(ps[0].Render()); !strings.Contains(got, "tick") {
