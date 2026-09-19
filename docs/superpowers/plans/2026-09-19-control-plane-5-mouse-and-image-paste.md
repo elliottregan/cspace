@@ -27,7 +27,7 @@
   - `tea.View` also has an `OnMouse func(MouseMsg) Cmd` hook the renderer calls (`tea.go:126`, `tea.go:808`). **This plan does not use it:** it is an extra path in addition to `Update`, its result is dispatched from the renderer's goroutine, and hit-testing belongs in `Update` against stored geometry, which is what makes it testable.
 - **Mouse messages must be consumed explicitly.** `Model.Update` ends with a fall-through that hands any unmatched message to whichever widget owns the keyboard (`m.input`, `m.confirm`, `m.picker`). Without arms of their own, mouse messages would be fed to a `textinput` or a `huh.Form`. Every one of the four types gets an arm.
 - **Timestamp format is `20060102-150405.000`** (Go reference layout), and the `paste/` directory is created on demand with mode **0700**.
-- **`make check` must be green after every task.** `make test-race` (`go test -race -count=1 ./internal/pane/... ./internal/controlplane/... ./internal/control/...`) must be clean after **Tasks 2, 3 and 5** — the three that add a new reader or writer of a live `*pane.Pane` from the UI goroutine. Each of those tasks' final step runs it.
+- **`make check` must be green after every task.** The pasteboard tests Task 4 adds are gated behind `CSPACE_CLIPBOARD_TESTS=1` and skip without it: `make check` runs `go test ./...` and `scripts/release.sh` runs `make check`, so ungated they would overwrite the developer's clipboard — and an image on it cannot be put back — on every check and every release. `make test-race` (`go test -race -count=1 ./internal/pane/... ./internal/controlplane/... ./internal/control/...`) must be clean after **Tasks 2, 3 and 5** — the three that add a new reader or writer of a live `*pane.Pane` from the UI goroutine. Each of those tasks' final step runs it.
 - **`cspace tui` must start, render and keep every step-4 capability working after every task.** Nothing in this plan is allowed a "deliberately down in between" window: the geometry lands inert (Task 1), then each input path is switched on behind it.
 - **Preserve these known behaviours; do not "fix" them:**
   - `.cspace/context/findings/2026-07-20-tui-down-reports-benign-teardown-warnings-as-failure.md` — `control.Down` reports any `warning:` text as failure. Unchanged.
@@ -74,6 +74,7 @@ Modified:
 | `internal/controlplane/model.go` | `geom` field, `Update`→`update` plus the refreshing wrapper (1); the four mouse arms (2, 3); the `clip` field and `New`'s parameter (4); the `pasteMsg` arm (5) | 1, 2, 3, 4, 5 |
 | `internal/controlplane/view.go` | `v.MouseMode` on both return paths (2); `helpView`'s mouse and selection note (6) | 2, 6 |
 | `internal/controlplane/leader.go` | `moveTab` in terms of `focusTab` and the shared `noScrollbackNotice` (3); the `PasteImage` arm dispatches (5) | 3, 5 |
+| `internal/controlplane/leader_test.go` | `TestLeaderDispatch`'s `v` case: the binding pastes now, so the placeholder assertion is replaced | 5 |
 | `internal/controlplane/model_test.go`, `detach_test.go`, and the `geometry_test.go`/`mouse_test.go` cases Tasks 1–2 add | the `New` call sites gain the clipboard | 4 |
 | `internal/cli/cmd_tui.go` | `newClipboard(home)` passed to `controlplane.New` | 4 |
 | `docs/superpowers/specs/2026-09-17-control-plane-design.md` | the Input section's Mouse and Paste paragraphs; Rollout step 5 struck through | 6 |
@@ -92,7 +93,7 @@ Hit testing needs to know which screen cell holds which sidebar row, which tab a
 - Test: `internal/controlplane/geometry_test.go`
 
 **Interfaces:**
-- Consumes: `Model.width`, `Model.height`, `Model.rows`, `Model.live`, `Model.ports`, `Model.selected`, `Model.tabs`, `Model.focused`, `Model.focus`, `Model.paneSize()`, `mainWidthFor(int) int`, `sidebarWidth`/`sidebarInner`, `sidebarLines`, `sidebarWindow`, `fit`, `tabsElided`, `styleTabActive`/`styleTabFocused`/`styleTabIdle` — all existing.
+- Consumes: `Model.width`, `Model.height`, `Model.rows`, `Model.live`, `Model.ports`, `Model.selected`, `Model.tabs`, `Model.focused`, `Model.focus`, `mainWidthFor(int) int`, `sidebarWidth`/`sidebarInner`, `sidebarLines`, `sidebarWindow`, `fit`, `tabsElided`, `styleTabActive`/`styleTabFocused`/`styleTabIdle` — all existing.
 - Produces:
   - `type rect struct{ x, y, w, h int }` with `func (r rect) contains(x, y int) bool`
   - `type tabSpan struct{ index, from, to int }` — `index` into `Model.tabs`; `[from, to)` absolute screen columns
@@ -114,7 +115,42 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/elliottregan/cspace/internal/control"
 )
+
+// rect is the hit test every mouse message ends in, and its edges are a
+// half-open interval — so the inputs that matter are the ones an interior
+// point never reaches. A table, because they are a list and not a story.
+func TestRectContains(t *testing.T) {
+	r := rect{x: 5, y: 2, w: 3, h: 4} // columns 5..7, rows 2..5
+	for _, tc := range []struct {
+		name string
+		x, y int
+		want bool
+	}{
+		{"the origin cell", 5, 2, true},
+		{"the last included cell", 7, 5, true},
+		{"one column left of it", 4, 3, false},
+		{"one column past the right edge", 8, 3, false},
+		{"one row above it", 6, 1, false},
+		{"one row past the bottom edge", 6, 6, false},
+		{"a negative column", -1, 3, false},
+		{"a negative row", 6, -1, false},
+	} {
+		if got := r.contains(tc.x, tc.y); got != tc.want {
+			t.Errorf("%s: rect%+v.contains(%d, %d) = %v, want %v", tc.name, r, tc.x, tc.y, got, tc.want)
+		}
+	}
+
+	// A rect with no width or no height is nowhere at all, whatever its
+	// origin says — which is what every region of an unsized model is.
+	for _, empty := range []rect{{x: 5, y: 2, w: 0, h: 4}, {x: 5, y: 2, w: 3, h: 0}, {}} {
+		if empty.contains(empty.x, empty.y) {
+			t.Errorf("rect%+v contains its own origin", empty)
+		}
+	}
+}
 
 // The geometry has to agree with what View actually paints, and the only
 // honest way to check that is to render the same thing and look at where
@@ -157,6 +193,14 @@ func TestGeometryListRowsMatchTheRenderedSidebar(t *testing.T) {
 		}
 		if idx >= len(m.rows) {
 			t.Fatalf("listRows[%d] = %d, out of range for %d rows", y, idx, len(m.rows))
+		}
+		if m.rows[idx].Kind == control.RowSidecar {
+			// Correlate prefixes a sidecar with its sandbox's name and
+			// sidebarRow strips it straight back off ("mercury-convex"
+			// draws as "   ├ convex"), so a sidecar's line does not hold
+			// its own Name. The mapping is still checked by the rows
+			// either side of it.
+			continue
 		}
 		name := m.rows[idx].Name
 		if !strings.Contains(lines[y], truncatedName(name)) {
@@ -462,8 +506,8 @@ package controlplane
 //
 // The arithmetic is not repeated here: sidebarSplit and planTabs are the
 // same functions View draws from, and everything else is read off
-// mainWidthFor and paneSize, which View also uses. What this file adds is
-// the *inverse* — cell to meaning — which rendering alone cannot give.
+// mainWidthFor and the same bodyHeight View computes. What this file adds
+// is the *inverse* — cell to meaning — which rendering alone cannot give.
 
 // rect is a half-open region of the screen in terminal cells: columns
 // [x, x+w) and rows [y, y+h). A zero width or height is nowhere at all,
@@ -512,9 +556,13 @@ type geometry struct {
 
 // computeGeometry measures the layout View is about to draw.
 //
-// Every number here has exactly one other home: bodyHeight and mainWidth
-// are View's, sidebarSplit is sidebarColumn's, sidebarWindow is
-// renderSidebar's, planTabs is tabsRow's. Nothing is re-derived.
+// Every number here has exactly one other home: sidebarSplit is
+// sidebarColumn's, sidebarWindow is renderSidebar's, planTabs is tabsRow's.
+// bodyHeight and mainWidth are View's own arithmetic, repeated here because
+// View has a value receiver and can store nothing. main.h is the body less
+// the tabs row — NOT paneSize's floored row count, which View uses for the
+// emulator itself — so on a window too small for a pane the rect is empty
+// and every hit test against it is false.
 func (m Model) computeGeometry() geometry {
 	if m.width <= 0 || m.height <= 0 {
 		return geometry{}
@@ -588,8 +636,9 @@ to
 // The refresh is here rather than at each of update's thirty-odd return
 // points, and rather than in View, which has a value receiver and can store
 // nothing. It runs on every message, including a pane's ~30/s redraw
-// signal: it walks the row list and the tabs, which is a rounding error
-// beside the full render that same signal triggers.
+// signal: it re-renders the row list and the tabs — the same work View
+// does for those two regions, and small beside the emulator render that
+// same signal triggers.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.update(msg)
 	mm, ok := next.(Model)
@@ -641,7 +690,7 @@ The mouse is switched on and clicks are routed. Nothing is forwarded to the chil
 - Produces:
   - `func (m Model) handleClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd)`
   - `func (m Model) selectListRow(line int) (tea.Model, tea.Cmd)`
-  - `func (m Model) focusTab(i int) Model` — Task 3's `moveTab` and the click both go through it
+  - `func (m Model) focusTab(i int) Model` — this task's `moveTab` (Step 6) and the click both go through it
 
 - [ ] **Step 1: Write the failing test**
 
@@ -779,6 +828,27 @@ func TestClickOnATabFocusesIt(t *testing.T) {
 	}
 	if got.focus != focusMain {
 		t.Error("clicking a tab did not point the keyboard at the main area")
+	}
+
+	// The span is half-open, so both of its own edges belong to it and the
+	// column after it belongs to the next tab. An interior click cannot
+	// tell those apart, and lighting the tab next door is exactly what two
+	// copies of the elision arithmetic would produce.
+	if edge := click(t, m, first.from, m.geom.tabsY); edge.focused != 0 {
+		t.Errorf("focused = %d after a click on the span's first column, want 0", edge.focused)
+	}
+	if edge := click(t, m, first.to-1, m.geom.tabsY); edge.focused != 0 {
+		t.Errorf("focused = %d after a click on the span's last column, want 0", edge.focused)
+	}
+	if len(got.geom.tabs) != 2 {
+		t.Fatalf("tab spans = %+v, want one per tab", got.geom.tabs)
+	}
+	second := got.geom.tabs[1]
+	if got.geom.tabs[0].to != second.from {
+		t.Fatalf("the spans are not adjacent: %+v", got.geom.tabs)
+	}
+	if edge := click(t, got, second.from, got.geom.tabsY); edge.focused != 1 {
+		t.Errorf("focused = %d after a click on the second span's first column, want 1", edge.focused)
 	}
 }
 
@@ -1208,7 +1278,13 @@ func TestWheelOverATmuxBackedPaneRefusesLikeLeaderBracket(t *testing.T) {
 	}
 }
 
-func TestWheelOnAHostShellEntersScrollModeAndScrolls(t *testing.T) {
+// A pane whose child prints to the NORMAL screen, which the fake host's
+// `history` child does and a real tmux-backed pane never does. openOne
+// presses enter, so this is a Claude-kind tab — but the fake runs /bin/sh
+// for every kind, so it stands in for a host shell. The distinction the
+// refusal test above turns on is tmux and the alternate screen, not the
+// tab's kind.
+func TestWheelOnAPaneWithScrollbackEntersScrollModeAndScrolls(t *testing.T) {
 	h := &fakeHost{t: t, history: true}
 	m := openOne(t, h)
 	waitForHistory(t, m.tabs[0], 2*wheelLines)
@@ -1238,6 +1314,23 @@ func TestWheelDownOnALivePaneDoesNotArmScrollMode(t *testing.T) {
 	got := wheel(t, m, m.geom.main.x+4, m.geom.main.y+4, false)
 	if got.scrolling {
 		t.Error("wheeling down from the live screen armed scroll mode; there is nothing below it")
+	}
+}
+
+func TestWheelOverThePaneWithTheSidebarFocusedDoesNotArmScrollMode(t *testing.T) {
+	h := &fakeHost{t: t, history: true}
+	m := openOne(t, h)
+	waitForHistory(t, m.tabs[0], 2*wheelLines)
+	m.focus = focusSidebar
+
+	got := wheel(t, m, m.geom.main.x+4, m.geom.main.y+4, true)
+	if got.scrolling {
+		t.Error("the wheel armed scroll mode while the keyboard was on the sidebar: " +
+			"only handlePaneKey leaves that mode, and the sidebar's keys never reach it, " +
+			"so the pane would sit under a banner promising that any key returns to live")
+	}
+	if got.focus != focusSidebar {
+		t.Error("the wheel moved the focus")
 	}
 }
 
@@ -1460,6 +1553,15 @@ func (m Model) wheelMain(dir int) (tea.Model, tea.Cmd) {
 		// arming scroll mode to sit at offset 0 would swallow the next key.
 		return m, nil
 	}
+	if m.focus != focusMain {
+		// Scroll mode is escapable only through handlePaneKey, which the
+		// keyboard reaches only while the main area has focus. Arming it
+		// from here would leave the pane under a banner that says any key
+		// returns to live while every key went to the sidebar instead,
+		// with leader g the only way out. A wheel is a look: it does not
+		// take the focus, so it does not arm a mode that needs it either.
+		return m, nil
+	}
 	// Exactly what leader [ does, plus the notch that asked for it.
 	m.scrolling = true
 	m.scroll = clampScroll(wheelLines, t.p.ScrollbackLen())
@@ -1549,6 +1651,14 @@ import (
 // any host, and cspace itself is macOS-only for other reasons.
 func requireOsascript(t *testing.T) {
 	t.Helper()
+	if os.Getenv("CSPACE_CLIPBOARD_TESTS") == "" {
+		// Opt-in, because these overwrite the REAL pasteboard and
+		// keepClipboard can only put text back. `make check` runs
+		// `go test ./...`, and `scripts/release.sh` runs `make check` —
+		// so without this gate, cutting a release destroys whatever
+		// image the developer had on their clipboard.
+		t.Skip("set CSPACE_CLIPBOARD_TESTS=1: these tests overwrite the real pasteboard and cannot restore an image")
+	}
 	for _, bin := range []string{"osascript", "pbcopy", "pbpaste"} {
 		if _, err := exec.LookPath(bin); err != nil {
 			t.Skipf("%s is not on PATH; the clipboard tests are macOS-only", bin)
@@ -1632,7 +1742,7 @@ func TestClipboardWritesAPNGWhereTheSandboxPaneCanReadIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the written png: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	cfg, err := png.DecodeConfig(f)
 	if err != nil {
 		t.Fatalf("the written file is not a png: %v", err)
@@ -1957,8 +2067,11 @@ func (c *osaClipboard) hasImage(ctx context.Context) (bool, error) {
 // interpolated into the script: a sandbox name is operator-supplied and
 // AppleScript string escaping is not something to reinvent. `set eof f to 0`
 // truncates first, so a retry onto an existing name cannot leave a tail of
-// the previous image behind, and the write sits in a `try` so a failure
-// still reaches `close access` and releases the handle.
+// the previous image behind, and the write sits in a `try` whose handler
+// closes the file and then RE-RAISES. A bare `try` is not enough: measured
+// on 2026-09-19, `osascript -e try -e 'error "boom"' -e 'end try'` exits 0,
+// so a failed write would come back as success and leader `v` would type
+// the path of a zero-byte file into a pane.
 func (c *osaClipboard) writePNG(ctx context.Context, path string) error {
 	_, err := osascript(ctx, []string{
 		"on run argv",
@@ -1968,8 +2081,13 @@ func (c *osaClipboard) writePNG(ctx context.Context, path string) error {
 		"try",
 		"set eof f to 0",
 		"write d to f",
-		"end try",
 		"close access f",
+		"on error e",
+		"try",
+		"close access f",
+		"end try",
+		"error e",
+		"end try",
 		"end run",
 	}, path)
 	if err != nil {
@@ -2040,8 +2158,8 @@ In `internal/cli/cmd_tui.go`, the model construction becomes:
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
-Run: `go test ./internal/cli/ -run Clipboard -v`
-Expected: PASS on a Mac with a real pasteboard; SKIP where `osascript`, `pbcopy` or `pbpaste` is missing.
+Run: `CSPACE_CLIPBOARD_TESTS=1 go test ./internal/cli/ -run Clipboard -v`
+Expected: PASS on a Mac with a real pasteboard; SKIP under a bare `make check`, which does not set the variable; SKIP too where `osascript`, `pbcopy` or `pbpaste` is missing.
 
 Run: `go test ./internal/controlplane/`
 Expected: PASS — the `New` call sites compile again.
@@ -2076,7 +2194,7 @@ git commit -m "Add a Clipboard seam and read the macOS pasteboard behind it"
 The binding declared in 4b finally acts. Every case the design and the rulings name gets a branch: a sandbox pane, a host shell, a supervisor tab, a pane that has exited, no tab at all, a text-only clipboard, an empty one, and a host with no `osascript`.
 
 **Files:**
-- Modify: `internal/controlplane/clipboard.go`, `internal/controlplane/model.go`, `internal/controlplane/leader.go`
+- Modify: `internal/controlplane/clipboard.go`, `internal/controlplane/model.go`, `internal/controlplane/leader.go`, `internal/controlplane/leader_test.go`
 - Test: `internal/controlplane/clipboard_test.go`
 
 **Interfaces:**
@@ -2180,7 +2298,7 @@ func TestLeaderVOnAHostShellAsksForTheHostPath(t *testing.T) {
 	m = openHostShell(t, m)
 	mustTabs(t, m, 1)
 
-	m = pasteV(t, m)
+	pasteV(t, m)
 	if len(c.calls) != 1 || c.calls[0] != "image:/" {
 		t.Fatalf("clipboard calls = %v, want an Image with no sandbox", c.calls)
 	}
@@ -2234,7 +2352,7 @@ func TestAWrappedErrNoImageStillFallsBack(t *testing.T) {
 	m := newTestModelWithClipboard(h, c)
 	m = stepPump(t, m, "enter")
 
-	m = pasteV(t, m)
+	pasteV(t, m)
 	if len(c.calls) != 2 {
 		t.Fatalf("clipboard calls = %v; errors.Is must see through the wrap", c.calls)
 	}
@@ -2400,12 +2518,36 @@ In `internal/controlplane/leader.go`, replace the `PasteImage` arm:
 		return m.startAction(LabelPasteImage, m.pasteImageCmd(t))
 ```
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [ ] **Step 6: Retire the placeholder in `TestLeaderDispatch`**
 
-Run: `go test ./internal/controlplane/ -run 'LeaderV|Clipboard|Paste|Empty|Wrapped|Osascript' -v`
+`internal/controlplane/leader_test.go` still asserts that `v` does nothing, and it keeps passing after Step 5 — `mode` is still `modeNormal` and `notice.text` is still `""`, because the only thing the dispatch moved is `m.action`, which the case never reads. Left alone it is a test whose comment and failure message now say the opposite of the shipped behaviour, and which can catch a regression in neither direction. Replace
+
+```go
+	// v is bound so the config shape is stable, and deliberately does
+	// nothing until rollout step 5.
+	if got := leader(t, m, "v"); got.mode != modeNormal || got.notice.text != "" {
+		t.Error("leader v did something; image paste is step 5")
+	}
+```
+
+with
+
+```go
+	// v pastes now: on a live pane it starts the clipboard read and marks
+	// it in flight. What it reads is clipboard_test.go's business; this is
+	// the dispatch. openOne's model carries nopClipboard, and the command
+	// is never run here, so nothing touches a pasteboard.
+	if got := leader(t, m, "v"); got.action != LabelPasteImage {
+		t.Errorf("action = %q, want the image paste in flight", got.action)
+	}
+```
+
+- [ ] **Step 7: Run the tests to verify they pass**
+
+Run: `go test ./internal/controlplane/ -run 'LeaderV|LeaderDispatch|Clipboard|Paste|Empty|Wrapped|Osascript' -v`
 Expected: PASS.
 
-- [ ] **Step 7: Check**
+- [ ] **Step 8: Check**
 
 Run: `make check`
 Expected: green.
@@ -2413,11 +2555,12 @@ Expected: green.
 Run: `make test-race`
 Expected: green. `t.p.Paste` from the `pasteMsg` arm is a new writer of a live pane from the UI goroutine.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add internal/controlplane/clipboard.go internal/controlplane/clipboard_test.go \
-        internal/controlplane/model.go internal/controlplane/leader.go
+        internal/controlplane/model.go internal/controlplane/leader.go \
+        internal/controlplane/leader_test.go
 git commit -m "Paste the clipboard's image into a pane on leader v"
 ```
 
@@ -2465,7 +2608,7 @@ In `internal/controlplane/view.go`, in `helpView`'s `lines` slice, add two entri
 
 ```go
 		styleDim.Render(fit("mouse: click a row, a tab or the pane; the wheel scrolls the sidebar or the pane", width)),
-		styleDim.Render(fit("hold shift while dragging for your terminal's own selection", width)),
+		styleDim.Render(fit("hold shift for your terminal's own mouse: shift+drag selects, shift+click opens a port link", width)),
 ```
 
 - [ ] **Step 4: Run the test to verify it passes**
@@ -2501,6 +2644,11 @@ same notice on every tmux-backed pane (the
 a supervisor tab it scrolls that view's viewport. The wheel never moves the
 focus. Nothing is forwarded to the child: there is no path from a mouse
 message to the pane engine, and the guest tmux is `mouse off` besides.
+Mouse reporting also takes plain-click activation of the sidebar's OSC 8
+port links, by the same mechanism that takes drag-selection — a plain click
+on a port line now selects its sandbox. The terminal's own bypass modifier
+(shift on Ghostty and friends) still opens them, and the help overlay says
+so.
 ```
 
 and the Paste paragraph's last sentence, adding the cases the implementation resolves:
@@ -2545,7 +2693,7 @@ In `CLAUDE.md`, the `cspace tui` command line becomes:
 and the **controlplane** architecture bullet gains one sentence at its end, before the keybindings sentence:
 
 ```
-The mouse is on in cell-motion mode (a `tea.View` property in bubbletea v2, not a program option) and hit-tested against a `geometry` value the model rebuilds after every message, so a click resolves to a row, a tab or the pane area without rendering; nothing is forwarded to the child, and the terminal's own selection is still available on shift+drag. Leader `v` writes the clipboard's PNG to the sandbox's `paste/` directory through a `Clipboard` seam (`internal/cli/clipboard.go`, `osascript` plus `pbpaste`) and types the `/sessions/paste/...` path the pane can open.
+The mouse is on in cell-motion mode (a `tea.View` property in bubbletea v2, not a program option) and hit-tested against a `geometry` value the model rebuilds after every message, so a click resolves to a row, a tab or the pane area without rendering; nothing is forwarded to the child, and the terminal's own selection and OSC 8 link clicks are still available on shift+drag and shift+click. Leader `v` writes the clipboard's PNG to the sandbox's `paste/` directory through a `Clipboard` seam (`internal/cli/clipboard.go`, `osascript` plus `pbpaste`) and types the `/sessions/paste/...` path the pane can open.
 ```
 
 - [ ] **Step 8: Record the wheel on the scrollback finding**
@@ -2682,6 +2830,20 @@ def step(n, what, t):
     print(t.display())
 
 
+def row_line(t, name):
+    """The 1-based screen row whose sidebar cell holds `name`.
+
+    `cspace tui` is host-wide — it lists every project on the machine — so
+    which line this sandbox lands on depends on what else is up. A fixed
+    row number would quietly drive somebody else's sandbox and the rest of
+    the run would prove nothing.
+    """
+    for i, line in enumerate(t.display().split("\n"), start=1):
+        if name in line[:24]:
+            return i
+    raise SystemExit("%s is not in the sidebar; is it up?" % name)
+
+
 def main():
     sandbox = sys.argv[1] if len(sys.argv) > 1 else "mouse-smoke"
 
@@ -2699,8 +2861,8 @@ def main():
         t.pump(12)
         step(0, "booted", t)
 
-        press(t, SIDEBAR_COL, 4)
-        step(1, "clicked a sidebar row (the ▸ marker should have moved)", t)
+        press(t, SIDEBAR_COL, row_line(t, sandbox))
+        step(1, "clicked %s's sidebar row (the ▸ marker should be on it)" % sandbox, t)
 
         t.send(b"\r", then=6.0)   # enter: open a claude pane on it
         step(2, "opened a claude pane", t)
@@ -2802,7 +2964,7 @@ python3 scripts/tui-smoke/mouse.py mouse-smoke 2>&1 | tee /tmp/mouse-smoke.txt
 
 Read every step. What each must show:
 
-1. **Sidebar click** — the `▸` marker is on the row that was clicked, and the detail band below the list describes that sandbox.
+1. **Sidebar click** — the `▸` marker is on `<sandbox>`'s row, which the script located by name rather than by a fixed line, and the detail band below the list describes that sandbox. If the marker is on some other row, the sidebar is not laid out as `row_line` assumed and nothing after this step can be trusted.
 2. **Claude pane** — a tab appears reading `cspace/<sandbox> · claude`, and Claude's own screen fills the main area.
 3. **Host shell** — a second tab, `host · shell`.
 4. **Tab click** — the first tab is lit again (`styleTabActive`) and the main area shows Claude.
@@ -2813,7 +2975,7 @@ Read every step. What each must show:
 9. **Wheel back down** — the counter falls to 0.
 10. **Leader `v` with a PNG** — `/sessions/paste/<timestamp>.png` appears in Claude's input box, with no newline: **nothing is sent**. The file exists at `~/.cspace/sessions/cspace/mouse-smoke/paste/<timestamp>.png` (the script lists it at the end) and its directory is `drwx------`.
 11. **Leader `v` with text** — `hello from the smoke test` is pasted into the same box.
-12. **Help overlay** — it carries `mouse: click a row, a tab or the pane; the wheel scrolls the sidebar or the pane` and `hold shift while dragging for your terminal's own selection`.
+12. **Help overlay** — it carries `mouse: click a row, a tab or the pane; the wheel scrolls the sidebar or the pane` and `hold shift for your terminal's own mouse: shift+drag selects, shift+click opens a port link`.
 13. **A key after all that** — `x` lands in Claude's input box. Mouse mode did not cost the keyboard.
 
 `exit: 0` at the end, not `HUNG`.
@@ -2833,6 +2995,8 @@ Expected: the PNG the host wrote, readable, and `file` calls it `PNG image data,
 - [ ] **Step 5: Try the shift-drag escape hatch by hand**
 
 With `bin/cspace-go tui` open in your own terminal, hold shift and drag across a pane. Expected: the terminal's own selection highlights, and the dashboard does not react. Without shift, the drag does nothing visible — cell-motion motion events are dropped.
+
+Then shift+click one of the sidebar's port lines. Expected: the terminal opens its URL, which is the other thing mouse reporting takes away — a plain click on that line now selects its sandbox instead.
 
 - [ ] **Step 6: Tear down**
 
@@ -2874,7 +3038,7 @@ git commit -m "Add a pty smoke script for the mouse and image paste"
 | "the wheel scrolls the focused pane's scrollback" | 3 (`wheelMain`) |
 | "…or the sidebar" | 3 (`moveSelection`) |
 | "Nothing is forwarded to the child" | 2 and 3 (no path to `SendKey`; asserted by `TestWheelNeverReachesTheChild`), Global Constraints (guest tmux `mouse off`) |
-| Non-goal: no drag-to-select; shift-drag still works and the overlay says so | 6 (help note), 7 Step 5 (verified by hand) |
+| Non-goal: no drag-to-select; shift-drag and shift+click (the OSC 8 port links) still work and the overlay says so | 6 (help note), 7 Step 5 (verified by hand) |
 | "Image paste (leader `v`) runs `osascript` to write the clipboard's PNG to `~/.cspace/sessions/<project>/<sandbox>/paste/<timestamp>.png`" | 4 (`writePNG`, `pasteDirs`) |
 | "then types `/sessions/paste/<timestamp>.png` into the pane with no trailing newline" | 5 (`t.p.Paste(msg.text)`; asserted no `^M`) |
 | "An empty or text-only clipboard falls back to a text paste" | 5 (`ErrNoImage` → `Text`) |
