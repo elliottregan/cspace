@@ -587,3 +587,22 @@ func TestSendBoxShortensItsLabelRatherThanTheStyledInput(t *testing.T) {
 		}
 	}
 }
+
+// The design's mouse non-goal says the overlay carries the selection note,
+// because turning mouse reporting on takes the terminal's own drag-select
+// away and there is no other place a person would learn what to do instead.
+func TestHelpOverlayNamesTheMouseAndTheSelectionEscapeHatch(t *testing.T) {
+	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
+	cols, _ := m.paneSize()
+	help := plain(m.helpView(cols))
+	for _, want := range []string{"click", "wheel", "shift"} {
+		if !strings.Contains(strings.ToLower(help), want) {
+			t.Errorf("the help overlay never mentions %q:\n%s", want, help)
+		}
+	}
+	for i, l := range strings.Split(help, "\n") {
+		if w := len([]rune(l)); w > cols {
+			t.Errorf("help line %d is %d cells, wider than the %d the overlay is drawn in: %q", i, w, cols, l)
+		}
+	}
+}
