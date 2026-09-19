@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -108,5 +109,66 @@ func TestDownAllSkipsALegacyNameAndContinues(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "dotted.name") {
 		t.Errorf("stderr = %q, want it to name the skipped entry %q", stderr.String(), "dotted.name")
+	}
+}
+
+// noSubstrate is the injected substrate: teardown is best-effort and has no
+// error return, so a no-op is a faithful stand-in for "the container was
+// already gone". It exists so `go test ./internal/cli/` never runs
+// `container rm --force cspace-demo-mercury` against whatever a developer
+// happens to have booted.
+type noSubstrate struct{}
+
+func (noSubstrate) Stop(context.Context, string) error { return nil }
+func (noSubstrate) ListVolumes(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+func (noSubstrate) RemoveVolume(context.Context, string) error { return nil }
+
+// noSidecars silences the two stopBrowserSidecar calls for one test. Those
+// run `container stop` and `container rm` by name and are not adapter
+// methods, so they need their own seam.
+func noSidecars(t *testing.T) {
+	t.Helper()
+	prev := stopSidecarContainer
+	stopSidecarContainer = func(context.Context, string) {}
+	t.Cleanup(func() { stopSidecarContainer = prev })
+}
+
+func TestTeardownKeepsTheRegistryEntryWithKeepState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home) // teardownSandbox resolves $HOME itself; see below
+	noSidecars(t)
+	reg := &registry.Registry{Path: filepath.Join(home, "sandbox-registry.json")}
+	if err := reg.Register(registry.Entry{Project: "demo", Name: "mercury", State: "ready"}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	var out bytes.Buffer
+
+	teardownSandbox(context.Background(), noSubstrate{}, reg, "demo", "mercury", &out, false /* wipeState */)
+
+	e, err := reg.Lookup("demo", "mercury")
+	if err != nil {
+		t.Fatalf("--keep-state removed the registry entry: %v", err)
+	}
+	if e.State != "stopped" {
+		t.Errorf("state = %q, want stopped", e.State)
+	}
+}
+
+func TestTeardownUnregistersWithoutKeepState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home) // this one reaches wipeSandboxState's RemoveAlls
+	noSidecars(t)
+	reg := &registry.Registry{Path: filepath.Join(home, "sandbox-registry.json")}
+	if err := reg.Register(registry.Entry{Project: "demo", Name: "mercury", State: "ready"}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	var out bytes.Buffer
+
+	teardownSandbox(context.Background(), noSubstrate{}, reg, "demo", "mercury", &out, true /* wipeState */)
+
+	if _, err := reg.Lookup("demo", "mercury"); err == nil {
+		t.Error("the default teardown left the registry entry behind")
 	}
 }

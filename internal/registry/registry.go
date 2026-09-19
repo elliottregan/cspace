@@ -148,6 +148,30 @@ func (r *Registry) MarkReady(project, name string) error {
 	})
 }
 
+// MarkStopped transitions an existing entry's State to "stopped": the
+// sandbox is registered and resumable, but nothing is running. `cspace down
+// --keep-state` uses it in place of Unregister, so the sandbox keeps its row
+// in the dashboard — a row the boot action is offered on — instead of
+// vanishing. No-op if the entry is missing, for the same reason MarkReady is.
+//
+// The state matters as well as the entry: Correlate reads "starting" as
+// booting, so a sandbox torn down mid-boot would otherwise show ◐ forever.
+func (r *Registry) MarkStopped(project, name string) error {
+	return r.withLock(func() error {
+		m, err := r.load()
+		if err != nil {
+			return err
+		}
+		e, ok := m[key(project, name)]
+		if !ok {
+			return nil
+		}
+		e.State = "stopped"
+		m[key(project, name)] = e
+		return r.save(m)
+	})
+}
+
 func (r *Registry) Unregister(project, name string) error {
 	return r.withLock(func() error {
 		m, err := r.load()

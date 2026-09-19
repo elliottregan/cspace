@@ -2,7 +2,7 @@
 title: "cspace down --keep-state" unregisters the sandbox, so it vanishes from the dashboard instead of showing stopped
 date: 2026-09-18
 kind: finding
-status: open
+status: resolved
 category: bug
 tags: control-plane, dashboard, down, registry
 ---
@@ -63,3 +63,13 @@ clone, sessions, and volumes").
 Filed from the control-plane-3-dashboard final review's Task 9 observations,
 confirmed live against `cmd_down.go:231` (`_ = r.Unregister(...)`,
 unconditional).
+
+### 2026-09-18 — status: resolved
+`teardownSandbox` now unregisters only when `wipeState` is true; with
+`--keep-state` it calls the new `registry.MarkStopped`, so the sandbox stays
+in the registry with `state: "stopped"`, `Correlate` gives it a selectable
+`StateStopped` row, and the dashboard's boot key is reachable. The shared
+browser's reference count is now taken over entries whose state is not
+`"stopped"`, rather than over every entry: a kept entry's container is gone
+and holds no claim on the sidecar, and counting by identity would have left
+the browser running after `cspace down --all --keep-state`.
