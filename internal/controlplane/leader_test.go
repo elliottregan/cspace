@@ -508,6 +508,31 @@ func TestCtrlCQuitsThroughAnOpenPicker(t *testing.T) {
 	}
 }
 
+// TestCtrlCQuitsThroughTheHelpOverlay is N2 from review-fixwave.md:
+// childOwnsKeyboard checked mode, focus and liveness but not m.showHelp, so
+// with the overlay open over a focused pane it stayed true, and Ctrl+C
+// neither quit (the exemption said "no") nor reached the child (handleKey's
+// showHelp branch dismisses the overlay and swallows the key before the
+// pane ever sees it) — the same case TestCtrlCQuitsThroughAnOpenPicker
+// covers for the picker, and the one view.go's cursor guard already
+// excluded showHelp for.
+func TestCtrlCQuitsThroughTheHelpOverlay(t *testing.T) {
+	h := &fakeHost{t: t}
+	m := openOne(t, h)
+	m = leader(t, m, "?")
+	if !m.showHelp {
+		t.Fatal("leader ? did not open the help overlay")
+	}
+	mm, cmd := m.Update(press("ctrl+c"))
+	m = mm.(Model)
+	if !m.quitting {
+		t.Fatal("ctrl+c did not quit with the help overlay open over a focused pane")
+	}
+	if _, ok := runCmd(t, cmd).(tea.QuitMsg); !ok {
+		t.Error("ctrl+c through the help overlay produced no quit message")
+	}
+}
+
 // TestQuitClosesEveryPane is quitCmd's contract from both of its callers:
 // every open pane is detached and closed on the way out, whether q was
 // pressed from the sidebar or through the leader.
