@@ -290,10 +290,13 @@ func TestLeaderVWhileAnotherActionIsInFlightIsIgnored(t *testing.T) {
 	if m.action != LabelClosePane {
 		t.Errorf("action = %q, want the in-flight one left alone", m.action)
 	}
-	// The notice names what is actually holding the gate, which here is
-	// not the paste.
-	if !m.notice.isErr || !strings.Contains(m.notice.text, LabelClosePane) {
-		t.Errorf("notice = %q, want it to name the close that is still running", m.notice.text)
+	// Asserted on the FOOTER, not on a field: footer() ranks the spinner
+	// above the notice, so a refusal written into m.notice while an action
+	// is in flight is invisible for exactly as long as it is true. The
+	// answer names what is actually holding the gate, which here is not
+	// the paste.
+	if got := plain(m.footer()); !strings.Contains(got, LabelClosePane+" is still in progress") {
+		t.Errorf("footer = %q, want it to name the close that is still running", got)
 	}
 }
 
@@ -479,7 +482,13 @@ func TestLeaderVFromTheSidebarPastesIntoThePaneOnScreen(t *testing.T) {
 // session, behind a spinner that never stops.
 func TestADroppedPasteReleasesTheOneActionGate(t *testing.T) {
 	h := &fakeHost{t: t}
-	c := &fakeClipboard{path: "/sessions/paste/x.png"}
+	// A real file behind the clipboard, so this also covers the one wire
+	// that justifies Image returning a host path at all: the command has
+	// to carry it into pasteMsg, or the cleanup has nothing to unlink.
+	// Every other cleanup test builds the pasteMsg by hand and would not
+	// notice the command dropping it.
+	file := pasteTempPNG(t)
+	c := &fakeClipboard{path: "/sessions/paste/x.png", file: file}
 	m := newTestModelWithClipboard(h, c)
 	m = stepPump(t, m, "enter")
 	mustTabs(t, m, 1)
@@ -501,6 +510,10 @@ func TestADroppedPasteReleasesTheOneActionGate(t *testing.T) {
 	mm, cleanup := m.Update(runCmd(t, cmd))
 	m = mm.(Model)
 	runDiscard(t, cleanup)
+	if !gone(t, file) {
+		t.Error("the PNG survived a paste nobody could receive — " +
+			"the host path never left the command")
+	}
 	if m.action != "" {
 		t.Fatalf("action = %q after a paste nobody could receive; the gate is stuck", m.action)
 	}
@@ -518,6 +531,16 @@ func TestAPasteNoTabCanReceiveTakesItsPNGBackOut(t *testing.T) {
 	m := newTestModelWithClipboard(&fakeHost{t: t}, &fakeClipboard{})
 
 	mm, cleanup := m.Update(pasteMsg{id: 4242, text: "/sessions/paste/x.png", file: file})
+	// Update does no I/O: the unlink is the command's, and until the
+	// command runs the file is still there. Checking that order is what
+	// separates "returns a cleanup command" from "unlinked on the UI
+	// goroutine and returned nil".
+	if cleanup == nil {
+		t.Fatal("the drop handed back no cleanup command")
+	}
+	if gone(t, file) {
+		t.Error("the PNG was unlinked inside Update, before the command ran")
+	}
 	runDiscard(t, cleanup)
 
 	if got := mm.(Model); got.notice.isErr {
@@ -611,8 +634,92 @@ func TestASecondVWhileAPasteIsInFlightSaysSo(t *testing.T) {
 	if len(c.calls) != 0 {
 		t.Errorf("the clipboard was read from Update: %v", c.calls)
 	}
-	if !m.notice.isErr || !strings.Contains(m.notice.text, LabelPasteImage) ||
-		!strings.Contains(m.notice.text, "in progress") {
-		t.Errorf("notice = %q, want it to name the paste that is still running", m.notice.text)
+	// The FOOTER, which is what the operator reads. m.notice would be
+	// unreachable here: the spinner arm outranks it while m.action is set.
+	got := plain(m.footer())
+	if !strings.Contains(got, LabelPasteImage+" is still in progress") {
+		t.Errorf("footer = %q, want it to say the paste is still running", got)
+	}
+	// And the spinner line it is attached to is still there — the answer
+	// is an aside on the action, not a replacement for it.
+	if !strings.Contains(got, LabelPasteImage+"\u2026") {
+		t.Errorf("footer = %q, want the in-flight action still named", got)
+	}
+}
+
+// --- fix round 2: what the footer actually says ---
+
+// A paste that WORKED must not leave a red line under the path it just
+// delivered. This arm is the action's whole report: it clears the footer
+// rather than inheriting whatever was on it.
+//
+// The regression this pins was invisible to every earlier test because they
+// all read m.notice; the footer is what the operator reads.
+func TestAfterASuccessfulPasteTheFooterCarriesNoStaleLine(t *testing.T) {
+	h := &fakeHost{t: t, echo: true}
+	const typed = "/sessions/paste/20260919-143001.123.png"
+	c := &fakeClipboard{path: typed}
+	m := newTestModelWithClipboard(h, c)
+	m = stepPump(t, m, "enter")
+	mustTabs(t, m, 1)
+
+	m = step(t, m, "ctrl+space")
+	mm, cmd := m.Update(press("v"))
+	m = mm.(Model)
+	// Something was already on the footer when the paste landed — here an
+	// error from an earlier action, which nothing else would have cleared.
+	m.notice = notice{text: "close pane: something went wrong earlier", isErr: true}
+
+	mm, _ = m.Update(runCmd(t, cmd))
+	m = mm.(Model)
+	waitForPaneScreen(t, m.tabs[0], typed)
+
+	got := plain(m.footer())
+	for _, unwanted := range []string{"in progress", "went wrong", LabelPasteImage + ":"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("footer = %q, want no %q under a path that just arrived", got, unwanted)
+		}
+	}
+	if m.notice.text != "" {
+		t.Errorf("notice = %q, want the successful paste to own the line", m.notice.text)
+	}
+}
+
+// The refusal is attached to the action, not to the notice, so it cannot
+// outlive the thing it describes: once m.action clears, footer() never
+// reaches the arm that draws it.
+func TestTheBusyAnswerCannotOutliveTheActionItNames(t *testing.T) {
+	h := &fakeHost{t: t}
+	c := &fakeClipboard{path: "/sessions/paste/x.png"}
+	m := newTestModelWithClipboard(h, c)
+	m = stepPump(t, m, "enter")
+	mustTabs(t, m, 1)
+
+	m = step(t, m, "ctrl+space")
+	mm, cmd := m.Update(press("v"))
+	m = mm.(Model)
+	m = step(t, m, "ctrl+space")
+	mm, _ = m.Update(press("v")) // refused; the answer goes on the footer
+	m = mm.(Model)
+	if !strings.Contains(plain(m.footer()), "is still in progress") {
+		t.Fatalf("footer = %q, want the refusal while the gate is held", plain(m.footer()))
+	}
+
+	// The paste lands. Whatever the model still remembers about the
+	// refusal, the footer must not show it.
+	mm, _ = m.Update(runCmd(t, cmd))
+	m = mm.(Model)
+	if got := plain(m.footer()); strings.Contains(got, "is still in progress") {
+		t.Errorf("footer = %q after the action finished, want the aside gone with it", got)
+	}
+	// And the next action starts clean rather than inheriting it. (`s`
+	// from the sidebar, not `enter`: the keyboard is on the pane now, and
+	// a second Claude pane on the same sandbox would only refocus the one
+	// that is already there — no action, nothing to clear.)
+	m.focus = focusSidebar
+	m = stepPump(t, m, "s")
+	mustTabs(t, m, 2)
+	if m.actionNote != "" {
+		t.Errorf("actionNote = %q, want a new action to start with a clean line", m.actionNote)
 	}
 }
