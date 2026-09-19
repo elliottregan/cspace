@@ -386,6 +386,9 @@ func TestHelpOverlayToggles(t *testing.T) {
 	if !strings.Contains(out, "~/.cspace/config.json") {
 		t.Errorf("the help overlay should say where bindings come from:\n%s", out)
 	}
+	if !strings.Contains(out, "shell pane") {
+		t.Errorf("the help overlay should list the pane bindings too:\n%s", out)
+	}
 	if !strings.Contains(out, "mercury") {
 		t.Error("the sidebar stays visible behind the help overlay")
 	}
