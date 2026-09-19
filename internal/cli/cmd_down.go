@@ -166,9 +166,32 @@ Without it, exactly one <name> argument is required.`,
 	return cmd
 }
 
+// downSubstrate is the substrate surface cspace down uses: the container
+// teardown, and the two volume calls behind the default (non-`--keep-state`)
+// wipe. *applecontainer.Adapter satisfies it as written, so neither
+// production caller — cmd_down.go's RunE and control_host.go — changes.
+//
+// It exists so a unit test can inject a no-op. `teardownSandbox` is
+// best-effort and has no error return, which made it easy to call from a
+// test with a real adapter; that test would then run
+// `container rm --force cspace-<project>-<sandbox>` against the developer's
+// own machine and be harmless only by luck of the names.
+type downSubstrate interface {
+	Stop(ctx context.Context, name string) error
+	ListVolumes(ctx context.Context, prefix string) ([]string, error)
+	RemoveVolume(ctx context.Context, name string) error
+}
+
+// stopSidecarContainer is stopBrowserSidecar behind a variable, for the same
+// reason: it runs `container stop` and `container rm` by name and is a
+// package function rather than an adapter method, so an interface cannot
+// reach it. Only teardownSandbox goes through the variable; every other
+// caller of stopBrowserSidecar is unchanged.
+var stopSidecarContainer = stopBrowserSidecar
+
 // substrateDowner is a minimal substrate adapter for sidecars.Down that only stops containers.
 type substrateDowner struct {
-	adapter *applecontainer.Adapter
+	adapter downSubstrate
 }
 
 func (s *substrateDowner) Run(ctx context.Context, spec sidecars.ServiceSpec) (string, error) {
@@ -198,7 +221,7 @@ func (s *substrateDowner) IP(ctx context.Context, name string) (string, error) {
 // registry state.
 func teardownSandbox(
 	ctx context.Context,
-	a *applecontainer.Adapter,
+	a downSubstrate,
 	r *registry.Registry,
 	project, name string,
 	out io.Writer,
@@ -256,18 +279,44 @@ func teardownSandbox(
 
 	// Per-instance (opt-out / --no-shared-browser) sidecar: stop this sandbox's
 	// own browser. Idempotent and a no-op in the shared case (no such container).
-	stopBrowserSidecar(ctx, browserContainerName(project, name))
+	stopSidecarContainer(ctx, browserContainerName(project, name))
 
-	// Remove this instance from the registry BEFORE counting so it is not
-	// included in the remaining-sandboxes tally.
-	_ = r.Unregister(project, name)
+	// The registry entry goes only when the state does. --keep-state promises
+	// a sandbox that can be resumed under the same name, and a sandbox the
+	// registry has forgotten is one the dashboard cannot show — let alone
+	// offer its boot key on, which is only offered on stopped rows. Marking
+	// it stopped rather than leaving it alone matters too: Correlate reads a
+	// "starting" entry as booting, so a sandbox torn down mid-boot would
+	// otherwise keep its ◐ forever.
+	// (cs-finding:2026-09-18-keep-state-drops-the-registry-entry-so-a-stopped-sandbox-leaves-the-dashboard)
+	if wipeState {
+		_ = r.Unregister(project, name)
+	} else {
+		_ = r.MarkStopped(project, name)
+	}
 
-	// Shared browser sidecar: ref-counted — stop it only when this was the last
-	// sandbox in the project. Idempotent and a no-op when no singleton exists.
-	if remaining, err := r.CountForProject(project); err != nil {
-		_, _ = fmt.Fprintf(out, "[cspace] warning: registry count during browser teardown: %v\n", err)
-	} else if remaining == 0 {
-		stopBrowserSidecar(ctx, browserSingletonName(project))
+	// Shared browser sidecar: ref-counted — stop it only when the project has
+	// no sandbox left that could use it. The count is now by STATE rather
+	// than by identity, because a kept entry holds no claim on the browser:
+	// its container is gone. That is just as true of the siblings an earlier
+	// `cspace down --all --keep-state` marked stopped, which is why
+	// discounting only this one is not enough — CountForProject counts every
+	// entry regardless of state (its own comment says so), so with three
+	// sandboxes and --all --keep-state the tally never reaches zero and the
+	// sidecar is left running for a project with nothing left to use it.
+	// Idempotent and a no-op when no singleton exists.
+	if entries, err := r.List(); err != nil {
+		_, _ = fmt.Fprintf(out, "[cspace] warning: registry list during browser teardown: %v\n", err)
+	} else {
+		live := 0
+		for _, e := range entries {
+			if e.Project == project && e.State != "stopped" {
+				live++
+			}
+		}
+		if live == 0 {
+			stopSidecarContainer(ctx, browserSingletonName(project))
+		}
 	}
 
 	if wipeState {
@@ -304,7 +353,7 @@ func removeControlPlaneDir(out io.Writer, project, name string) {
 // successful container stop.
 func wipeSandboxState(
 	ctx context.Context,
-	a *applecontainer.Adapter,
+	a downSubstrate,
 	project, name string,
 	out io.Writer,
 ) {

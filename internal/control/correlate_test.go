@@ -118,3 +118,26 @@ func TestCorrelateCarriesListErr(t *testing.T) {
 		t.Errorf("Err = %v, want carried", snap.Err)
 	}
 }
+
+func TestCorrelateShowsAKeptEntryAsStopped(t *testing.T) {
+	now := time.Now()
+	snap := Correlate(now, nil,
+		[]registry.Entry{{Project: "demo", Name: "mercury", State: "stopped"}},
+		nil, nil, nil, DaemonHealth{Reachable: true}, nil)
+
+	var row Row
+	for _, r := range snap.Rows {
+		if r.Kind == RowSandbox && r.Name == "mercury" {
+			row = r
+		}
+	}
+	if row.Kind != RowSandbox {
+		t.Fatalf("a kept entry produced no sandbox row: %+v", snap.Rows)
+	}
+	if row.State != StateStopped {
+		t.Errorf("state = %v, want StateStopped — the dashboard offers boot only on those", row.State)
+	}
+	if !row.Selectable {
+		t.Error("the row is not selectable, so u can never reach it")
+	}
+}

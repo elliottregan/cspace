@@ -194,6 +194,27 @@ func TestMarkReadyOnMissingIsNoOp(t *testing.T) {
 	}
 }
 
+func TestMarkStopped(t *testing.T) {
+	r := &Registry{Path: filepath.Join(t.TempDir(), "registry.json")}
+	if err := r.Register(Entry{Project: "demo", Name: "mercury", State: "starting"}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := r.MarkStopped("demo", "mercury"); err != nil {
+		t.Fatalf("MarkStopped: %v", err)
+	}
+	e, err := r.Lookup("demo", "mercury")
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if e.State != "stopped" {
+		t.Errorf("state = %q, want stopped", e.State)
+	}
+	// A missing entry is not an error: a racing `down` may have removed it.
+	if err := r.MarkStopped("demo", "gone"); err != nil {
+		t.Errorf("MarkStopped on a missing entry = %v, want nil", err)
+	}
+}
+
 func TestFreePort(t *testing.T) {
 	p, err := FreePort()
 	if err != nil {
