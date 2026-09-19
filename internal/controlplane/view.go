@@ -150,6 +150,8 @@ func (m Model) helpView(width int) string {
 		h.FullHelpView(m.keys.PaneFullHelp()),
 		"",
 		styleDim.Render(fit("every other key goes to the focused pane; "+m.leaderLabel()+" is the leader", width)),
+		styleDim.Render(fit("mouse: click a row, a tab or the pane; the wheel scrolls both", width)),
+		styleDim.Render(fit("hold shift for the terminal's own mouse: drag selects, click opens a link", width)),
 		styleDim.Render(fit("ctrl+c quits, except in a live pane where it goes to the program", width)),
 		styleDim.Render(fit("esc leaves a prompt", width)),
 		styleDim.Render(fit("keys the selected row cannot use are hidden from the footer", width)),
