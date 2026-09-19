@@ -62,11 +62,14 @@ type vtEmulator struct {
 	kittyFlags int
 	kittyOn    bool
 
-	// forcedKitty makes kittyEnabled answer yes whatever the child
-	// negotiated. Set once at construction, before any goroutine exists;
-	// read under mu with the rest of the kitty state so there is one rule
-	// rather than two. See newVTEmulator's doc and pane.ExtendedKeys.
-	forcedKitty bool
+	// forceExtended makes encoding answer encForced whenever the child has
+	// negotiated nothing. Set once at construction, before any goroutine
+	// exists; read under mu with the rest of the kitty state so there is
+	// one rule rather than two. It is deliberately NOT part of
+	// kittyEnabled: forcing is not a negotiation, and the `?u` query still
+	// has to report what the child itself asked for. See newVTEmulator's
+	// doc and pane.ExtendedKeys.
+	forceExtended bool
 
 	closeOnce sync.Once
 	closeErr  error
@@ -78,12 +81,15 @@ var _ Emulator = (*vtEmulator)(nil)
 // returned — and therefore before the engine starts any goroutine — because
 // x/vt's RegisterCsiHandler appends to a plain map with no lock of its own.
 //
-// forceKitty short-circuits the negotiation the handlers exist to track, for
-// a child that cannot conduct it on its own behalf: see pane.ExtendedKeys.
-// The handlers are still registered, because such a child may sit behind
-// something that does negotiate, and a `?u` query still has to be answered.
-func newVTEmulator(cols, rows int, forceKitty bool) *vtEmulator {
-	e := &vtEmulator{term: vt.NewSafeEmulator(cols, rows), forcedKitty: forceKitty}
+// forceExtended stands in for the negotiation the handlers exist to track,
+// for a child that cannot conduct it on its own behalf: see
+// pane.ExtendedKeys. It does not pretend the child negotiated — it selects
+// encForced, a narrower encoding than encKitty. The handlers are still
+// registered, because such a child may sit behind something that does
+// negotiate (in which case the real thing wins), and a `?u` query still has
+// to be answered with the child's own flags.
+func newVTEmulator(cols, rows int, forceExtended bool) *vtEmulator {
+	e := &vtEmulator{term: vt.NewSafeEmulator(cols, rows), forceExtended: forceExtended}
 	e.term.SetScrollbackSize(scrollbackLines)
 	e.registerKitty()
 	return e
@@ -134,7 +140,7 @@ func (e *vtEmulator) CursorPosition() (int, int) {
 // unless Mod is zero. encodeKey's second return is what says "x/vt has this
 // one"; when it does, the fall-through below is unchanged from Task 1.
 func (e *vtEmulator) SendKey(k KeyEvent) {
-	if seq, ok := encodeKey(k, e.kittyEnabled()); ok {
+	if seq, ok := encodeKey(k, e.encoding()); ok {
 		e.term.SendText(seq)
 		return
 	}
@@ -266,13 +272,32 @@ func (e *vtEmulator) registerKitty() {
 	})
 }
 
-// kittyEnabled reports whether the child has the kitty keyboard protocol on
-// with a non-zero flag set — the condition under which a modified key should
-// be encoded as CSI-u instead of degraded.
+// kittyEnabled reports whether the CHILD has the kitty keyboard protocol on
+// with a non-zero flag set. It is blind to forceExtended on purpose: that
+// flag is this package's decision, not the child's, and the one thing the
+// child can ask — the `?u` query — must report what it negotiated itself.
 func (e *vtEmulator) kittyEnabled() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.forcedKitty || (e.kittyOn && e.kittyFlags != 0)
+	return e.kittyOn && e.kittyFlags != 0
+}
+
+// encoding is which of keys.go's three worlds this pane's child lives in.
+//
+// A real negotiation outranks a forced one: a child that speaks for itself
+// gets the whole protocol it asked for. Nothing the child does can clear
+// encForced, though — a pop it never pushed would otherwise turn off a form
+// it never turned on.
+func (e *vtEmulator) encoding() keyEncoding {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	switch {
+	case e.kittyOn && e.kittyFlags != 0:
+		return encKitty
+	case e.forceExtended:
+		return encForced
+	}
+	return encLegacy
 }
 
 // vtScrollback adapts x/vt's history to Scrollback.
