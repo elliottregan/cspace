@@ -17,10 +17,15 @@ import (
 // child.
 func (m Model) handleLeaderKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// The leader twice sends the leader itself to the child — the standard
-	// escape hatch, and the only way to type Ctrl+Space into a program.
+	// escape hatch, and the only way to type Ctrl+Space into a program. A
+	// pane whose child has already exited has nothing to type into: the
+	// same guard handlePaneKey applies to every ordinary key belongs here
+	// too, or the byte sits in a queue nothing will ever drain.
 	if key.Matches(msg, m.keys.Leader) {
 		if t := m.focusedTab(); t != nil && t.p != nil {
-			t.p.SendKey(paneKey(msg))
+			if _, _, exited := t.p.Exited(); !exited {
+				t.p.SendKey(paneKey(msg))
+			}
 		}
 		return m, nil
 	}
@@ -37,12 +42,22 @@ func (m Model) handleLeaderKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.moveTab(-1), nil
 
 	case key.Matches(msg, m.keys.NewPane):
+		// The one-action gate: an open already in flight must not be
+		// overwritten by a second one before it reports back.
+		if m.action != "" {
+			return m, nil
+		}
 		m.mode = modePicker
 		m.pending = m.selectedRow()
 		m.picker = newPanePicker(mainWidthFor(m.width) - 2)
 		return m, m.picker.Init()
 
 	case key.Matches(msg, m.keys.ClosePane):
+		// The one-action gate, as above: a close already in flight must not
+		// be overwritten by another.
+		if m.action != "" {
+			return m, nil
+		}
 		t := m.focusedTab()
 		if t == nil {
 			return m, nil
