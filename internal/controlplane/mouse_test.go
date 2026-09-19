@@ -571,8 +571,13 @@ func TestWheelOverASupervisorTabScrollsItsViewport(t *testing.T) {
 	}
 
 	wheel(t, m, m.geom.main.x+4, m.geom.main.y+4, true)
-	if sup.vp.YOffset() >= before {
-		t.Errorf("YOffset = %d, want less than %d", sup.vp.YOffset(), before)
+	if got := before - sup.vp.YOffset(); got != wheelLines {
+		t.Errorf("one notch up moved %d lines, want %d (wheelLines)", got, wheelLines)
+	}
+
+	wheel(t, m, m.geom.main.x+4, m.geom.main.y+4, false)
+	if got := sup.vp.YOffset(); got != before {
+		t.Errorf("one notch down after one up left YOffset at %d, want back at %d", got, before)
 	}
 }
 
@@ -607,5 +612,64 @@ func TestWheelIsInertUnderAModalAndTheHelpOverlay(t *testing.T) {
 	box := step(t, m, "m")
 	if got := wheel(t, box, 4, 3, false); got.selected != before {
 		t.Error("the wheel moved the selection behind the send box")
+	}
+}
+
+// TestWheelDisarmsTheLeaderAndIsSwallowed pins review-task3.md's Important 1:
+// a half-typed leader chord left armed by a wheel notch outlives the notch,
+// and the very next ordinary key is then dispatched as the chord's second
+// key instead of going where a person watching scroll mode's own "any other
+// key returns to live" banner would expect it to. Matches handleClick's
+// existing rule for exactly the same hazard.
+func TestWheelDisarmsTheLeaderAndIsSwallowed(t *testing.T) {
+	h := &fakeHost{t: t, history: true}
+	m := openOne(t, h)
+	waitForHistory(t, m.tabs[0], wheelLines)
+	m = step(t, m, "ctrl+space")
+	if !m.leaderArmed {
+		t.Fatal("ctrl+space did not arm the leader")
+	}
+
+	got := wheel(t, m, m.geom.main.x+4, m.geom.main.y+4, true)
+	if got.leaderArmed {
+		t.Error("a wheel notch left the leader armed")
+	}
+	if got.scrolling {
+		t.Error("the notch that disarmed the leader also acted, arming scroll mode")
+	}
+
+	// The leader outliving the notch is what let 't' — a leader chord's own
+	// second key — open the new-pane picker over a pane still (invisibly)
+	// promising that any key returns to live.
+	next := stepPump(t, got, "t")
+	if next.mode == modePicker {
+		t.Error("the leader survived the wheel notch: 't' opened the new-pane picker")
+	}
+}
+
+// TestWheelOverTheSidebarAtTheEndsFiresNoEventsRead pins review-task3.md's
+// Minor 3: the click path already returns nil when the selection could not
+// move (selectListRow, mouse.go); the wheel must match it. A trackpad emits
+// notches an order of magnitude faster than key repeat, so an unconditional
+// events read at a boundary is wasted work the click path already avoids.
+func TestWheelOverTheSidebarAtTheEndsFiresNoEventsRead(t *testing.T) {
+	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
+
+	// mercury (1) is the first selectable row.
+	m.selected = 1
+	if got := m.rows[m.selected].Name; got != "mercury" {
+		t.Fatalf("fixture moved: rows[%d] = %q, want mercury", m.selected, got)
+	}
+	if _, cmd := m.Update(tea.MouseWheelMsg{X: 4, Y: 3, Button: tea.MouseWheelUp}); cmd != nil {
+		t.Error("wheeling up past the first selectable row fired an events read")
+	}
+
+	// "browser (shared)" (4) is the last selectable row.
+	m.selected = 4
+	if got := m.rows[m.selected].Name; got != "browser (shared)" {
+		t.Fatalf("fixture moved: rows[%d] = %q, want browser (shared)", m.selected, got)
+	}
+	if _, cmd := m.Update(tea.MouseWheelMsg{X: 4, Y: 3, Button: tea.MouseWheelDown}); cmd != nil {
+		t.Error("wheeling down past the last selectable row fired an events read")
 	}
 }

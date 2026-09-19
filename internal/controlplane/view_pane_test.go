@@ -133,6 +133,32 @@ func TestPaneAreaNamesTheConfiguredLeader(t *testing.T) {
 	}
 }
 
+// TestScrollBannerWinsOverTheExitedLine pins review-task3.md's Minor 1: scroll
+// mode has to announce itself whether or not the pane's child is still
+// running, because handlePaneKey's own scrolling branch already treats the
+// two identically — any key returns to live, exited pane or not. Before
+// this, the exited line won the render, so the mode was armed and eating a
+// key while showing no counter and no "returns to live" hint at all.
+func TestScrollBannerWinsOverTheExitedLine(t *testing.T) {
+	h := &fakeHost{t: t, exits: true}
+	m := openOne(t, h)
+	waitForExit(t, m.tabs[0])
+
+	notScrolling := plain(m.paneArea(70, 10))
+	if !strings.Contains(notScrolling, "exited with status") {
+		t.Fatalf("setup: an exited, non-scrolling pane does not show its reason: %q", notScrolling)
+	}
+
+	m.scrolling = true
+	got := plain(m.paneArea(70, 10))
+	if !strings.Contains(got, "returns to live") {
+		t.Errorf("scroll mode on an exited pane rendered no banner: %q", got)
+	}
+	if strings.Contains(got, "exited with status") {
+		t.Errorf("the exited line is still shown while scrolling, hiding the banner: %q", got)
+	}
+}
+
 // The terminal cursor is the dashboard's claim about where typing goes, so
 // it may only sit on a pane the operator can actually see. The help
 // overlay and the two modals all render over the main area while the focus
