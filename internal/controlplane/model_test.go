@@ -145,7 +145,7 @@ func testSnapshot() control.Snapshot {
 
 // newTestModel returns a sized model with one snapshot already applied.
 func newTestModel(d *fakeData, a Actor) Model {
-	m := New(d, a, nopPaneHost{}, NewKeyMap(nil))
+	m := New(d, a, nopPaneHost{}, nopClipboard{}, NewKeyMap(nil))
 	m.now = func() time.Time { return time.Unix(1_000_060, 0) }
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m = mm.(Model)
@@ -156,7 +156,7 @@ func newTestModel(d *fakeData, a Actor) Model {
 // newTestModelWithHost is newTestModel with a pane host, for the tests that
 // open tabs.
 func newTestModelWithHost(d *fakeData, a Actor, h PaneHost) Model {
-	m := New(d, a, h, NewKeyMap(nil))
+	m := New(d, a, h, nopClipboard{}, NewKeyMap(nil))
 	m.now = func() time.Time { return time.Unix(1_000_060, 0) }
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m = mm.(Model)
@@ -165,7 +165,7 @@ func newTestModelWithHost(d *fakeData, a Actor, h PaneHost) Model {
 }
 
 func TestInitKicksThreeCadencesAndTheStartupSweep(t *testing.T) {
-	m := New(&fakeData{snap: testSnapshot()}, &recordingActor{}, nopPaneHost{}, NewKeyMap(nil))
+	m := New(&fakeData{snap: testSnapshot()}, &recordingActor{}, nopPaneHost{}, nopClipboard{}, NewKeyMap(nil))
 	cmd := m.Init()
 	if cmd == nil {
 		t.Fatal("Init must start the poll loop")
@@ -303,7 +303,7 @@ func TestFirstSnapshotTriggersAnImmediateSlowPoll(t *testing.T) {
 	d := &fakeData{snap: testSnapshot(), ports: []control.Port{
 		{Port: 5173, Label: "web", URL: "http://mercury.alpha.cspace.test:5173/"},
 	}}
-	m := New(d, &recordingActor{}, nopPaneHost{}, NewKeyMap(nil))
+	m := New(d, &recordingActor{}, nopPaneHost{}, nopClipboard{}, NewKeyMap(nil))
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m = mm.(Model)
 	_ = m.Init() // the cadences start; their own ticks are irrelevant here
@@ -779,7 +779,7 @@ func TestViewGeometry(t *testing.T) {
 // alternate screen like every other one, or it can be painted on the normal
 // screen and left behind in scrollback once the real layout takes over.
 func TestPreSizeViewRunsInTheAlternateScreen(t *testing.T) {
-	m := New(&fakeData{}, &recordingActor{}, nopPaneHost{}, NewKeyMap(nil))
+	m := New(&fakeData{}, &recordingActor{}, nopPaneHost{}, nopClipboard{}, NewKeyMap(nil))
 	v := m.View()
 	if !strings.Contains(v.Content, "starting cspace tui") {
 		t.Errorf("pre-size view content = %q, want the placeholder", v.Content)
@@ -836,4 +836,25 @@ func drain(cmd tea.Cmd) []tea.Msg {
 		out = append(out, drain(c)...)
 	}
 	return out
+}
+
+// A Model built without a clipboard gets one that fails closed, the same
+// way a Model without a PaneHost does. Task 5's paste command calls
+// m.clip unconditionally: a nil there is a crash in the middle of the
+// dashboard, and a silent success is a paste of nothing.
+func TestNewSubstitutesAFailClosedClipboard(t *testing.T) {
+	m := New(&fakeData{}, &recordingActor{}, nopPaneHost{}, nil, NewKeyMap(nil))
+	if m.clip == nil {
+		t.Fatal("New left the clipboard nil")
+	}
+	if path, file, err := m.clip.Image(context.Background(), "alpha", "mercury"); err == nil {
+		t.Errorf("Image returned %q/%q and no error; the stand-in must explain itself", path, file)
+	}
+	// Text fails too. An empty string and no error would look exactly like
+	// an empty clipboard, so the paste would type nothing and report
+	// success — the one outcome the operator cannot diagnose.
+	text, err := m.clip.Text(context.Background())
+	if err == nil {
+		t.Errorf("Text returned %q and no error; the stand-in must explain itself", text)
+	}
 }

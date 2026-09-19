@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/elliottregan/cspace/internal/pane"
 )
@@ -86,18 +87,24 @@ func TestLeaderDispatch(t *testing.T) {
 	if got := leader(t, m, "t"); got.mode != modePicker || got.picker == nil {
 		t.Error("leader t did not open the new-pane picker")
 	}
-	// v is bound so the config shape is stable, and deliberately does
-	// nothing until rollout step 5.
-	if got := leader(t, m, "v"); got.mode != modeNormal || got.notice.text != "" {
-		t.Error("leader v did something; image paste is step 5")
+	// v pastes now: on a live pane it starts the clipboard read and marks
+	// it in flight. What it reads is clipboard_test.go's business; this is
+	// the dispatch. openOne's model carries nopClipboard, and the command
+	// is never run here, so nothing touches a pasteboard.
+	if got := leader(t, m, "v"); got.action != LabelPasteImage {
+		t.Errorf("action = %q, want the image paste in flight", got.action)
 	}
 }
 
-// A pane whose child keeps its own history — every Claude and shell pane,
-// because tmux switches to the alternate screen at startup and nothing
-// written there enters scrollback — must say so rather than arm a mode that
-// can only show "0 lines back" and eat the next key. Found by Task 8 Step 8
-// against a real sandbox: leader [ then PgUp moved nothing.
+// A pane with no scrollback — every Claude and shell pane, because tmux
+// switches to the alternate screen at startup and nothing written there
+// enters scrollback, but also an exited pane (no child left to hold any)
+// and a freshly opened host shell (no tmux, screen not yet full) — must say
+// so rather than arm a mode that can only show "0 lines back" and eat the
+// next key. Found by Task 8 Step 8 against a real sandbox: leader [ then
+// PgUp moved nothing. The exact-text check pins the refusal to the one
+// shared definition (noScrollbackNotice) rather than to a copy of its
+// wording, so leader [ and the wheel can never drift apart.
 func TestScrollRefusesAPaneWithNoScrollback(t *testing.T) {
 	h := &fakeHost{t: t}
 	m := openOne(t, h)
@@ -107,6 +114,19 @@ func TestScrollRefusesAPaneWithNoScrollback(t *testing.T) {
 	}
 	if !strings.Contains(got.notice.text, "nothing to scroll") {
 		t.Errorf("notice = %q, want it to say there is nothing to scroll", got.notice.text)
+	}
+	if got.notice.text != noScrollbackNotice().text {
+		t.Errorf("notice = %q, want the shared refusal %q", got.notice.text, noScrollbackNotice().text)
+	}
+}
+
+// The footer's fit() elides at 120 columns and drops trailing clauses
+// silently at 80 — and the trailing clause here, "PgUp/PgDn go there", is
+// the only actionable part of the sentence. 78 keeps two cells of slack
+// under the 80-column case so the notice never loses its way forward.
+func TestNoScrollbackNoticeFitsAnEightyColumnFooter(t *testing.T) {
+	if w := lipgloss.Width(noScrollbackNotice().text); w > 78 {
+		t.Errorf("noScrollbackNotice() is %d cells wide, want <= 78", w)
 	}
 }
 

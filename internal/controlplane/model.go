@@ -54,6 +54,7 @@ type Model struct {
 	data  Data
 	actor Actor
 	host  PaneHost
+	clip  Clipboard
 
 	tabs      []*tab
 	focused   int // index into tabs; -1 when there are none
@@ -120,12 +121,27 @@ type Model struct {
 	showHelp bool
 	input    textinput.Model
 	action   string // in-flight action label; "" when idle
-	spinner  spinner.Model
+	// actionNote is an aside about the action currently in flight — today,
+	// the answer to a key the one-action gate refused.
+	//
+	// It is NOT a notice, and that is the whole point. footer() ranks the
+	// spinner above the notice, so a notice written while an action is in
+	// flight cannot be seen until the action ends — and is then rendered,
+	// as an error, about an action that has already finished. A note that
+	// is only ever drawn INSIDE the action arm cannot go stale on screen:
+	// the condition that makes it true is the condition that renders it.
+	// startAction clears it, so each action starts with a clean line.
+	actionNote string
+	spinner    spinner.Model
 
 	notice    notice
 	noticeGen int
 
 	width, height int
+	// geom is where the last layout put everything, so a mouse message can
+	// be hit-tested without rendering. Update refreshes it after every
+	// message; View never writes it.
+	geom geometry
 	// quitting is nothing in production — tea.Quit is what actually ends the
 	// program — but it is the observable two tests assert on: that `q` quits
 	// from the sidebar and does *not* from inside the send box, where the
@@ -134,19 +150,24 @@ type Model struct {
 	quitting bool
 }
 
-// New builds the dashboard over the query, action and pane seams and the
-// resolved keymap. Nothing is polled and nothing is opened until Init runs.
-func New(data Data, actor Actor, host PaneHost, keys KeyMap) Model {
+// New builds the dashboard over the query, action, pane and clipboard seams
+// and the resolved keymap. Nothing is polled and nothing is opened until
+// Init runs.
+func New(data Data, actor Actor, host PaneHost, clip Clipboard, keys KeyMap) Model {
 	ti := textinput.New()
 	ti.Placeholder = "message"
 	ti.CharLimit = 2000
 	if host == nil {
 		host = nopPaneHost{}
 	}
+	if clip == nil {
+		clip = nopClipboard{}
+	}
 	return Model{
 		data:     data,
 		actor:    actor,
 		host:     host,
+		clip:     clip,
 		keys:     keys,
 		help:     help.New(),
 		now:      time.Now,
@@ -188,7 +209,29 @@ func (m Model) paused() bool {
 	return m.mode != modeNormal || m.action == LabelOpenPane
 }
 
+// Update refreshes the layout geometry after handling a message, and does
+// nothing else the method below does not.
+//
+// The refresh is here rather than at each of update's thirty-odd return
+// points, and rather than in View, which has a value receiver and can store
+// nothing. It runs on every message, including a pane's ~30/s redraw
+// signal: it re-renders the row list and the tabs — the same work View
+// does for those two regions, and small beside the emulator render that
+// same signal triggers.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	mm, ok := next.(Model)
+	if !ok {
+		// Unreachable: every return in update is a Model. Kept so a future
+		// arm that returns something else degrades to "no geometry" rather
+		// than panicking under the operator's cursor.
+		return next, cmd
+	}
+	mm.geom = mm.computeGeometry()
+	return mm, cmd
+}
+
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -500,6 +543,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case pasteMsg:
+		// Cleared FIRST, and on every branch below, including the silent
+		// one: m.action is the one-action gate every other key consults, so
+		// a path that returns without clearing it wedges the whole window —
+		// no new pane, no close, no boot, no send — for the rest of the
+		// session, with a spinner that never stops.
+		m.action = ""
+		// Every branch that cannot deliver the paste takes its PNG back
+		// out; the successful one is the only one that keeps the file,
+		// because it is the only one that told a pane where to find it.
+		if msg.err != nil {
+			m.notice = notice{text: LabelPasteImage + " failed: " + msg.err.Error(), isErr: true}
+			return m, discardPaste(msg.file)
+		}
+		if msg.text == "" {
+			m.notice = notice{text: LabelPasteImage + ": the clipboard is empty", isErr: true}
+			return m, discardPaste(msg.file)
+		}
+		// By identity, never by position: a tab closing while the clipboard
+		// was being read shifts every index after it, so an index would
+		// type this into whichever tab moved into that slot.
+		t, _ := m.tabByID(msg.id)
+		if t == nil || t.p == nil {
+			// The tab closed while the clipboard was being read. There is
+			// nowhere to put this and nobody to tell: the person closed it.
+			return m, discardPaste(msg.file)
+		}
+		if _, _, exited := t.p.Exited(); exited {
+			m.notice = pasteExitedNotice()
+			return m, discardPaste(msg.file)
+		}
+		// Through Emulator.Paste, which brackets when the child asked —
+		// the same path a terminal paste takes — and with no trailing
+		// newline, so Claude gets the path in its input box and sends
+		// nothing.
+		t.p.Paste(msg.text)
+		// This arm is the action's whole report, and the report is the
+		// path now sitting in the pane. Anything the footer was carrying
+		// before belongs to something else — and a *stale error* under a
+		// path that has just arrived reads as the paste having failed.
+		m.notice = notice{}
+		return m, nil
+
 	case tea.KeyPressMsg:
 		// Ctrl+C quits from everywhere except a live pane, which is what
 		// helpView promises. Only a running child earns the exemption —
@@ -544,6 +630,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+
+	case tea.MouseClickMsg:
+		return m.handleClick(msg)
+
+	case tea.MouseWheelMsg:
+		return m.handleWheel(msg)
+
+	case tea.MouseReleaseMsg, tea.MouseMotionMsg:
+		// Cell motion mode reports a release for every click, and motion
+		// while a button is held — a drag. The design has no drag gesture
+		// and forwards nothing to the child, so both are dropped HERE
+		// rather than left to fall through to the widget switch at the
+		// bottom of Update, which would hand them to a textinput or a huh
+		// form.
+		return m, nil
 	}
 
 	// Anything the branches above did not consume goes to whichever widget

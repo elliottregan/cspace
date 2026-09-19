@@ -445,16 +445,39 @@ help overlay (the full binding list from `bubbles/v2/help`, plus the
 selection note) · `q` quit · leader again sends the leader to the child. Quit does not confirm:
 tmux holds every session.
 
-Mouse: cell-motion mode. Click selects a sidebar row or a tab or focuses the
-main area; the wheel scrolls the focused pane's scrollback or the sidebar.
-Nothing is forwarded to the child.
+Mouse: cell-motion mode, enabled on every rendered view (bubbletea v2 makes
+it a `tea.View` property, not a program option). Click selects a sidebar row
+— a port line selects its sandbox, a project header and the system divider
+select nothing — or focuses a tab, or focuses the main area; a click on an
+elision marker, on the empty end of the tabs row, or in a main area with no
+tabs open does nothing. A click disarms an armed leader, dismisses the help
+overlay, and is swallowed under a modal without answering it. The wheel over
+the sidebar moves the selection one row to a notch; over the main area it
+scrolls the focused pane's scrollback three lines to a notch, entering scroll mode exactly as
+leader `[` does — which means it works on a host shell and refuses with the
+same notice on every tmux-backed pane (the
+`scroll-mode-never-reaches-a-tmux-backed-panes-history` finding) — and over
+a supervisor tab it scrolls that view's viewport. The wheel never moves the
+focus. Nothing is forwarded to the child: there is no path from a mouse
+message to the pane engine, and the guest tmux is `mouse off` besides.
+Mouse reporting also takes plain-click activation of the sidebar's OSC 8
+port links, by the same mechanism that takes drag-selection — a plain click
+on a port line now selects its sandbox. The terminal's own bypass modifier
+(shift on Ghostty and friends) still opens them, and the help overlay says
+so.
 
 Paste: text paste events go to the focused pane through `Emulator.Paste`,
 which brackets them when the child asked. Image paste (leader `v`) runs
 `osascript` to write the clipboard's PNG to
 `~/.cspace/sessions/<project>/<sandbox>/paste/<timestamp>.png`, then types
 `/sessions/paste/<timestamp>.png` into the pane with no trailing newline. An
-empty or text-only clipboard falls back to a text paste.
+empty or text-only clipboard falls back to a text paste. A host shell has no
+sandbox and no bind mount: its images go to `~/.cspace/paste` and the host
+path is typed. A supervisor tab and a pane whose child has exited have
+nowhere to type, and say so in the footer. The clipboard is a `Clipboard`
+seam beside `PaneHost`, satisfied in `internal/cli` by `osascript` for the
+image and `pbpaste` for the text — `osascript` prints a script's result with
+a newline appended, which would change a pasted diff.
 
 ## Error handling
 
@@ -502,7 +525,7 @@ empty or text-only clipboard falls back to a text paste.
 2. ~~**Control API.**~~ Landed.
 3. ~~**Dashboard on v2.**~~ Landed.
 4. ~~**Panes.**~~ Landed, as two plans: `2026-09-18-control-plane-4a-pane-engine.md` (the engine, the pane commands, the two step-3 follow-ups, the smoke harness) and `2026-09-18-control-plane-4b-panes-in-the-dashboard.md` (tabs, focus, the leader, the detach protocol, the supervisor view).
-5. **Mouse and image paste.**
+5. ~~**Mouse and image paste.**~~ Landed.
 
 Each step lands on its own and leaves `make check` green.
 

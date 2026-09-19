@@ -20,6 +20,7 @@ func (m Model) View() tea.View {
 	if m.width == 0 || m.height == 0 {
 		v := tea.NewView("starting cspace tui…")
 		v.AltScreen = true
+		v.MouseMode = tea.MouseModeCellMotion
 		return v
 	}
 
@@ -47,6 +48,17 @@ func (m Model) View() tea.View {
 		lipgloss.JoinHorizontal(lipgloss.Top, side, main),
 		m.footer()))
 	v.AltScreen = true
+
+	// Cell motion, not all motion: it reports clicks, releases, the wheel
+	// and drags, which is everything the design asks for, and it is the
+	// better supported of the two. In bubbletea v2 this is a property of
+	// the view — there is no program option and no command — so it is set
+	// on every frame, including the starting one above.
+	//
+	// The cost is the terminal's own selection: with mouse reporting on,
+	// a drag belongs to the program. Ghostty and friends still select on
+	// shift+drag, and the help overlay says so.
+	v.MouseMode = tea.MouseModeCellMotion
 
 	// The cursor belongs to the focused pane and only when the keyboard is
 	// pointed at it: a cursor blinking in a pane the keys do not reach is a
@@ -138,6 +150,8 @@ func (m Model) helpView(width int) string {
 		h.FullHelpView(m.keys.PaneFullHelp()),
 		"",
 		styleDim.Render(fit("every other key goes to the focused pane; "+m.leaderLabel()+" is the leader", width)),
+		styleDim.Render(fit("mouse: click a row, a tab or the pane; the wheel scrolls both", width)),
+		styleDim.Render(fit("hold shift for the terminal's own mouse: drag selects, click opens a link", width)),
 		styleDim.Render(fit("ctrl+c quits, except in a live pane where it goes to the program", width)),
 		styleDim.Render(fit("esc leaves a prompt", width)),
 		styleDim.Render(fit("keys the selected row cannot use are hidden from the footer", width)),
@@ -205,7 +219,16 @@ func (m Model) footer() string {
 		// confirm).
 		return sendBoxLine(sendBoxPrefix(m.pending.Name), m.input.View(), m.width)
 	case m.action != "":
-		return m.spinner.View() + " " + m.action + "…"
+		line := m.spinner.View() + " " + m.action + "…"
+		if m.actionNote != "" {
+			// fit() on the composed line, not on the note alone: the
+			// spinner frame is a single rune and the label is plain text,
+			// so there is no ANSI in front of the truncation point here —
+			// unlike the notice arms, which are styled before they are
+			// measured.
+			line = fit(line+"  "+m.actionNote, m.width)
+		}
+		return line
 	case m.notice.text != "":
 		if m.notice.isErr {
 			return styleErr.Render(fit(m.notice.text, m.width))

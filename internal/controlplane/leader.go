@@ -9,6 +9,36 @@ import (
 	"github.com/elliottregan/cspace/internal/pane"
 )
 
+// noScrollbackNotice is the refusal a pane with no history gives, shared by
+// leader [ and the wheel so the two can never drift into saying different
+// things about the same pane.
+//
+// tmux is the dominant reason: it switches the terminal to the ALTERNATE
+// screen the moment it starts (measured against the image's tmux 3.3a: its
+// first bytes are ESC[?1049h), and nothing written to the alternate screen
+// ever enters scrollback — the permanent state of every Claude and shell
+// pane, not a rare one. See the
+// scroll-mode-never-reaches-a-tmux-backed-panes-history finding. But it is
+// not the only reason a pane has none: an exited pane has no child at all
+// to hold history for, and a freshly opened host shell (no tmux) simply
+// has not filled a screen yet. The wording leads with the one thing true of
+// all three — there is nothing here to scroll — and keeps the tmux
+// explanation as a trailing, general aside rather than a claim about this
+// particular pane.
+//
+// Kept to <= 78 cells on purpose: the footer's fit() elides at 120 columns
+// and, worse, silently drops trailing clauses at 80 — and the trailing
+// clause here is "PgUp/PgDn go there", the only actionable part of the
+// whole sentence. A longer wording that reads fine at 120 becomes a
+// refusal with no way forward at 80. Measured with lipgloss.Width.
+func noScrollbackNotice() notice {
+	return notice{
+		text: "nothing to scroll here; tmux keeps the history inside — " +
+			"PgUp/PgDn go there",
+		isErr: true,
+	}
+}
+
 // handleLeaderKey dispatches the key after the leader.
 //
 // The leader is already disarmed by the caller, so every path here is a
@@ -74,21 +104,8 @@ func (m Model) handleLeaderKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			// through, and the mode is not inert — it swallows the next
 			// keypress as the one that returns to live, so arming it here
 			// costs a keystroke and shows a counter that can only ever say
-			// "0 lines back".
-			//
-			// This is the permanent state of every Claude and shell pane,
-			// not a rare one. tmux switches the terminal to the ALTERNATE
-			// screen the moment it starts (measured against the image's
-			// tmux 3.3a: its first bytes are ESC[?1049h), and nothing
-			// written to the alternate screen ever enters scrollback. The
-			// history is real, but it is on the child's side — tmux's
-			// copy-mode holds it, and Claude Code scrolls its own
-			// transcript with PgUp/PgDn, which reach the child precisely
-			// because this mode is off.
-			m.notice = notice{
-				text:  "nothing to scroll: this pane has no scrollback — its child keeps its own history (PgUp/PgDn go to it)",
-				isErr: true,
-			}
+			// "0 lines back". The wheel gives the same refusal.
+			m.notice = noScrollbackNotice()
 			return m, nil
 		}
 		m.scrolling = true
@@ -111,23 +128,49 @@ func (m Model) handleLeaderKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.quitCmd()
 
 	case key.Matches(msg, m.keys.PasteImage):
-		// Bound so the config shape is stable and the footer can name it;
-		// rollout step 5 is what makes it act. Doing nothing quietly beats a
-		// "not implemented" notice on a key the footer advertises.
-		return m, nil
+		t := m.focusedTab()
+		if t == nil || t.p == nil {
+			// No tabs at all, or a supervisor tab, which runs no process.
+			// Either way there is nowhere for a path to be typed.
+			m.notice = notice{text: LabelPasteImage + ": no pane", isErr: true}
+			return m, nil
+		}
+		if _, _, exited := t.p.Exited(); exited {
+			m.notice = pasteExitedNotice()
+			return m, nil
+		}
+		if m.action != "" {
+			// The one-action gate, as the other leader keys apply it: two
+			// concurrent osascript runs would race for one footer line.
+			//
+			// Unlike t and x this one says so. osascript is the slowest
+			// thing behind any of these gates — a ten-second budget, and a
+			// pasteboard conversion that can use it — so v is the key a
+			// person is most likely to press twice, and a second silent
+			// no-op reads as a broken binding rather than a busy one. The
+			// answer names the action that is actually holding the gate,
+			// which is not always this one.
+			//
+			// Through actionNote rather than m.notice: footer() ranks the
+			// spinner above the notice, so a notice set here would be
+			// invisible for exactly as long as it was true, and would then
+			// surface in red once the action it describes had finished.
+			m.actionNote = m.action + " is still in progress"
+			return m, nil
+		}
+		return m.startAction(LabelPasteImage, m.pasteImageCmd(t))
 	}
 	return m, nil
 }
 
-// moveTab steps the focus through the tabs, wrapping.
+// moveTab steps the focus through the tabs, wrapping. The step is the only
+// thing it decides; focusTab does the rest, so the leader's n/p and a click
+// on a tab cannot end up leaving the model in different states.
 func (m Model) moveTab(dir int) Model {
 	if len(m.tabs) == 0 {
 		return m
 	}
-	m.focused = (m.focused + dir + len(m.tabs)) % len(m.tabs)
-	m.focus = focusMain
-	m.scrolling, m.scroll = false, 0
-	return m
+	return m.focusTab((m.focused + dir + len(m.tabs)) % len(m.tabs))
 }
 
 // handlePaneKey is what a focused pane's keyboard does: in scroll mode, move

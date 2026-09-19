@@ -51,3 +51,10 @@ Neither belongs in a fix wave: both change what scroll mode *is*.
 ### 2026-09-19 — status: open
 Filed from the plan 4b whole-branch review's ruling on Task 8's observation
 1, and the Task 8 review's spec-compliance note on spec lines 425-427.
+
+### 2026-09-19 — status: open
+Rollout step 5 gave the wheel the same refusal: over a tmux-backed pane it
+posts `noScrollbackNotice()`, the line leader `[` already posts, rather than
+arming a mode with nothing in it. One function now owns that text, so the
+two cannot drift. The gap itself is unchanged — both ways out listed above
+still apply — and the finding stays open.
