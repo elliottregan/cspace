@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/elliottregan/cspace/internal/control"
 	"github.com/elliottregan/cspace/internal/controlplane"
 )
@@ -36,19 +38,82 @@ func TestPaneHostOpensAHostShellWithNoContainer(t *testing.T) {
 }
 
 // The warning is only useful if the operator can read the remedy, and the
-// footer it lands in truncates to the window width. 120 columns is a normal
-// terminal; the wording this test guards was chosen to fit one.
-func TestNoTmuxWarningFitsAFooterAndNamesTheRemedy(t *testing.T) {
-	warn := noTmuxWarning("panecheck")
-	if !strings.Contains(warn, "cspace image build") {
-		t.Errorf("warning = %q, want it to name the rebuild command", warn)
+// footer it lands in truncates to the window width — so the whole line has
+// to fit an ordinary terminal, remedy included. It carries both steps of
+// that remedy, because the rebuild alone leaves the running sandbox on the
+// old image.
+func TestNoTmuxWarningFitsAFooterAndNamesBothStepsOfTheRemedy(t *testing.T) {
+	warn := noTmuxWarning()
+	for _, want := range []string{"image build", "down"} {
+		if !strings.Contains(warn, want) {
+			t.Errorf("warning = %q, want it to name %q", warn, want)
+		}
 	}
-	if !strings.Contains(warn, "panecheck") {
-		t.Errorf("warning = %q, want it to name the sandbox", warn)
+	if n := ansi.StringWidth(warn); n > warningWidth {
+		t.Errorf("warning is %d cells, want at most %d: %q", n, warningWidth, warn)
 	}
-	if n := len([]rune(warn)); n > 120 {
-		t.Errorf("warning is %d columns; a 120-column footer cuts it off before %q",
-			n, "cspace image build")
+}
+
+// The other degraded open has to reach the footer too: it is the one the
+// operator cannot recover from on their own, because nothing records the
+// tmux client it strands. See openWarning.
+func TestDegradedAttachWarningFitsAFooterAndSaysWhatItCosts(t *testing.T) {
+	warn := degradedAttachWarning()
+	if !strings.Contains(warn, "tmux client") {
+		t.Errorf("warning = %q, want it to say what is left behind", warn)
+	}
+	if n := ansi.StringWidth(warn); n > warningWidth {
+		t.Errorf("warning is %d cells, want at most %d: %q", n, warningWidth, warn)
+	}
+}
+
+// openWarning is the whole of Opened.Warning: a clean open says nothing, a
+// degraded attachment is reported rather than swallowed, and with both
+// broken the line names the one with a remedy.
+func TestOpenWarningPicksOneLine(t *testing.T) {
+	cases := []struct {
+		name                       string
+		tmuxPresent, bookkeepingOK bool
+		want                       string
+	}{
+		{"a clean open warns about nothing", true, true, ""},
+		{"a degraded attachment is surfaced", true, false, degradedAttachWarning()},
+		{"no tmux names the remedy", false, true, noTmuxWarning()},
+		{"both broken: the remedy wins", false, false, noTmuxWarning()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := openWarning(tc.tmuxPresent, !tc.bookkeepingOK); got != tc.want {
+				t.Errorf("openWarning = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Which pane kinds get pane.ExtendedKeys is a decision with no test of its
+// own until here — the option is passed inside Open, past a tmux probe that
+// needs a container — so this pins the rule the way the code states it:
+// Claude under tmux, and nothing else. A shell has no CSI-u decoder (bash
+// and zsh answer the forced form with a beep and the tail of the sequence
+// typed onto the command line), and a no-tmux pane's child negotiates for
+// itself.
+func TestOnlyAClaudePaneUnderTmuxForcesTheExtendedKeys(t *testing.T) {
+	cases := []struct {
+		kind    controlplane.Kind
+		session string
+		want    bool
+	}{
+		{controlplane.KindClaude, "cspace", true},
+		{controlplane.KindClaude, "", false},
+		{controlplane.KindShell, "cspace", false},
+		{controlplane.KindShell, "", false},
+		{controlplane.KindHostShell, "", false},
+	}
+	for _, tc := range cases {
+		if got := forcesExtendedKeys(tc.kind, tc.session); got != tc.want {
+			t.Errorf("kind %v session %q forces extended keys = %v, want %v",
+				tc.kind, tc.session, got, tc.want)
+		}
 	}
 }
 
