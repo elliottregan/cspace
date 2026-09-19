@@ -231,16 +231,31 @@ func (m Model) supervisorTickCmds() []tea.Cmd {
 // emit an actionResultMsg, the first to land clears the gate for the other,
 // and the footer reports whichever verb arrived last. Typing is never gated
 // — only the keys that act.
+//
+// They also check the same reachability predicates the sidebar's own keys
+// are disabled by (KeyMap.forRow). The spec's error handling says a
+// supervisor that cannot be reached has send and interrupt DISABLED on that
+// row rather than failing on press; the sidebar gets that by disabling the
+// binding, which is not available here because these keys are a switch on
+// the raw string rather than bindings. Saying so in the footer and sending
+// nothing is the same contract by the other route — and the typed text
+// survives, so Enter again once the agent answers sends it.
 func (m Model) handleSupervisorKey(t *tab, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	// Both actions take the same row, rebuilt from the current row set
+	// Both actions take the same row, read out of the current row set
 	// rather than remembered: it is hoisted here so the two arms cannot
-	// drift apart, and it is cheap — containerFor is a scan of a list the
-	// dashboard already holds.
-	row := control.Row{Kind: control.RowSandbox, Project: t.project, Name: t.sandbox,
-		Container: containerFor(m.rows, t.project, t.sandbox)}
+	// drift apart, and it is cheap — sandboxRow is a scan of a list the
+	// dashboard already holds. The whole row, not a rebuilt identity: the
+	// gates below read its agent status, which a synthesized row would
+	// report unreachable for every sandbox.
+	row := sandboxRow(m.rows, t.project, t.sandbox)
+	live := m.live[keyOf(row)]
 
 	switch msg.String() {
 	case "enter":
+		if !canSend(row, live) {
+			m.notice = notice{text: "supervisor unreachable: nothing to send to", isErr: true}
+			return m, nil
+		}
 		if m.action != "" {
 			// The gate, checked before the box is read: a turn thrown away
 			// because the last action had not landed yet would be the worst
@@ -255,6 +270,10 @@ func (m Model) handleSupervisorKey(t *tab, msg tea.KeyPressMsg) (tea.Model, tea.
 		}
 		return m.startAction(LabelSend, m.actor.Send(row, text))
 	case "esc":
+		if !canInterrupt(row, live) {
+			m.notice = notice{text: "nothing to interrupt: the agent is not working", isErr: true}
+			return m, nil
+		}
 		if m.action != "" {
 			return m, nil
 		}
@@ -271,14 +290,19 @@ func (m Model) handleSupervisorKey(t *tab, msg tea.KeyPressMsg) (tea.Model, tea.
 	return m, cmd
 }
 
-// containerFor finds a sandbox's container name in the current row set. The
-// actions take a Row, and a supervisor tab holds only the identity — the row
-// it was opened from may have been rebuilt by a poll since.
-func containerFor(rows []control.Row, project, sandbox string) string {
+// sandboxRow finds a supervisor tab's sandbox in the current row set. A
+// supervisor tab holds only the identity — the row it was opened from may
+// have been rebuilt by a poll since, and its container name and agent
+// status are both things a poll changes.
+//
+// A sandbox that has left the row set entirely falls back to the identity
+// alone: no container to act on and no agent to reach, which is what the
+// gates should then say.
+func sandboxRow(rows []control.Row, project, sandbox string) control.Row {
 	for _, r := range rows {
 		if r.Kind == control.RowSandbox && r.Project == project && r.Name == sandbox {
-			return r.Container
+			return r
 		}
 	}
-	return ""
+	return control.Row{Kind: control.RowSandbox, Project: project, Name: sandbox}
 }

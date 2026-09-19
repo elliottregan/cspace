@@ -404,7 +404,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// resize, redraw or close: a zombie the operator can neither use
 			// nor get rid of. Treat it as the failure it is instead.
 			m.notice = notice{text: LabelOpenPane + " failed: host returned no pane", isErr: true}
-			return m, nil
+			// A host that booked an attachment and then failed to hand
+			// back a pane still took the sandbox's attach lock and wrote a
+			// client record. Nothing else will ever close that: no tab is
+			// made, so no leader x and no quit can reach it.
+			return m, closeDetacher(msg.opened.Detach)
 		}
 		project, sandbox := msg.row.Project, msg.row.Name
 		if msg.kind == KindHostShell {
@@ -413,6 +417,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// let a later reader take it for a pane on that sandbox.
 			project, sandbox = "", ""
 		}
+		// Re-apply the current layout before the tab exists. The size that
+		// went into Open was the one at the keypress, and a Claude pane
+		// takes seconds to appear — a WindowSizeMsg landing in between
+		// resizes every tab there is, and this one was not yet among them.
+		// The error is the pane's to report on its next write; there is no
+		// tab to hang a notice on yet.
+		_ = msg.opened.Pane.Resize(m.paneSize())
 		m = m.addTab(&tab{
 			kind:    msg.kind,
 			project: project,
@@ -490,14 +501,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyPressMsg:
-		// Ctrl+C quits from the sidebar and from any modal — a picker or
-		// confirmation left open over a focused pane must not swallow the
-		// one key that always gets out, which is what helpView promises
-		// ("ctrl+c quits from anywhere"). Only modeNormal with a pane
-		// focused routes it to the child instead, where interrupting Claude
-		// is the single most-used key.
-		if key.Matches(msg, forceQuit) &&
-			(m.mode != modeNormal || m.focus != focusMain || m.focusedTab() == nil) {
+		// Ctrl+C quits from everywhere except a live pane, which is what
+		// helpView promises. Only a running child earns the exemption —
+		// interrupting Claude is the single most-used key — and the
+		// exemption is exactly as wide as that reason. A modal over a pane
+		// must not swallow the one key that always gets out; neither must
+		// a supervisor tab, whose textarea binds no ctrl+c at all, nor an
+		// exited pane, whose key handler drops the key on the floor. Both
+		// of those used to leave leader q as the only way out.
+		if key.Matches(msg, forceQuit) && !m.childOwnsKeyboard() {
 			m.quitting = true
 			return m, m.quitCmd()
 		}
@@ -514,8 +526,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// picker, the teardown confirm) must not leak the paste through to
 		// the child behind it.
 		if m.mode == modeNormal && m.focus == focusMain {
-			if t := m.focusedTab(); t != nil && t.p != nil {
-				t.p.Paste(msg.Content)
+			if t := m.focusedTab(); t != nil {
+				if t.p != nil {
+					t.p.Paste(msg.Content)
+					return m, nil
+				}
+				if t.sup != nil {
+					// A supervisor tab's send box is a textarea, which
+					// handles PasteMsg itself — but only if it is given
+					// one. Returning unconditionally here is what used to
+					// swallow a pasted stack trace or diff, which is the
+					// obvious thing to put in that box.
+					var cmd tea.Cmd
+					t.sup.input, cmd = t.sup.input.Update(msg)
+					return m, cmd
+				}
 			}
 			return m, nil
 		}
@@ -664,6 +689,26 @@ func (m *Model) restoreSelection(prev control.Row) {
 		}
 	}
 	m.selected = 0
+}
+
+// childOwnsKeyboard reports whether the keys are reaching a running child
+// rather than the dashboard. It is the exemption Ctrl+C is tested against,
+// and the reason for it is the whole of the condition: there has to be a
+// live process for the interrupt to mean anything.
+//
+// A supervisor tab has no process (t.p is nil) and its textarea binds no
+// ctrl+c; an exited pane's key handler drops every key. In both, Ctrl+C
+// reaching "the pane" means Ctrl+C doing nothing at all.
+func (m Model) childOwnsKeyboard() bool {
+	if m.mode != modeNormal || m.focus != focusMain {
+		return false
+	}
+	t := m.focusedTab()
+	if t == nil || t.p == nil {
+		return false
+	}
+	_, _, exited := t.p.Exited()
+	return !exited
 }
 
 // paneSize is the emulator geometry for the main area: the window less the

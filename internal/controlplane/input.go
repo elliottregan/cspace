@@ -88,8 +88,10 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// One action at a time: the footer reports one outcome, and attach hands
-	// the terminal away entirely while it runs.
+	// One action at a time: the footer reports one outcome, so a second
+	// action started under the first would have the pair of them racing
+	// for that line and the first result to land clearing the gate for
+	// both.
 	if m.action != "" {
 		return m, nil
 	}
