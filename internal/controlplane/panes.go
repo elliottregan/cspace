@@ -338,6 +338,26 @@ func (m Model) closeTab(id int) tea.Cmd {
 	}
 }
 
+// closeDetacher releases an attachment that never became a tab: the pane
+// host booked it, then failed to hand back a pane. Nothing else can reach
+// it — there is no tab for leader x or quit to find — so the sandbox's
+// attach lock and the client record would be held until the process ends.
+//
+// It is a tea.Cmd rather than an inline call because closing an attachment
+// execs into the container to detach the client, which must not run on the
+// UI goroutine. A nil detacher is nothing to do, which is the ordinary case.
+func closeDetacher(d Detacher) tea.Cmd {
+	if d == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
+		defer cancel()
+		_ = d.Close(ctx)
+		return nil
+	}
+}
+
 // reapExited is closeTab's teardown without the drop: the same detach and
 // the same engine handshake, run for a pane whose child ended on its own,
 // while the tab stays on screen.
