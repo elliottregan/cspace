@@ -144,6 +144,18 @@ func runEmulatorSuite(t *testing.T, newEmu newEmulator) {
 		}
 	})
 
+	t.Run("resize to zero clamps instead of going negative", func(t *testing.T) {
+		// x/vt clamps the cursor to width-1/height-1, so an unclamped
+		// Resize(0, 0) would leave CursorPosition at (-1,-1) and violate the
+		// interface's "zero-based, screen-relative" promise.
+		e, _ := newTestEmulator(t, newEmu, 10, 3)
+		e.Resize(0, 0)
+		if x, y := e.CursorPosition(); x < 0 || y < 0 {
+			t.Errorf("cursor = (%d,%d) after Resize(0, 0), want both non-negative", x, y)
+		}
+		_ = e.Render() // must not panic
+	})
+
 	t.Run("scrollback keeps lines that scrolled off", func(t *testing.T) {
 		e, _ := newTestEmulator(t, newEmu, 20, 3)
 		if _, err := e.Write([]byte("one\r\ntwo\r\nthree\r\nfour\r\nfive")); err != nil {
@@ -185,6 +197,42 @@ func runEmulatorSuite(t *testing.T, newEmu newEmulator) {
 		}
 		if err := e.Close(); err != nil {
 			t.Errorf("second Close: %v, want nil", err)
+		}
+	})
+
+	t.Run("write after close does not panic", func(t *testing.T) {
+		// The adapter deliberately does not surface an error here: Close
+		// closes the reply pipe, not the parser, and a Write's only
+		// contract after that is "does not panic". Task 3's output pump
+		// must not rely on a Write error to detect teardown — it detects
+		// that from Read returning io.EOF instead.
+		e := newEmu(20, 4)
+		if err := e.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		_, _ = e.Write([]byte("anything"))
+	})
+
+	t.Run("scrollback line at and past the end is empty", func(t *testing.T) {
+		e, _ := newTestEmulator(t, newEmu, 20, 3)
+		if _, err := e.Write([]byte("one\r\ntwo\r\nthree\r\nfour\r\nfive")); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		sb := e.Scrollback()
+		n := sb.Len()
+		if got := sb.Line(n); got != "" {
+			t.Errorf("Line(Len()) = %q, want empty", got)
+		}
+		if got := sb.Line(n + 1); got != "" {
+			t.Errorf("Line(Len()+1) = %q, want empty", got)
+		}
+	})
+
+	t.Run("scrollback line on an empty scrollback is empty", func(t *testing.T) {
+		e, _ := newTestEmulator(t, newEmu, 20, 3)
+		sb := e.Scrollback()
+		if got := sb.Line(0); got != "" {
+			t.Errorf("Line(0) on an empty scrollback = %q, want empty", got)
 		}
 	})
 }
@@ -248,6 +296,98 @@ func TestVTEmulatorTracksTheKittyKeyboardProtocol(t *testing.T) {
 	}
 	if e.kittyEnabled() {
 		t.Error("kitty is still on after the child popped the stack")
+	}
+
+	// CSI = flags ; mode u is the "set" form. Mode 1 (the default when the
+	// sub-parameter is absent) replaces the flags outright; modes 2 and 3
+	// OR and clear bits against whatever is already set.
+	if _, err := e.Write([]byte("\x1b[=1u")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if !e.kittyEnabled() {
+		t.Error("kitty is off after CSI = 1 u (set-all)")
+	}
+
+	if _, err := e.Write([]byte("\x1b[=0;3u")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if !e.kittyEnabled() {
+		t.Error("kitty is off after CSI = 0 ; 3 u, which resets no bits")
+	}
+
+	if _, err := e.Write([]byte("\x1b[=1;3u")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if e.kittyEnabled() {
+		t.Error("kitty is still on after CSI = 1 ; 3 u cleared its only bit")
+	}
+
+	// A push, then a set that overwrites the pushed value, then a pop must
+	// restore what was active before the push — not the value the set wrote
+	// — which only holds if = updates the top of the stack in place rather
+	// than a scratch value the pop never looks at.
+	if _, err := e.Write([]byte("\x1b[>9u")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if _, err := e.Write([]byte("\x1b[>2u")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if _, err := e.Write([]byte("\x1b[=5u")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if _, err := e.Write([]byte("\x1b[<1u")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if _, err := e.Write([]byte("\x1b[?u")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	r.waitFor(t, "\x1b[?9u")
+}
+
+// TestVTEmulatorCapsKittyStack is x/vt-specific: the kitty keyboard spec caps
+// the flag stack at 16 entries, discarding the oldest push once full, and
+// nothing in x/vt enforces that — it is this adapter's own bookkeeping, so
+// it is asserted against the concrete type.
+func TestVTEmulatorCapsKittyStack(t *testing.T) {
+	e := newVTEmulator(20, 4)
+	r := &responses{done: make(chan struct{})}
+	go func() {
+		defer close(r.done)
+		buf := make([]byte, 4096)
+		for {
+			n, err := e.Read(buf)
+			if n > 0 {
+				r.mu.Lock()
+				r.buf.Write(buf[:n])
+				r.mu.Unlock()
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		_ = e.Close()
+		<-r.done
+	})
+
+	for i := 0; i < 20; i++ {
+		if _, err := e.Write([]byte("\x1b[>1u")); err != nil {
+			t.Fatalf("Write %d: %v", i, err)
+		}
+	}
+	e.mu.Lock()
+	got := len(e.kittyStack)
+	e.mu.Unlock()
+	if got != 16 {
+		t.Fatalf("kitty stack holds %d entries after 20 pushes, want 16", got)
+	}
+
+	if _, err := e.Write([]byte("\x1b[<1u")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if !e.kittyEnabled() {
+		t.Error("kitty is off after popping one of sixteen entries, want still enabled")
 	}
 }
 

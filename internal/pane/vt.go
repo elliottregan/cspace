@@ -16,6 +16,11 @@ import (
 // eagerly and it is not configurable), so this is the cheap part of a pane.
 const scrollbackLines = 2000
 
+// kittyStackLimit is the kitty keyboard protocol's own cap on its flag
+// stack: a push past this discards the oldest entry rather than growing
+// forever.
+const kittyStackLimit = 16
+
 // vtEmulator adapts github.com/charmbracelet/x/vt to Emulator.
 //
 // It carries three things x/vt does not do for us:
@@ -89,6 +94,15 @@ func (e *vtEmulator) Write(p []byte) (int, error) {
 func (e *vtEmulator) Resize(cols, rows int) {
 	e.emuMu.Lock()
 	defer e.emuMu.Unlock()
+	// x/vt clamps the cursor to width-1/height-1, so a zero dimension leaves
+	// CursorPosition at -1 — clamp to 1 to keep the interface's "zero-based,
+	// screen-relative" promise true at any size.
+	if cols < 1 {
+		cols = 1
+	}
+	if rows < 1 {
+		rows = 1
+	}
 	e.term.Resize(cols, rows)
 }
 
@@ -155,15 +169,36 @@ func (e *vtEmulator) registerKitty() {
 	e.term.RegisterCsiHandler(ansi.Command('>', 0, 'u'), func(params ansi.Params) bool {
 		flags, _, _ := params.Param(0, 0) // CSI > u with no param means 0
 		e.mu.Lock()
-		e.kittyStack = append(e.kittyStack, flags)
+		if len(e.kittyStack) >= kittyStackLimit {
+			// The kitty spec caps the stack at 16 entries and discards the
+			// oldest on overflow; nothing in x/vt enforces that.
+			copy(e.kittyStack, e.kittyStack[1:])
+			e.kittyStack[len(e.kittyStack)-1] = flags
+		} else {
+			e.kittyStack = append(e.kittyStack, flags)
+		}
 		e.kittyFlags, e.kittyOn = flags, true
 		e.mu.Unlock()
 		return true
 	})
 	e.term.RegisterCsiHandler(ansi.Command('=', 0, 'u'), func(params ansi.Params) bool {
 		flags, _, _ := params.Param(0, 0)
+		mode, _, _ := params.Param(1, 1) // mode defaults to 1, set-all, when absent
 		e.mu.Lock()
-		e.kittyFlags, e.kittyOn = flags, flags != 0
+		switch mode {
+		case 2: // set-bits: OR the given flags into the current set
+			e.kittyFlags |= flags
+		case 3: // reset-bits: clear the given flags from the current set
+			e.kittyFlags &^= flags
+		default: // 1: set-all, replace the current set outright
+			e.kittyFlags = flags
+		}
+		e.kittyOn = e.kittyFlags != 0
+		if len(e.kittyStack) > 0 {
+			// Keep the stack's top in sync so a later pop restores this
+			// value rather than whatever was pushed before the set.
+			e.kittyStack[len(e.kittyStack)-1] = e.kittyFlags
+		}
 		e.mu.Unlock()
 		return true
 	})
@@ -224,16 +259,13 @@ func (e *vtEmulator) kittyEnabled() bool {
 type vtScrollback struct{ e *vtEmulator }
 
 func (s vtScrollback) Len() int {
-	if s.e == nil {
-		return 0
-	}
 	s.e.emuMu.RLock()
 	defer s.e.emuMu.RUnlock()
 	return s.e.term.ScrollbackLen()
 }
 
 func (s vtScrollback) Line(i int) string {
-	if s.e == nil || i < 0 {
+	if i < 0 {
 		return ""
 	}
 	s.e.emuMu.RLock()

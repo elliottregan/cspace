@@ -97,8 +97,12 @@ type Scrollback interface {
 // queries — cursor position reports, device attributes, mode reports — and
 // hands the answers back through Read, along with everything SendKey and
 // Paste encode. x/vt's implementation carries no buffer, so a Write that
-// produces an answer BLOCKS until a Read consumes it. Every user of an
-// Emulator must have a reader running before the first Write.
+// produces an answer BLOCKS until a Read consumes it — and so do SendKey and
+// Paste, unconditionally, since they write into the same unbuffered pipe even
+// when what they encode is zero bytes. Every user of an Emulator must have a
+// reader running before the first Write, and that reader's goroutine must
+// never itself be the one calling Write, SendKey or Paste, and must outlive
+// every other caller — otherwise the emulator's users stall.
 type Emulator interface {
 	// Write feeds the child's output to the parser.
 	Write([]byte) (int, error)
