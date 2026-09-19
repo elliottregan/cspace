@@ -69,6 +69,12 @@ type Model struct {
 	help help.Model
 	now  func() time.Time
 
+	// leaderArmed is whether the leader's first key has been pressed and the
+	// next key is its second key rather than an ordinary one. It resets the
+	// moment that next key is dispatched, in handleKey — there is no mode to
+	// get stuck in.
+	leaderArmed bool
+
 	rows     []control.Row
 	selected int
 	daemon   control.DaemonHealth
@@ -404,13 +410,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyPressMsg:
-		// Ctrl+C is not configurable and is never routed to a modal: a
-		// dashboard with no way out is a bug.
-		if key.Matches(msg, forceQuit) {
+		// Ctrl+C quits from the sidebar and from a modal, where a dashboard
+		// with no way out would be a bug. With a pane focused it belongs to
+		// the child — interrupting Claude is the single most-used key in
+		// there — so the way out is the leader's quit.
+		if key.Matches(msg, forceQuit) && (m.focus != focusMain || m.focusedTab() == nil) {
 			m.quitting = true
-			return m, tea.Quit
+			return m, m.quitCmd()
 		}
 		return m.handleKey(msg)
+
+	case tea.PasteMsg:
+		// A text paste goes to the focused pane, which brackets it when the
+		// child asked for bracketing. With the sidebar focused there is
+		// nothing to paste into.
+		if t := m.focusedTab(); t != nil && t.p != nil && m.focus == focusMain {
+			t.p.Paste(msg.Content)
+		}
+		return m, nil
 	}
 
 	// Anything the branches above did not consume goes to whichever widget
@@ -425,6 +442,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case modeConfirmDown:
 		if m.confirm != nil {
 			return m.updateConfirm(msg)
+		}
+	case modePicker:
+		if m.picker != nil {
+			return m.updatePicker(msg)
 		}
 	}
 	return m, nil
