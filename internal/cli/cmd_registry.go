@@ -24,8 +24,9 @@ its control URL, IP, token, and (when applicable) browser-sidecar name.
 
 Stale entries accumulate when cspace down doesn't run cleanly (Ctrl-C
 mid-teardown, host reboot, externally stopped containers). These subcommands
-inspect the registry against live container state and clean up entries whose
-containers are gone.`,
+inspect the registry against live container state: prune removes stale
+entries and reports, but keeps, ones stopped on purpose with
+` + "`cspace down --keep-state`" + `.`,
 	}
 	parent.AddCommand(newRegistryListCmd())
 	parent.AddCommand(newRegistryPruneCmd())
@@ -225,7 +226,7 @@ func runRegistryPrune(out io.Writer, dryRun bool) error {
 				_, _ = fmt.Fprintf(out, "removed: %s:%s\n", e.Project, e.Name)
 			}
 			pruneCount++
-		case e.State == "starting":
+		case e.State == registry.StateStarting:
 			// Container alive but the entry never reached state=ready.
 			// Boot might still be in progress, or cspace up may have
 			// died after Run returned but before /health responded. Don't
@@ -262,12 +263,19 @@ func runRegistryPrune(out io.Writer, dryRun bool) error {
 	// container still exists, stop it now.
 	stoppedSingletonCount := 0
 	for project := range seenProjects {
-		remaining, err := r.CountForProject(project)
-		if err != nil {
-			_, _ = fmt.Fprintf(out, "warning: registry count for %s: %v\n", project, err)
-			continue
+		// liveEntryCount, not r.CountForProject: CountForProject counts
+		// every state, so one entry kept stopped by `cspace down
+		// --keep-state` would pin the browser sidecar alive forever even
+		// though nothing is left running that could use it. entries is
+		// already the full List() read from the top of this function, so
+		// filter it in place rather than re-reading the registry.
+		var projectEntries []registry.Entry
+		for _, e := range entries {
+			if e.Project == project {
+				projectEntries = append(projectEntries, e)
+			}
 		}
-		if remaining > 0 {
+		if liveEntryCount(projectEntries) > 0 {
 			continue
 		}
 		singletonName := browserSingletonName(project)

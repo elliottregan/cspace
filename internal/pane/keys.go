@@ -30,7 +30,10 @@ import (
 //     already resolved to text (CapsLock+a is Text "A"; a NumLock keypad
 //     digit is its digit), is typed as that text rather than handed to
 //     x/vt, which would re-derive it from the BASE codepoint and send a
-//     lowercase "a". Everything else falls to rule 1.
+//     lowercase "a". Likewise, a keypad press carrying a NumLock bit is
+//     typed as its text rather than handed to x/vt's application-keypad
+//     encoding — one wrong-ish byte beats zero bytes, and an unflagged
+//     keypad press is unchanged. Everything else falls to rule 1.
 //  1. Nothing modified goes through here. x/vt encodes unmodified keys
 //     correctly AND mode-sensitively — DECCKM decides between ESC O A and
 //     ESC [ A for Up, the application keypad decides the keypad forms — and
