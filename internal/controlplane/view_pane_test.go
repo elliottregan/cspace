@@ -54,20 +54,26 @@ func TestRenderTabsCountsBothSidesAndNeverSaysPlusZero(t *testing.T) {
 		wantKeep     string // a tab that must still be legible
 		wantElisions []string
 		wantAbsent   []string
+		wantPrefix   string // set only where a specific side's marker matters
+		wantSuffix   string
 	}{
 		// Tab 0 focused: nothing is to its left, so the row drops from the
 		// right and says so.
 		{"the first tab keeps its neighbour and counts the right",
-			0, 70, "resume-redux/mercury", []string{"+1"}, []string{"+0"}},
+			0, 70, "resume-redux/mercury", []string{"+1"}, []string{"+0"}, "", ""},
 		{"the first tab alone still counts the right",
-			0, 30, "resume-redux", []string{"+2"}, []string{"+0"}},
-		// A middle tab: one dropped on each side, both counted.
+			0, 30, "resume-redux", []string{"+2"}, []string{"+0"}, "", ""},
+		// A middle tab: one dropped on each side, both counted — on their
+		// own side, not just "a +1 appears somewhere in the row". A row
+		// that dropped the right-hand marker but kept the left one's "+1"
+		// would still satisfy a bare strings.Contains(got, "+1"), so pin
+		// each marker at its own end instead.
 		{"a middle tab counts both sides",
-			1, 40, "resume-redux", []string{"+1"}, []string{"+0"}},
+			1, 40, "resume-redux", []string{"+1"}, []string{"+0"}, "+1 ", " +1"},
 		// The last tab is the original case: everything dropped is on the
 		// left, and there is no right-hand count to show.
 		{"the last tab counts only the left",
-			2, 40, "issue-42", []string{"+2"}, []string{"+0"}},
+			2, 40, "issue-42", []string{"+2"}, []string{"+0"}, "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -87,6 +93,12 @@ func TestRenderTabsCountsBothSidesAndNeverSaysPlusZero(t *testing.T) {
 				if strings.Contains(got, absent) {
 					t.Errorf("row %q claims %q, which describes nothing", got, absent)
 				}
+			}
+			if tc.wantPrefix != "" && !strings.HasPrefix(got, tc.wantPrefix) {
+				t.Errorf("row %q does not open with the left elision count %q", got, tc.wantPrefix)
+			}
+			if tc.wantSuffix != "" && !strings.HasSuffix(got, tc.wantSuffix) {
+				t.Errorf("row %q does not close with the right elision count %q", got, tc.wantSuffix)
 			}
 		})
 	}
