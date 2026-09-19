@@ -458,9 +458,14 @@ func TestAPortsFailureIsScopedToItsOwnSandbox(t *testing.T) {
 	if got := m.selectedRow().Name; got != "mercury" {
 		t.Fatalf("test setup: selected %q, want mercury", got)
 	}
+	// Rollout step 4 moved the band under the sidebar, 24 columns wide,
+	// where a full URL does not fit (view_pane.go's sidebarColumn doc). The
+	// port number does — both in the band's own (now-folded) ports line and
+	// in the row list's port sub-line, which is what carries the address
+	// itself now, as an OSC 8 hyperlink on "5173 web" rather than as text.
 	out := plain(m.View().Content)
-	if !strings.Contains(out, "http://mercury.alpha.cspace.test:5173/") {
-		t.Errorf("mercury's band should still list its URLs; got:\n%s", out)
+	if !strings.Contains(out, "5173") {
+		t.Errorf("mercury's ports should still be listed; got:\n%s", out)
 	}
 	if strings.Contains(out, "ports unavailable") {
 		t.Errorf("another sandbox's Ports failure blanked mercury's ports; got:\n%s", out)
@@ -474,9 +479,11 @@ func TestAPortsFailureIsScopedToItsOwnSandbox(t *testing.T) {
 	if !strings.Contains(out, "ports unavailable") {
 		t.Errorf("the sandbox whose probe failed should say so; got:\n%s", out)
 	}
-	if !strings.Contains(out, "no such process") {
-		t.Errorf("the band should carry its own probe's error; got:\n%s", out)
-	}
+	// The error's own text ("container exec: no such process") no longer
+	// fits the 23-column band alongside "ports unavailable: " — that specific
+	// degradation is TestRenderDetailPortsError's job, at a width where it
+	// survives. What this test still owns is the scoping: each sandbox's
+	// band reflects only its own probe, never its neighbour's.
 }
 
 // Ports arrive on the slow cadence alone, so a sandbox that stops must lose
@@ -786,22 +793,20 @@ func TestPreSizeViewRunsInTheAlternateScreen(t *testing.T) {
 	}
 }
 
-// tabsLine clamps its gap to a minimum of 1 but, before this fix, never
-// truncated title or health — so a narrow window (a project/sandbox title
-// alongside "daemon <version>") could render a couple of cells wider than
-// the pane. Reproduces the design's own example: W=57 -> mainWidth 33,
-// "alpha/mercury" + "daemon 1.0.0-rc.48" don't fit with even a 1-cell gap
-// once styleTabs' own padding is counted.
-func TestTabsLineFitsANarrowWindow(t *testing.T) {
+// With no panes open the row carries daemon health, right-aligned, and it
+// has to fit a narrow window — the design's own example: W=57 -> mainWidth
+// 33, where the old selection title and "daemon 1.0.0-rc.48" together did
+// not fit even with a one-cell gap.
+func TestTabsRowFitsANarrowWindow(t *testing.T) {
 	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
 	const mainWidth = 57 - sidebarWidth // 33
 
-	line := plain(m.tabsLine(mainWidth))
+	line := plain(m.tabsRow(mainWidth))
 	if w := ansi.StringWidth(line); w > mainWidth {
-		t.Errorf("tabs line width = %d, want <= %d: %q", w, mainWidth, line)
+		t.Errorf("tabs row width = %d, want <= %d: %q", w, mainWidth, line)
 	}
 	if !strings.Contains(line, "daemon") {
-		t.Errorf("tabs line should still show daemon health; got %q", line)
+		t.Errorf("with no tabs the row should still show daemon health; got %q", line)
 	}
 }
 

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/elliottregan/cspace/internal/control"
 )
 
@@ -26,8 +28,21 @@ func renderDetail(row control.Row, live liveState, ports []control.Port, portsEr
 
 	switch row.Kind {
 	case control.RowSandbox:
-		add(lipglossStyle{}, "%s · %s · %s · %s", row.Name, stateLabel(row),
+		// Under the sidebar `width` is sidebarInner — 23 columns, one less
+		// than sidebarWidth's 24 — and these four fields do not fit on one
+		// line; `fit` would cut the memory figure off the end, which is the
+		// number the band is there for. Fold rather than lose it. In the
+		// main area, where the band was until rollout step 4, the header
+		// still fits and still renders as one line.
+		head := fmt.Sprintf("%s · %s · %s · %s", row.Name, stateLabel(row),
 			formatUptime(row.Uptime), formatMemUsage(memoryUsedB, row.MemoryB))
+		if ansi.StringWidth(head) > width {
+			add(lipglossStyle{}, "%s · %s", row.Name, stateLabel(row))
+			add(lipglossStyle{}, "%s", strings.TrimPrefix(
+				formatUptime(row.Uptime)+" · "+formatMemUsage(memoryUsedB, row.MemoryB), " · "))
+		} else {
+			add(lipglossStyle{}, "%s", head)
+		}
 		if row.State == control.StateStopped {
 			add(styleDim, "not running — press u to boot it, or select another sandbox")
 			return strings.Join(lines, "\n")

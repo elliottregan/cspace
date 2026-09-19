@@ -22,6 +22,7 @@ const (
 	modeNormal uiMode = iota
 	modeConfirmDown
 	modeInput
+	modePicker
 )
 
 // noticeLifetime is how long a success notice stays in the footer. Error
@@ -98,6 +99,9 @@ type Model struct {
 
 	mode    uiMode
 	confirm *huh.Form
+	// picker is the new-pane picker's form, arriving in Task 4; the field is
+	// declared here so mainArea's modePicker branch compiles now.
+	picker *huh.Form
 	// pending is the row a prompt (the send box or the teardown
 	// confirmation) was opened against. Its completion path acts on this,
 	// not on selectedRow(): moveSelection or a snapshot landing while the

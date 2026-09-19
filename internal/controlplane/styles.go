@@ -36,6 +36,15 @@ var (
 
 	// styleMain pads the main area off the sidebar's rule.
 	styleMain = lipgloss.NewStyle().Padding(0, 1)
+
+	// The tabs row. styleTabActive is the focused tab while the keyboard is
+	// pointed at the main area; styleTabFocused is the same tab while the
+	// sidebar has it — bold, so it is still findable, but not lit. The rest
+	// are dim, so the row reads at a glance even without colour.
+	styleTabActive = lipgloss.NewStyle().Bold(true).Padding(0, 1).
+			Foreground(lipgloss.Color("#5fffaf"))
+	styleTabFocused = lipgloss.NewStyle().Bold(true).Padding(0, 1)
+	styleTabIdle    = lipgloss.NewStyle().Faint(true).Padding(0, 1)
 )
 
 // lipglossStyle is lipgloss.Style under a local name, so view code can hand

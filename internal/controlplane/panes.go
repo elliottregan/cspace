@@ -144,8 +144,6 @@ type tab struct {
 
 // title is what the tabs row shows: "<project>/<sandbox> · <kind>". A host
 // shell belongs to no sandbox, so it says so.
-//
-//nolint:unused // filled in by Task 3, which is the first caller
 func (t *tab) title() string {
 	if t.kind == KindHostShell {
 		return "host · shell"
@@ -242,8 +240,6 @@ func (m Model) addTab(t *tab) Model {
 }
 
 // focusedTab is the tab the main area shows, or nil when there are none.
-//
-//nolint:unused // filled in by Task 3, which is the first caller
 func (m Model) focusedTab() *tab {
 	if m.focused < 0 || m.focused >= len(m.tabs) {
 		return nil

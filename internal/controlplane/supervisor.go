@@ -19,7 +19,6 @@ func (s *supervisor) resize(width, height int) { s.width, s.height = width, heig
 //nolint:unused // filled in by Task 6, which is the first caller
 func (s *supervisor) setEvents([]control.EventLine) {}
 
-//nolint:unused // filled in by Task 3, which is the first caller
 func (s *supervisor) view(width, height int) string { return "" }
 
 func (m Model) supervisorEventsCmd(*tab) tea.Cmd { return nil }
