@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -155,27 +156,57 @@ func TestClickOnATabFocusesIt(t *testing.T) {
 	}
 }
 
+// TestClickOnAnElisionMarkerDoesNothing pins that the "+N" head of an
+// elided tabs row belongs to no tab.
+//
+// The setup is built so a hit test that DID claim the marker's columns
+// would be visible twice over: three tabs narrowed until exactly one is
+// dropped, so the span nearest the marker is a tab that is not the focused
+// one (a claim would move `focused`), and the keyboard pointed at the
+// sidebar (a claim would also move `focus`). Asserting on `focused` alone
+// against a row where the only surviving span IS the focused tab — which
+// is what two tabs narrowed to one gives — cannot tell a no-op from a
+// wrong hit, which is how the first version of this test passed either way.
 func TestClickOnAnElisionMarkerDoesNothing(t *testing.T) {
 	h := &fakeHost{t: t}
 	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
 	m = stepPump(t, m, "enter")
 	m.focus = focusSidebar
 	m = stepPump(t, m, "s")
-	mustTabs(t, m, 2)
-	// Narrow enough that at least one tab is elided.
-	mm, _ := m.Update(tea.WindowSizeMsg{Width: 48, Height: 24})
+	m.focus = focusSidebar
+	m = stepPump(t, m, "a")
+	mustTabs(t, m, 3)
+	// Set before the resize, so the geometry the click is tested against is
+	// the one this state renders.
+	m.focus = focusSidebar
+	// Narrow enough to drop one tab and keep two.
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = mm.(Model)
-	if len(m.geom.tabs) >= 2 {
-		t.Skip("both tabs still fit; nothing was elided")
+
+	if len(m.geom.tabs) != 2 {
+		t.Fatalf("tab spans = %+v, want two: one tab elided and two kept", m.geom.tabs)
+	}
+	if m.geom.tabs[0].index == m.focused {
+		t.Fatalf("the span next to the marker is the focused tab (%d); this setup cannot tell a wrong hit from a no-op",
+			m.focused)
 	}
 	if !strings.Contains(plain(m.tabsRow(mainWidthFor(m.width))), "+") {
 		t.Fatal("expected an elision marker")
 	}
-	before := m.focused
-	// Column 0 of the row is the marker.
-	got := click(t, m, sidebarWidth, m.geom.tabsY)
-	if got.focused != before {
+	// The marker sits at the head of the row, in the columns before the
+	// first surviving span. The row starts where the sidebar ends.
+	marker := sidebarWidth
+	if marker >= m.geom.tabs[0].from {
+		t.Fatalf("no columns before the first span for a marker: %+v", m.geom.tabs)
+	}
+
+	beforeFocused, beforeFocus := m.focused, m.focus
+	got := click(t, m, marker, m.geom.tabsY)
+	if got.focused != beforeFocused {
 		t.Errorf("focused moved to %d; a marker is not a tab", got.focused)
+	}
+	if got.focus != beforeFocus {
+		t.Error("clicking a marker pointed the keyboard at the main area; a marker is not a tab")
 	}
 }
 
@@ -234,15 +265,44 @@ func TestClickDismissesTheHelpOverlayAndIsSwallowed(t *testing.T) {
 	}
 }
 
+// TestClickUnderAModalIsSwallowedWithoutAnsweringIt pins the
+// `m.mode != modeNormal` swallow.
+//
+// The click has to land somewhere the same click WOULD act in modeNormal,
+// or the test proves nothing: the first version clicked the empty main
+// area of a model with no tabs, which the main arm refuses anyway, so it
+// passed with the swallow deleted. A selectable sidebar row that is not
+// the current selection is the dangerous case — with the swallow gone it
+// moves the selection, and the detail band, out from under a prompt that
+// names a different sandbox.
 func TestClickUnderAModalIsSwallowedWithoutAnsweringIt(t *testing.T) {
 	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
 	m = step(t, m, "d") // the teardown confirmation
 	if m.mode != modeConfirmDown {
 		t.Fatalf("mode = %v, want the confirmation", m.mode)
 	}
-	got := click(t, m, m.geom.main.x+5, m.geom.main.y+2)
+	beforeSelected, beforeFocus := m.selected, m.focus
+	if m.rows[3].Name != "issue-42" || !m.rows[3].Selectable || beforeSelected == 3 {
+		t.Fatalf("fixture moved: rows[3] must be a selectable row other than the selection (%d)", beforeSelected)
+	}
+	y := listLineOf(t, m, 3)
+
+	got, cmd := clickCmd(t, m, 4, y)
 	if got.mode != modeConfirmDown {
 		t.Errorf("mode = %v; a click is not an answer and must not cancel a prompt", got.mode)
+	}
+	if got.selected != beforeSelected {
+		t.Errorf("selected moved to %d under an open prompt; the detail band belongs to the row the prompt named",
+			got.selected)
+	}
+	if got.focus != beforeFocus {
+		t.Error("the keyboard moved under an open prompt")
+	}
+	if cmd != nil {
+		t.Error("a swallowed click must not start anything")
+	}
+	if got.pending.Name != m.pending.Name {
+		t.Errorf("pending = %q, want the row the prompt was opened against (%q)", got.pending.Name, m.pending.Name)
 	}
 }
 
@@ -258,22 +318,130 @@ func TestANonLeftClickDoesNothing(t *testing.T) {
 	}
 }
 
+// TestMotionAndReleaseNeverReachTheWidgets pins the
+// `case tea.MouseReleaseMsg, tea.MouseMotionMsg:` arm, which consumes both
+// above Update's fall-through to whichever widget owns the keyboard.
+//
+// Neither bubbles' textinput nor huh reads a mouse message today — huh
+// v2.0.3 contains no reference to Mouse at all — so "the send box is
+// unchanged" and "no command came back" are both true whether or not the
+// arm exists. That is how the first version of this test passed with the
+// arm deleted.
+//
+// What does tell the two paths apart: textinput.Update re-runs
+// handleOverflow on EVERY message, whatever its type. So a send box whose
+// scroll window has gone stale — a value wider than the box, then a
+// narrower window — renders differently the moment anything at all passes
+// through the widget. The test asserts that discrimination first, so if a
+// future bubbles stops recomputing, this fails loudly instead of quietly
+// going vacuous again.
 func TestMotionAndReleaseNeverReachTheWidgets(t *testing.T) {
-	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
-	m = step(t, m, "m") // the send box
-	if m.mode != modeInput {
-		t.Fatalf("mode = %v, want the send box", m.mode)
-	}
 	for _, msg := range []tea.Msg{
 		tea.MouseMotionMsg{X: 30, Y: 5, Button: tea.MouseLeft},
 		tea.MouseReleaseMsg{X: 30, Y: 5, Button: tea.MouseLeft},
 	} {
-		mm, cmd := m.Update(msg)
+		m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
+		m = step(t, m, "m") // the send box
+		if m.mode != modeInput {
+			t.Fatalf("mode = %v, want the send box", m.mode)
+		}
+		// Through the message path, not by poking the field: the paste
+		// falls through to the textinput exactly as a real one does.
+		mm, _ := m.Update(tea.PasteMsg{Content: strings.Repeat("0123456789", 12)})
+		m = mm.(Model)
+		mm, _ = m.Update(tea.WindowSizeMsg{Width: 40, Height: 24})
+		m = mm.(Model)
+		before := m.input.View()
+
+		if probe, _ := m.input.Update(msg); probe.View() == before {
+			t.Fatalf("%T no longer changes a stale send box; this test can no longer tell "+
+				"a dropped message from one handed to the widget", msg)
+		}
+
+		got, cmd := m.Update(msg)
+		g := got.(Model)
 		if cmd != nil {
 			t.Errorf("%T produced a command; it must be dropped", msg)
 		}
-		if mm.(Model).input.Value() != "" {
+		if g.input.View() != before {
 			t.Errorf("%T reached the send box", msg)
+		}
+		if g.input.Value() != m.input.Value() {
+			t.Errorf("%T changed the send box's text", msg)
+		}
+		if g.mode != modeInput {
+			t.Errorf("%T left the send box: mode = %v", msg, g.mode)
+		}
+	}
+}
+
+// TestClickOnTheSidebarBandAndRule covers the arm that catches everything
+// in the sidebar that is not a row: the vertical rule, the detail band
+// below it, and a list line that belongs to no row. All three point the
+// keyboard at the sidebar — the person did ask for that by clicking in it
+// — and none of them moves the selection or re-reads any events.
+func TestClickOnTheSidebarBandAndRule(t *testing.T) {
+	base := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
+	g := base.geom
+
+	// A list line inside the row list that maps to no row: the fixture has
+	// five rows and a taller column than that.
+	padding := -1
+	for y, idx := range g.listRows {
+		if idx < 0 {
+			padding = y
+			break
+		}
+	}
+	if padding < 0 {
+		t.Fatalf("the fixture fills the list; no empty line to click: %v", g.listRows)
+	}
+
+	cases := []struct {
+		name string
+		x, y int
+	}{
+		{"the detail band", 4, g.list.y + g.list.h + 2},
+		{"the vertical rule", sidebarWidth - 1, 1},
+		{"a list line belonging to no row", 4, g.list.y + padding},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if !g.sidebar.contains(tc.x, tc.y) {
+				t.Fatalf("(%d,%d) is not in the sidebar %+v", tc.x, tc.y, g.sidebar)
+			}
+			m := base
+			m.focus = focusMain
+			before := m.selected
+
+			got, cmd := clickCmd(t, m, tc.x, tc.y)
+			if got.focus != focusSidebar {
+				t.Error("a click in the sidebar did not point the keyboard at it")
+			}
+			if got.selected != before {
+				t.Errorf("selected moved to %d; there is no row under the pointer", got.selected)
+			}
+			if cmd != nil {
+				t.Error("nothing was selected, so there is nothing to re-read")
+			}
+		})
+	}
+}
+
+// TestAnyClickDismissesAnErrorNotice pins that a click is input for the
+// purpose of the footer whatever button made it, which is the rule
+// handleKey applies to every key.
+func TestAnyClickDismissesAnErrorNotice(t *testing.T) {
+	base := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
+	for _, button := range []tea.MouseButton{tea.MouseLeft, tea.MouseMiddle, tea.MouseRight} {
+		mm, _ := base.Update(actionResultMsg{label: LabelSend, err: errors.New("boom")})
+		m := mm.(Model)
+		if !m.notice.isErr {
+			t.Fatalf("setup: the footer holds no error notice (%+v)", m.notice)
+		}
+		mm, _ = m.Update(tea.MouseClickMsg{X: 4, Y: 1, Button: button})
+		if got := mm.(Model).notice; got.text != "" {
+			t.Errorf("a %v click left %q in the footer; any key would have dismissed it", button, got.text)
 		}
 	}
 }
