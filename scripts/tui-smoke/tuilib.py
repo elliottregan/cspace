@@ -6,7 +6,9 @@ it belongs to a person (or an agent) verifying a change, not to CI.
 Two pieces. Screen is a small VT interpreter — enough of one for what Bubble
 Tea paints — so `display()` is what a human would have seen rather than a
 byte stream, and it is resumable, because pump feeds it one pty read at a
-time and escape sequences straddle read boundaries. Tui forks a pty, runs the
+time and escape sequences straddle read boundaries. So do multi-byte
+glyphs, one level down, which is why the bytes go through a single
+incremental UTF-8 decoder rather than being decoded per read. Tui forks a pty, runs the
 binary in it, answers the terminal queries Bubble Tea makes at startup, and
 keeps the stream drained.
 
@@ -16,6 +18,7 @@ pty buffer holds — so a script that stops reading while it writes wedges the
 child in write() and never gets its keystrokes read.
 """
 
+import codecs
 import fcntl
 import os
 import pty
@@ -205,6 +208,14 @@ class Tui:
         self.raw = b""
         self.rows, self.cols = rows, cols
         self.screen = Screen(cols, rows)
+        # One decoder for the whole stream, not one per read. The dashboard
+        # paints glyphs the pty hands over in pieces — a single ▸ is
+        # b"\xe2\x96\xb8" — and an independent decode of each chunk turns a
+        # glyph split across a read boundary into U+FFFD on both sides, which
+        # reads in a capture as a rendering bug that is not there. The
+        # incremental decoder holds the partial sequence until the rest
+        # arrives; reap() flushes whatever is left.
+        self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self.exited = False
         self.status = None
         argv = argv if argv is not None else ["tui"]
@@ -245,7 +256,7 @@ class Tui:
             if not chunk:
                 return
             self.raw += chunk
-            self.screen.feed(chunk.decode("utf-8", "replace"))
+            self.screen.feed(self.decoder.decode(chunk))
             self._answer_queries(chunk)
 
     def _answer_queries(self, chunk):
@@ -314,13 +325,36 @@ class Tui:
         self.pump(wait)
         return self.reap()
 
+    def _flush(self):
+        """Feed the decoder's held-back bytes to the screen, once.
+
+        A stream that ends mid-glyph leaves bytes in the incremental decoder;
+        final=True turns them into the one U+FFFD they deserve instead of
+        dropping them silently. Safe to call again — the decoder resets
+        itself and a second call yields nothing.
+        """
+        tail = self.decoder.decode(b"", final=True)
+        if tail:
+            self.screen.feed(tail)
+
     def reap(self, tries=60):
+        # Idempotent, on every path. quit() calls reap(), and a script that
+        # then calls reap() itself must not re-run the 6s loop and raise
+        # ChildProcessError against a pid nobody is left to wait for.
         if self.exited:
             return self.status
         for _ in range(tries):
-            done, st = os.waitpid(self.pid, os.WNOHANG)
+            try:
+                done, st = os.waitpid(self.pid, os.WNOHANG)
+            except ChildProcessError:
+                # Already reaped by someone else (a SIGCHLD handler, an
+                # earlier wait). Nothing to report but "it is gone".
+                self.exited = True
+                self._flush()
+                return self.status
             if done:
                 self.exited, self.status = True, st
+                self._flush()
                 return st
             self.pump(0.1)
         try:
@@ -328,7 +362,11 @@ class Tui:
             os.waitpid(self.pid, 0)
         except OSError:
             pass
-        self.status = None
+        # exited is set here too: the child is gone, status None is what
+        # exit_code() renders as HUNG, and a second reap() must return that
+        # rather than waiting another six seconds for a corpse.
+        self.exited, self.status = True, None
+        self._flush()
         return None
 
     def exit_code(self):
