@@ -141,6 +141,7 @@ type Emulator interface {
     Read([]byte) (int, error)    // responses the emulator wants sent to the PTY
     Resize(cols, rows int)
     Render() string              // the visible screen as styled text
+    CursorPosition() (x, y int)  // where the child left the cursor; tea.View places the terminal cursor from it
     SendKey(KeyEvent)            // encodes and queues a key for the child
     Paste(string)                // brackets when the child asked for it
     Scrollback() Scrollback
@@ -166,10 +167,18 @@ modified keys as CSI-u when the child has kitty on, xterm modifier forms
 otherwise, and degrades a modified legacy key to its plain byte when neither
 applies, which is what a real terminal does.
 
-Teardown handshake: stop accepting input, cancel the response drain and wait
-for it, close the PTY (the output pump then sees EOF and exits), wait for the
-process, then `Close` the emulator once via `sync.Once`. No `Read` is in
-flight when `Close` runs.
+Teardown handshake: stop accepting input, end the child's process group and
+reap it, close the PTY — which both returns a writer parked on a child that
+stopped reading and gives the output pump its EOF — then `Close` the emulator
+once via `sync.Once` and join the response drain. The drain cannot be
+cancelled first: it is parked inside x/vt's unbuffered input pipe, and only
+closing that pipe returns it. The property the original ordering was buying —
+a `Close` that cannot race a `Read` — is bought instead by the adapter's
+`Close`, which closes the emulator's input pipe (synchronized by `io.Pipe`)
+rather than calling x/vt's own `Close`, which writes an unguarded `closed`
+bool that `Read` reads. The scrollback is read under the adapter's own lock
+for the same reason: `SafeEmulator` wraps the accessor but not the buffer it
+returns. `make test-race` is the acceptance check for both.
 
 Host-shell panes use the engine with `$SHELL` and no container exec.
 

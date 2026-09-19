@@ -3,7 +3,7 @@ LDFLAGS         := -ldflags "-X github.com/elliottregan/cspace/internal/cli.Vers
 LDFLAGS_RELEASE := -ldflags "-s -w -X github.com/elliottregan/cspace/internal/cli.Version=$(VERSION)"
 GOBIN           := ./bin/cspace-go
 
-.PHONY: build build-linux clean test test-scripts vet sync-embedded fmt fmt-check lint check install-tools setup-hooks check-hooks cspace-linux cspace-image release
+.PHONY: build build-linux clean test test-scripts test-race vet sync-embedded fmt fmt-check lint check install-tools setup-hooks check-hooks cspace-linux cspace-image release
 # (registry-daemon target removed; daemon is embedded as `cspace daemon serve`.)
 
 # Sync lib/ contents into internal/assets/embedded/ for go:embed.
@@ -55,6 +55,13 @@ test-scripts:
 		echo "bash $$t"; \
 		bash "$$t" || exit 1; \
 	done
+
+# Race check for the pane engine: four goroutines per pane around an emulator
+# whose upstream does not guard its own Close. Deliberately not part of
+# `make check` — a race build is slow and this is the one package that needs
+# it. Run it after touching internal/pane.
+test-race: sync-embedded
+	go test -race -count=1 ./internal/pane/...
 
 vet: sync-embedded
 	go vet ./...
