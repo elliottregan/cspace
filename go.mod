@@ -14,6 +14,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/charmbracelet/x/vt v0.0.0-20260913004009-c615ff2f7805
 	github.com/compose-spec/compose-go/v2 v2.14.0
+	github.com/creack/pty v1.1.24
 	github.com/mattn/go-isatty v0.0.20
 	github.com/miekg/dns v1.1.72
 	github.com/spf13/cobra v1.10.2
