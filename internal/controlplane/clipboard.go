@@ -3,6 +3,9 @@ package controlplane
 import (
 	"context"
 	"errors"
+	"time"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // ErrNoImage is what a Clipboard reports when the clipboard holds no image.
@@ -56,3 +59,54 @@ func (nopClipboard) Image(context.Context, string, string) (string, error) {
 }
 
 func (nopClipboard) Text(context.Context) (string, error) { return "", errNoClipboard }
+
+// LabelPasteImage is what the footer calls an image paste while it is in
+// flight and when it fails.
+const LabelPasteImage = "paste image"
+
+// clipboardTimeout bounds one image paste: the probe, the write, and the
+// text read the fallback needs. osascript is fast, but it is a host binary
+// that can be slow to start under load, and the UI must never wait on it.
+const clipboardTimeout = 10 * time.Second
+
+// pasteMsg carries one clipboard read's outcome back to the tab it was
+// started for. text is what to type into the pane: the path of the written
+// PNG, or the clipboard's own text when it held no image.
+type pasteMsg struct {
+	id   int
+	text string
+	err  error
+}
+
+// pasteImageCmd reads the clipboard for one tab, off the UI goroutine.
+//
+// The fallback is here rather than in a second round trip because it is one
+// decision: "an empty or text-only clipboard falls back to a text paste"
+// (the design). Two commands would also mean two deadlines and a window in
+// which the tab could close between them.
+//
+// The tab's identity travels by value. The command outlives nothing, but it
+// must not read the model it was built from — that Model is a copy, and by
+// the time this runs the real one has moved on. It must not touch the pane
+// either: the write happens in the pasteMsg arm, on the UI goroutine, which
+// is the only place a *pane.Pane is driven from.
+func (m Model) pasteImageCmd(t *tab) tea.Cmd {
+	clip, id, project, sandbox := m.clip, t.id, t.project, t.sandbox
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), clipboardTimeout)
+		defer cancel()
+
+		path, err := clip.Image(ctx, project, sandbox)
+		if err == nil {
+			return pasteMsg{id: id, text: path}
+		}
+		if !errors.Is(err, ErrNoImage) {
+			return pasteMsg{id: id, err: err}
+		}
+		text, err := clip.Text(ctx)
+		if err != nil {
+			return pasteMsg{id: id, err: err}
+		}
+		return pasteMsg{id: id, text: text}
+	}
+}
