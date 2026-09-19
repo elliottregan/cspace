@@ -209,10 +209,10 @@ func runDaemonServe() error {
 				continue
 			}
 			entries, err := r.List()
-			if err != nil || len(entries) > 0 {
+			if err != nil || liveEntryCount(entries) > 0 {
 				continue
 			}
-			log.Printf("cspace daemon: idle %s with no entries; exiting", idleSince)
+			log.Printf("cspace daemon: idle %s with no live entries; exiting", idleSince)
 			os.Exit(0)
 		}
 	}()
@@ -795,6 +795,26 @@ func memoizedContainerIP(container string) (string, error) {
 	}
 	m.ip = "" // negative-cache the failure so we don't re-inspect until TTL expiry
 	return "", errContainerGone
+}
+
+// liveEntryCount is how many registry entries still need this daemon.
+//
+// A stopped entry does not: `cspace down --keep-state` removes the
+// container and keeps the row so the sandbox can be resumed under the same
+// name, but there is nothing left to serve DNS for (MarkStopped clears the
+// IP, so the DNS handler already NXDOMAINs the name) and nothing left to
+// look up in the registry API. Counting it would mean one kept sandbox pins
+// the daemon alive forever — the idle exit would never fire again on that
+// host — which is the same ref-count rule `cspace down` applies to the
+// shared browser sidecar two files over.
+func liveEntryCount(entries []registry.Entry) int {
+	n := 0
+	for _, e := range entries {
+		if e.State != registry.StateStopped {
+			n++
+		}
+	}
+	return n
 }
 
 // liveSandboxIP prefers the container's currently-inspected IP over the

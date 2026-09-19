@@ -65,11 +65,11 @@ func Correlate(
 			switch {
 			case running && st.Reachable:
 				state = StateRunning
-			case running && e.State == "starting":
+			case running && e.State == registry.StateStarting:
 				state = StateBooting
 			case running:
 				state = StateDegraded
-			case e.State == "starting":
+			case e.State == registry.StateStarting:
 				state = StateBooting
 			}
 			rows = append(rows, Row{

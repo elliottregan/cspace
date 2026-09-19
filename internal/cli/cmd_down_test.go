@@ -172,3 +172,84 @@ func TestTeardownUnregistersWithoutKeepState(t *testing.T) {
 		t.Error("the default teardown left the registry entry behind")
 	}
 }
+
+// TestDownAllSkipsAKeptEntry — `--all` built its name list from every
+// registry entry in the project, which after --keep-state includes the
+// stopped ones. Running plain `cspace down --all` then reached
+// wipeSandboxState for a sandbox with no container to tear down, deleting
+// the clone, sessions and volumes the operator deliberately kept. The kept
+// entry is skipped and named instead; nothing calls the substrate, so this
+// stays hermetic.
+func TestDownAllSkipsAKeptEntry(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CSPACE_PROJECT", "demo")
+
+	regPath, err := registry.DefaultPath()
+	if err != nil {
+		t.Fatalf("registry.DefaultPath: %v", err)
+	}
+	r := &registry.Registry{Path: regPath}
+	if err := r.Register(registry.Entry{
+		Project: "demo", Name: "mercury", State: registry.StateStopped, StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+
+	// The state the flag was for: a clone that must survive a later --all.
+	clone := filepath.Join(home, ".cspace", "clones", "demo", "mercury")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newDownCmd()
+	cmd.SetArgs([]string{"--all"})
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("down --all: %v", err)
+	}
+
+	if !strings.Contains(stdout.String(), "kept: mercury (stopped;") {
+		t.Errorf("stdout = %q, want it to name the kept sandbox", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "nothing to tear down") {
+		t.Errorf("stdout = %q, want a closing line when every name is filtered out", stdout.String())
+	}
+	if _, err := os.Stat(clone); err != nil {
+		t.Errorf("down --all wiped the clone of a kept sandbox: %v", err)
+	}
+	if _, err := r.Lookup("demo", "mercury"); err != nil {
+		t.Errorf("down --all purged the kept registry entry: %v", err)
+	}
+}
+
+// TestDownASingleKeptSandboxStillPurges — skipping is a property of the
+// batch, not of the state. Naming a kept sandbox is how an operator
+// deliberately reclaims it, and that has to keep working.
+func TestDownASingleKeptSandboxStillPurges(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	noSidecars(t)
+	reg := &registry.Registry{Path: filepath.Join(home, "sandbox-registry.json")}
+	if err := reg.Register(registry.Entry{
+		Project: "demo", Name: "mercury", State: registry.StateStopped,
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	clone := filepath.Join(home, ".cspace", "clones", "demo", "mercury")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+
+	teardownSandbox(context.Background(), noSubstrate{}, reg, "demo", "mercury", &out, true /* wipeState */)
+
+	if _, err := reg.Lookup("demo", "mercury"); err == nil {
+		t.Error("purging a kept sandbox left its registry entry behind")
+	}
+	if _, err := os.Stat(clone); !os.IsNotExist(err) {
+		t.Errorf("purging a kept sandbox left its clone behind: %v", err)
+	}
+}
