@@ -122,6 +122,7 @@ func (m Model) helpView(width int) string {
 		styleDim.Render(fit("panes", width)),
 		h.FullHelpView(m.keys.PaneFullHelp()),
 		"",
+		styleDim.Render(fit("every other key goes to the focused pane; ⌃Space is the leader", width)),
 		styleDim.Render(fit("ctrl+c quits from anywhere · esc leaves a prompt", width)),
 		styleDim.Render(fit("keys the selected row cannot use are hidden from the footer", width)),
 		styleDim.Render(fit("bindings come from tui.keys in ~/.cspace/config.json", width)),
