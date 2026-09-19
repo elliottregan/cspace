@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/elliottregan/cspace/internal/control"
 )
 
@@ -191,6 +193,21 @@ func TestRenderDetailPortsError(t *testing.T) {
 	}
 	if !strings.Contains(out, "mercury") {
 		t.Errorf("the rest of the band must still render; got:\n%s", out)
+	}
+
+	// ...and at the width the band actually has. Since Task 3 moved it
+	// under the sidebar, sidebarInner (23) is its only production width —
+	// 70 is a width this line is never rendered at, and the fold is what
+	// breaks first. The error text itself is allowed to be cut; the label
+	// that says the line degraded is not.
+	out = plain(renderDetail(row, liveState{}, nil, errors.New("ss: exit 127"), nil, nil, 0, sidebarInner))
+	if !strings.Contains(out, "ports unavailable") {
+		t.Errorf("the degraded label did not survive the 23-column fold; got:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if w := ansi.StringWidth(line); w > sidebarInner {
+			t.Errorf("line %q is %d cells, wider than the sidebar's %d", line, w, sidebarInner)
+		}
 	}
 }
 

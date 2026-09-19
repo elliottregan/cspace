@@ -78,7 +78,8 @@ func TestLeaderDispatch(t *testing.T) {
 	// Scroll needs a scrollback to walk; this pane's child printed nothing,
 	// so the key refuses and says so rather than arming a mode whose only
 	// effect would be to swallow the next keypress. The armed case is
-	// TestScrollModeWalksTheScrollback, whose child prints 200 lines.
+	// TestScrollModeMovesAndAnyOtherKeyReturnsToLive, whose child prints
+	// 200 lines.
 	if got := leader(t, m, "["); got.scrolling {
 		t.Error("leader [ entered scroll mode on a pane with no scrollback")
 	}
