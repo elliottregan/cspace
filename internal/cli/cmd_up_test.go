@@ -382,6 +382,7 @@ func TestValidateSandboxName(t *testing.T) {
 		errHas  string // substring expected in error message when wantErr is true
 	}{
 		{"browser reserved", "test-project", "browser", true, "browser.test-project.cspace.test"},
+		{"Browser reserved case-insensitively", "test-project", "Browser", true, "browser.test-project.cspace.test"},
 		{"issue-42 allowed", "test-project", "issue-42", false, ""},
 		{"mercury allowed", "test-project", "mercury", false, ""},
 		{"custom-name allowed", "test-project", "custom-name", false, ""},

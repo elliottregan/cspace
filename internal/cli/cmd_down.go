@@ -102,7 +102,11 @@ Without it, exactly one <name> argument is required.`,
 					if !all {
 						return err
 					}
-					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "[cspace] skipping %q: %v\n", name, err)
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+						"[cspace] skipping %q: %v\n"+
+							"[cspace]   run `cspace registry prune` once its container is gone to drop the entry, "+
+							"and delete ~/.cspace/clones/%[3]s/%[1]s/ and ~/.cspace/sessions/%[3]s/%[1]s/ by hand\n",
+						name, err, project)
 					continue
 				}
 				kept = append(kept, name)
