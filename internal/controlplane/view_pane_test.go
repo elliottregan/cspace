@@ -36,6 +36,91 @@ func TestRenderTabsTruncatesFromTheLeftAndCounts(t *testing.T) {
 	}
 }
 
+// The count has to describe both sides. Dropping from the left alone can
+// drop nothing — with tab 0 focused there is nothing to its left — and the
+// row then rendered a literal "+0" while hiding every tab to the right of
+// the focused one. Reachable at ordinary sizes: four tabs of ~26 cells
+// overflow a 96-column main area, and ⌃Space p walks the focus to tab 0.
+func TestRenderTabsCountsBothSidesAndNeverSaysPlusZero(t *testing.T) {
+	tabs := []*tab{
+		{id: 1, kind: KindClaude, project: "resume-redux", sandbox: "mercury"},
+		{id: 2, kind: KindShell, project: "resume-redux", sandbox: "mercury"},
+		{id: 3, kind: KindSupervisor, project: "cspace", sandbox: "issue-42"},
+	}
+	cases := []struct {
+		name         string
+		focused      int
+		width        int
+		wantKeep     string // a tab that must still be legible
+		wantElisions []string
+		wantAbsent   []string
+	}{
+		// Tab 0 focused: nothing is to its left, so the row drops from the
+		// right and says so.
+		{"the first tab keeps its neighbour and counts the right",
+			0, 70, "resume-redux/mercury", []string{"+1"}, []string{"+0"}},
+		{"the first tab alone still counts the right",
+			0, 30, "resume-redux", []string{"+2"}, []string{"+0"}},
+		// A middle tab: one dropped on each side, both counted.
+		{"a middle tab counts both sides",
+			1, 40, "resume-redux", []string{"+1"}, []string{"+0"}},
+		// The last tab is the original case: everything dropped is on the
+		// left, and there is no right-hand count to show.
+		{"the last tab counts only the left",
+			2, 40, "issue-42", []string{"+2"}, []string{"+0"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := plain(renderTabs(tabs, tc.focused, tc.width, true))
+			if w := ansi.StringWidth(got); w > tc.width {
+				t.Errorf("row is %d cells wide, want at most %d: %q", w, tc.width, got)
+			}
+			if !strings.Contains(got, tc.wantKeep) {
+				t.Errorf("row %q dropped the focused tab %q", got, tc.wantKeep)
+			}
+			for _, want := range tc.wantElisions {
+				if !strings.Contains(got, want) {
+					t.Errorf("row %q does not carry the elision count %q", got, want)
+				}
+			}
+			for _, absent := range tc.wantAbsent {
+				if strings.Contains(got, absent) {
+					t.Errorf("row %q claims %q, which describes nothing", got, absent)
+				}
+			}
+		})
+	}
+
+	// The whole row when everything fits: no counts at all, either side.
+	if got := plain(renderTabs(tabs, 0, 100, true)); strings.Contains(got, "+") {
+		t.Errorf("a row that fits carries an elision count: %q", got)
+	}
+}
+
+// A rebound leader has to reach every line that names it. The footer
+// derives its label from the binding; the three lines in the main area used
+// to spell ⌃Space out.
+func TestPaneAreaNamesTheConfiguredLeader(t *testing.T) {
+	keys := NewKeyMap(map[string][]string{"leader": {"ctrl+x"}})
+	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, &fakeHost{t: t})
+	m.keys = keys
+
+	got := plain(m.paneArea(70, 10)) // the empty state
+	if !strings.Contains(got, "ctrl+x t") {
+		t.Errorf("the empty state %q does not name the configured leader", got)
+	}
+	if strings.Contains(got, "⌃Space") {
+		t.Errorf("the empty state %q still names the default leader", got)
+	}
+
+	m = openOne(t, &fakeHost{t: t, history: true})
+	m.keys = keys
+	m.scrolling = true
+	if got := plain(m.paneArea(70, 10)); !strings.Contains(got, "ctrl+x g") {
+		t.Errorf("the scroll header %q does not name the configured leader", got)
+	}
+}
+
 // The terminal cursor is the dashboard's claim about where typing goes, so
 // it may only sit on a pane the operator can actually see. The help
 // overlay and the two modals all render over the main area while the focus
