@@ -165,11 +165,50 @@ func (c cmdHandle) Pid() int {
 	return c.Process.Pid
 }
 
+// Option adjusts one pane at open time.
+type Option func(*openConfig)
+
+// openConfig is what the Options set. Nothing here can change after Open
+// returns: these decide how the emulator is built.
+type openConfig struct{ extendedKeys bool }
+
+// ExtendedKeys encodes modified keys in the CSI-u form even though the child
+// never asked for the kitty keyboard protocol.
+//
+// It exists for one child: a tmux client. A pane normally learns that the
+// program it runs speaks CSI-u by watching for the protocol's own push
+// sequence in its output (vt.go's registerKitty) — Claude Code sends
+// `ESC [ > 5 u` a moment after it starts. Run under tmux, it still sends it,
+// but to tmux, which consumes it: measured against the sandbox image's tmux
+// 3.3a, not one byte of the negotiation reaches the host side, so the pane
+// can never see it and every modified key degrades. Shift+Enter degrading to
+// plain Enter is the one that matters — it SENDS the half-written message
+// instead of breaking the line.
+//
+// Sending the extended form unconditionally is safe because tmux, not this
+// package, has the last word on what the application gets: cspace's tmux
+// config sets `extended-keys always`, and tmux hands an application the
+// extended form only for a key with no legacy byte. Measured against a
+// `cat -v` that negotiated nothing: `ESC [ 99;5 u` arrived as a real ctrl+c
+// (the process took SIGINT), `ESC [ 105;5 u` arrived as a tab, and
+// `ESC [ 13;2 u` — which has no legacy form — arrived intact.
+//
+// Do not pass it for a child that talks to the terminal itself: that one can
+// negotiate, and forcing the form on a program that never asked for it is
+// how a modified key turns into visible garbage in its input box.
+func ExtendedKeys() Option {
+	return func(c *openConfig) { c.extendedKeys = true }
+}
+
 // Open starts cmd on a new pseudo-terminal of the given size and begins
 // interpreting its output.
-func Open(cmd Command, cols, rows int) (*Pane, error) {
+func Open(cmd Command, cols, rows int, opts ...Option) (*Pane, error) {
 	if err := validateOpen(cmd, cols, rows); err != nil {
 		return nil, err
+	}
+	var cfg openConfig
+	for _, opt := range opts {
+		opt(&cfg)
 	}
 	// Clamp before the emulator is built as well as before the pty is
 	// sized: x/vt allocates its screen from these two numbers.
@@ -177,7 +216,7 @@ func Open(cmd Command, cols, rows int) (*Pane, error) {
 	// Validate before building the emulator: x/vt's constructor allocates a
 	// fixed 4 MiB parser buffer eagerly, and a bad Command or size should
 	// fail before paying for it.
-	return open(cmd, cols, rows, newVTEmulator(cols, rows))
+	return open(cmd, cols, rows, newVTEmulator(cols, rows, cfg.extendedKeys))
 }
 
 // validateOpen is Open's precondition check. open re-runs it for a caller
