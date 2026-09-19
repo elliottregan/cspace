@@ -51,12 +51,23 @@ func (c *osaClipboard) Image(ctx context.Context, project, sandbox string) (pane
 	// filepath.Join cleans "../.." rather than rejecting it. Every caller
 	// today passes control.Row fields, which come off the registry and
 	// `container ls` — but the pane picker's text field is exactly where a
-	// typed name would first reach a path join, which is the reason
-	// validateSandboxName exists at all.
+	// typed name would first reach a path join, which is the reason either
+	// check below exists at all.
 	// (cs-finding:2026-09-18-sandbox-names-are-not-shape-validated-before-path-joins)
+	//
+	// The two halves are not the same kind of name. sandbox is validated by
+	// validateSandboxName because a sandbox name is also a container name
+	// and a DNS label (cmd_up.go), so it is deliberately narrower than "one
+	// path segment". project is filepath.Base(c.ProjectRoot) or
+	// $CSPACE_PROJECT (config.go) and is validated NOWHERE else in cspace —
+	// a checkout at ~/Projects/next.js or ~/work/site.com is ordinary, and
+	// one named "browser" collides with nothing (that reservation is a
+	// sandbox-name rule, about browser.<project>.cspace.test, not a
+	// project-name rule). What the join below needs from the project half
+	// is only that it is exactly one path segment.
 	if project != "" || sandbox != "" {
-		if err := validateSandboxName(project, project); err != nil {
-			return "", "", fmt.Errorf("project name: %w", err)
+		if err := validatePathSegment("project", project); err != nil {
+			return "", "", err
 		}
 		if err := validateSandboxName(project, sandbox); err != nil {
 			return "", "", fmt.Errorf("sandbox name: %w", err)
@@ -97,6 +108,23 @@ func (c *osaClipboard) Image(ctx context.Context, project, sandbox string) (pane
 	return filepath.Join(paneDir, name), dst, nil
 }
 
+// validatePathSegment rejects a name that could not survive a filepath.Join
+// as exactly one path segment: empty, "." or "..", anything containing a
+// path separator or NUL, and — to be safe against a name later read off
+// argv by some other tool — a leading "-".
+//
+// This is deliberately weaker than validateSandboxName: what is a
+// path-segment concern here (the "project" half of Image, filepath.Base of
+// a project root that cspace validates nowhere else) is not a DNS-label or
+// container-name concern, so "next.js" and "My Project" are fine.
+func validatePathSegment(what, s string) error {
+	if s == "" || s == "." || s == ".." ||
+		strings.ContainsAny(s, "/\\\x00") || strings.HasPrefix(s, "-") {
+		return fmt.Errorf("%s name %q is not a valid path segment", what, s)
+	}
+	return nil
+}
+
 // pasteDirs is where the file goes on the host, and the directory the pane
 // will see it in.
 //
@@ -105,6 +133,15 @@ func (c *osaClipboard) Image(ctx context.Context, project, sandbox string) (pane
 // into it is /sessions/paste/<name> however the host spells the directory.
 // A host shell has no mount and belongs to no sandbox: its images go to
 // ~/.cspace/paste and the host path is what gets typed.
+//
+// The "half a name is still a sandbox" branches below are unreachable
+// through Image, pasteDirs' only caller: Image now rejects an empty project
+// half (validatePathSegment) and an empty sandbox half (validateSandboxName
+// rejects "" — sandboxNamePattern requires at least one character) before
+// pasteDirs is ever called, so project and sandbox arrive here either both
+// empty or both set. The branches stay because pasteDirs is also exercised
+// directly by TestPasteDirsPutEachCaseWhereItsPaneCanReadIt, which pins the
+// fallback behaviour a future caller would get if that precondition lapsed.
 func (c *osaClipboard) pasteDirs(project, sandbox string) (hostDir, paneDir string) {
 	if project == "" && sandbox == "" {
 		d := filepath.Join(c.home, ".cspace", "paste")
