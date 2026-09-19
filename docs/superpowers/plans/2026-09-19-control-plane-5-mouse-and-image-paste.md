@@ -51,7 +51,7 @@ New files in `internal/controlplane` (all `package controlplane`):
 
 | File | Responsibility | Task |
 |---|---|---|
-| `geometry.go` | `rect`, `tabSpan`, `geometry`, `Model.computeGeometry`, the `Update` wrapper that refreshes it | 1 |
+| `geometry.go` | `rect`, `tabSpan`, `geometry`, `Model.computeGeometry` (the `Update` wrapper lives in `model.go`) | 1 |
 | `mouse.go` | `handleClick`, `handleWheel`, `wheelMain`, `selectListRow`, `focusTab` | 2, 3 |
 | `clipboard.go` | `Clipboard`, `ErrNoImage`, `nopClipboard`, `pasteMsg`, `pasteImageCmd` | 4, 5 |
 
@@ -704,6 +704,8 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/elliottregan/cspace/internal/control"
 )
 
 // click delivers a left-button press at a zero-based screen cell and
@@ -1607,7 +1609,7 @@ The seam and its one real implementation, wired but not yet reachable from a key
 
 **Files:**
 - Create: `internal/controlplane/clipboard.go`, `internal/cli/clipboard.go`
-- Modify: `internal/controlplane/model.go`, `internal/controlplane/model_test.go`, `internal/controlplane/detach_test.go`, `internal/cli/cmd_tui.go`
+- Modify: `internal/controlplane/model.go`, `internal/controlplane/model_test.go`, `internal/controlplane/detach_test.go`, `internal/cli/cmd_tui.go`, `internal/controlplane/geometry_test.go`, `internal/controlplane/mouse_test.go`
 - Test: `internal/cli/clipboard_test.go`
 
 **Interfaces:**
@@ -1943,7 +1945,7 @@ func New(data Data, actor Actor, host PaneHost, clip Clipboard, keys KeyMap) Mod
 }
 ```
 
-Update every existing `New(...)` call site to pass `nopClipboard{}` as the fourth argument. Find them with `grep -rn 'New(.*NewKeyMap' internal/controlplane internal/cli`; at the head of this task they are nine:
+Update every existing `New(...)` call site to pass `nopClipboard{}` as the fourth argument. Find them with `grep -rn 'New(.*NewKeyMap' internal/controlplane` (seven rows) plus `grep -n 'controlplane.New(' internal/cli/cmd_tui.go`, whose call is split across four lines and which no single-line grep finds. Counting the two files Tasks 1 and 2 added, the nine sites are:
 
 - `internal/controlplane/model_test.go:148` (`newTestModel`) — `New(d, a, nopPaneHost{}, nopClipboard{}, NewKeyMap(nil))`
 - `internal/controlplane/model_test.go:159` (`newTestModelWithHost`) — `New(d, a, h, nopClipboard{}, NewKeyMap(nil))`
@@ -2169,8 +2171,8 @@ Expected: PASS — the `New` call sites compile again.
 Run: `git diff --stat go.mod go.sum`
 Expected: no output. The clipboard is two host binaries, not a dependency.
 
-Run: `go list -deps ./internal/controlplane | grep -c 'cspace/internal/cli'`
-Expected: `0`.
+Run: `go list -deps ./internal/controlplane | grep 'cspace/internal/cli' && echo LEAKED || echo clean`
+Expected: `clean`. (`grep -c` prints `0` but exits 1, which reads as a failed command.)
 
 - [ ] **Step 9: Check**
 
@@ -2219,6 +2221,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // fakeClipboard records what it was asked for and answers with what the
@@ -2571,7 +2575,7 @@ git commit -m "Paste the clipboard's image into a pane on leader v"
 The capability is not shipped until the window says it exists and the documents stop describing the old one. The spec's Rollout list gets step 5 struck through, which is what marks the control-plane design complete.
 
 **Files:**
-- Modify: `internal/controlplane/view.go`, `docs/superpowers/specs/2026-09-17-control-plane-design.md`, `CLAUDE.md`, `.cspace/context/findings/2026-09-19-scroll-mode-never-reaches-a-tmux-backed-panes-history.md`
+- Modify: `internal/controlplane/view.go`, `internal/controlplane/keys.go`, `docs/superpowers/specs/2026-09-17-control-plane-design.md`, `CLAUDE.md`, `.cspace/context/findings/2026-09-19-scroll-mode-never-reaches-a-tmux-backed-panes-history.md`
 - Test: `internal/controlplane/input_test.go` (the existing `TestHelpOverlayToggles` file)
 
 **Interfaces:**
@@ -2588,10 +2592,16 @@ Append to `internal/controlplane/input_test.go`:
 // away and there is no other place a person would learn what to do instead.
 func TestHelpOverlayNamesTheMouseAndTheSelectionEscapeHatch(t *testing.T) {
 	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
-	help := plain(m.helpView(m.width))
+	cols, _ := m.paneSize()
+	help := plain(m.helpView(cols))
 	for _, want := range []string{"click", "wheel", "shift"} {
 		if !strings.Contains(strings.ToLower(help), want) {
 			t.Errorf("the help overlay never mentions %q:\n%s", want, help)
+		}
+	}
+	for i, l := range strings.Split(help, "\n") {
+		if w := len([]rune(l)); w > cols {
+			t.Errorf("help line %d is %d cells, wider than the %d the overlay is drawn in: %q", i, w, cols, l)
 		}
 	}
 }
@@ -2607,8 +2617,23 @@ Expected: FAIL — "the help overlay never mentions "click"".
 In `internal/controlplane/view.go`, in `helpView`'s `lines` slice, add two entries directly after the `"every other key goes to the focused pane…"` line:
 
 ```go
-		styleDim.Render(fit("mouse: click a row, a tab or the pane; the wheel scrolls the sidebar or the pane", width)),
-		styleDim.Render(fit("hold shift for your terminal's own mouse: shift+drag selects, shift+click opens a port link", width)),
+		styleDim.Render(fit("mouse: click a row, a tab or the pane; the wheel scrolls both", width)),
+		styleDim.Render(fit("hold shift for the terminal's own mouse: drag selects, click opens a link", width)),
+```
+
+- [ ] **Step 3b: Retire the "step 5 will make it act" comment**
+
+In `internal/controlplane/keys.go`, in `LeaderHelp`'s doc comment, replace
+
+```
+// do, in the design's order. PasteImage is listed because it is bound and
+// the config shape is stable; rollout step 5 is what makes it act.
+```
+
+with
+
+```
+// do, in the design's order.
 ```
 
 - [ ] **Step 4: Run the test to verify it passes**
@@ -2717,7 +2742,7 @@ Expected: green.
 - [ ] **Step 10: Commit**
 
 ```bash
-git add internal/controlplane/view.go internal/controlplane/input_test.go \
+git add internal/controlplane/view.go internal/controlplane/keys.go internal/controlplane/input_test.go \
         docs/superpowers/specs/2026-09-17-control-plane-design.md CLAUDE.md \
         .cspace/context/findings/2026-09-19-scroll-mode-never-reaches-a-tmux-backed-panes-history.md
 git commit -m "Document the mouse and image paste, and land rollout step 5"
@@ -2975,7 +3000,7 @@ Read every step. What each must show:
 9. **Wheel back down** — the counter falls to 0.
 10. **Leader `v` with a PNG** — `/sessions/paste/<timestamp>.png` appears in Claude's input box, with no newline: **nothing is sent**. The file exists at `~/.cspace/sessions/cspace/mouse-smoke/paste/<timestamp>.png` (the script lists it at the end) and its directory is `drwx------`.
 11. **Leader `v` with text** — `hello from the smoke test` is pasted into the same box.
-12. **Help overlay** — it carries `mouse: click a row, a tab or the pane; the wheel scrolls the sidebar or the pane` and `hold shift for your terminal's own mouse: shift+drag selects, shift+click opens a port link`.
+12. **Help overlay** — it carries `mouse: click a row, a tab or the pane; the wheel scrolls both` and `hold shift for the terminal's own mouse: drag selects, click opens a link`.
 13. **A key after all that** — `x` lands in Claude's input box. Mouse mode did not cost the keyboard.
 
 `exit: 0` at the end, not `HUNG`.
