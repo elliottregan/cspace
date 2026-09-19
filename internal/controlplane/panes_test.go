@@ -32,6 +32,10 @@ type fakeHost struct {
 	sweeps  int
 	openErr error
 	warn    string
+	// sweep and sweepErr are what Sweep reports; both zero value by default,
+	// matching a sweep that found and broke on nothing.
+	sweep    SweepOutcome
+	sweepErr error
 	// history makes the child print enough lines to fill a scrollback, for
 	// the tests that scroll.
 	history bool
@@ -86,7 +90,7 @@ func (h *fakeHost) Open(_ context.Context, kind Kind, row control.Row, cols, row
 
 func (h *fakeHost) Sweep(context.Context) (SweepOutcome, error) {
 	h.sweeps++
-	return SweepOutcome{}, nil
+	return h.sweep, h.sweepErr
 }
 
 type fakeDetacher struct{ closed int }

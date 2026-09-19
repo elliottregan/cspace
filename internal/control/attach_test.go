@@ -993,3 +993,65 @@ func TestSweepRechecksThePidImmediatelyBeforeDetaching(t *testing.T) {
 		t.Errorf("the record was removed: %v", err)
 	}
 }
+
+// Fix round 2, Minor 4: the pre-detach re-read (fix round 1) still detached
+// fresh.TTY without checking that fresh actually names the same client the
+// list-clients evidence above was gathered for. This test overwrites the
+// record at the exact same path with a different pid and tty from inside
+// the fakeExec reply that answers the list-clients call — the earliest point
+// at which a concurrent BeginAttach's own writeRecord could land — and
+// expects the sweep to notice the mismatch and back off rather than detach a
+// tty tmux was never actually asked about.
+func TestSweepBacksOffWhenTheRecordWasReplacedBeforeTheDetach(t *testing.T) {
+	home := t.TempDir()
+	dir := ControlPlaneDir(home, "demo", "neptune")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	path := filepath.Join(dir, "cspace-claude.dev-pts-8.json")
+	if err := os.WriteFile(path,
+		[]byte(`{"session":"cspace-claude","tty":"/dev/pts/8","pid":108}`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	f := &fakeExec{reply: func(_ int, cmdline []string) (string, int, error) {
+		if len(cmdline) > 1 && cmdline[1] == "list-clients" {
+			// Stand in for a concurrent BeginAttach's writeRecord landing
+			// between this listing and the sweep's own re-read.
+			if err := os.WriteFile(path,
+				[]byte(`{"session":"cspace-claude","tty":"/dev/pts/99","pid":208}`), 0o644); err != nil {
+				t.Fatalf("overwrite record: %v", err)
+			}
+			return "/dev/pts/8\n", 0, nil
+		}
+		return "", 0, nil
+	}}
+	c := New(Options{
+		Home: home,
+		Containers: &fakeContainers{out: []applecontainer.ContainerSummary{
+			{Name: "cspace-demo-neptune", State: "running"},
+		}},
+		Tmux:         testTmux(f),
+		ProcessAlive: func(int) bool { return false },
+	})
+
+	res, err := c.SweepClientRecords(context.Background())
+	if err != nil {
+		t.Fatalf("SweepClientRecords: %v", err)
+	}
+	if res.Kept != 1 || res.Errors != 1 || res.Detached != 0 || res.Deleted != 0 {
+		t.Errorf("kept = %d, errors = %d, detached = %d, deleted = %d, want 1, 1, 0 and 0 — a replaced record must not be acted on",
+			res.Kept, res.Errors, res.Detached, res.Deleted)
+	}
+	for _, call := range f.recorded() {
+		if len(call) > 1 && call[1] == "detach-client" {
+			t.Error("the sweep detached a tty from a record that was replaced")
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the replacement record was removed: %v", err)
+	}
+	if !strings.Contains(string(data), "/dev/pts/99") {
+		t.Errorf("record = %s, want the replacement record left untouched", data)
+	}
+}

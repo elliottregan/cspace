@@ -50,6 +50,20 @@ var detachTimeout = 5 * time.Second
 // wait out the real value.
 var sweepExecTimeout = 5 * time.Second
 
+// sweepLockWait bounds how long the sweep waits for one sandbox's
+// attach.lock before giving up on that directory for this pass. It is
+// deliberately much shorter than attachLockWait: BeginAttach has nothing to
+// fall back to and must wait out a legitimate concurrent attach's own
+// discovery window, but the sweep does — a lock another cspace process
+// holds means that process (an attach starting, or another sweep) owns the
+// decision on this directory's records and will account for them itself, so
+// the sweep can simply skip the directory this pass rather than block
+// everything behind it. Waiting the full attachLockWait here would stall
+// every startup sweep — the tui, `cspace up` — for up to 12s behind one
+// sandbox mid-attach, for a directory the very next sweep will look at
+// again anyway. A var so tests do not have to wait out the real value.
+var sweepLockWait = 2 * time.Second
+
 // ClientRecord is the on-disk record of one live tmux client, written to
 // <ControlPlaneDir>/<session>.<tty>.json.
 //
@@ -308,7 +322,7 @@ func lockAttach(ctx context.Context, dir string, wait time.Duration) (*os.File, 
 		}
 		if ctx.Err() != nil || !time.Now().Before(deadline) {
 			_ = f.Close()
-			return nil, fmt.Errorf("attach lock %q busy after %s: another attach to this sandbox is starting", path, wait)
+			return nil, fmt.Errorf("attach lock %q busy after %s: another cspace process is attaching to or sweeping this sandbox", path, wait)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
@@ -327,6 +341,11 @@ func lockAttach(ctx context.Context, dir string, wait time.Duration) (*os.File, 
 // (whose records were therefore never seen, and so appear in neither Kept
 // nor Deleted). Either way a sweep with Errors > 0 has work left that the
 // next sweep will have to redo, which is the only claim this field makes.
+//
+// A record skipped because its sandbox's attach.lock was held by another
+// cspace process (an attach starting, or a concurrent sweep) counts as
+// Kept, not Errors: that process's own Close or sweep owns the decision on
+// those records, and nothing went wrong by leaving them to it.
 type SweepResult struct {
 	Kept     int // records left in place
 	Detached int // clients tmux still listed, now detached (a subset of Deleted)
@@ -419,22 +438,37 @@ func (c *Client) SweepClientRecords(ctx context.Context) (SweepResult, error) {
 // "unanswered" authorise different things.
 //
 // The whole directory is processed under the sandbox's own attach.lock — the
-// same file BeginAttach holds while it is discovering its own client's tty
-// (see attachLockWait). Without it, a sweep that read a stale record for a
-// tty a concurrent attach is about to reuse could see that attach's own
-// brand-new client show up in list-clients, read it as the dead record's
-// client still being attached, and detach it — deleting the fresh record
-// that names it in the same stroke. Held for the whole directory, the two
-// can never interleave: BeginAttach cannot start its own discovery window
-// until the sweep releases the lock, and vice versa. A lock that cannot be
-// taken in time — real contention with an attach mid-window, or a local
-// bookkeeping problem opening the lock file at all — leaves the whole
-// directory unswept this pass rather than guess past it; the next sweep is
-// the retry.
+// same file BeginAttach holds while it is discovering its own client's tty.
+// Without it, a sweep that read a stale record for a tty a concurrent attach
+// is about to reuse could see that attach's own brand-new client show up in
+// list-clients, read it as the dead record's client still being attached,
+// and detach it — deleting the fresh record that names it in the same
+// stroke. Held for the whole directory, the two can never interleave:
+// BeginAttach cannot start its own discovery window until the sweep
+// releases the lock, and vice versa.
+//
+// Unlike BeginAttach, the sweep only waits sweepLockWait (short) for it, not
+// attachLockWait (up to 12s): a busy lock here means another cspace process
+// — an attach starting, or another sweep — is already handling this exact
+// directory, so waiting the long way out would only stall this pass behind
+// work that is already being done, for a directory the very next sweep will
+// look at again regardless. A busy lock therefore skips the directory
+// without logging anything and counts its records as Kept (SweepResult's
+// own doc), using a best-effort, unlocked count — not Errors, since nothing
+// here went wrong. Only a lock that could not be opened at all
+// (ErrBookkeepingUnavailable — a local filesystem problem, not contention)
+// is genuinely unfinished work.
 func (c *Client) sweepDir(ctx context.Context, dir, container string, containerKnownGone bool, res *SweepResult) {
-	lock, lockErr := lockAttach(ctx, dir, attachLockWait(c.tmux))
+	lock, lockErr := lockAttach(ctx, dir, sweepLockWait)
 	if lockErr != nil {
-		res.Errors++
+		if errors.Is(lockErr, ErrBookkeepingUnavailable) {
+			res.Errors++
+			return
+		}
+		// Busy, not broken: leave this directory's records for whichever
+		// cspace process holds the lock — its own Close or sweep will
+		// account for them.
+		res.Kept += countRecords(dir)
 		return
 	}
 	defer func() {
@@ -563,14 +597,38 @@ func (c *Client) sweepDir(ctx context.Context, dir, container string, containerK
 		// record and re-checking its pid immediately before the detach is
 		// the last chance to notice and back off before ending a client
 		// this record no longer accurately describes.
-		fresh, err := readClientRecord(path)
-		if err != nil {
-			// Gone or changed since this sweep first read it; either way
-			// there is nothing left here it is safe to act on.
+		fresh, ferr := readClientRecord(path)
+		if ferr != nil {
+			if errors.Is(ferr, fs.ErrNotExist) {
+				// Already gone — its own owner's Close (or a sibling sweep)
+				// beat us to it between the listing above and now. Nothing
+				// left to detach or delete, but this is still a record the
+				// sweep looked at and resolved, so Kept+Deleted stays the
+				// count of records seen.
+				res.Deleted++
+			} else {
+				// Exists but no longer parses — changed shape since the
+				// listing above, most plausibly a partial write. Leave it
+				// for the next sweep rather than guess at it.
+				res.Kept++
+				res.Errors++
+			}
 			continue
 		}
 		if c.processAlive(fresh.PID) {
 			res.Kept++
+			continue
+		}
+		if fresh.TTY != rec.TTY || fresh.Session != rec.Session {
+			// The record at this path no longer names the client the
+			// list-clients evidence above was gathered for — it was
+			// replaced by an unrelated record in the window between that
+			// listing and now. Detaching fresh.TTY here would act on tty
+			// evidence tmux was never actually asked about; leave it for the
+			// next sweep, which will judge the replacement on its own fresh
+			// evidence.
+			res.Kept++
+			res.Errors++
 			continue
 		}
 
@@ -590,6 +648,28 @@ func (c *Client) sweepDir(ctx context.Context, dir, container string, containerK
 			res.Detached++
 		}
 	}
+}
+
+// countRecords is the sweep's best-effort, unlocked tally of a sandbox
+// directory's record files, used only when that directory's attach.lock is
+// held by another cspace process and its records cannot safely be decided
+// this pass. It exists to keep Kept an honest count of records the sweep
+// saw, not to detect a problem — a directory that cannot even be listed this
+// way counts as 0 rather than an error, since the point of skipping it was
+// precisely to not treat someone else's in-progress work as this sweep's own
+// unfinished business.
+func countRecords(dir string) int {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
+			n++
+		}
+	}
+	return n
 }
 
 // readClientRecord parses one record file.
