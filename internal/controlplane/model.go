@@ -223,6 +223,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.pollingMedium && !m.paused() {
 			m.pollingMedium = true
 			cmds = append(cmds, m.snapshotCmd())
+			cmds = append(cmds, m.supervisorTickCmds()...)
 		}
 		return m, tea.Batch(cmds...)
 
@@ -275,6 +276,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.events, m.eventsErr = msg.lines, msg.err
+		return m, nil
+
+	case supervisorEventsMsg:
+		if t, _ := m.tabByID(msg.id); t != nil && t.sup != nil {
+			t.sup.err = msg.err
+			t.sup.setEvents(msg.lines)
+			t.sup.reading = false
+			// Whether the agent is working is the fast ticker's answer, not
+			// a guess from the tail. "The last event is not a result" can
+			// never go false — events.ndjson carries lines that are not
+			// sdk-events at all, and any tail ending in one of those would
+			// leave the spinner's tick chain alive for the rest of the
+			// session, redrawing the whole dashboard at spinner cadence.
+			// AgentStatus is what the fast cadence already polls for exactly
+			// this question.
+			working := m.live[sandboxKey{Project: t.project, Name: t.sandbox}].Agent.State == "working"
+			started := working && !t.sup.working
+			t.sup.working = working
+			if started {
+				// Start this spinner's own tick chain. bubbles tags each
+				// TickMsg with the spinner's id and drops the ones that are
+				// not its own, so every spinner needs its own chain — the
+				// model's own animates only while an Actor action is in
+				// flight, which a supervisor read is not.
+				return m, t.sup.spin.Tick
+			}
+		}
 		return m, nil
 
 	case actionResultMsg:
@@ -341,14 +369,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		// Animate only while an action is in flight; when idle let the tick
-		// chain die rather than redraw a whole dashboard forever.
-		if m.action == "" {
-			return m, nil
+		// Each spinner has its own id and its own chain; Update drops a tick
+		// that is not its own, so both are fed and whichever one it belonged
+		// to re-arms.
+		var cmds []tea.Cmd
+		for _, t := range m.tabs {
+			if t.sup != nil && t.sup.working {
+				var cmd tea.Cmd
+				t.sup.spin, cmd = t.sup.spin.Update(msg)
+				cmds = append(cmds, cmd)
+			}
 		}
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
+		// Animate the model's own only while an action is in flight; when
+		// idle let its chain die rather than redraw a whole dashboard
+		// forever.
+		if m.action != "" {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			cmds = append(cmds, cmd)
+		}
+		return m, tea.Batch(cmds...)
 
 	case paneOpenedMsg:
 		m.action = ""
