@@ -107,6 +107,17 @@ func (m Model) mainArea(width, height int) string {
 	return m.paneArea(width, height)
 }
 
+// leaderLabel is how the leader is spelled on screen. It comes from the
+// binding rather than from a literal, because the leader is configurable
+// (tui.keys.leader) — every hardcoded "⌃Space" is a line that lies the
+// moment somebody rebinds it.
+func (m Model) leaderLabel() string {
+	if lead := m.keys.Leader.Help().Key; lead != "" {
+		return lead
+	}
+	return strings.Join(m.keys.Leader.Keys(), "/")
+}
+
 // helpView is the full binding list, plus the notes the footer has no room
 // for. Rendering it in the main area keeps the sidebar visible, so a person
 // can read the keys against the row they were about to act on.
@@ -126,7 +137,7 @@ func (m Model) helpView(width int) string {
 		styleDim.Render(fit("panes", width)),
 		h.FullHelpView(m.keys.PaneFullHelp()),
 		"",
-		styleDim.Render(fit("every other key goes to the focused pane; ⌃Space is the leader", width)),
+		styleDim.Render(fit("every other key goes to the focused pane; "+m.leaderLabel()+" is the leader", width)),
 		styleDim.Render(fit("ctrl+c quits, except in a live pane where it goes to the program", width)),
 		styleDim.Render(fit("esc leaves a prompt", width)),
 		styleDim.Render(fit("keys the selected row cannot use are hidden from the footer", width)),
@@ -209,10 +220,7 @@ func (m Model) footer() string {
 	// pane focused, where every key but the leader goes to the child — the
 	// leader's second keys, prefixed by the leader itself.
 	if m.focus == focusMain && m.focusedTab() != nil {
-		lead := m.keys.Leader.Help().Key
-		if lead == "" {
-			lead = strings.Join(m.keys.Leader.Keys(), "/")
-		}
+		lead := m.leaderLabel()
 		// helpView's pattern, for helpView's reason: m.help is sized to the
 		// whole window, this line has the leader's label in front of it, and
 		// a local copy is how one call gets a different budget without
