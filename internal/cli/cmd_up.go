@@ -1297,7 +1297,7 @@ var sandboxNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`)
 // wipeSandboxState's two os.RemoveAlls.
 // (cs-finding:2026-09-18-sandbox-names-are-not-shape-validated-before-path-joins)
 func validateSandboxName(project, name string) error {
-	if name == "browser" {
+	if strings.EqualFold(name, "browser") {
 		return fmt.Errorf(
 			`"browser" is reserved for the shared browser sidecar (browser.%s.cspace.test)`,
 			project)
