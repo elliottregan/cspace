@@ -244,9 +244,13 @@ func (p *Pane) Paste(text string) { p.emu.Paste(text) }
 // paints anything new.
 //
 // The error is the ioctl's — including one for a pane that has already been
-// Closed, which setWinsize's own doc explains. A pane whose pty has gone
-// returns one here; the caller fans a resize out over every pane and must
-// not let one failure stop the rest.
+// Closed, which setWinsize's own doc explains. That specific error is Go's
+// internal/poll.ErrFileClosing ("use of closed file"): RawConn.Control
+// returns it unwrapped, not behind a *fs.PathError, so it is NOT
+// errors.Is(err, os.ErrClosed)-matchable — a caller that needs to tell "pty
+// gone" apart from any other ioctl failure has to compare the error text.
+// A pane whose pty has gone returns one here; the caller fans a resize out
+// over every pane and must not let one failure stop the rest.
 func (p *Pane) Resize(cols, rows int) error {
 	if cols <= 0 || rows <= 0 {
 		return fmt.Errorf("pane: bad size %dx%d", cols, rows)
@@ -337,14 +341,17 @@ func (p *Pane) ScrollbackView(offset, rows int) string {
 }
 
 // Exited reports the child's exit once the waiter has seen it. ok is false
-// while the child is still running. err is non-nil when the wait itself
-// failed or the child died by a signal Close did not send itself (code is
+// while the child is still running, in which case code and err are their
+// zero values. err is non-nil when the wait itself failed, or the child
+// died by a signal observed while Close was NOT already running (code is
 // -1 for the latter, naming the signal), but never for an ordinary
 // non-zero exit — that is what code is for. Code -1 with a nil error means
-// the pane was closed by Close: endChild's own SIGHUP or SIGKILL, or
-// killGroup's follow-up, is not a failure worth reporting as one, and
-// without this distinction every pane the operator closed would render as
-// "killed by hangup".
+// the death was observed while Close was already running: that covers
+// endChild's own SIGHUP or SIGKILL and killGroup's follow-up, but also a
+// foreign signal that happens to land during Close — the discriminator is
+// "was Close in progress", not "did Close send this particular signal",
+// since the two are not distinguished. Without it every pane the operator
+// closed would render as "killed by hangup".
 func (p *Pane) Exited() (code int, err error, ok bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -358,14 +365,22 @@ func (p *Pane) Dropped() uint64 { return p.dropped.Load() }
 // Close runs the teardown handshake and joins every goroutine, honouring
 // ctx: a join that does not complete before ctx is done makes Close return
 // an error naming the goroutine that would not join. The rest of the
-// teardown that goroutine was blocking is skipped, but Close still releases
-// what it safely can before returning — the pty and the emulator's own pipe
-// — so a wedged pane does not go on holding the master descriptor and x/vt's
-// 4 MiB parser buffer for the rest of the process's life; only the
-// goroutines themselves may stay parked, until the child eventually dies on
-// its own. Close is idempotent: the first call's result, success or error,
-// is what every later call returns too, via sync.Once — a Close that gave
-// up is not retried by calling it again.
+// teardown that goroutine was blocking is skipped, but Close still calls
+// ptmx.Close() and emu.Close() best-effort before returning on that path.
+// That does NOT free the master descriptor or x/vt's 4 MiB parser buffer
+// outright for a genuinely wedged pane: (*os.File).Close only sets the
+// file's closed bit and defers the real close(2) to whichever goroutine
+// holds the last reference — the parked pump, if that is what is stuck —
+// and the emulator's own Close frees no buffer either; a pump still blocked
+// in Read keeps both alive regardless. What the early close DOES buy
+// immediately: the drain goroutine exits (it holds no pty reference of its
+// own), a later Resize fails fast instead of racing a live syscall, and
+// SendKey/Paste both drop instead of blocking. The descriptor and the
+// buffer are only actually freed once the parked goroutine itself returns —
+// for a wedged pty, that is when the child eventually dies. Close is
+// idempotent: the first call's result, success or error, is what every
+// later call returns too, via sync.Once — a Close that gave up is not
+// retried by calling it again.
 //
 // The order is: stop accepting input, end the child's process group and
 // reap it, kill whatever is left of that group, close the pty, then close
@@ -378,13 +393,29 @@ func (p *Pane) Dropped() uint64 { return p.dropped.Load() }
 // probe against this host found a goroutine parked in Write and one parked
 // in Read still blocked 4s after Close returned, and both released the
 // instant the child was killed. ptmx.Close() here is cleanup of the master
-// descriptor, not the unblocking mechanism — but it still has to run, and
-// be joined, before the emulator's Close, so that no pump call into
-// emu.Write is still in flight when that runs. On Linux, which has no
-// tty-revoke equivalent to macOS's, a setsid grandchild that ignored SIGHUP
-// and still holds the pty's slave side open could leave the pump parked
-// even after the direct child is reaped — which is what killGroup's second,
-// unconditional SIGKILL to the group is for.
+// descriptor, not the unblocking mechanism — but on the normal (non-timeout)
+// path it still has to run, and be joined, before the emulator's Close, so
+// that no pump call into emu.Write is still in flight when that runs. The
+// early-return timeout paths in shutdown break that ordering on purpose,
+// closing the emulator without waiting for the pump first. That is safe
+// only because vtEmulator.Close closes just x/vt's own input pipe
+// (synchronized by io.Pipe; x/vt's unguarded `closed` bool is left alone —
+// see vtEmulator.Close's own doc): a pump Write already in flight keeps
+// parsing normally against the emulator's screen state, and the one path
+// that writes back INTO that pipe from inside a Write — the kitty `?u`
+// query handler's reply — simply gets io.ErrClosedPipe instead of blocking.
+//
+// On Linux, which has no tty-revoke equivalent to macOS's, a setsid
+// grandchild that ignored SIGHUP and still holds the pty's slave side open
+// could leave the pump parked even after the direct child is reaped — which
+// is what killGroup's follow-up SIGKILL to the group is for, but only when
+// this Close actually signalled the group itself (see killGroup's doc): a
+// child that had already exited on its own before Close ran, leaving such a
+// group member behind, is never signalled by design — the pgid could by
+// then belong to a stranger — so on Linux the pump can stay parked past
+// that group member, and Close returns a "pump did not stop" error once ctx
+// expires. That is the trade this package makes: a hung Close over a
+// possible cross-process SIGKILL.
 //
 // The design asks for the drain to be stopped BEFORE the emulator is closed,
 // so that no Read is in flight when Close runs. That is not reachable from
@@ -409,11 +440,15 @@ func (p *Pane) shutdown(ctx context.Context) error {
 
 	p.endChild(ctx)
 	if err := p.join(ctx, p.waitDone, "waiter"); err != nil {
-		// The child was never confirmed reaped, so killGroup has no safe
-		// pid to signal (see its doc) — but the pty and the emulator can
-		// still be released best-effort; nothing about a stuck waiter makes
-		// that unsafe, and it is what keeps a wedged pane from holding both
-		// for the rest of the process's life.
+		// killGroup is not reached on this path — shutdown returns here
+		// instead — but not because an unreaped pid is unsafe to signal: an
+		// unreaped pid is the one case that IS safe, since the kernel
+		// cannot yet have handed pgid to a stranger. The real reason is
+		// that endChild has already escalated all the way to its own
+		// SIGKILL by the time ctx expired (see endChild), so there is
+		// nothing left for a second group kill to add here. closeDescriptors
+		// is still worth calling — see its own doc for what that does and
+		// does not buy.
 		p.closeDescriptors()
 		return err
 	}
@@ -442,13 +477,18 @@ func (p *Pane) shutdown(ctx context.Context) error {
 	return emuErr
 }
 
-// closeDescriptors releases the pty and the emulator's own pipe best-effort.
-// It exists for a Close that is giving up on a join and returning early: the
-// goroutines it was waiting on may stay parked until the child dies, but
-// nothing should keep holding the master descriptor or x/vt's 4 MiB parser
-// buffer on that account. Errors are discarded deliberately — there is
-// nothing left to do differently with them once Close has already decided
-// to give up.
+// closeDescriptors calls ptmx.Close() and emu.Close() best-effort. It exists
+// for a Close that is giving up on the waiter's join and returning early.
+// It does NOT free the master descriptor or x/vt's 4 MiB parser buffer
+// outright for a genuinely wedged pane — (*os.File).Close only sets the
+// closed bit and defers the real close(2) to whichever goroutine holds the
+// file's last reference, and the emulator's own Close frees no buffer
+// either, so a pump still parked in Read keeps both alive regardless. What
+// it DOES buy immediately: the drain goroutine exits, a later Resize fails
+// fast, and SendKey/Paste both drop instead of blocking — see Close's own
+// doc for the detail. Errors are discarded deliberately — there is nothing
+// left to do differently with them once Close has already decided to give
+// up.
 func (p *Pane) closeDescriptors() {
 	_ = p.ptmx.Close()
 	_ = p.emu.Close()

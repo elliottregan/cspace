@@ -55,6 +55,9 @@ func groupMembers(t *testing.T, pgid int, name string) int {
 	t.Helper()
 	out, err := exec.Command("pgrep", "-g", strconv.Itoa(pgid), name).Output()
 	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			t.Skipf("pgrep is not on PATH")
+		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 			return 0 // pgrep's own "nothing matched" exit code
@@ -187,6 +190,17 @@ func TestPaneDropsInputForAChildThatNeverReads(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Close blocked on a child that never reads its input")
+	}
+}
+
+func TestPaneExitedReportsNotYetExitedForALiveChild(t *testing.T) {
+	p := openTestPane(t, `sleep 30`, 40, 6)
+	code, err, ok := p.Exited()
+	if ok {
+		t.Fatalf("Exited = (%d, %v, %v), want ok = false for a running child", code, err, ok)
+	}
+	if code != 0 || err != nil {
+		t.Errorf("Exited = (%d, %v, false), want (0, nil, false)", code, err)
 	}
 }
 
@@ -560,10 +574,16 @@ func TestPaneResizeSignalsDirty(t *testing.T) {
 	// A single fixed sleep-then-drain cannot tell Resize's own signal apart
 	// from a late startup signal that just happens to land after it: drain
 	// until nothing arrives for a stretch, so whatever comes next can only
-	// be caused by the Resize call below.
+	// be caused by the Resize call below. Bounded overall so a pane that
+	// (wrongly) never goes quiet fails with a clear message instead of
+	// hanging the test.
+	quietBy := time.Now().Add(3 * time.Second)
 	for {
 		select {
 		case <-p.Dirty():
+			if time.Now().After(quietBy) {
+				t.Fatal("the pane never went quiet after startup")
+			}
 			continue
 		case <-time.After(100 * time.Millisecond):
 		}
