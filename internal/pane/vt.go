@@ -114,16 +114,21 @@ func (e *vtEmulator) CursorPosition() (int, int) {
 	return pos.X, pos.Y
 }
 
-// SendKey hands the key to x/vt.
+// SendKey hands x/vt what it encodes correctly and encodes the rest here.
+// keys.go owns that decision; this is the only caller.
 //
-// This is the interim version and it is what makes this task's package
-// compile on its own: Task 2 adds the key overlay and replaces this body
-// with the version that consults it. Until then a modified special key
-// produces no bytes, which is exactly the gap Task 2 exists to close.
-//
-// Text is deliberately not forwarded: x/vt matches whole key structs, so a
-// non-empty Text makes every special key fall through its switch.
+// Task 1 shipped this as a straight hand-off to x/vt, which drops every
+// modified special key — Ctrl+Right, Shift+Enter, Alt+Home — because its
+// switch matches whole key structs and its default branch emits nothing
+// unless Mod is zero. encodeKey's second return is what says "x/vt has this
+// one"; when it does, the fall-through below is unchanged from Task 1.
 func (e *vtEmulator) SendKey(k KeyEvent) {
+	if seq, ok := encodeKey(k, e.kittyEnabled()); ok {
+		e.term.SendText(seq)
+		return
+	}
+	// Text is deliberately not forwarded: x/vt matches whole key structs, so
+	// a non-empty Text makes every special key fall through its switch.
 	e.term.SendKey(uv.KeyPressEvent{Code: k.Code, Mod: uv.KeyMod(k.Mod)})
 }
 
