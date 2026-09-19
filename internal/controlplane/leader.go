@@ -33,7 +33,7 @@ import (
 // refusal with no way forward at 80. Measured with lipgloss.Width.
 func noScrollbackNotice() notice {
 	return notice{
-		text: "nothing to scroll: a tmux pane keeps its history inside — " +
+		text: "nothing to scroll here; tmux keeps the history inside — " +
 			"PgUp/PgDn go there",
 		isErr: true,
 	}
