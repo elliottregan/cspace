@@ -20,7 +20,7 @@
   - `internal/control` imports none of them.
 - **Exact module pins.** This plan adds exactly one module:
   - `charm.land/glamour/v2 v2.0.1` — read against the proxy on 2026-09-18: its own go.mod asks for `lipgloss/v2 v2.0.4`, `x/ansi v0.11.7`, `go-colorful v1.4.0`, `x/text v0.24.0`, all **below** what this repo already pins, so **no version moves**. It brings `alecthomas/chroma/v2 v2.14.0`, `dlclark/regexp2 v1.11.0`, `microcosm-cc/bluemonday v1.0.27`, `aymerick/douceur v0.2.0`, `gorilla/css v1.0.1`, `yuin/goldmark v1.7.8`, `yuin/goldmark-emoji v1.0.5` and `charmbracelet/x/exp/slice` as new indirects. It has **no** dependency on bubbletea/bubbles/huh.
-  - Already present and unchanged: `charm.land/bubbletea/v2 v2.0.9`, `charm.land/lipgloss/v2 v2.0.6`, `charm.land/bubbles/v2 v2.2.1`, `charm.land/huh/v2 v2.0.3`, `github.com/charmbracelet/x/ansi v0.11.8`, `github.com/charmbracelet/x/vt v0.0.0-20260913004009-c615ff2f7805`, `github.com/creack/pty v1.1.24`, `github.com/charmbracelet/ultraviolet v0.0.0-20260811164956-006e29f97886`. `github.com/charmbracelet/bubbletea v1.3.10` and `github.com/charmbracelet/lipgloss v1.1.0` stay for `internal/overlay`.
+  - Already present and unchanged: `charm.land/bubbletea/v2 v2.0.9`, `charm.land/lipgloss/v2 v2.0.6`, `charm.land/bubbles/v2 v2.2.1`, `charm.land/huh/v2 v2.0.3`, `github.com/charmbracelet/x/ansi v0.11.8`, `github.com/charmbracelet/x/vt v0.0.0-20260913004009-c615ff2f7805`, `github.com/creack/pty v1.1.24`, `github.com/charmbracelet/ultraviolet v0.0.0-20260811164956-006e29f97886`. `github.com/charmbracelet/bubbletea v1.3.10`, `github.com/charmbracelet/bubbles v1.0.0` and `github.com/charmbracelet/lipgloss v1.1.0` stay for `internal/overlay`, which is still on the v1 line.
 - **Concurrency rules:** nothing outside the pane engine touches an emulator except through `*pane.Pane`'s methods; `Render`, `Cursor` and `ScrollbackView` are called only from the UI goroutine (i.e. only from `View`); the writer channel is bounded and never blocks the UI. No `PaneHost` method is called from `Update` — every one of them goes through a `tea.Cmd`, because opening a pane probes a container and takes a file lock.
 - **glamour/v2 API facts this plan relies on** (read from the module source, not from memory): the renderer is `glamour.NewTermRenderer(opts ...TermRendererOption) (*TermRenderer, error)` and the render call is the method `(*TermRenderer).Render(in string) (string, error)`. `WithAutoStyle` and `WithColorProfile` are **gone in v2**; the style comes from `WithStandardStyle(styles.DarkStyle)` and the width from `WithWordWrap(n)`. Word wrap is construction-time only — there is no setter — so **a resize rebuilds the renderer**.
 - **bubbles/v2 API facts this plan relies on:** `viewport.New(viewport.WithWidth(w), viewport.WithHeight(h))` — not `New(w, h)`; size is `SetWidth`/`SetHeight`/`Width()`/`Height()`, there are no exported `Width`/`Height` fields; `YOffset()` is a method, not a field; `GotoBottom()` returns `[]string`; `Model.View()` returns `string`, not `tea.View`. `textarea.New()` takes no options, `Focus()` returns a `tea.Cmd`, and its default `KeyMap.InsertNewline` is bound to `enter` — it must be cleared for Enter to submit.
@@ -145,38 +145,40 @@ func TestLeaderHelpNamesTheSecondKeys(t *testing.T) {
 	}
 }
 
-func TestForRowGatesThePaneKeys(t *testing.T) {
-	running := control.Row{Kind: control.RowSandbox, State: control.StateRunning}
+// The supervisor view reads events.ndjson from the host's session directory,
+// which outlives the container — so a sandbox stopped with
+// `cspace down --keep-state` still has a history worth opening, and
+// canSupervisor is deliberately wider than canAttach and canShell. This is
+// its own test rather than a row in the table below because the reason is
+// the whole point of the predicate.
+func TestSupervisorStaysOpenableOnAStoppedSandbox(t *testing.T) {
 	stopped := control.Row{Kind: control.RowSandbox, State: control.StateStopped}
-	browser := control.Row{Kind: control.RowBrowser, State: control.StateRunning}
-
-	if !NewKeyMap(nil).forRow(running, liveState{}).Shell.Enabled() {
-		t.Error("shell is off for a running sandbox")
-	}
-	if NewKeyMap(nil).forRow(stopped, liveState{}).Shell.Enabled() {
-		t.Error("shell is on for a stopped sandbox")
-	}
-	if NewKeyMap(nil).forRow(browser, liveState{}).Shell.Enabled() {
-		t.Error("shell is on for the browser row")
-	}
-	// The supervisor view reads a file on the host, so a stopped sandbox
-	// whose state was kept still has one worth opening.
 	if !NewKeyMap(nil).forRow(stopped, liveState{}).Supervisor.Enabled() {
 		t.Error("supervisor is off for a stopped sandbox")
-	}
-	if NewKeyMap(nil).forRow(browser, liveState{}).Supervisor.Enabled() {
-		t.Error("supervisor is on for the browser row")
 	}
 }
 ```
 
 (add `"strings"` to the file's imports.)
 
+The rest of the gating is what `TestForRowDisablesWhatTheSelectionCannotDo`
+(keys_test.go:108) is already a table for, so it goes in there rather than
+into a second test asking the same question a second way. Add four rows to
+its `cases` slice, beside the `attach` ones it already has — the fixtures
+`working`, `stopped` and `browser` are declared at the top of that test:
+
+```go
+		{"shell in a running sandbox", working, liveState{}, ActionShell, true},
+		{"shell in a stopped sandbox", stopped, liveState{}, ActionShell, false},
+		{"shell on the browser row", browser, liveState{}, ActionShell, false},
+		{"supervisor on the browser row", browser, liveState{}, ActionSupervisor, false},
+```
+
 `TestDefaultsJSONMatchesTheBuiltInKeys` already compares the whole map, so it fails until `lib/defaults.json` is updated too — that is the point.
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `cd /Users/elliott/Projects/cspace-control-plane-4b && go test ./internal/controlplane/ -run 'TestPaneBindings|TestLeaderHelp|TestForRowGatesThePaneKeys|TestDefaultsJSON'`
+Run: `cd /Users/elliott/Projects/cspace-control-plane-4b && go test ./internal/controlplane/ -run 'TestPaneBindings|TestLeaderHelp|TestSupervisorStaysOpenable|TestForRowDisables|TestDefaultsJSON'`
 Expected: FAIL to build — `undefined: ActionShell` and friends.
 
 - [ ] **Step 3: Add the actions and the bindings**
@@ -272,9 +274,19 @@ Add `LeaderHelp` beside `ShortHelp`:
 // LeaderHelp is the footer the main area gets: what the leader's second keys
 // do, in the design's order. PasteImage is listed because it is bound and
 // the config shape is stable; rollout step 5 is what makes it act.
+//
+// It is deliberately shorter than the full set of second keys. This is ONE
+// line shared with the leader's own label, and help.ShortHelpView elides
+// from the right once it runs out of width — so a list that does not fit is
+// a list whose tail nobody ever reads. All nine render to about 98 cells,
+// which overflows the design's 100-column reference window before the
+// leader's seven-cell prefix is even counted; these seven fit in 76. The two
+// that give are the ones already advertised elsewhere: PrevTab is in
+// PaneFullHelp below, and Help is in FullHelp, which the overlay renders
+// first.
 func (k KeyMap) LeaderHelp() []key.Binding {
-	return []key.Binding{k.FocusSidebar, k.NextTab, k.PrevTab, k.NewPane,
-		k.ClosePane, k.Scroll, k.PasteImage, k.Help, k.Quit}
+	return []key.Binding{k.FocusSidebar, k.NextTab, k.NewPane,
+		k.ClosePane, k.Scroll, k.PasteImage, k.Quit}
 }
 ```
 
@@ -448,6 +460,7 @@ package controlplane
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -459,7 +472,16 @@ import (
 
 // fakeHost opens real panes running a harmless command, so the tab
 // bookkeeping is exercised against the real engine without a container.
+//
+// t is not decoration: every pane it opens is a real child on a real pty
+// with four goroutines behind it, and most of these tests never close the
+// tab they opened. Registering the close as a cleanup is what internal/pane's
+// own openTestPane does (pane_test.go:33), and without it one `go test` run
+// of this package leaves a dozen `sleep 30` children and their pty masters
+// alive until the test binary exits — under `make test-race`, with a race
+// detector watching all of them.
 type fakeHost struct {
+	t       *testing.T
 	opens   []Kind
 	rows    []control.Row
 	sweeps  int
@@ -473,6 +495,9 @@ type fakeHost struct {
 	// actually reached the child: with a 512-slot queue being drained,
 	// Dropped() is zero whether or not a byte was ever sent.
 	echo bool
+	// exits makes the child die the moment it starts, for the tests that
+	// watch a pane end on its own rather than by the operator's key.
+	exits bool
 }
 
 func (h *fakeHost) Open(_ context.Context, kind Kind, row control.Row, cols, rows int) (Opened, error) {
@@ -491,11 +516,20 @@ func (h *fakeHost) Open(_ context.Context, kind Kind, row control.Row, cols, row
 		// the line discipline's, and `cat -v` so a control byte is visible
 		// (NUL prints as ^@).
 		script = "stty raw -echo; cat -v"
+	case h.exits:
+		script = "exit 0"
 	}
 	p, err := pane.Open(pane.Command{Path: "/bin/sh", Args: []string{"sh", "-c", script}}, cols, rows)
 	if err != nil {
 		return Opened{}, err
 	}
+	// Close is idempotent (sync.Once), so a tab the test closed itself, or
+	// one the dashboard reaped when its child exited, costs nothing here.
+	h.t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = p.Close(ctx)
+	})
 	return Opened{Pane: p, Detach: &fakeDetacher{}, Warning: h.warn}, nil
 }
 
@@ -545,7 +579,7 @@ func pump(t *testing.T, m Model, cmd tea.Cmd) Model {
 }
 
 func TestEnterOpensAClaudePaneAndSecondEnterFocusesIt(t *testing.T) {
-	h := &fakeHost{}
+	h := &fakeHost{t: t}
 	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
 
 	m = stepPump(t, m, "enter")
@@ -576,7 +610,7 @@ func TestEnterOpensAClaudePaneAndSecondEnterFocusesIt(t *testing.T) {
 }
 
 func TestShellAndSupervisorOpenTheirOwnTabs(t *testing.T) {
-	h := &fakeHost{}
+	h := &fakeHost{t: t}
 	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
 	m = stepPump(t, m, "s")
 	mustTabs(t, m, 1)
@@ -597,7 +631,7 @@ func TestShellAndSupervisorOpenTheirOwnTabs(t *testing.T) {
 }
 
 func TestAFailedOpenBecomesAFooterErrorAndNoTab(t *testing.T) {
-	h := &fakeHost{openErr: errors.New("no container yet")}
+	h := &fakeHost{t: t, openErr: errors.New("no container yet")}
 	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
 	m = stepPump(t, m, "enter")
 	if len(m.tabs) != 0 {
@@ -612,7 +646,7 @@ func TestAFailedOpenBecomesAFooterErrorAndNoTab(t *testing.T) {
 }
 
 func TestCloseTabDetachesAndTearsDown(t *testing.T) {
-	h := &fakeHost{}
+	h := &fakeHost{t: t}
 	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
 	m = stepPump(t, m, "enter")
 	mustTabs(t, m, 1)
@@ -627,6 +661,114 @@ func TestCloseTabDetachesAndTearsDown(t *testing.T) {
 	}
 	if m.focus != focusSidebar {
 		t.Error("closing the last tab did not return focus to the sidebar")
+	}
+}
+
+// TestAnExitedPaneReapsItself is the close nobody presses a key for, and it
+// is the commonest one: the child ends on its own. 4a closes Dirty only
+// inside Pane.Close, so the waiter's final markDirty is the last signal an
+// exited-but-unclosed pane will ever emit — miss it and the tmux client
+// stays attached inside the sandbox, its record file stays on the host, and
+// the pty master and x/vt's parser buffer stay live until the operator
+// happens to press leader x.
+func TestAnExitedPaneReapsItself(t *testing.T) {
+	h := &fakeHost{t: t, exits: true}
+	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
+	m = stepPump(t, m, "enter")
+	mustTabs(t, m, 1)
+	tb := m.tabs[0]
+	d := tb.detach.(*fakeDetacher)
+
+	// The redraw wait the open armed, run by hand: stepPump discards it.
+	out, ok := runCmd(t, awaitOutput(tb)).(paneOutputMsg)
+	if !ok {
+		t.Fatal("the pane never signalled")
+	}
+	mm, cmd := m.Update(out)
+	m = mm.(Model)
+	if cmd == nil {
+		t.Fatal("an exited pane produced no teardown; it would leak until leader x")
+	}
+	if !tb.closing {
+		t.Error("the reap was not marked in flight, so a second signal would start another")
+	}
+	reaped, ok := runCmd(t, cmd).(paneReapedMsg)
+	if !ok {
+		t.Fatal("the teardown did not report back")
+	}
+	if reaped.err != nil {
+		t.Errorf("reap error = %v", reaped.err)
+	}
+	mm, _ = m.Update(reaped)
+	m = mm.(Model)
+
+	if d.closed != 1 {
+		t.Errorf("detacher closed %d times, want exactly 1 — and nobody pressed a key", d.closed)
+	}
+	// The tab stays, so the last screen is still readable; leader x is what
+	// removes it.
+	mustTabs(t, m, 1)
+	// And nothing re-arms on it. A closed pane's Dirty() returns
+	// immediately and forever, so a re-armed wait would spin at the tick
+	// rate rather than park.
+	if _, again := m.Update(paneOutputMsg{id: tb.id}); again != nil {
+		t.Error("an exited pane re-armed its output wait")
+	}
+}
+
+// TestAnOpenThatWarnsGoesThroughResultWarn pins the mechanism, not the text:
+// an open that worked but degraded — the no-tmux fallback — reports through
+// ResultWarn, the same path every other "it worked, now read this" takes, so
+// there is one place that decides such a notice is sticky.
+func TestAnOpenThatWarnsGoesThroughResultWarn(t *testing.T) {
+	// exits, so the redraw wait batched with the warning comes back at once:
+	// a child that prints nothing and never dies leaves awaitOutput parked
+	// on Dirty, and drain would wait on it.
+	h := &fakeHost{t: t, exits: true,
+		warn: "mercury has no tmux: this session will not survive the window"}
+	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
+
+	mm, cmd := m.Update(press("enter"))
+	m = mm.(Model)
+	opened, ok := runCmd(t, cmd).(paneOpenedMsg)
+	if !ok {
+		t.Fatal("enter did not open a pane")
+	}
+	mm, cmd = m.Update(opened)
+	m = mm.(Model)
+
+	warn := ""
+	for _, msg := range drain(cmd) {
+		if got := ResultWarnText(msg); got != "" {
+			warn = got
+			mm, _ = m.Update(msg)
+			m = mm.(Model)
+		}
+	}
+	if !strings.Contains(warn, "no tmux") {
+		t.Fatalf("the open emitted no warning result; got %q", warn)
+	}
+	if !m.notice.isErr || !strings.Contains(m.notice.text, "no tmux") {
+		t.Errorf("notice = %+v, want the warning in the alert style", m.notice)
+	}
+}
+
+// runCmd runs one command and hands back the message it produced. The
+// ceiling is the same hazard pump documents: a command that never answers
+// should fail the test rather than hang it.
+func runCmd(t *testing.T, cmd tea.Cmd) tea.Msg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("no command to run")
+	}
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	select {
+	case msg := <-done:
+		return msg
+	case <-time.After(10 * time.Second):
+		t.Fatal("a command never produced a message")
+		return nil
 	}
 }
 
@@ -689,6 +831,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -800,18 +943,28 @@ type tab struct {
 	// sup is non-nil only for KindSupervisor (see supervisor.go).
 	sup *supervisor
 
-	// closing is set the moment closeTab hands the teardown to a command,
-	// and it exists to stop awaitOutput re-arming on a pane that is going
-	// away. Once Pane.Close returns, the pump and the waiter have both
-	// exited, so nothing ever refills the dirty channel again and a wait
-	// parked on it parks forever — bubbletea deliberately leaks a command's
-	// goroutine rather than joining it, so that is one leak per closed tab
-	// for the life of the session.
+	// closing is set the moment a teardown is handed to a command — by
+	// closeTab, or by the paneOutputMsg arm reaping a child that exited on
+	// its own — and it exists to stop awaitOutput re-arming on a pane that
+	// is going away.
+	//
+	// The hazard is the opposite of a leak. 4a closes the dirty channel
+	// inside Pane.Close (see Pane.Dirty's doc): a receive on a closed pane's
+	// Dirty() returns immediately, and forever. An unguarded re-arm is
+	// therefore a ~30 Hz message loop on a dead pane — a whole dashboard
+	// redrawn at the tick rate for the rest of the session — not a
+	// goroutine parked on a channel nothing can refill.
 	closing bool
+	// reaped is set once an exited pane's own teardown has finished, so a
+	// later signal cannot start a second one. closing covers the window
+	// while it is in flight; this covers everything after.
+	reaped bool
 }
 
 // title is what the tabs row shows: "<project>/<sandbox> · <kind>". A host
 // shell belongs to no sandbox, so it says so.
+//
+//nolint:unused // filled in by Task 3, which is the first caller
 func (t *tab) title() string {
 	if t.kind == KindHostShell {
 		return "host · shell"
@@ -845,17 +998,32 @@ type (
 		id  int
 		err error
 	}
+	// paneReapedMsg reports the teardown of a pane whose child exited on
+	// its own. Unlike paneClosedMsg it does NOT drop the tab: an exited
+	// pane still shows its last screen, and closing the tab stays the
+	// operator's decision.
+	paneReapedMsg struct {
+		id  int
+		err error
+	}
 )
 
 // openOrFocus focuses the tab for (kind, row) if it exists, and otherwise
 // starts opening one.
 func (m Model) openOrFocus(kind Kind, row control.Row) (tea.Model, tea.Cmd) {
-	for i, t := range m.tabs {
-		if t.kind == kind && t.project == row.Project && t.sandbox == row.Name {
-			m.focused = i
-			m.focus = focusMain
-			m.scrolling, m.scroll = false, 0
-			return m, nil
+	// A host shell is exempt from the match: it belongs to no sandbox, so
+	// the (kind, project, sandbox) key every other tab is found by is empty
+	// for all of them. Asking for one always opens one — two host shells are
+	// two tabs, both titled "host · shell" — rather than silently refocusing
+	// whichever was opened first.
+	if kind != KindHostShell {
+		for i, t := range m.tabs {
+			if t.kind == kind && t.project == row.Project && t.sandbox == row.Name {
+				m.focused = i
+				m.focus = focusMain
+				m.scrolling, m.scroll = false, 0
+				return m, nil
+			}
 		}
 	}
 	cols, rows := m.paneSize()
@@ -893,6 +1061,8 @@ func (m Model) addTab(t *tab) Model {
 }
 
 // focusedTab is the tab the main area shows, or nil when there are none.
+//
+//nolint:unused // filled in by Task 3, which is the first caller
 func (m Model) focusedTab() *tab {
 	if m.focused < 0 || m.focused >= len(m.tabs) {
 		return nil
@@ -957,6 +1127,35 @@ func (m Model) closeTab(id int) tea.Cmd {
 	}
 }
 
+// reapExited is closeTab's teardown without the drop: the same detach and
+// the same engine handshake, run for a pane whose child ended on its own,
+// while the tab stays on screen.
+//
+// It exists because an exited pane is not a closed one. 4a's engine leaves
+// the pty master, x/vt's parser buffer, the guest tmux client and this
+// attach's record file all live until Close runs, and the child exiting is
+// not Close — so without this the commonest way a pane ends would keep every
+// one of those until the operator noticed and pressed leader x. What the tab
+// keeps is only what a person still wants: the dimmed last screen
+// (view_pane.go's exited branch) and the key that dismisses it.
+func (m Model) reapExited(t *tab) tea.Cmd {
+	id, detach, p := t.id, t.detach, t.p
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
+		defer cancel()
+		var err error
+		if detach != nil {
+			err = detach.Close(ctx)
+		}
+		if p != nil {
+			if closeErr := p.Close(ctx); closeErr != nil && err == nil {
+				err = closeErr
+			}
+		}
+		return paneReapedMsg{id: id, err: err}
+	}
+}
+
 // dropTab removes a closed tab and re-points the focus at a neighbour,
 // falling back to the sidebar when the last one goes.
 func (m Model) dropTab(id int) Model {
@@ -986,26 +1185,52 @@ func (m Model) dropTab(id int) Model {
 // client attached inside each sandbox and a record file stranded for the
 // next start's sweep, so the detach still runs on the way out.
 //
+// The closes run CONCURRENTLY under one shared deadline, so the wait before
+// the program ends is one closeTimeout however many tabs are open — not one
+// per tab. That is not a micro-optimisation: control.Attachment.Close waits
+// on its own tracking goroutine with no context of its own, bounded only by
+// Tmux.PollFor, so one wedged sandbox is enough to make a sequential quit
+// look hung while the operator stares at a frozen window.
+//
 // It is one closure rather than tea.Sequence(closes…, tea.Quit) because the
 // closes have to finish before the program ends, and because a sequence's
 // own message is unexported and therefore unobservable from a test: the
 // thing that must not regress here is that quitting detaches.
 func (m Model) quitCmd() tea.Cmd {
-	closes := make([]tea.Cmd, 0, len(m.tabs))
-	for _, t := range m.tabs {
-		if cmd := m.closeTab(t.id); cmd != nil {
-			closes = append(closes, cmd)
-		}
+	type teardown struct {
+		detach Detacher
+		p      *pane.Pane
 	}
-	if len(closes) == 0 {
+	downs := make([]teardown, 0, len(m.tabs))
+	for _, t := range m.tabs {
+		if t.detach == nil && t.p == nil {
+			continue // the supervisor view owns no process and no client
+		}
+		t.closing = true
+		downs = append(downs, teardown{detach: t.detach, p: t.p})
+	}
+	if len(downs) == 0 {
 		return tea.Quit
 	}
 	return func() tea.Msg {
-		for _, cmd := range closes {
-			// The result message has nowhere to go — the program is ending —
-			// but running the command is what performs the detach.
-			_ = cmd()
+		ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
+		defer cancel()
+		var wg sync.WaitGroup
+		for _, d := range downs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				// The errors have nowhere to go — the program is ending —
+				// but running these is what performs the detach.
+				if d.detach != nil {
+					_ = d.detach.Close(ctx)
+				}
+				if d.p != nil {
+					_ = d.p.Close(ctx)
+				}
+			}()
 		}
+		wg.Wait()
 		return tea.QuitMsg{}
 	}
 }
@@ -1072,27 +1297,54 @@ func New(data Data, actor Actor, host PaneHost, keys KeyMap) Model {
 			m.notice = notice{text: LabelOpenPane + " failed: " + msg.err.Error(), isErr: true}
 			return m, nil
 		}
+		project, sandbox := msg.row.Project, msg.row.Name
+		if msg.kind == KindHostShell {
+			// It was opened from whatever row happened to be selected and
+			// belongs to none of them: leave the identity empty rather than
+			// let a later reader take it for a pane on that sandbox.
+			project, sandbox = "", ""
+		}
 		m = m.addTab(&tab{
 			kind:    msg.kind,
-			project: msg.row.Project,
-			sandbox: msg.row.Name,
+			project: project,
+			sandbox: sandbox,
 			p:       msg.opened.Pane,
 			detach:  msg.opened.Detach,
 		})
+		wait := awaitOutput(m.tabs[m.focused])
 		if msg.opened.Warning != "" {
-			// Sticky, like every warning: what it says is that this session
-			// will not survive the window.
-			m.notice = notice{text: msg.opened.Warning, isErr: true}
+			// Through ResultWarn rather than written into m.notice here:
+			// "it worked, now read this" already has a mechanism, and the
+			// actionResultMsg arm is where the rule that such a notice is
+			// sticky lives. A second copy of that rule is a second place to
+			// forget it.
+			warning := msg.opened.Warning
+			return m, tea.Batch(wait, func() tea.Msg { return ResultWarn(LabelOpenPane, warning) })
 		}
-		return m, awaitOutput(m.tabs[m.focused])
+		return m, wait
 
 	case paneOutputMsg:
-		// The redraw is the Update itself; all this does is re-arm. A tab
-		// closed while its wait was in flight drops the message — and so
-		// does one whose teardown is merely in flight, because a pane that
-		// has already been Closed never signals again and the re-armed wait
-		// would park forever.
-		if t, _ := m.tabByID(msg.id); t != nil && !t.closing {
+		// The redraw is the Update itself; the rest is deciding whether to
+		// wait again. A tab closed while its wait was in flight drops the
+		// message, and so does one whose teardown is already running.
+		t, _ := m.tabByID(msg.id)
+		if t == nil || t.p == nil {
+			return m, nil
+		}
+		if _, _, exited := t.p.Exited(); exited {
+			// The child ended on its own, and this signal — the waiter's
+			// final markDirty — is the last one this pane will ever emit:
+			// Dirty is closed by Pane.Close and by nothing else. Tear the
+			// pane down here, or its tmux client stays attached inside the
+			// sandbox and its record file on the host until the operator
+			// presses leader x. The tab survives the reap.
+			if !t.closing && !t.reaped {
+				t.closing = true
+				return m, m.reapExited(t)
+			}
+			return m, nil
+		}
+		if !t.closing {
 			return m, awaitOutput(t)
 		}
 		return m, nil
@@ -1100,6 +1352,21 @@ func New(data Data, actor Actor, host PaneHost, keys KeyMap) Model {
 	case paneClosedMsg:
 		m.action = ""
 		m = m.dropTab(msg.id)
+		if msg.err != nil {
+			m.notice = notice{text: LabelClosePane + ": " + msg.err.Error(), isErr: true}
+		}
+		return m, nil
+
+	case paneReapedMsg:
+		// No dropTab and no m.action: the reap was nobody's action, and the
+		// tab stays to show the dead pane's last screen. Clearing closing
+		// and setting reaped is what stops a second signal starting the
+		// teardown again; dropping the detacher is what keeps a later
+		// leader x from closing an attachment this already closed (Pane.Close
+		// is idempotent on its own).
+		if t, _ := m.tabByID(msg.id); t != nil {
+			t.closing, t.reaped, t.detach = false, true, nil
+		}
 		if msg.err != nil {
 			m.notice = notice{text: LabelClosePane + ": " + msg.err.Error(), isErr: true}
 		}
@@ -1277,7 +1544,7 @@ func (m Model) handleSupervisorKey(*tab, tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 - [ ] **Step 8: Run the tests**
 
-Run: `cd /Users/elliott/Projects/cspace-control-plane-4b && go test ./internal/controlplane/ -v -run 'TestEnterOpens|TestShellAndSupervisor|TestAFailedOpen|TestCloseTab'`
+Run: `cd /Users/elliott/Projects/cspace-control-plane-4b && go test ./internal/controlplane/ -v -run 'TestEnterOpens|TestShellAndSupervisor|TestAFailedOpen|TestCloseTab|TestAnExitedPane|TestAnOpenThatWarns'`
 Expected: PASS.
 
 - [ ] **Step 9: Widen the race target, then verify the dependency direction and the race build**
@@ -1344,7 +1611,7 @@ The design's geometry: the detail band under the sidebar, the tabs row carrying 
 **Files:**
 - Create: `internal/controlplane/view_pane.go`
 - Test: `internal/controlplane/view_pane_test.go`
-- Modify: `internal/controlplane/view.go`, `internal/controlplane/styles.go`, `internal/controlplane/view_detail.go`, `internal/controlplane/model.go`, `internal/controlplane/keys.go` (Step 7 adds `actionHelp[ActionLeader]`), `internal/controlplane/supervisor.go` (Step 3 drops `view`'s `//nolint:unused`, since `paneArea` is now its caller)
+- Modify: `internal/controlplane/view.go`, `internal/controlplane/styles.go`, `internal/controlplane/view_detail.go`, `internal/controlplane/model.go`, `internal/controlplane/keys.go` (Step 7 adds `actionHelp[ActionLeader]`), `internal/controlplane/supervisor.go` and `internal/controlplane/panes.go` (Step 3 drops all three `//nolint:unused` lines Task 2 left for it — `supervisor.view`, `focusedTab`, `tab.title`)
 - Test (existing, updated): `internal/controlplane/model_test.go` (`TestTabsLineFitsANarrowWindow` → `TestTabsRowFitsANarrowWindow`)
 
 **Interfaces:**
@@ -1408,7 +1675,7 @@ func TestRenderTabsTruncatesFromTheLeftAndCounts(t *testing.T) {
 }
 
 func TestEmptyMainAreaNamesTheKeysThatOpenAPane(t *testing.T) {
-	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, &fakeHost{})
+	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, &fakeHost{t: t})
 	got := plain(m.paneArea(60, 10))
 	for _, want := range []string{"enter", "s ", "a "} {
 		if !strings.Contains(got, want) {
@@ -1421,7 +1688,7 @@ func TestEmptyMainAreaNamesTheKeysThatOpenAPane(t *testing.T) {
 }
 
 func TestSidebarColumnHoldsRowsAndTheDetailBand(t *testing.T) {
-	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, &fakeHost{})
+	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, &fakeHost{t: t})
 	col := m.sidebarColumn(23)
 	lines := strings.Split(col, "\n")
 	if len(lines) != 23 {
@@ -1447,7 +1714,7 @@ func TestSidebarColumnHoldsRowsAndTheDetailBand(t *testing.T) {
 }
 
 func TestViewPutsAFocusedPaneInTheMainArea(t *testing.T) {
-	h := &fakeHost{}
+	h := &fakeHost{t: t}
 	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
 	m = stepPump(t, m, "enter")
 	mustTabs(t, m, 1)
@@ -1471,12 +1738,19 @@ Expected: FAIL to build — `undefined: renderTabs`, `undefined: paneArea`, `und
 
 - [ ] **Step 3: Write `view_pane.go`**
 
-`paneArea` below is the first caller of the supervisor stub's `view`, so
-**delete the `//nolint:unused // filled in by Task 3, which is the first
-caller` line above `func (s *supervisor) view` in
-`internal/controlplane/supervisor.go`** as part of this step. Leaving it
-would be a lie by the time `make check` runs, and `nolintlint` is not what
-catches that — a reader is.
+This step is the first caller of **three** symbols Task 2 had to annotate,
+so **delete the `//nolint:unused // filled in by Task 3, which is the first
+caller` line above each of them** as part of it:
+
+- `func (s *supervisor) view` in `internal/controlplane/supervisor.go` —
+  `paneArea` below calls it;
+- `func (m Model) focusedTab` in `internal/controlplane/panes.go` —
+  `paneArea` and `View` both call it;
+- `func (t *tab) title` in `internal/controlplane/panes.go` — `renderTabs`
+  calls it.
+
+Leaving any of them would be a lie by the time `make check` runs, and
+`nolintlint` is not what catches that — a reader is.
 
 ```go
 package controlplane
@@ -1583,7 +1857,12 @@ func (m Model) paneArea(width, height int) string {
 			reason = "exited: " + err.Error()
 		}
 		// The last screen, dimmed, under the reason — a dead pane still
-		// shows what it was doing when it died.
+		// shows what it was doing when it died. By the time this renders
+		// the pane has also been reaped (model.go's paneOutputMsg arm), and
+		// that is fine: Pane.Close ends the child, the pty and the tmux
+		// client, but the emulator keeps its screen and its scrollback —
+		// only its input pipe is closed — so Render and ScrollbackView
+		// still answer.
 		body := styleDim.Render(fitLines(t.p.ScrollbackView(m.scroll, height-2), height-2))
 		return fitLines(strings.Join([]string{
 			styleErr.Render(fit(reason+" — ⌃Space x closes this tab", width)),
@@ -1776,10 +2055,17 @@ func (m Model) View() tea.View {
 
 	side := styleSidebar.Height(bodyHeight).Render(m.sidebarColumn(bodyHeight))
 
+	// The main area's own size comes from paneSize, not from bodyHeight-1
+	// and mainWidth-2 recomputed here. They are the same arithmetic at any
+	// usable window — and at a tiny one they are not, because paneSize
+	// floors, so an emulator sized 2 rows would be rendered into 0. One
+	// source keeps the pane's geometry and the box it is drawn in equal,
+	// which is the property supervisor.view's read-only design rests on.
+	paneCols, paneRows := m.paneSize()
 	main := lipgloss.NewStyle().Width(mainWidth).Height(bodyHeight).MaxHeight(bodyHeight).Render(
 		lipgloss.JoinVertical(lipgloss.Left,
 			m.tabsRow(mainWidth),
-			styleMain.Render(m.mainArea(mainWidth-2, bodyHeight-1))))
+			styleMain.Render(m.mainArea(paneCols, paneRows))))
 
 	v := tea.NewView(lipgloss.JoinVertical(lipgloss.Left,
 		lipgloss.JoinHorizontal(lipgloss.Top, side, main),
@@ -1852,7 +2138,21 @@ In `internal/controlplane/view.go`'s `footer`, replace the final two lines:
 		if lead == "" {
 			lead = strings.Join(m.keys.Leader.Keys(), "/")
 		}
-		return fit(lead+" "+m.help.ShortHelpView(m.keys.LeaderHelp()), m.width)
+		// helpView's pattern, for helpView's reason: m.help is sized to the
+		// whole window, this line has the leader's label in front of it, and
+		// a local copy is how one call gets a different budget without
+		// changing the model's.
+		//
+		// Not fit(): the composed line is already styled ANSI, and fit drops
+		// trailing *runes* — the hazard tabsLine and sendBoxLine both
+		// document, where an escape sequence is cut in half and its closing
+		// reset lost, so the style bleeds into whatever the terminal draws
+		// next. help counts cells and elides between bindings, which is what
+		// this line wants anyway: LeaderHelp is trimmed to what fits, and
+		// anything that still does not is dropped whole rather than sliced.
+		h := m.help
+		h.SetWidth(max(1, m.width-ansi.StringWidth(lead)-1))
+		return lead + " " + h.ShortHelpView(m.keys.LeaderHelp())
 	}
 	row := m.selectedRow()
 	return m.help.ShortHelpView(m.keys.forRow(row, m.live[keyOf(row)]).ShortHelp())
@@ -1879,7 +2179,9 @@ task. Step 10's `make check` is the gate that has to be green everywhere.
 cd /Users/elliott/Projects/cspace-control-plane-4b
 make build && python3 scripts/tui-smoke/smoke.py sandboxes daemon
 ```
-Expected: the printed screen shows the row list at the top-left, a rule, and the detail band beneath it; the right-hand side is the "no panes open" text with the three keys; the footer is the sidebar's short help. `exit 0`.
+Expected: the printed screen shows the row list at the top-left, a rule, and the detail band beneath it; the right-hand side is the "no panes open" text with the three keys; the footer is the sidebar's short help; and the printed `exit` line reads `0`.
+
+Read the screen, not the needles. `smoke.py` prints whether each needle was found and then always exits 0 (smoke.py:17-34), so "found: sandboxes" is a report, not an assertion — and with the layout moved, `sandboxes` is a word this dashboard never renders anyway. The check here is the screen above and a clean exit; Task 8 Step 3 is the step that drives `tuilib.Tui` directly when an assertion is wanted.
 
 - [ ] **Step 10: Run the gate and commit**
 
@@ -1911,7 +2213,7 @@ With a pane focused, every key goes to the child except the leader. That is what
 - Create: `internal/controlplane/leader.go`
 - Test: `internal/controlplane/leader_test.go`
 - Modify: `internal/controlplane/input.go`, `internal/controlplane/model.go`, `internal/controlplane/view.go` (Step 5's line in `helpView`), `internal/controlplane/supervisor.go` (Step 4 drops `handleSupervisorKey`'s `//nolint:unused`, since `handlePaneKey` is now its caller)
-- Test (existing, updated): `internal/controlplane/input_test.go` (three new `press` cases), `internal/controlplane/panes_test.go` (`fakeHost` gains an echoing child)
+- Test (existing, updated): `internal/controlplane/input_test.go` (three new `press` cases). `internal/controlplane/panes_test.go` is **not** touched: Task 2 Step 1 already gives `fakeHost` every script variant this task needs, the echoing child included.
 
 **Interfaces:**
 - Consumes: the `KeyMap` fields (Task 1); `tab`, `focusArea`, `closeTab`, `quitCmd`, `openOrFocus`, `fakeHost` (Task 2); `canAttach` (step 3); `pane.KeyEvent`, `pane.KeyMod` (4a).
@@ -1975,7 +2277,7 @@ func TestPaneKeyConversionMatchesBubbleteasModifiers(t *testing.T) {
 }
 
 func TestKeysReachTheFocusedPaneAndTheLeaderDoesNot(t *testing.T) {
-	h := &fakeHost{}
+	h := &fakeHost{t: t}
 	m := openOne(t, h)
 
 	// `q` quits from the sidebar. With a pane focused it is a letter.
@@ -1995,7 +2297,7 @@ func TestKeysReachTheFocusedPaneAndTheLeaderDoesNot(t *testing.T) {
 }
 
 func TestLeaderDispatch(t *testing.T) {
-	h := &fakeHost{}
+	h := &fakeHost{t: t}
 	m := openOne(t, h)
 
 	if got := leader(t, m, "h"); got.focus != focusSidebar {
@@ -2059,7 +2361,7 @@ func settlePicker(t *testing.T, m Model, k string) (Model, tea.Cmd) {
 // answered, and no unit test that only asserts `mode == modePicker` would
 // notice.
 func TestThePickerOpensThePaneItPicks(t *testing.T) {
-	h := &fakeHost{}
+	h := &fakeHost{t: t}
 	m := openOne(t, h) // one Claude pane on mercury, focus in the main area
 	m = leader(t, m, "t")
 	if m.mode != modePicker || m.picker == nil {
@@ -2085,7 +2387,7 @@ func TestThePickerOpensThePaneItPicks(t *testing.T) {
 // and its container name (4a Task 6), so an ungated open would reach the
 // tmux probe and fail with a transport-shaped error a person cannot act on.
 func TestThePickerRefusesAStoppedSandbox(t *testing.T) {
-	h := &fakeHost{}
+	h := &fakeHost{t: t}
 	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
 	m = step(t, m, "j") // issue-42, which testSnapshot has as StateStopped
 	if got := m.selectedRow().Name; got != "issue-42" {
@@ -2106,12 +2408,58 @@ func TestThePickerRefusesAStoppedSandbox(t *testing.T) {
 	}
 }
 
+// TestTwoHostShellsAreTwoTabs is the exemption openOrFocus makes for the one
+// pane kind that belongs to no sandbox. The existing-tab match is
+// (kind, project, sandbox), and a host shell has neither of the last two —
+// so without the exemption the second one opened from the same row would
+// silently refocus the first, and one opened from a different row would sit
+// beside it wearing that row's identity under an identical title.
+func TestTwoHostShellsAreTwoTabs(t *testing.T) {
+	h := &fakeHost{t: t}
+	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
+
+	m = openHostShell(t, m)
+	m.focus = focusSidebar
+	m = step(t, m, "j") // a different row: issue-42
+	m = openHostShell(t, m)
+
+	mustTabs(t, m, 2)
+	for i, tb := range m.tabs {
+		if tb.kind != KindHostShell {
+			t.Fatalf("tab %d is a %v, want a host shell", i, tb.kind)
+		}
+		if tb.project != "" || tb.sandbox != "" {
+			t.Errorf("tab %d carries %q/%q; a host shell belongs to no sandbox",
+				i, tb.project, tb.sandbox)
+		}
+		if got := tb.title(); got != "host · shell" {
+			t.Errorf("tab %d title = %q", i, got)
+		}
+	}
+}
+
+// openHostShell drives leader `t` → "Host shell", the fourth option, which
+// is the only way to open one: it has no sidebar key, because there is no
+// row to press one on.
+func openHostShell(t *testing.T, m Model) Model {
+	t.Helper()
+	m = leader(t, m, "t")
+	if m.mode != modePicker || m.picker == nil {
+		t.Fatal("leader t did not open the new-pane picker")
+	}
+	for i := 0; i < 3; i++ {
+		m = step(t, m, "down") // Claude, Shell, Supervisor, Host shell
+	}
+	m, cmd := settlePicker(t, m, "enter")
+	return pump(t, m, cmd)
+}
+
 func TestLeaderTwiceSendsTheLeaderToTheChild(t *testing.T) {
 	// An echoing child, because the interesting claim is that the byte
 	// arrived. Asserting Dropped() did not change cannot fail for the
 	// reason it names: a 512-slot queue being drained drops nothing whether
 	// or not anything was ever queued.
-	h := &fakeHost{echo: true}
+	h := &fakeHost{t: t, echo: true}
 	m := openOne(t, h)
 	m = leader(t, m, "ctrl+space")
 	if m.leaderArmed {
@@ -2138,7 +2486,7 @@ func waitForPaneScreen(t *testing.T, tb *tab, want string) {
 }
 
 func TestTabNavigationWraps(t *testing.T) {
-	h := &fakeHost{}
+	h := &fakeHost{t: t}
 	m := openOne(t, h)
 	m.focus = focusSidebar
 	m = stepPump(t, m, "s")
@@ -2157,7 +2505,7 @@ func TestScrollModeMovesAndAnyOtherKeyReturnsToLive(t *testing.T) {
 	// The offset is clamped to the history that exists, so this pane has to
 	// have some: a pane whose child printed nothing cannot scroll, and
 	// asserting that it does would be asserting a bug.
-	h := &fakeHost{history: true}
+	h := &fakeHost{t: t, history: true}
 	m := openOne(t, h)
 	waitForHistory(t, m.tabs[0], 10)
 	m = leader(t, m, "[")
@@ -2196,7 +2544,7 @@ func waitForHistory(t *testing.T, tb *tab, n int) {
 }
 
 func TestLeaderXClosesTheFocusedPane(t *testing.T) {
-	h := &fakeHost{}
+	h := &fakeHost{t: t}
 	m := openOne(t, h)
 	d := m.tabs[0].detach.(*fakeDetacher)
 	m, cmd := leaderCmd(t, m, "x")
@@ -2219,7 +2567,7 @@ func leaderCmd(t *testing.T, m Model, second string) (Model, tea.Cmd) {
 }
 
 func TestCtrlCGoesToTheChildWhenAPaneHasFocus(t *testing.T) {
-	h := &fakeHost{}
+	h := &fakeHost{t: t}
 	m := openOne(t, h)
 	if got := step(t, m, "ctrl+c"); got.quitting {
 		t.Error("ctrl+c quit the dashboard instead of interrupting the child")
@@ -2231,7 +2579,7 @@ func TestCtrlCGoesToTheChildWhenAPaneHasFocus(t *testing.T) {
 }
 
 func TestHelpMentionsTheLeader(t *testing.T) {
-	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, &fakeHost{})
+	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, &fakeHost{t: t})
 	m.showHelp = true
 	if got := plain(m.helpView(80)); !strings.Contains(got, "leader") {
 		t.Errorf("help %q never mentions the leader", got)
@@ -2252,7 +2600,7 @@ func TestHelpMentionsTheLeader(t *testing.T) {
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `cd /Users/elliott/Projects/cspace-control-plane-4b && go test ./internal/controlplane/ -run 'TestLeader|TestPaneKey|TestKeysReach|TestScrollMode|TestCtrlC|TestThePicker'`
+Run: `cd /Users/elliott/Projects/cspace-control-plane-4b && go test ./internal/controlplane/ -run 'TestLeader|TestPaneKey|TestKeysReach|TestScrollMode|TestCtrlC|TestThePicker|TestTwoHostShells'`
 Expected: FAIL to build — `undefined: paneKey`, `m.leaderArmed` undefined.
 
 - [ ] **Step 3: Write `leader.go`**
@@ -2391,6 +2739,9 @@ func (m Model) handlePaneKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if _, _, exited := t.p.Exited(); exited {
+		// There is nothing to type into: the child is gone and the pane has
+		// already been reaped, so a key here would be queued for a writer
+		// that has exited. Leader x is what the tab is still on screen for.
 		return m, nil
 	}
 	t.p.SendKey(paneKey(msg))
@@ -2582,7 +2933,7 @@ Add the matching case to `leader_test.go`:
 
 ```go
 func TestAKeyDismissesTheHelpOverlayWithAPaneFocused(t *testing.T) {
-	h := &fakeHost{}
+	h := &fakeHost{t: t}
 	m := openOne(t, h)
 	m = leader(t, m, "?")
 	if !m.showHelp {
@@ -2679,7 +3030,7 @@ EOF
 A dead host side never reaches the guest. Rollout step 2 shipped `control.BeginAttach` and `Attachment.Close`, and rollout step 1 made `cspace attach` use them; Task 2 wired `Close` into pane close and quit. What is still missing is step 4 of the design's protocol: the sweep that reaps records left behind by a control plane or a `cspace attach` that died without detaching.
 
 **Files:**
-- Modify: `internal/control/attach.go`, `internal/control/client.go`
+- Modify: `internal/control/attach.go`, `internal/control/client.go`, `internal/control/control.go` (Step 3 adds `controlPlaneRoot`)
 - Test: `internal/control/attach_test.go`
 - Test: `internal/controlplane/detach_test.go`
 - Modify: `internal/controlplane/model.go` (`Init`, the `sweepMsg` case), `internal/controlplane/panes.go` (Step 5 adds `sweepMsg` and `sweepCmd` beside the other pane messages)
@@ -2947,7 +3298,32 @@ Expected: FAIL to build — `undefined: SweepClientRecords`, `unknown field Proc
 
 - [ ] **Step 3: Implement the sweep**
 
-Add to `internal/control/attach.go`:
+First give the layout one owner. `ControlPlaneDir` (control.go:55) already
+knows where the bookkeeping lives, and a sweep that re-derived the same path
+as a literal would be a second definition that has to be changed twice — the
+very thing `paths.go`'s header warns about. In
+`internal/control/control.go`, hoist the root out of `ControlPlaneDir`:
+
+```go
+// controlPlaneRoot is the directory ControlPlaneDir hangs off, and the one
+// SweepClientRecords walks. It is factored out because two definitions of
+// this path is one too many: a sweep that looked anywhere but where the
+// writer writes would find nothing, report a clean pass, and leave every
+// stale client attached.
+func controlPlaneRoot(home string) string {
+	return filepath.Join(home, ".cspace", "controlplane")
+}
+```
+
+and make `ControlPlaneDir` call it, keeping its own doc comment as it is:
+
+```go
+func ControlPlaneDir(home, project, sandbox string) string {
+	return filepath.Join(controlPlaneRoot(home), project, sandbox)
+}
+```
+
+Then add to `internal/control/attach.go`:
 
 ```go
 // SweepResult counts what one sweep did.
@@ -3009,7 +3385,7 @@ func (c *Client) SweepClientRecords(ctx context.Context) (SweepResult, error) {
 	if c.home == "" {
 		return res, ErrNoHome
 	}
-	root := filepath.Join(c.home, ".cspace", "controlplane")
+	root := controlPlaneRoot(c.home)
 
 	projects, err := os.ReadDir(root)
 	if err != nil {
@@ -3352,7 +3728,7 @@ import (
 )
 
 func TestInitRunsTheStartupSweep(t *testing.T) {
-	h := &fakeHost{}
+	h := &fakeHost{t: t}
 	m := New(&fakeData{snap: testSnapshot()}, &recordingActor{}, h, NewKeyMap(nil))
 	for _, msg := range drain(m.Init()) {
 		if _, ok := msg.(sweepMsg); ok {
@@ -3366,7 +3742,7 @@ func TestInitRunsTheStartupSweep(t *testing.T) {
 }
 
 func TestQuitClosesEveryPaneBeforeItQuits(t *testing.T) {
-	h := &fakeHost{}
+	h := &fakeHost{t: t}
 	m := openOne(t, h)
 	d := m.tabs[0].detach.(*fakeDetacher)
 	m.focus = focusSidebar
@@ -3448,6 +3824,8 @@ go get charm.land/glamour/v2@v2.0.1
 git diff go.mod | head -40
 ```
 Expected: `charm.land/glamour/v2 v2.0.1` in the direct block and a handful of new indirects (`chroma/v2`, `regexp2`, `bluemonday`, `douceur`, `gorilla/css`, `goldmark`, `goldmark-emoji`, `x/exp/slice`). **No existing version moves**; if one does, stop.
+
+**This step reaches the network**, and it is the only one in the plan that does. Several of those indirects — `microcosm-cc/bluemonday`, `aymerick/douceur`, `gorilla/css` and `charmbracelet/x/exp/slice` — are not in this machine's module cache, so `go get` goes to the proxy. An executor without network access fails here, at a one-line step whose failure is obvious, rather than several steps later in the middle of `make check`; if that happens, stop and say so rather than working around it.
 
 - [ ] **Step 2: Write the failing control test**
 
@@ -3675,8 +4053,13 @@ func TestSupervisorViewRendersTextAndToolSummaries(t *testing.T) {
 	if !strings.Contains(got, "result") {
 		t.Errorf("view %q dropped the result line", got)
 	}
-	if lines := strings.Count(s.view(60, 16), "\n") + 1; lines != 16 {
-		t.Errorf("view is %d lines, want exactly 16", lines)
+	// At most 16: fitLines guarantees the ceiling, and the floor is not
+	// bubbles' to promise. textarea.View() renders a prompt column and a
+	// cursor column of its own, so "exactly SetHeight(3) lines at exactly
+	// SetWidth(w) cells" is an assumption about a widget's internals — the
+	// same one sendInputWidth (view.go:189) exists to work around.
+	if lines := strings.Count(s.view(60, 16), "\n") + 1; lines > 16 {
+		t.Errorf("view is %d lines, want at most 16", lines)
 	}
 }
 
@@ -3690,6 +4073,11 @@ func TestSupervisorViewSurvivesAResize(t *testing.T) {
 	s.resize(30, 10)
 	got := s.view(30, 10)
 	for _, line := range strings.Split(plain(got), "\n") {
+		// At most 30 cells: the claim is that the feed was re-wrapped by a
+		// renderer built at the new width, not that every widget in the
+		// stack stops at exactly Width(). The send box does not — bubbles
+		// draws its prompt and its cursor past that, which is what
+		// sendInputWidth subtracts for the footer's own input.
 		if ansi.StringWidth(line) > 30 {
 			t.Errorf("line %q is wider than the resized view", line)
 		}
@@ -3698,7 +4086,7 @@ func TestSupervisorViewSurvivesAResize(t *testing.T) {
 
 func TestSupervisorEnterSendsAndEscInterrupts(t *testing.T) {
 	a := &recordingActor{}
-	h := &fakeHost{}
+	h := &fakeHost{t: t}
 	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, a, h)
 	m = stepPump(t, m, "a") // open the supervisor tab on mercury
 	if m.focusedTab() == nil || m.focusedTab().sup == nil {
@@ -3715,10 +4103,64 @@ func TestSupervisorEnterSendsAndEscInterrupts(t *testing.T) {
 	if got := m.focusedTab().sup.input.Value(); got != "" {
 		t.Errorf("the box kept %q after sending", got)
 	}
+	if m.action != LabelSend {
+		t.Fatalf("action = %q, want the send in flight", m.action)
+	}
 
+	// Esc while the send is still out is refused: the supervisor tab is
+	// inside the same one-action-at-a-time gate the sidebar's keys pass
+	// through. Two actions in flight means two results, the first of which
+	// clears the gate for the second and leaves the footer naming the wrong
+	// verb.
+	if got := step(t, m, "esc"); len(a.interrupt) != 0 {
+		t.Errorf("interrupts = %d while the send was in flight, want 0 (action %q)",
+			len(a.interrupt), got.action)
+	}
+
+	// Once the send's result lands the gate opens and esc interrupts.
+	mm, _ := m.Update(Result(LabelSend, nil))
+	m = mm.(Model)
 	m = step(t, m, "esc")
 	if len(a.interrupt) != 1 {
 		t.Errorf("interrupts = %d, want 1", len(a.interrupt))
+	}
+}
+
+// TestSupervisorWorkingFollowsTheAgentStatus pins where the spinner's state
+// comes from. Not from the tail: events.ndjson carries lines that are not
+// sdk-events at all, so "the last event is not a result" is a guess that can
+// never go false again — and a spinner that never stops keeps the whole
+// dashboard redrawing at spinner cadence for the rest of the session, which
+// is exactly what model.go's own tick chain is written to avoid.
+func TestSupervisorWorkingFollowsTheAgentStatus(t *testing.T) {
+	h := &fakeHost{t: t}
+	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
+	m = stepPump(t, m, "a")
+	tb := m.focusedTab()
+	if tb == nil || tb.sup == nil {
+		t.Fatal("no supervisor tab")
+	}
+
+	// A tail whose last line is an assistant turn, and no agent status
+	// saying anything is running.
+	mm, _ := m.Update(supervisorEventsMsg{id: tb.id, lines: supervisorLines()[:1]})
+	m = mm.(Model)
+	if tb.sup.working {
+		t.Error("the supervisor is working with nothing reporting that it is")
+	}
+
+	mm, _ = m.Update(liveMsg{states: map[sandboxKey]liveState{
+		{Project: "alpha", Name: "mercury"}: {
+			Agent: control.AgentStatus{Reachable: true, State: "working"}},
+	}})
+	m = mm.(Model)
+	mm, cmd := m.Update(supervisorEventsMsg{id: tb.id, lines: supervisorLines()[:1]})
+	m = mm.(Model)
+	if !tb.sup.working {
+		t.Error("the supervisor is idle while the fast ticker reports the agent working")
+	}
+	if cmd == nil {
+		t.Error("this spinner's own tick chain never started")
 	}
 }
 ```
@@ -3906,8 +4348,8 @@ func (s *supervisor) markdown(text string) string {
 // renderer and call vp.SetContent. A supervisor learns its geometry in
 // exactly two places instead: openOrFocus, when the tab is created, and
 // model.go's tea.WindowSizeMsg fan-out. Both pass the same numbers this
-// function is handed, because paneSize() and the area mainArea renders
-// into are the same arithmetic.
+// function is handed, because View sizes the main area from paneSize()
+// itself rather than recomputing the same arithmetic beside it.
 func (s *supervisor) view(width, height int) string {
 	status := styleDim.Render(strings.Repeat("─", max(1, width)))
 	if s.working {
@@ -3957,6 +4399,13 @@ func (m Model) supervisorTickCmds() []tea.Cmd {
 // handleSupervisorKey is the supervisor tab's keyboard. The box owns it:
 // Enter sends, Esc interrupts, the page keys scroll the feed, and everything
 // else is text. The leader is handled before this is ever reached.
+//
+// The two arms that start an action check m.action first, because this route
+// does not pass through handleNormalKey, where the one-action-at-a-time gate
+// lives. Without it a second action can be started under the first: both
+// emit an actionResultMsg, the first to land clears the gate for the other,
+// and the footer reports whichever verb arrived last. Typing is never gated
+// — only the keys that act.
 func (m Model) handleSupervisorKey(t *tab, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Both actions take the same row, rebuilt from the current row set
 	// rather than remembered: it is hoisted here so the two arms cannot
@@ -3967,6 +4416,13 @@ func (m Model) handleSupervisorKey(t *tab, msg tea.KeyPressMsg) (tea.Model, tea.
 
 	switch msg.String() {
 	case "enter":
+		if m.action != "" {
+			// The gate, checked before the box is read: a turn thrown away
+			// because the last action had not landed yet would be the worst
+			// possible reading of "busy". The text stays, and Enter again
+			// once the footer clears sends it.
+			return m, nil
+		}
 		text := strings.TrimSpace(t.sup.input.Value())
 		t.sup.input.Reset()
 		if text == "" {
@@ -3974,6 +4430,9 @@ func (m Model) handleSupervisorKey(t *tab, msg tea.KeyPressMsg) (tea.Model, tea.
 		}
 		return m.startAction(LabelSend, m.actor.Send(row, text))
 	case "esc":
+		if m.action != "" {
+			return m, nil
+		}
 		return m.startAction(LabelInterrupt, m.actor.Interrupt(row))
 	case "pgup":
 		t.sup.vp.PageUp()
@@ -4011,8 +4470,15 @@ In `internal/controlplane/model.go`'s `Update`:
 			t.sup.err = msg.err
 			t.sup.setEvents(msg.lines)
 			t.sup.reading = false
-			// The agent is working when its last event is not a result.
-			working := len(msg.lines) > 0 && msg.lines[len(msg.lines)-1].Type != "result"
+			// Whether the agent is working is the fast ticker's answer, not
+			// a guess from the tail. "The last event is not a result" can
+			// never go false — events.ndjson carries lines that are not
+			// sdk-events at all, and any tail ending in one of those would
+			// leave the spinner's tick chain alive for the rest of the
+			// session, redrawing the whole dashboard at spinner cadence.
+			// AgentStatus is what the fast cadence already polls for exactly
+			// this question.
+			working := m.live[sandboxKey{Project: t.project, Name: t.sandbox}].Agent.State == "working"
 			started := working && !t.sup.working
 			t.sup.working = working
 			if started {
@@ -4112,8 +4578,8 @@ Step 3's attach handed the whole terminal to `container exec` through `tea.Exec`
 - Create: `internal/cli/controlplane_panes.go`
 - Test: `internal/cli/controlplane_panes_test.go`
 - Modify: `internal/cli/controlplane_actor.go`, `internal/cli/cmd_tui.go`
-- Modify: `internal/controlplane/actor.go` (`Actor.Attach`, `LabelAttach`), `internal/controlplane/model.go` (`paused`), `internal/controlplane/keys.go` (`actionHelp[ActionAttach]`)
-- Test (existing, updated): `internal/cli/controlplane_actor_test.go` (six tests and `countingExecer` deleted), `internal/controlplane/model_test.go` (`TestViewGeometry`, `TestPollingContinuesWhileALongActionRuns`, and `recordingActor.Attach`)
+- Modify: `internal/controlplane/actor.go` (`Actor.Attach`, `LabelAttach`), `internal/controlplane/model.go` (`paused`), `internal/controlplane/keys.go` (`actionHelp[ActionAttach]`), `internal/controlplane/controlplane.go` (Step 7's package doc — the one file 4b otherwise never touches)
+- Test (existing, updated): `internal/cli/controlplane_actor_test.go` (six tests and `countingExecer` deleted, and the imports they orphan), `internal/controlplane/model_test.go` (`TestViewGeometry`, `TestPollingContinuesWhileALongActionRuns`, and `recordingActor.Attach`), `internal/controlplane/keys_test.go` (Step 7 rewords `TestLeaderIsDeclaredButNotAdvertised`'s stale comment)
 - Modify: `CLAUDE.md`, `docs/superpowers/specs/2026-09-17-control-plane-design.md`
 
 `internal/controlplane/input.go` is **not** in this list: Task 2 already removed its `m.actor.Attach(row)` dispatch, and nothing in this task touches the file.
@@ -4309,6 +4775,15 @@ return `tea.Cmd` — and so do `context`, `time`, `control` and `controlplane`.
 `io.Discard`, and `os/exec` only by `attachExec.Run`.) Remove the matching
 tests from `internal/cli/controlplane_actor_test.go`.
 
+**Then prune the imports those deletions orphan in the test file too** — at
+least `sync/atomic` (used only by `countingExecer`, controlplane_actor_test.go:26)
+and `os/exec` (used only by the two `attachRunErr` tests, :237 and :248);
+re-check `context`, `errors` and `io` the same way, use by use. `unused`
+ignores `_test.go` and so does not help here, but the compiler does not:
+"imported and not used" is a build failure, so the package — and Step 6's
+`make check` — does not compile until this is done. Confirm with
+`go vet ./internal/cli/` before moving on.
+
 Two test fixtures go dead with them and are **not** found by Step 6's
 catch-all, because neither names `LabelAttach` nor `Actor.Attach` —
 `unused` ignores `_test.go` entirely, so `make check` stays green with both
@@ -4321,6 +4796,17 @@ still sitting there. Delete them by name:
   them the moment `Actor` stops declaring `Attach`, and a fake that
   implements a method its interface no longer has is a fake that will be
   read as documentation of a path that no longer exists.
+
+**`ResultWarn` and `ResultWarnText` stay.** They lose their old callers here
+— `attachResult` was the production one, and the two assertions inside the
+attach tests were the test ones — but they are not dead: Task 2's
+`paneOpenedMsg` arm reports the no-tmux warning through `ResultWarn`, which
+is the case `ResultWarn`'s own doc comment names, and
+`TestAnOpenThatWarnsGoesThroughResultWarn` in
+`internal/controlplane/panes_test.go` reads it back with `ResultWarnText`.
+Leave both functions, and leave the `ResultWarn` reference in `notice`'s doc
+(`internal/controlplane/model.go:33`) alone: it is still exactly how a
+warning becomes a sticky footer line.
 
 From `internal/controlplane/actor.go` remove `Attach(row control.Row) tea.Cmd` from the `Actor` interface and the `LabelAttach` constant, and update the `Actor` doc comment's "everything but attach" clause:
 
@@ -4375,7 +4861,44 @@ Expected: green, no races. Any test still referring to `LabelAttach` or `Actor.A
 
 - [ ] **Step 7: Update the docs**
 
-In `CLAUDE.md`, replace the **controlplane** bullet's last two sentences —
+First the comments this plan makes wrong, which are in the code rather than
+in `CLAUDE.md` and would otherwise survive every gate — `make check` has no
+opinion about a paragraph that describes a path that no longer exists. Four
+of them:
+
+- `cpActor`'s doc (`internal/cli/controlplane_actor.go:38-42`): "Only attach
+  stays here: it hands the terminal to a child, which is a Bubble Tea
+  concern and therefore not control's." Attach is what this step deleted.
+  Replace those two sentences with: *"Every action delegates; nothing is
+  implemented here. Panes are the other seam — `paneHost`
+  (controlplane_panes.go) — because opening one produces a live process the
+  dashboard then owns."* `home` is still kept for the attach lock and the
+  client records, so that sentence stays.
+- the package doc (`internal/controlplane/controlplane.go:10-13`) — the one
+  file 4b otherwise never touches: "Rollout step 3 has no panes: the main
+  area holds the detail band for the selected row, and attach suspends the
+  whole program into `container exec` the way the v1 dashboard did. The tabs
+  line, the leader binding and the detail renderer's width parameter are the
+  seams rollout step 4 grows into." Replace that paragraph with: *"Rollout
+  step 4 grew the seams step 3 left: the main area holds the focused pane
+  (internal/pane, opened through the PaneHost seam), the detail band moved
+  under the sidebar, and the leader binding dispatches. Attach no longer
+  suspends the program — a Claude session runs in a pane inside the
+  window."*
+- `paused()`'s remaining attach sentence (`internal/controlplane/model.go:144-154`).
+  Step 4 above drops `LabelAttach` from the condition and the clause about
+  attach owning the terminal; finish the job here by reading the whole
+  comment back and making sure what is left says why an *open* pauses a
+  poll — the row set must not be replaced under a row an open is in flight
+  against — with nothing left about a suspended program.
+- `TestLeaderIsDeclaredButNotAdvertised`'s comment and failure message
+  (`internal/controlplane/keys_test.go:184-186`): "nothing in step 3
+  dispatches it" and "until panes land". The test itself still holds and
+  stays — the leader is dispatched now but is still deliberately absent from
+  `ShortHelp` and `FullHelp`, because it is the prefix, not a key of its
+  own, and the leader footer names it separately. Reword both to say that.
+
+Then `CLAUDE.md`: replace the **controlplane** bullet's last two sentences —
 the one beginning "Every action goes through an `Actor`" and the one about
 keybindings. The `Actor` clause stays, because `Actor` stays: `Down`, `Send`,
 `Interrupt`, `RestartBrowser` and `Up` all still run through it, and only
@@ -4414,9 +4937,12 @@ main-area list — the four bullets under "Main area, by tab kind:" — with:
   `Send`; Esc interrupts), and a spinner while working.
 - Host shell: the emulator screen.
 - Exited pane: the last screen dimmed, under the exit reason and the key that
-  closes the tab. There is no separate restart key: closing the tab and
-  opening the pane again from the sidebar *is* the restart, and it rejoins
-  the same tmux session with its screen intact.
+  closes the tab. The pane's own teardown — the detach and the engine's
+  handshake — runs the moment the child exits, not when the tab is dismissed,
+  so nothing stays attached inside the sandbox while the screen is being
+  read. There is no separate restart key: closing the tab and opening the
+  pane again from the sidebar *is* the restart, and it rejoins the same tmux
+  session with its screen intact.
 ```
 
 and replace the first bullet under "## Error handling" with:
@@ -4646,21 +5172,21 @@ EOF
 Checked against the spec's `internal/controlplane` section, "Sessions", "Detach protocol", "Input", "Error handling", "Testing", rollout step 4 and all three open questions.
 
 - **Layout** — Task 3 makes the design's move: the detail band under the sidebar, the tabs row carrying real tabs. The band is 24 columns wide there, which the spec acknowledges cannot hold a URL; the resolution recorded in `sidebarColumn`'s comment is that the sidebar's own port lines already carry the URL as an OSC 8 hyperlink, so nothing is lost but the visible text. Its header does have to fold in two at that width, though — four fields joined with ` · ` do not fit, and `fit` would cut the memory figure off the end, which is the number the band is there for. On a window under twelve rows the band is dropped entirely rather than squeezing the row list, because the list is the thing you cannot navigate without.
-- **The pane is unframed, and that is a departure the spec now records.** The design asks for "the emulator's rendered screen inside a border colored by state". A border costs two of the main area's columns and two of its rows in a window whose whole point is to hold a full Claude Code session, and it duplicates a cue three other things already carry: the focused tab is lit only while the keyboard is in the main area (`styleTabActive` versus `styleTabFocused`), the footer switches to the leader's keys, and the cursor is placed in the pane only then. Task 7 Step 7 rewrites the spec's main-area bullets to say so, together with two smaller departures in the same neighbourhood: a failed open is a footer error and no tab (so there is no pane area to hold a retry key — retrying is pressing the same key again), and an exited pane offers the key that closes the tab rather than a separate restart binding, because closing and reopening rejoins the same tmux session with its screen intact.
+- **The pane is unframed, and that is a departure the spec now records.** The design asks for "the emulator's rendered screen inside a border colored by state". A border costs two of the main area's columns and two of its rows in a window whose whole point is to hold a full Claude Code session, and it duplicates a cue three other things already carry: the focused tab is lit only while the keyboard is in the main area (`styleTabActive` versus `styleTabFocused`), the footer switches to the leader's keys, and the cursor is placed in the pane only then. Task 7 Step 7 rewrites the spec's main-area bullets to say so, together with two smaller departures in the same neighbourhood: a failed open is a footer error and no tab (so there is no pane area to hold a retry key — retrying is pressing the same key again), and an exited pane offers the key that closes the tab rather than a separate restart binding, because closing and reopening rejoins the same tmux session with its screen intact — and the pane behind that dimmed screen has already been torn down, since the child exiting is what starts the reap.
 - **Open question 1 (tab titles)** — `renderTabs` truncates from the **left** and prefixes a `+N` count, which is the question's stated default. Truncating from the left rather than the right is the one judgement added: it keeps the focused tab and the neighbours `n`/`p` reach next.
-- **Open question 2 (supervisor content)** — assistant text through glamour plus one dim line per tool call, the question's default. `toolSummary` picks the argument a reader wants (`file_path`, `command`, …) and truncates to 60 runes; `decodeContent` tolerates both the block-array and bare-string shapes of `message.content`, because a strict decode would drop whole events for the shape it did not expect.
+- **Open question 2 (supervisor content)** — assistant text through glamour plus one dim line per tool call, the question's default. `toolSummary` picks the argument a reader wants (`file_path`, `command`, …) and truncates to 60 runes; `decodeContent` tolerates both the block-array and bare-string shapes of `message.content`, because a strict decode would drop whole events for the shape it did not expect. The spinner beside the feed is driven by the fast ticker's `AgentStatus`, not by the shape of the last event: the log carries lines that are not `sdk-event`s at all, so "the last one is not a result" is a heuristic that can never go false again — and a spinner that never stops redraws the whole dashboard at spinner cadence for the rest of the session.
 - **Open question 3 (`--no-tmux`)** — untouched. The flag stays hidden on `cspace attach`, as the default says.
-- **Focus and input** — Task 4's routing is the spec's: sidebar keys when the sidebar has focus, `Tab` to the main area, and with a pane focused every key to the child except the leader. Three resolutions are recorded in the code. **Ctrl+C goes to the child when a pane has focus** — the spec's step-3 rule ("never routed to a modal") is kept for the sidebar and modals, but interrupting Claude is the most-used key in a pane and a dashboard that stole it would be unusable; the way out is the leader's quit, which the footer names. **Scroll mode consumes the key that leaves it** rather than forwarding it, so a stray letter cannot land in a child a person thought they were only reading. **Leader `v` is bound and dispatches to nothing**, per the brief: the config shape has to be stable now and step 5 is what makes it act. **The help overlay's "swallow the next key" rule moved up**, out of `handleNormalKey` and into `handleKey` ahead of the focus split: with a pane focused the sidebar path is never reached, so leaving it where step 3 put it would have made the overlay dismissible only by a second leader `?` while every other key went to the child the overlay was covering.
+- **Focus and input** — Task 4's routing is the spec's: sidebar keys when the sidebar has focus, `Tab` to the main area, and with a pane focused every key to the child except the leader. Three resolutions are recorded in the code. **Ctrl+C goes to the child when a pane has focus** — the spec's step-3 rule ("never routed to a modal") is kept for the sidebar and modals, but interrupting Claude is the most-used key in a pane and a dashboard that stole it would be unusable; the way out is the leader's quit, which the footer names. **Scroll mode consumes the key that leaves it** rather than forwarding it, so a stray letter cannot land in a child a person thought they were only reading. **Leader `v` is bound and dispatches to nothing**, per the brief: the config shape has to be stable now and step 5 is what makes it act. **The help overlay's "swallow the next key" rule moved up**, out of `handleNormalKey` and into `handleKey` ahead of the focus split: with a pane focused the sidebar path is never reached, so leaving it where step 3 put it would have made the overlay dismissible only by a second leader `?` while every other key went to the child the overlay was covering. **The supervisor tab's Enter and Esc are inside the one-action-at-a-time gate** even though the pane route never passes through `handleNormalKey`, where that gate lives: two actions in flight means two results, and the first to land clears the gate for the second, leaving the footer naming the wrong verb. The typed text is never discarded on a refusal. **A host shell is exempt from the existing-tab match** — it belongs to no sandbox, so the `(kind, project, sandbox)` key every other tab is found by is empty for all of them; asking for one always opens one, and its tab carries no sandbox identity. **The leader footer is trimmed, not truncated**: `LeaderHelp` is the seven second keys that fit one line, with `p` and `?` left to the help overlay, and the line is rendered through a local copy of `m.help` so `help` elides between bindings instead of `fit` cutting an escape sequence in half.
 - **The leader is `Ctrl+Space`** and a test asserts it is not `Ctrl+b`, which Claude Code uses to background a task.
-- **Sessions and the detach protocol** — pane open goes through `control.BeginAttach` (Task 7's host), which takes the attach lock and identifies the client by listing before and after; pane close runs `Attachment.Close`, which detaches and deletes the record. The spec orders the record delete after the teardown handshake; step 2 couples it to the detach inside `Attachment.Close`, and `closeTab`'s comment records that the difference is immaterial since both happen once the client is detached. **Quit closes every pane through the same path** before `tea.Quit` — the spec says quit does not confirm, not that it may skip the detach, and a window that vanished would leave a client attached in each sandbox and a record for the next sweep. Ctrl+C from the sidebar does the same.
+- **Sessions and the detach protocol** — pane open goes through `control.BeginAttach` (Task 7's host), which takes the attach lock and identifies the client by listing before and after; pane close runs `Attachment.Close`, which detaches and deletes the record. The spec orders the record delete after the teardown handshake; step 2 couples it to the detach inside `Attachment.Close`, and `closeTab`'s comment records that the difference is immaterial since both happen once the client is detached. **A pane that exits on its own detaches itself**, without waiting for the operator: the engine closes its dirty channel only inside `Close`, so the waiter's last signal is the dashboard's only notice that the child died, and `reapExited` — `closeTab`'s teardown minus the drop — runs there. The tab stays, showing the dimmed last screen; what goes is the tmux client, the record file, the pty and the parser buffer. **Quit closes every pane through the same path** before `tea.Quit` — the spec says quit does not confirm, not that it may skip the detach, and a window that vanished would leave a client attached in each sandbox and a record for the next sweep. Those closes run concurrently under one shared deadline, so quitting costs one `closeTimeout` rather than one per tab: `Attachment.Close` waits on its own tracking goroutine with no context, and one wedged sandbox should not make quitting look hung. Ctrl+C from the sidebar does the same.
 - **The startup sweep** — Task 5, `control.SweepClientRecords`. It handles every record in one pass, including several in one sandbox's directory (a crash strands one per open pane, and reaping only the first would need as many restarts as there were panes). **Every delete is an explicit branch naming its evidence**, and there are four: an unparseable record (it names no client), a dead pid plus an *authoritative* container list that lacks the container (no exec — the step-2 carry-forward), a dead pid plus tmux answering that it does not list the tty, and a dead pid plus a listed tty the sweep then detached. Everything else keeps the record and, when the reason was a failure rather than evidence, counts it under `SweepResult.Errors`: a `container ls` that could not be believed (`liveContainers`' second return), a `list-clients` exec that failed, a detach that failed, and an unlink that failed. A directory that could not be read at all is counted there too, since its records were never seen and appear in neither `Kept` nor `Deleted`; a live pid is kept but is *not* an error, because that is evidence, not a failure. The two "absence of an answer" cases are the ones worth naming — an unlistable container list never means "gone", and a `list-clients` that could not run never means "nothing is attached" — because the record is the only handle the next sweep has, and deleting it on either would strand a client forever. `SweepResult` reports `Kept`/`Detached`/`Deleted`/`Errors` (`Detached` a subset of `Deleted`), and `attach.lock` is never touched.
-- **Error handling** — a failed open is a footer error and no tab (tested); the no-tmux fallback is a sticky warning naming `cspace image build` (`paneHost.Open`); an exited pane shows its last screen dimmed under the exit reason and the key that closes it; a failed close reports and still drops the tab, because a tab whose pane is gone is not navigable; poll failures degrade exactly as step 3 left them.
-- **Testing** — model tests are messages in, state and rendered text out, as step 3 established. The tab tests open **real** panes running `sh` through the fake host, so the bookkeeping is exercised against the real engine without a container; `make test-race` is re-run after Tasks 2, 4 and 7 because those are the ones that add concurrent owners, and the Global Constraints list says the same three — Task 2 also widens the target from `./internal/pane/...` to `./internal/pane/... ./internal/controlplane/...`, since what those three tasks can race is the tab bookkeeping, which the engine-only scope could never have reported. Nothing declares a fake the `internal/control` test package already has: `fakeExec`, `testTmux` and `fakeContainers` are reused by name, since a second `fakeContainers` in one package is a duplicate type, not a stylistic overlap. What is not testable without Apple Container — a real `claude` in a pane, Shift+Enter under kitty, the detach emptying `tmux list-clients` — is Task 8, step by step.
-- **Seven step-3 tests change, and each one is named in the task that breaks it** rather than left to a catch-all, because four of them mention neither `LabelAttach` nor `Actor.Attach` and would otherwise be found by `make check` instead of by reading. Task 2 splits `TestAttachAndInterruptDispatch` (Enter stops reaching the `Actor`) and updates all four `New(` call sites in `model_test.go`, not just `newTestModel`'s. Task 3 renames `TestTabsLineFitsANarrowWindow` to `TestTabsRowFitsANarrowWindow`, and folds the detail band's header so `TestMemoryUsageSurvivesAStatsFreeSnapshot` keeps passing rather than being weakened. Task 5 renames `TestInitKicksAllThreeCadences` to `TestInitKicksThreeCadencesAndTheStartupSweep` and widens its count to four. Task 7 repoints `TestViewGeometry`'s footer assertion at `"claude pane"` and `TestPollingContinuesWhileALongActionRuns` at `LabelOpenPane`, and deletes two fixtures the catch-all cannot see (`countingExecer`, `recordingActor.Attach`) because `unused` ignores `_test.go`. Task 1 extends `TestHelpOverlayToggles` with a pane binding, which is what proves the overlay's second help row is actually drawn.
+- **Error handling** — a failed open is a footer error and no tab (tested); the no-tmux fallback is a sticky warning naming `cspace image build` (`paneHost.Open`), carried by `ResultWarn` so "it worked, now read this" keeps one mechanism; an exited pane reaps itself and then shows its last screen dimmed under the exit reason and the key that closes it; a failed close reports and still drops the tab, because a tab whose pane is gone is not navigable; poll failures degrade exactly as step 3 left them.
+- **Testing** — model tests are messages in, state and rendered text out, as step 3 established. The tab tests open **real** panes running `sh` through the fake host, so the bookkeeping is exercised against the real engine without a container — and `fakeHost` carries the `*testing.T` so every pane it opens is closed by a `t.Cleanup`, the way `internal/pane`'s own `openTestPane` does: most of these tests never close the tab they opened, and without it one run leaves a dozen children, their goroutines and their pty masters alive for the life of the test binary, under `-race`; `make test-race` is re-run after Tasks 2, 4 and 7 because those are the ones that add concurrent owners, and the Global Constraints list says the same three — Task 2 also widens the target from `./internal/pane/...` to `./internal/pane/... ./internal/controlplane/...`, since what those three tasks can race is the tab bookkeeping, which the engine-only scope could never have reported. Nothing declares a fake the `internal/control` test package already has: `fakeExec`, `testTmux` and `fakeContainers` are reused by name, since a second `fakeContainers` in one package is a duplicate type, not a stylistic overlap. What is not testable without Apple Container — a real `claude` in a pane, Shift+Enter under kitty, the detach emptying `tmux list-clients` — is Task 8, step by step.
+- **Eight step-3 tests change, and each one is named in the task that touches it** rather than left to a catch-all, because four of them mention neither `LabelAttach` nor `Actor.Attach` and would otherwise be found by `make check` instead of by reading. Task 2 splits `TestAttachAndInterruptDispatch` (Enter stops reaching the `Actor`) and updates all four `New(` call sites in `model_test.go`, not just `newTestModel`'s. Task 3 renames `TestTabsLineFitsANarrowWindow` to `TestTabsRowFitsANarrowWindow`, and folds the detail band's header so `TestMemoryUsageSurvivesAStatsFreeSnapshot` keeps passing rather than being weakened. Task 5 renames `TestInitKicksAllThreeCadences` to `TestInitKicksThreeCadencesAndTheStartupSweep` and widens its count to four. Task 7 repoints `TestViewGeometry`'s footer assertion at `"claude pane"` and `TestPollingContinuesWhileALongActionRuns` at `LabelOpenPane`, and deletes two fixtures the catch-all cannot see (`countingExecer`, `recordingActor.Attach`) because `unused` ignores `_test.go`. Task 1 extends `TestHelpOverlayToggles` with a pane binding, which is what proves the overlay's second help row is actually drawn, and adds the pane gates as four rows of `TestForRowDisablesWhatTheSelectionCannotDo`'s existing table rather than as a second test asking the same question a second way — only `canSupervisor` on a stopped sandbox stands alone, because the reason it is wider than `canAttach` is the point of it. Task 7 also rewords `TestLeaderIsDeclaredButNotAdvertised`'s "until panes land" comment: the assertion still holds — the leader is a prefix, not a key of its own, so it stays out of `ShortHelp` and `FullHelp` — but the reason changed.
 - **The dashboard is never broken, but it is briefly narrower.** Between Task 2 and Task 7 the three pane keys report `open pane failed: no pane host configured`: Task 2 retires the old suspend-the-program attach and lands the `PaneHost` seam, and only Task 7 supplies an implementation. The Global Constraint is worded for that — start, render, and every step-3 action but this one — and both tasks say so in their own intro, because a task that silently takes a feature away for five commits is the kind of thing a reviewer finds by bisecting.
 - **The help overlay renders two `FullHelpView` rows, not one wider one.** `help.FullHelpView` drops whole columns once their total passes its width and appends an ellipsis; the overlay is 74 columns at a 100-column window and step 3's four columns already fill it, so pane bindings appended as a fifth and sixth column would have been invisible at every realistic size while still passing every test. `PaneFullHelp` is therefore its own method rendered as its own row, and `TestHelpOverlayToggles` asserts one of its labels is on screen.
 - **The picker applies the gate `forRow` gives the sidebar keys for free.** `updatePicker` is reached from the leader, not from a binding `forRow` disabled, so it checks `canAttach` itself and refuses anything but a host shell on a sandbox that is not running. 4a Task 6 is what makes that reachable: a `--keep-state` teardown leaves a selectable stopped row whose `Container` is still set, so an ungated pick would have failed at the tmux probe with an error about a transport rather than about a stopped sandbox.
-- **`supervisor.view` is read-only.** It was the one place a `View` call mutated shared state — resize rebuilds the glamour renderer and calls `SetContent` — which is safe today only because bubbletea v2 runs `View` on the event-loop goroutine. A supervisor now learns its geometry in `openOrFocus` and in the `tea.WindowSizeMsg` fan-out, which pass the same numbers `paneArea` would have: `paneSize()` and the area `mainArea` renders into are the same arithmetic.
+- **`supervisor.view` is read-only.** It was the one place a `View` call mutated shared state — resize rebuilds the glamour renderer and calls `SetContent` — which is safe today only because bubbletea v2 runs `View` on the event-loop goroutine. A supervisor now learns its geometry in `openOrFocus` and in the `tea.WindowSizeMsg` fan-out, which pass the same numbers `paneArea` is handed — because `View` sizes the main area from `paneSize()` itself rather than recomputing `bodyHeight-1` and `mainWidth-2` beside it, which would agree at every usable window and disagree at a tiny one, where `paneSize` floors and the raw arithmetic does not.
 - **Dependency direction** — asserted with `go list -deps` in Task 2 for both packages. `internal/pane` stays free of every cspace package; `internal/controlplane` gains `internal/pane` and keeps out of `internal/cli`; the one place all three meet is `internal/cli/controlplane_panes.go`, which is the package allowed to see them.
 - **What `New`'s new parameter costs** — every construction site moves at once (Task 2 for the tests, Task 7 for `cmd_tui.go`), and a nil host becomes `nopPaneHost`, which fails every open with an explanation rather than a nil dereference. That is the same fail-closed rule `control.Client` applies to its own unset seams.
 - **Out of scope, and left alone** — mouse, image paste, `cspace ports` / `control.Ports` convergence, the two tmux drivers (`cli.defaultTmux` for `cspace attach`, `Client.Tmux()` for everything else), the fast-cadence findings, and panes for sidecars. `cspace attach` is unchanged, including `restoreBlockingStreams`, which panes do not need — a pane's child gets a pty this process owns, not the terminal's descriptors.
