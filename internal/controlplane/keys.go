@@ -97,6 +97,7 @@ var actionHelp = map[string][2]string{
 	ActionRefresh:        {"r", "refresh"},
 	ActionHelp:           {"?", "help"},
 	ActionQuit:           {"q", "quit"},
+	ActionLeader:         {"⌃Space", "leader"},
 	ActionShell:          {"s", "shell pane"},
 	ActionSupervisor:     {"a", "supervisor"},
 	ActionFocusMain:      {"tab", "focus pane"},
