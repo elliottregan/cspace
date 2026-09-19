@@ -698,9 +698,13 @@ func (m *Model) restoreSelection(prev control.Row) {
 //
 // A supervisor tab has no process (t.p is nil) and its textarea binds no
 // ctrl+c; an exited pane's key handler drops every key. In both, Ctrl+C
-// reaching "the pane" means Ctrl+C doing nothing at all.
+// reaching "the pane" means Ctrl+C doing nothing at all. The help overlay
+// is the same story from the other side: it covers the pane without moving
+// focus off it (see view.go's cursor guard, which excludes it for the same
+// reason), and handleKey dismisses it and swallows the key that opened it —
+// so with it up, "the pane" is not reachable either.
 func (m Model) childOwnsKeyboard() bool {
-	if m.mode != modeNormal || m.focus != focusMain {
+	if m.mode != modeNormal || m.focus != focusMain || m.showHelp {
 		return false
 	}
 	t := m.focusedTab()

@@ -54,9 +54,9 @@ type vtEmulator struct {
 
 	// mu guards the kitty state. The handlers that write it run on whichever
 	// goroutine called Write (the parser is synchronous inside Write);
-	// kittyEnabled is read by whichever goroutine sends a key. Those are
-	// different goroutines in the engine, so this is a real lock and not a
-	// formality.
+	// encoding() — which SendKey reads on every key — is read by whichever
+	// goroutine sends a key. Those are different goroutines in the engine,
+	// so this is a real lock and not a formality.
 	mu         sync.Mutex
 	kittyStack []int
 	kittyFlags int
@@ -276,9 +276,22 @@ func (e *vtEmulator) registerKitty() {
 // with a non-zero flag set. It is blind to forceExtended on purpose: that
 // flag is this package's decision, not the child's, and the one thing the
 // child can ask — the `?u` query — must report what it negotiated itself.
+//
+// encoding below shares kittyOnLocked with this rather than restating the
+// condition, so the two cannot drift; encoding is production's own reader
+// (SendKey calls it on every key, vt.go:143), and kittyEnabled's only
+// caller left is emulator_test.go, kept because "is kitty on" reads better
+// at a kitty-only call site than encoding() == encKitty does.
 func (e *vtEmulator) kittyEnabled() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.kittyOnLocked()
+}
+
+// kittyOnLocked is kittyEnabled's condition, factored out so encoding can
+// reuse it without taking mu twice (sync.Mutex is not reentrant). Callers
+// must already hold mu.
+func (e *vtEmulator) kittyOnLocked() bool {
 	return e.kittyOn && e.kittyFlags != 0
 }
 
@@ -292,7 +305,7 @@ func (e *vtEmulator) encoding() keyEncoding {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	switch {
-	case e.kittyOn && e.kittyFlags != 0:
+	case e.kittyOnLocked():
 		return encKitty
 	case e.forceExtended:
 		return encForced
