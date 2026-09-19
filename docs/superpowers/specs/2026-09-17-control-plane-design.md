@@ -165,7 +165,13 @@ its own queue), and process waiter. The kitty keyboard protocol is tracked by
 registering a CSI `u` handler on the emulator; the key overlay encodes
 modified keys as CSI-u when the child has kitty on, xterm modifier forms
 otherwise, and degrades a modified legacy key to its plain byte when neither
-applies, which is what a real terminal does.
+applies, which is what a real terminal does. A Claude pane under tmux is the
+one exception, because tmux swallows the child's negotiation and the pane can
+never see it: that pane is opened with `pane.ExtendedKeys`, which forces the
+CSI-u form for exactly the keys whose legacy encoding would drop a modifier
+(Shift/Ctrl+Enter, Ctrl+Shift+`<letter>`) and leaves every faithful legacy
+form — Shift+Tab's `ESC[Z`, Ctrl+`<letter>`, Alt-prefixed keys, the xterm
+modifier forms — alone. Claude panes only; a shell has no CSI-u decoder.
 
 Teardown handshake: stop accepting input, end the child's process group and
 reap it, send the group one more `SIGKILL` (a member that ignored the first
@@ -347,7 +353,12 @@ A dead host side never reaches the guest, so every pane close and every
 4. On control-plane startup: for every record file under
    `~/.cspace/controlplane/` whose host pid is no longer running and whose
    tty tmux still lists, detach it and delete the file. This covers a crash
-   of the control plane or of `cspace attach`.
+   of the control plane or of `cspace attach`. Deleting a record requires
+   tmux itself to have answered; the sandbox image's tmux 3.3a says there is
+   no server with `error connecting to <socket> (<errno>)`, which counts as
+   an answered-empty only for the errnos that mean nothing is listening
+   (ENOENT, ECONNREFUSED) — the same sentence with EACCES comes from a live
+   server and is not evidence.
 
 `cspace attach` stops using `syscall.Exec`. It runs the exec as a foreground
 child with the terminal's signals flowing to it, and on the child's exit or
@@ -425,7 +436,11 @@ user-level cspace config along with every other binding. It must not be
 Leader then: `h` focus sidebar · `n` / `p` next / previous tab · `t` new-pane
 picker (Claude, shell, supervisor, host shell) · `x` close pane (detach
 protocol) · `[` scroll mode (arrows, PageUp/Down, wheel move the scrollback;
-any other key returns to live) · `g` back to live · `v` image paste · `?`
+any other key returns to live) — it reads the *pane's* scrollback, which a
+tmux-backed pane does not have, since tmux runs on the alternate screen and
+keeps the history itself: host shells only until copy-mode passthrough (see
+the `scroll-mode-never-reaches-a-tmux-backed-panes-history` finding) · `g`
+back to live · `v` image paste · `?`
 help overlay (the full binding list from `bubbles/v2/help`, plus the
 selection note) · `q` quit · leader again sends the leader to the child. Quit does not confirm:
 tmux holds every session.
