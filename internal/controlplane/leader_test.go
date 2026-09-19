@@ -86,10 +86,12 @@ func TestLeaderDispatch(t *testing.T) {
 	if got := leader(t, m, "t"); got.mode != modePicker || got.picker == nil {
 		t.Error("leader t did not open the new-pane picker")
 	}
-	// v is bound so the config shape is stable, and deliberately does
-	// nothing until rollout step 5.
-	if got := leader(t, m, "v"); got.mode != modeNormal || got.notice.text != "" {
-		t.Error("leader v did something; image paste is step 5")
+	// v pastes now: on a live pane it starts the clipboard read and marks
+	// it in flight. What it reads is clipboard_test.go's business; this is
+	// the dispatch. openOne's model carries nopClipboard, and the command
+	// is never run here, so nothing touches a pasteboard.
+	if got := leader(t, m, "v"); got.action != LabelPasteImage {
+		t.Errorf("action = %q, want the image paste in flight", got.action)
 	}
 }
 

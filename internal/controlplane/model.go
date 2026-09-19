@@ -532,6 +532,36 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case pasteMsg:
+		m.action = ""
+		if msg.err != nil {
+			m.notice = notice{text: LabelPasteImage + " failed: " + msg.err.Error(), isErr: true}
+			return m, nil
+		}
+		if msg.text == "" {
+			m.notice = notice{text: LabelPasteImage + ": the clipboard is empty", isErr: true}
+			return m, nil
+		}
+		// By identity, never by position: a tab closing while the clipboard
+		// was being read shifts every index after it, so an index would
+		// type this into whichever tab moved into that slot.
+		t, _ := m.tabByID(msg.id)
+		if t == nil || t.p == nil {
+			// The tab closed while the clipboard was being read. There is
+			// nowhere to put this and nobody to tell: the person closed it.
+			return m, nil
+		}
+		if _, _, exited := t.p.Exited(); exited {
+			m.notice = notice{text: LabelPasteImage + ": the pane exited", isErr: true}
+			return m, nil
+		}
+		// Through Emulator.Paste, which brackets when the child asked —
+		// the same path a terminal paste takes — and with no trailing
+		// newline, so Claude gets the path in its input box and sends
+		// nothing.
+		t.p.Paste(msg.text)
+		return m, nil
+
 	case tea.KeyPressMsg:
 		// Ctrl+C quits from everywhere except a live pane, which is what
 		// helpView promises. Only a running child earns the exemption —
