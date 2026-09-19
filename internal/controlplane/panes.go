@@ -127,6 +127,14 @@ type tab struct {
 	// therefore a ~30 Hz message loop on a dead pane — a whole dashboard
 	// redrawn at the tick rate for the rest of the session — not a
 	// goroutine parked on a channel nothing can refill.
+	//
+	// closing is this package's own bookkeeping, not the ground truth: a
+	// Close that gave up on a wedged waiter (4a) can leave Exited() still
+	// reporting the child live even though Dirty is already closed, and once
+	// Task 7's host owns Close on its own paths too, a pane can end up
+	// closed by code this field never saw set. The paneOutputMsg re-arm
+	// therefore also asks p.Closed() directly — the pane's own structural
+	// answer — rather than trusting closing/reaped alone.
 	closing bool
 	// reaped is set once an exited pane's own teardown has finished, so a
 	// later signal cannot start a second one. closing covers the window
@@ -208,7 +216,7 @@ func (m Model) openOrFocus(kind Kind, row control.Row) (tea.Model, tea.Cmd) {
 		sup := newSupervisor(cols)
 		sup.resize(cols, rows)
 		m = m.addTab(&tab{
-			id: m.nextTabID, kind: kind, project: row.Project, sandbox: row.Name,
+			kind: kind, project: row.Project, sandbox: row.Name,
 			sup: sup,
 		})
 		return m, m.supervisorEventsCmd(m.tabs[m.focused])
@@ -359,11 +367,16 @@ func (m Model) dropTab(id int) Model {
 // next start's sweep, so the detach still runs on the way out.
 //
 // The closes run CONCURRENTLY under one shared deadline, so the wait before
-// the program ends is one closeTimeout however many tabs are open — not one
-// per tab. That is not a micro-optimisation: control.Attachment.Close waits
-// on its own tracking goroutine with no context of its own, bounded only by
-// Tmux.PollFor, so one wedged sandbox is enough to make a sequential quit
-// look hung while the operator stares at a frozen window.
+// the program ends does not grow with how many tabs are open — it is O(1) in
+// tabs, not one closeTimeout per tab. That said, the ceiling is not exactly
+// closeTimeout: ctx only bounds p.Close (4a honours it directly).
+// control.Attachment.Close derives its own, ctx-independent waits for its
+// tracking goroutine and its detach exec (context.WithoutCancel — see its
+// own doc), so the real ceiling is closeTimeout plus whatever those add on
+// top. What concurrency buys is that a second wedged sandbox does not add a
+// second helping of that on top of the first; one wedged sandbox is still
+// enough to make a sequential quit look hung while the operator stares at a
+// frozen window.
 //
 // It is one closure rather than tea.Sequence(closes…, tea.Quit) because the
 // closes have to finish before the program ends, and because a sequence's
