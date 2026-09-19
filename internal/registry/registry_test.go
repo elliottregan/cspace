@@ -294,3 +294,46 @@ func TestCountForProject(t *testing.T) {
 		}
 	}
 }
+
+// TestMarkStoppedClearsTheAddress — a kept entry describes a container that
+// no longer exists, so the two fields that address one must not survive it.
+// The IP is the load-bearing one: the daemon's DNS handler skips entries
+// with no IP, and a kept entry that held on to its old vmnet address would
+// keep answering <name>.<project>.cspace.test with an address the substrate
+// is free to have handed to a different container.
+func TestMarkStoppedClearsTheAddress(t *testing.T) {
+	r := &Registry{Path: filepath.Join(t.TempDir(), "registry.json")}
+	if err := r.Register(Entry{
+		Project:     "demo",
+		Name:        "mercury",
+		State:       StateReady,
+		IP:          "192.168.64.7",
+		ControlURL:  "http://192.168.64.7:6201",
+		Token:       "tok",
+		ProjectRoot: "/Users/someone/demo",
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := r.MarkStopped("demo", "mercury"); err != nil {
+		t.Fatalf("MarkStopped: %v", err)
+	}
+	e, err := r.Lookup("demo", "mercury")
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if e.State != StateStopped {
+		t.Errorf("state = %q, want %q", e.State, StateStopped)
+	}
+	if e.IP != "" {
+		t.Errorf("IP = %q, want it cleared", e.IP)
+	}
+	if e.ControlURL != "" {
+		t.Errorf("ControlURL = %q, want it cleared", e.ControlURL)
+	}
+	// ...and everything a stopped row still needs survives: the dashboard
+	// renders it from Project/Name/State, and the boot action it offers
+	// needs the project root.
+	if e.ProjectRoot != "/Users/someone/demo" {
+		t.Errorf("ProjectRoot = %q, want it preserved for the boot action", e.ProjectRoot)
+	}
+}

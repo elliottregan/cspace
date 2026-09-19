@@ -38,7 +38,11 @@ without losing in-progress state. Note that an existing clone is NOT
 auto-pulled on the next ` + "`up`" + `; if you keep state, you keep that
 exact tree.
 
-With --all (or -a), tear down every sandbox in the current project.
+With --all (or -a), tear down every sandbox in the current project —
+except the ones a previous --keep-state left behind. Those have no
+container to stop, and purging the state they were kept for is not
+something a batch command should do on its own: each is named in the
+output, and ` + "`cspace down <name>`" + ` purges one deliberately.
 Without it, exactly one <name> argument is required.`,
 		Args: func(_ *cobra.Command, args []string) error {
 			if all && len(args) > 0 {
@@ -68,12 +72,28 @@ Without it, exactly one <name> argument is required.`,
 				if err != nil {
 					return fmt.Errorf("registry list: %w", err)
 				}
+				mine := 0
 				for _, e := range entries {
-					if e.Project == project {
-						names = append(names, e.Name)
+					if e.Project != project {
+						continue
 					}
+					mine++
+					// A kept entry has nothing to tear down: --keep-state
+					// already stopped and removed its container. What it
+					// still has is the clone, the sessions and the volumes
+					// the operator asked cspace to hold, which the default
+					// (non --keep-state) teardown below would wipe on its
+					// way past. Skipping is the only reading of --all that
+					// cannot silently destroy state someone asked to keep;
+					// naming each one keeps the skip visible.
+					if e.State == registry.StateStopped {
+						_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+							"kept: %s (stopped; run `cspace down %s` to purge it)\n", e.Name, e.Name)
+						continue
+					}
+					names = append(names, e.Name)
 				}
-				if len(names) == 0 {
+				if mine == 0 {
 					_, _ = fmt.Fprintln(cmd.OutOrStdout(), "no sandboxes registered for this project")
 					return nil
 				}
@@ -112,6 +132,15 @@ Without it, exactly one <name> argument is required.`,
 				kept = append(kept, name)
 			}
 			names = kept
+
+			if all && len(names) == 0 {
+				// Every entry this project had was filtered out — kept by
+				// a previous --keep-state, or skipped for its shape. Both
+				// said so above, on their own streams; without this the
+				// command would tear nothing down and say nothing about it.
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "nothing to tear down")
+				return nil
+			}
 
 			a := applecontainer.New()
 			for _, name := range names {
@@ -160,7 +189,7 @@ Without it, exactly one <name> argument is required.`,
 		},
 	}
 	cmd.Flags().BoolVarP(&all, "all", "a", false,
-		"tear down every sandbox in the current project")
+		"tear down every sandbox in the current project (entries kept by --keep-state are skipped)")
 	cmd.Flags().BoolVar(&keepState, "keep-state", false,
 		"preserve the workspace clone, sessions, and per-sandbox volumes (default: wipe)")
 	return cmd
@@ -286,7 +315,7 @@ func teardownSandbox(
 	// registry has forgotten is one the dashboard cannot show — let alone
 	// offer its boot key on, which is only offered on stopped rows. Marking
 	// it stopped rather than leaving it alone matters too: Correlate reads a
-	// "starting" entry as booting, so a sandbox torn down mid-boot would
+	// StateStarting entry as booting, so a sandbox torn down mid-boot would
 	// otherwise keep its ◐ forever.
 	// (cs-finding:2026-09-18-keep-state-drops-the-registry-entry-so-a-stopped-sandbox-leaves-the-dashboard)
 	if wipeState {
@@ -310,7 +339,7 @@ func teardownSandbox(
 	} else {
 		live := 0
 		for _, e := range entries {
-			if e.Project == project && e.State != "stopped" {
+			if e.Project == project && e.State != registry.StateStopped {
 				live++
 			}
 		}
