@@ -29,18 +29,22 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.leaderArmed = false
 		return m.handleLeaderKey(msg)
 	}
-	if key.Matches(msg, m.keys.Leader) {
-		m.leaderArmed = true
+	if m.showHelp {
+		// The overlay swallows the very next key, whatever it is — including
+		// the leader itself, which must not arm behind an overlay it cannot
+		// then be used to read: the very next key would need to be blindly
+		// the leader's second key. That check has to sit HERE rather than at
+		// the top of handleNormalKey where step 3 left it, and above the
+		// leader-arm check below it. With a pane focused the route further
+		// down never reaches handleNormalKey, so without both of those the
+		// overlay would be dismissible only by a second leader `?` while
+		// every other key went to a child the overlay is covering — typing
+		// blind into Claude while reading help.
+		m.showHelp = false
 		return m, nil
 	}
-	if m.showHelp {
-		// The overlay swallows the very next key, whatever it is, and that
-		// check has to sit HERE rather than at the top of handleNormalKey
-		// where step 3 left it. With a pane focused the route below never
-		// reaches handleNormalKey, so the overlay would be dismissible only
-		// by a second leader `?` while every other key went to a child the
-		// overlay is covering — typing blind into Claude while reading help.
-		m.showHelp = false
+	if key.Matches(msg, m.keys.Leader) {
+		m.leaderArmed = true
 		return m, nil
 	}
 	if m.focus == focusMain && m.focusedTab() != nil {

@@ -375,3 +375,235 @@ func TestAKeyDismissesTheHelpOverlayWithAPaneFocused(t *testing.T) {
 			m.leaderArmed, m.mode, len(m.tabs))
 	}
 }
+
+// TestPasteInTheSendBoxLandsInTheInput is the fall-through the paste arm's
+// mode guard exists for: bracketed paste is on by default in bubbletea v2,
+// so before the guard was scoped to modeNormal a paste into the send box
+// would reach nothing — not the box (the top-level case owned it and
+// returned) and not the trailing mode switch either.
+func TestPasteInTheSendBoxLandsInTheInput(t *testing.T) {
+	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
+	m = step(t, m, "m")
+	if m.mode != modeInput {
+		t.Fatal("m did not open the send box")
+	}
+	mm, _ := m.Update(tea.PasteMsg{Content: "pasted text"})
+	m = mm.(Model)
+	if got := m.input.Value(); got != "pasted text" {
+		t.Errorf("input value = %q, want the pasted text", got)
+	}
+}
+
+// TestPasteWithThePickerOpenDoesNotReachThePane is the other half of the same
+// guard: a modal open over a focused pane must not leak a paste through to
+// the child behind it. The echoing child is what makes "did not reach" an
+// observable, not an assumption.
+func TestPasteWithThePickerOpenDoesNotReachThePane(t *testing.T) {
+	h := &fakeHost{t: t, echo: true}
+	m := openOne(t, h)
+	m = leader(t, m, "t")
+	if m.mode != modePicker || m.picker == nil {
+		t.Fatal("leader t did not open the picker")
+	}
+	mm, _ := m.Update(tea.PasteMsg{Content: "should not reach the pane"})
+	m = mm.(Model)
+	if m.mode != modePicker {
+		t.Error("the paste closed the picker")
+	}
+	// Give a wrongly-routed paste time to round-trip through the pty and
+	// the echoing child before checking for its absence.
+	time.Sleep(200 * time.Millisecond)
+	if strings.Contains(plain(m.tabs[0].p.Render()), "should not reach the pane") {
+		t.Error("a paste reached the pane behind an open picker")
+	}
+}
+
+// TestCtrlCQuitsThroughAnOpenPicker is helpView's "ctrl+c quits from
+// anywhere" promise for the one case a bare focus check could not cover: a
+// modal (the picker) open over a focused pane. Before this, `m.mode` never
+// entered into the force-quit condition, so Ctrl+C did nothing here — huh's
+// own quit is rebound to esc, and the pane behind the picker never sees the
+// key either, since it does not have the keyboard.
+func TestCtrlCQuitsThroughAnOpenPicker(t *testing.T) {
+	h := &fakeHost{t: t}
+	m := openOne(t, h)
+	m = leader(t, m, "t")
+	if m.mode != modePicker || m.picker == nil {
+		t.Fatal("leader t did not open the picker")
+	}
+	mm, cmd := m.Update(press("ctrl+c"))
+	m = mm.(Model)
+	if !m.quitting {
+		t.Fatal("ctrl+c did not quit with the picker open over a focused pane")
+	}
+	if _, ok := runCmd(t, cmd).(tea.QuitMsg); !ok {
+		t.Error("ctrl+c through the picker produced no quit message")
+	}
+}
+
+// TestQuitClosesEveryPane is quitCmd's contract from both of its callers:
+// every open pane is detached and closed on the way out, whether q was
+// pressed from the sidebar or through the leader.
+func TestQuitClosesEveryPane(t *testing.T) {
+	setup := func(t *testing.T) (m Model, d0, d1 *fakeDetacher, p0, p1 *pane.Pane) {
+		t.Helper()
+		h := &fakeHost{t: t}
+		m = openOne(t, h)
+		m.focus = focusSidebar
+		m = stepPump(t, m, "s")
+		mustTabs(t, m, 2)
+		return m, m.tabs[0].detach.(*fakeDetacher), m.tabs[1].detach.(*fakeDetacher),
+			m.tabs[0].p, m.tabs[1].p
+	}
+	assertAllClosed := func(t *testing.T, cmd tea.Cmd, d0, d1 *fakeDetacher, p0, p1 *pane.Pane) {
+		t.Helper()
+		if _, ok := runCmd(t, cmd).(tea.QuitMsg); !ok {
+			t.Fatal("q's command did not yield tea.QuitMsg")
+		}
+		if d0.closed != 1 || d1.closed != 1 {
+			t.Errorf("detachers closed = %d,%d, want 1,1", d0.closed, d1.closed)
+		}
+		if !p0.Closed() || !p1.Closed() {
+			t.Error("not every pane was closed")
+		}
+	}
+
+	t.Run("sidebar q", func(t *testing.T) {
+		m, d0, d1, p0, p1 := setup(t)
+		m.focus = focusSidebar
+		mm, cmd := m.Update(press("q"))
+		m = mm.(Model)
+		if !m.quitting {
+			t.Fatal("q did not set quitting")
+		}
+		assertAllClosed(t, cmd, d0, d1, p0, p1)
+	})
+
+	t.Run("leader q", func(t *testing.T) {
+		m, d0, d1, p0, p1 := setup(t)
+		// A pane is focused; leader q must still work.
+		m.focus = focusMain
+		m, cmd := leaderCmd(t, m, "q")
+		if !m.quitting {
+			t.Fatal("leader q did not set quitting")
+		}
+		assertAllClosed(t, cmd, d0, d1, p0, p1)
+	})
+}
+
+// TestLeaderGatesNewPaneAndClosePaneWhileAnActionIsInFlight is the one-action
+// gate handleNormalKey already gives every sidebar key, extended to the
+// leader's own open and close: an open or close in flight must report back
+// before another can start, or the second overwrites m.action and the first
+// never gets its result observed.
+func TestLeaderGatesNewPaneAndClosePaneWhileAnActionIsInFlight(t *testing.T) {
+	h := &fakeHost{t: t}
+	m := openOne(t, h)
+	m.action = "opening something" // an action is already in flight
+
+	if got := leader(t, m, "t"); got.mode == modePicker {
+		t.Error("leader t opened the picker while an action was in flight")
+	}
+	if got := leader(t, m, "x"); len(got.tabs) != 1 || got.action != m.action {
+		t.Errorf("leader x closed a pane while an action was in flight: tabs=%d action=%q",
+			len(got.tabs), got.action)
+	}
+}
+
+// TestLeaderDismissesHelpInsteadOfArming is the spec's "any key closes help"
+// rule applied to the leader itself: arming behind an overlay it cannot then
+// be used to read would mean the very next key has to be blindly the
+// leader's second key.
+func TestLeaderDismissesHelpInsteadOfArming(t *testing.T) {
+	h := &fakeHost{t: t}
+	m := openOne(t, h)
+	m = leader(t, m, "?")
+	if !m.showHelp {
+		t.Fatal("leader ? did not open the help overlay")
+	}
+	m = step(t, m, "ctrl+space")
+	if m.showHelp {
+		t.Error("the leader did not dismiss the help overlay")
+	}
+	if m.leaderArmed {
+		t.Error("the leader armed instead of being consumed dismissing the help overlay")
+	}
+}
+
+// TestPickerEscCancelsWithoutOpeningAPane is updatePicker's StateAborted
+// path, exercised the way TestTeardownCancels exercises the teardown
+// confirm's: esc resolves the form in one round trip, unlike a Select
+// answer.
+func TestPickerEscCancelsWithoutOpeningAPane(t *testing.T) {
+	h := &fakeHost{t: t}
+	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
+	m = leader(t, m, "t")
+	if m.mode != modePicker || m.picker == nil {
+		t.Fatal("leader t did not open the picker")
+	}
+	m = step(t, m, "esc")
+	if m.mode != modeNormal || m.picker != nil {
+		t.Errorf("esc should cancel the picker: mode=%v picker=%v", m.mode, m.picker)
+	}
+	if len(m.tabs) != 0 {
+		t.Errorf("tabs = %d, want none after cancelling the picker", len(m.tabs))
+	}
+	if len(h.opens) != 0 {
+		t.Errorf("opens = %v, want none after cancelling the picker", h.opens)
+	}
+}
+
+// waitForExit polls until a pane's child has exited.
+func waitForExit(t *testing.T, tb *tab) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, _, exited := tb.p.Exited(); exited {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("the pane never exited")
+}
+
+// TestLeaderTwiceOnAnExitedPaneDoesNotQueueAKey mirrors handlePaneKey's own
+// exited guard: a child that is gone has nothing to type into, whether the
+// key came from an ordinary binding or from the leader passing itself
+// through. Sending far more than the pane's 512-slot write queue holds is
+// what makes "nothing was queued" observable — without the guard, the
+// overflow past slot 512 would show up as a non-zero Dropped().
+func TestLeaderTwiceOnAnExitedPaneDoesNotQueueAKey(t *testing.T) {
+	h := &fakeHost{t: t, exits: true}
+	m := openOne(t, h)
+	waitForExit(t, m.tabs[0])
+
+	for i := 0; i < 600; i++ {
+		m = leader(t, m, "ctrl+space")
+	}
+	if got := m.tabs[0].p.Dropped(); got != 0 {
+		t.Errorf("Dropped() = %d, want 0: the exited guard should have kept every leader-leader from ever being queued", got)
+	}
+}
+
+// TestFooterHighlightsTheArmedLeader is the visual half of arming: the held
+// prefix takes the accent style so the state is visible, without changing
+// what the footer says.
+func TestFooterHighlightsTheArmedLeader(t *testing.T) {
+	h := &fakeHost{t: t}
+	m := openOne(t, h)
+
+	before := m.footer()
+	m = step(t, m, "ctrl+space")
+	if !m.leaderArmed {
+		t.Fatal("ctrl+space did not arm the leader")
+	}
+	armed := m.footer()
+
+	if plain(before) != plain(armed) {
+		t.Errorf("arming the leader changed the footer's text:\nbefore: %q\narmed:  %q",
+			plain(before), plain(armed))
+	}
+	if armed == before {
+		t.Error("the armed leader's footer carries no styling difference")
+	}
+}
