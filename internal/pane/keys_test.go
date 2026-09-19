@@ -1,6 +1,49 @@
 package pane
 
-import "testing"
+import (
+	"testing"
+
+	uv "github.com/charmbracelet/ultraviolet"
+)
+
+// The five modifier bits ultraviolet defines past the four this package
+// encodes. They live in the test rather than in keys.go on purpose: rule 0
+// masks by the positive set, so nothing in the package needs to name them,
+// and exporting them would invite a caller to think they mean something
+// here. TestInexpressibleModBitsMatchUltraviolet keeps the numbering honest.
+const (
+	modHyper KeyMod = 1 << (4 + iota)
+	modSuper
+	modCapsLock
+	modNumLock
+	modScrollLock
+)
+
+// TestInexpressibleModBitsMatchUltraviolet pins the constants above to
+// ultraviolet's own, the same way KeyMod's four exported bits are pinned by
+// being ultraviolet's values bit for bit. A drift here would make every
+// rule-0 case below test a bit the host terminal never sets.
+func TestInexpressibleModBitsMatchUltraviolet(t *testing.T) {
+	cases := []struct {
+		name string
+		ours KeyMod
+		uv   uv.KeyMod
+	}{
+		{"hyper", modHyper, uv.ModHyper},
+		{"super", modSuper, uv.ModSuper},
+		{"capslock", modCapsLock, uv.ModCapsLock},
+		{"numlock", modNumLock, uv.ModNumLock},
+		{"scrolllock", modScrollLock, uv.ModScrollLock},
+	}
+	for _, tc := range cases {
+		if KeyMod(tc.uv) != tc.ours {
+			t.Errorf("%s: test constant %d, ultraviolet %d", tc.name, tc.ours, tc.uv)
+		}
+		if tc.ours&encodableMods != 0 {
+			t.Errorf("%s (%d) overlaps encodableMods, which rule 0 would then keep", tc.name, tc.ours)
+		}
+	}
+}
 
 // Every row of the overlay's tables, and every rule that decides between
 // them. The cases are written as the bytes a real terminal sends, so a
@@ -119,6 +162,30 @@ func TestEncodeKey(t *testing.T) {
 		{"kitty shift+1 is text, not CSI-u", KeyEvent{Code: '1', Mod: ModShift, Text: "!"}, true, "!", true},
 		{"shift+a is text (kitty off)", KeyEvent{Code: 'a', Mod: ModShift, Text: "A"}, false, "A", true},
 		{"shift+1 is text (kitty off)", KeyEvent{Code: '1', Mod: ModShift, Text: "!"}, false, "!", true},
+
+		// Rule 0. ultraviolet's kitty decoder sets ModCapsLock, ModNumLock
+		// and ModSuper straight from the host terminal's own report, and
+		// neither this overlay nor x/vt can encode any of them — x/vt's
+		// default branch emits bytes only when Mod == 0, so an unmasked
+		// lock bit makes an ordinary letter vanish entirely, which is the
+		// exact failure this overlay exists to prevent. Masked, a key that
+		// the terminal already resolved to text types that text: Code is
+		// the BASE codepoint, so handing it to x/vt instead would send a
+		// lowercase "a" for a capital.
+		{"capslock+a types its capital", KeyEvent{Code: 'a', Mod: modCapsLock, Text: "A"}, false, "A", true},
+		{"kitty capslock+a types its capital", KeyEvent{Code: 'a', Mod: modCapsLock, Text: "A"}, true, "A", true},
+		{"numlock+keypad digit types its digit", KeyEvent{Code: uv.KeyKp5, Mod: modNumLock, Text: "5"}, false, "5", true},
+		{"scrolllock+a types its text", KeyEvent{Code: 'a', Mod: modScrollLock, Text: "a"}, false, "a", true},
+		// ...and a masked-away bit alongside a real one leaves the real one
+		// alone: this degrades to plain Ctrl+A, which is x/vt's own case.
+		// Unmasked, rule 6 would have claimed it (Mod&^(ModCtrl|ModAlt) is
+		// non-zero for the super bit) and double-encoded the control byte.
+		{"super+ctrl+a is masked back to plain ctrl+a", KeyEvent{Code: 'a', Mod: modSuper | ModCtrl}, false, "", false},
+		{"hyper+ctrl+right is masked back to plain ctrl+right", KeyEvent{Code: KeyRight, Mod: modHyper | ModCtrl}, false, "\x1b[1;5C", true},
+		// A masked-to-nothing key with no text has nothing to type, so it
+		// goes to x/vt like any unmodified key — which encodes Enter
+		// mode-sensitively, as rule 1 wants.
+		{"capslock+enter is x/vt's", KeyEvent{Code: KeyEnter, Mod: modCapsLock}, false, "", false},
 	}
 
 	for _, tc := range cases {
@@ -182,4 +249,28 @@ func TestVTEmulatorSendsAModifiedKeyThroughTheOverlay(t *testing.T) {
 	// encodeKey reports "not mine" in isolation.
 	e.SendKey(KeyEvent{Code: 'a', Mod: ModCtrl})
 	r.waitFor(t, "\x01")
+}
+
+// TestVTEmulatorMasksAnInexpressibleModifier is rule 0's wiring test, and
+// the only one that can catch a mask applied in encodeKey but not in
+// vtEmulator.SendKey: encodeKey works on its own copy of the event, so the
+// fall-through to x/vt would still hand over the unmasked Mod. x/vt matches
+// whole key structs and its default branch emits bytes only when Mod == 0,
+// so an unmasked Super bit riding along with Ctrl means zero bytes reach the
+// child.
+func TestVTEmulatorMasksAnInexpressibleModifier(t *testing.T) {
+	e, r := newTestEmulator(t, func(cols, rows int) Emulator { return newVTEmulator(cols, rows) }, 20, 4)
+
+	// Ctrl+A with the Command key also down, as ultraviolet reports it from
+	// a kitty-speaking host terminal. x/vt owns plain Ctrl+A, so this only
+	// arrives as \x01 if SendKey masked the Super bit before falling
+	// through to it.
+	e.SendKey(KeyEvent{Code: 'a', Mod: modSuper | ModCtrl})
+	r.waitFor(t, "\x01")
+
+	// CapsLock+a: nothing expressible is left after the mask, but the host
+	// terminal already resolved the key to "A", so the overlay types that
+	// rather than letting x/vt re-derive a lowercase "a" from Code.
+	e.SendKey(KeyEvent{Code: 'a', Mod: modCapsLock, Text: "A"})
+	r.waitFor(t, "A")
 }

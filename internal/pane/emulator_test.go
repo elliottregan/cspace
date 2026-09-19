@@ -1,6 +1,8 @@
 package pane
 
 import (
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -348,6 +350,12 @@ func TestVTEmulatorTracksTheKittyKeyboardProtocol(t *testing.T) {
 // the flag stack at 16 entries, discarding the oldest push once full, and
 // nothing in x/vt enforces that — it is this adapter's own bookkeeping, so
 // it is asserted against the concrete type.
+//
+// Each push carries a DIFFERENT value, so the assertion is on the surviving
+// window and not just its length: the eviction shifts the slice down by one
+// and writes the newcomer at the top, and a shift in the wrong direction (or
+// a write to the wrong end) keeps exactly 16 entries while holding the wrong
+// sixteen. Pushing the same flags twenty times cannot tell those apart.
 func TestVTEmulatorCapsKittyStack(t *testing.T) {
 	e := newVTEmulator(20, 4)
 	r := &responses{done: make(chan struct{})}
@@ -371,24 +379,37 @@ func TestVTEmulatorCapsKittyStack(t *testing.T) {
 		<-r.done
 	})
 
-	for i := 0; i < 20; i++ {
-		if _, err := e.Write([]byte("\x1b[>1u")); err != nil {
+	for i := 1; i <= 20; i++ {
+		if _, err := e.Write([]byte("\x1b[>" + strconv.Itoa(i) + "u")); err != nil {
 			t.Fatalf("Write %d: %v", i, err)
 		}
 	}
+	// Twenty pushes of 1..20 into a stack of sixteen leaves the last
+	// sixteen: 5..20, oldest first.
+	want := make([]int, 0, kittyStackLimit)
+	for i := 5; i <= 20; i++ {
+		want = append(want, i)
+	}
 	e.mu.Lock()
-	got := len(e.kittyStack)
+	got := append([]int(nil), e.kittyStack...)
 	e.mu.Unlock()
-	if got != 16 {
-		t.Fatalf("kitty stack holds %d entries after 20 pushes, want 16", got)
+	if !slices.Equal(got, want) {
+		t.Fatalf("kitty stack after 20 pushes = %v, want %v", got, want)
 	}
 
+	// Pop one and ask the emulator what its flags are now: the report is
+	// the only way to observe the new top from outside, and it is what a
+	// child actually reads.
 	if _, err := e.Write([]byte("\x1b[<1u")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	if !e.kittyEnabled() {
 		t.Error("kitty is off after popping one of sixteen entries, want still enabled")
 	}
+	if _, err := e.Write([]byte("\x1b[?u")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	r.waitFor(t, "\x1b[?19u")
 }
 
 // TestVTInputPipeIsAnIOCloser locks the assumption Close is built on: x/vt's

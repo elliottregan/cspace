@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -333,8 +334,14 @@ func TestPaneCloseHonoursContextAgainstAWaiterThatNeverFinishes(t *testing.T) {
 	closeErr := p.Close(ctx)
 	elapsed := time.Since(start)
 
-	if elapsed > 300*time.Millisecond {
-		t.Errorf("Close took %s, want well under 300ms", elapsed)
+	// The assertion is "Close returned instead of blocking on a Wait that
+	// never finishes", and the ctx it was given expires at 200ms. Two
+	// seconds proves that just as well as a tight bound would, and does not
+	// flake on a loaded machine running -race alongside another test
+	// binary — the one wall-clock upper bound in this package is not the
+	// place to be precise.
+	if elapsed > 2*time.Second {
+		t.Errorf("Close took %s, want it to return when its 200ms ctx expired", elapsed)
 	}
 	if closeErr == nil || !strings.Contains(closeErr.Error(), "waiter") {
 		t.Errorf("Close err = %v, want an error naming the waiter", closeErr)
@@ -643,5 +650,125 @@ func TestPaneScrollbackViewWalksBackThroughHistory(t *testing.T) {
 	// than an empty screen.
 	if got := stripANSI(p.ScrollbackView(1000, 4)); !strings.Contains(got, "line1") {
 		t.Errorf("over-scrolled view = %q, want the oldest lines", got)
+	}
+}
+
+// TestPaneDirtyIsClosedOnceThePaneIs — the control plane's redraw loop parks
+// a goroutine on `<-p.Dirty()` per tick. After Close the pump and the waiter
+// have both exited, so nothing would ever signal the channel again: without
+// a terminal state that goroutine parks for the life of the process, and its
+// closure retains the whole *Pane, x/vt's eagerly allocated 4 MiB parser
+// buffer included. One leaked goroutine and ~4 MiB per pane the operator
+// ever opens and closes.
+func TestPaneDirtyIsClosedOnceThePaneIs(t *testing.T) {
+	p := openTestPane(t, `printf 'hello'; sleep 30`, 40, 6)
+	waitForScreen(t, p, "hello")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := p.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// The channel carries one slot, so the first receive can hand back a
+	// signal the pump or the waiter queued on its way out; the close is
+	// what the next one reports. Both have to return promptly.
+	deadline := time.After(100 * time.Millisecond)
+	closed := false
+	for i := 0; i < 2 && !closed; i++ {
+		select {
+		case _, ok := <-p.Dirty():
+			closed = !ok
+		case <-deadline:
+			t.Fatal("a receive on Dirty blocked for 100ms after Close returned")
+		}
+	}
+	if !closed {
+		t.Fatal("Dirty is still open after Close; a waiter on it would park forever")
+	}
+
+	// ...and the pane answers the question the unparked waiter then asks.
+	if _, _, exited := p.Exited(); !exited {
+		t.Error("Exited() reports the child still running after Close")
+	}
+
+	// markDirty has to be a no-op now rather than a send on a closed
+	// channel: on Close's give-up paths the pump is still parked in Read
+	// and calls it on its way out, after the close. Calling it directly is
+	// the only way to reach that ordering deterministically.
+	p.markDirty()
+}
+
+// TestOpenAndResizeClampAnOversizeScreen — both sizes end up in a uint16
+// (TIOCSWINSZ's ws_col/ws_row, and creack/pty's Winsize), where 70000 wraps
+// to 4464 rather than failing. validateOpen only rejects <= 0, so without
+// the clamp an oversize request silently produces a narrow pane.
+//
+// It drives open() with a stub emulator rather than Open(): the clamp is
+// about the conversions, and building a real x/vt screen 65535 columns wide
+// to observe them would allocate hundreds of megabytes.
+func TestOpenAndResizeClampAnOversizeScreen(t *testing.T) {
+	sh := shell(t)
+	p, err := open(Command{Path: sh, Args: []string{"bash", "-c", "sleep 30"}}, 70000, 10, newStubEmulator())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = p.Close(ctx)
+	})
+
+	ws, err := pty.GetsizeFull(p.ptmx)
+	if err != nil {
+		t.Fatalf("GetsizeFull: %v", err)
+	}
+	if ws.Cols != 65535 || ws.Rows != 10 {
+		t.Errorf("pty opened at %dx%d, want 65535x10 (70000 truncates to 4464 unclamped)", ws.Cols, ws.Rows)
+	}
+
+	if err := p.Resize(70000, 70000); err != nil {
+		t.Fatalf("Resize: %v", err)
+	}
+	ws, err = pty.GetsizeFull(p.ptmx)
+	if err != nil {
+		t.Fatalf("GetsizeFull after Resize: %v", err)
+	}
+	if ws.Cols != 65535 || ws.Rows != 65535 {
+		t.Errorf("pty resized to %dx%d, want 65535x65535", ws.Cols, ws.Rows)
+	}
+}
+
+// TestHostShell covers the two branches nothing else in this package reaches:
+// the basename slicing that produces argv[0], and the $SHELL-unset fallback.
+// 4b opens host-shell panes from both.
+func TestHostShell(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	c := HostShell()
+	if c.Path != "/bin/sh" {
+		t.Errorf("Path = %q, want /bin/sh", c.Path)
+	}
+	if len(c.Args) != 2 || c.Args[0] != "sh" || c.Args[1] != "-l" {
+		t.Errorf("Args = %q, want [sh -l]", c.Args)
+	}
+
+	// argv[0] is the shell's own name, not its path — a login shell reads
+	// its argv[0] to decide what it is.
+	t.Setenv("SHELL", "/opt/homebrew/bin/fish")
+	if c := HostShell(); c.Path != "/opt/homebrew/bin/fish" || c.Args[0] != "fish" {
+		t.Errorf("HostShell() = %+v, want path /opt/homebrew/bin/fish with argv[0] fish", c)
+	}
+
+	// Unset, not empty: the documented fallback. The t.Setenv above still
+	// restores the developer's own $SHELL on cleanup.
+	if err := os.Unsetenv("SHELL"); err != nil {
+		t.Fatalf("Unsetenv: %v", err)
+	}
+	c = HostShell()
+	if c.Path != "/bin/bash" {
+		t.Errorf("Path with $SHELL unset = %q, want the /bin/bash fallback", c.Path)
+	}
+	if len(c.Args) != 2 || c.Args[0] != "bash" || c.Args[1] != "-l" {
+		t.Errorf("Args with $SHELL unset = %q, want [bash -l]", c.Args)
 	}
 }

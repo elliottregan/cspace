@@ -17,6 +17,20 @@ import (
 //
 // The rules, in the order they are applied:
 //
+//  0. Any modifier bit this overlay cannot express is masked off before
+//     any other rule runs. ultraviolet defines five bits past the four
+//     below — ModHyper, ModSuper, and the ModCapsLock/ModNumLock/
+//     ModScrollLock lock states — and its kitty decoder sets the lock ones
+//     and Super straight from the host terminal's own report. Neither this
+//     file nor x/vt has an encoding for any of them: x/vt's default branch
+//     emits bytes only when Mod == 0, so an unmasked lock bit makes an
+//     ordinary letter vanish, and rule 3 would otherwise claim the key for
+//     a CSI-u form whose modifier parameter ignores the bit anyway. A key
+//     left with no expressible modifier at all, but which the terminal
+//     already resolved to text (CapsLock+a is Text "A"; a NumLock keypad
+//     digit is its digit), is typed as that text rather than handed to
+//     x/vt, which would re-derive it from the BASE codepoint and send a
+//     lowercase "a". Everything else falls to rule 1.
 //  1. Nothing modified goes through here. x/vt encodes unmodified keys
 //     correctly AND mode-sensitively — DECCKM decides between ESC O A and
 //     ESC [ A for Up, the application keypad decides the keypad forms — and
@@ -57,12 +71,23 @@ import (
 //     applied the shift to Text, so only the ESC needs adding back.
 //  8. A printable key held with Shift alone (no Alt) is its own text: the
 //     terminal already applied the shift, and x/vt would drop it for
-//     Mod != 0.
+//     Mod != 0. Rule 0's masked-to-nothing text keys take this same path,
+//     early.
 //
 // ok == false means "x/vt has this one"; the adapter falls through to
 // SendKey.
 func encodeKey(k KeyEvent, kitty bool) (string, bool) {
+	mod := k.Mod & encodableMods // rule 0
+	masked := mod != k.Mod
+	k.Mod = mod
+
 	if k.Mod == 0 {
+		if masked && k.Text != "" {
+			// Rule 0 into rule 8: the key carried only modifiers nothing
+			// downstream can express, but it did produce text. x/vt would
+			// ignore that text and send the base codepoint.
+			return k.Text, true
+		}
 		return "", false // rule 1
 	}
 	if !kitty && k.Mod == ModShift && k.Code == KeyTab {
@@ -111,8 +136,23 @@ func encodeKey(k KeyEvent, kitty bool) (string, bool) {
 	return "", false
 }
 
+// encodableMods is the modifier set this overlay and x/vt between them can
+// actually encode. Rule 0 masks everything else off; see encodeKey.
+const encodableMods = ModShift | ModAlt | ModCtrl | ModMeta
+
 // modParam is the xterm/kitty modifier parameter: 1 plus a bitmask of
-// shift 1, alt 2, ctrl 4, meta 8. Both encodings agree on these four bits.
+// shift 1, alt 2, ctrl 4, meta 8.
+//
+// The xterm forms (rule 4) agree with this exactly. The kitty protocol does
+// NOT: in it bit 8 is super and meta is 32, and ultraviolet deliberately
+// swaps the two so its own ModMeta matches XTerm's ("Meta and Super are
+// swapped in the Kitty protocol, this is to preserve compatibility with
+// XTerm modifiers", ultraviolet/key.go:20-26). So rule 3's CSI-u form
+// reports uv's ModMeta in bit 8, which a kitty-speaking child reads as
+// Super. The encoding is left as is: the alternative is a kitty-specific
+// variant mapping ModMeta to 32, and the bit that would make the swap
+// visible the other way — uv's ModSuper — is masked off by rule 0 before
+// this is ever called, so nothing here can emit a wrong Super.
 func modParam(mod KeyMod) int {
 	n := 1
 	if mod&ModShift != 0 {
