@@ -122,10 +122,23 @@ func (m Model) handleLeaderKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.quitCmd()
 
 	case key.Matches(msg, m.keys.PasteImage):
-		// Bound so the config shape is stable and the footer can name it;
-		// rollout step 5 is what makes it act. Doing nothing quietly beats a
-		// "not implemented" notice on a key the footer advertises.
-		return m, nil
+		t := m.focusedTab()
+		if t == nil || t.p == nil {
+			// No tabs at all, or a supervisor tab, which runs no process.
+			// Either way there is nowhere for a path to be typed.
+			m.notice = notice{text: LabelPasteImage + ": no pane", isErr: true}
+			return m, nil
+		}
+		if _, _, exited := t.p.Exited(); exited {
+			m.notice = notice{text: LabelPasteImage + ": the pane exited", isErr: true}
+			return m, nil
+		}
+		if m.action != "" {
+			// The one-action gate, as the other leader keys apply it: two
+			// concurrent osascript runs would race for one footer line.
+			return m, nil
+		}
+		return m.startAction(LabelPasteImage, m.pasteImageCmd(t))
 	}
 	return m, nil
 }
