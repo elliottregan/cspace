@@ -77,12 +77,21 @@ import (
 //     Mod != 0. Rule 0's masked-to-nothing text keys take this same path,
 //     early.
 //
+// enc says which of those worlds the child lives in; encForced is a third
+// state that picks rule 3 per key rather than for all of them, and
+// legacyLosesModifier is the whole of that decision.
+//
 // ok == false means "x/vt has this one"; the adapter falls through to
 // SendKey.
-func encodeKey(k KeyEvent, kitty bool) (string, bool) {
+func encodeKey(k KeyEvent, enc keyEncoding) (string, bool) {
 	mod := k.Mod & encodableMods // rule 0
 	masked := mod != k.Mod
 	k.Mod = mod
+
+	// Whether THIS key takes the CSI-u form. A negotiated kitty session
+	// gets the whole protocol; a forced one gets it only where the legacy
+	// bytes would arrive with a modifier missing.
+	kitty := enc == encKitty || (enc == encForced && legacyLosesModifier(k))
 
 	if k.Mod == 0 {
 		if masked && k.Text != "" {
@@ -137,6 +146,74 @@ func encodeKey(k KeyEvent, kitty bool) (string, bool) {
 		return k.Text, true
 	}
 	return "", false
+}
+
+// keyEncoding is which key protocol a pane encodes for. It is the emulator's
+// kitty bookkeeping reduced to the one question encodeKey asks.
+type keyEncoding int
+
+const (
+	// encLegacy: the child negotiated nothing, so it gets what a terminal
+	// without CSI-u sends — the xterm modifier forms where they exist, the
+	// plain byte where they do not.
+	encLegacy keyEncoding = iota
+	// encKitty: the child pushed kitty keyboard flags of its own, so every
+	// key the protocol can disambiguate takes the CSI-u form. A negotiation
+	// always wins over encForced: a child that speaks for itself is not
+	// guessed at.
+	encKitty
+	// encForced: pane.ExtendedKeys, i.e. a child sitting behind a tmux that
+	// ate its negotiation. CSI-u only where legacy would drop a modifier;
+	// see legacyLosesModifier.
+	encForced
+)
+
+// legacyLosesModifier reports whether the legacy encoding above would send
+// this key with one of its modifiers missing from the bytes. It is the whole
+// definition of encForced — the CSI-u form is used here and nowhere else, so
+// every key a legacy terminal expresses faithfully keeps the bytes it has
+// always sent.
+//
+// Exactly two of encodeKey's rules lose a bit, and they are the two whose
+// own comments say "degrades":
+//
+//   - rule 5, the four keys whose classic form is a bare control byte
+//     (Enter, Tab, Backspace, Escape). There is nowhere in "\r" to put a
+//     Shift, so Shift+Enter arrives as Enter and SENDS the half-written
+//     message — the failure ExtendedKeys exists for. Alt is the exception:
+//     rule 5 prefixes ESC, which is how a terminal has expressed Alt since
+//     the VT100 and what readline and Claude Code both decode, so Alt
+//     alone loses nothing and Alt+Enter keeps "\x1b\r".
+//   - rule 6, Ctrl+<letter> with Shift or Meta also held: the control byte
+//     it degrades to is the same one plain Ctrl+<letter> sends, so the
+//     extra bit vanishes without trace.
+//
+// Everything else is faithful and is left exactly as it was. Shift+Tab is
+// rule 2's ESC[Z — a distinct sequence that says "shift" out loud, and the
+// key the first cut of ExtendedKeys silently changed (it is the permission
+// -mode cycle in a Claude pane). Modified arrows, Home, End and the
+// function keys take rule 4's xterm forms, which carry the modifier as a
+// parameter. Plain Ctrl+<letter> and Alt+<ascii> are x/vt's own and both
+// express their modifier. A shifted printable is the text the terminal
+// already shifted.
+//
+// Callers must mask (rule 0) before asking: an inexpressible bit left on
+// would make this answer for a modifier nothing downstream can encode.
+func legacyLosesModifier(k KeyEvent) bool {
+	if k.Mod&^ModAlt == 0 {
+		return false // rule 5's ESC prefix carries Alt on its own
+	}
+	if k.Code == KeyTab && k.Mod == ModShift {
+		return false // rule 2 hands this to x/vt, which sends ESC[Z
+	}
+	if _, ok := legacyByte[k.Code]; ok {
+		return true // rule 5: the modifier has nowhere to go
+	}
+	if k.Mod&ModCtrl != 0 && k.Mod&^(ModCtrl|ModAlt) != 0 { // rule 6
+		_, ok := ctrlLetterByte(k.Code)
+		return ok
+	}
+	return false
 }
 
 // encodableMods is the modifier set this overlay and x/vt between them can

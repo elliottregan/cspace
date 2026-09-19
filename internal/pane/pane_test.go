@@ -131,6 +131,20 @@ func TestExtendedKeysSendsCSIUWithoutTheChildAskingForIt(t *testing.T) {
 	waitForScreen(t, p, "SEQ[13;2")
 }
 
+// ...while a key whose legacy form carries its modifier keeps that form
+// even with the option on. Shift+Tab is the case: ESC[Z says "shift" out
+// loud, tmux forwards a CSI-u Shift+Tab verbatim (it has no table entry to
+// fold it back to), and in a Claude pane this is the permission-mode cycle.
+// The first cut of ExtendedKeys changed it to ESC[9;2u for every pane.
+func TestExtendedKeysLeaveShiftTabLegacy(t *testing.T) {
+	// cat -v prints the bytes it reads in caret notation, so ESC[Z lands on
+	// the screen as ^[[Z and a CSI-u form would land as ^[[9;2u.
+	p := openTestPane(t, `stty raw -echo; cat -v`, 40, 6, ExtendedKeys())
+	time.Sleep(300 * time.Millisecond)
+	p.SendKey(KeyEvent{Code: KeyTab, Mod: ModShift})
+	waitForScreen(t, p, "^[[Z")
+}
+
 // ...and without the option the same key degrades, which is the right
 // answer for a child that speaks for itself: it asked for nothing, so it
 // gets the encoding a legacy terminal would have sent.
