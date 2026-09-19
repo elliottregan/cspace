@@ -44,7 +44,7 @@ func listLineOf(t *testing.T, m Model, row int) int {
 }
 
 func TestViewEnablesCellMotionMouseMode(t *testing.T) {
-	m := New(&fakeData{snap: testSnapshot()}, &recordingActor{}, nopPaneHost{}, NewKeyMap(nil))
+	m := New(&fakeData{snap: testSnapshot()}, &recordingActor{}, nopPaneHost{}, nopClipboard{}, NewKeyMap(nil))
 	// Before the first WindowSizeMsg, too: the mode is a property of every
 	// view, and the starting screen is a view.
 	if got := m.View().MouseMode; got != tea.MouseModeCellMotion {
