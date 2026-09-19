@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -42,6 +43,9 @@ type fakeHost struct {
 	// exits makes the child die the moment it starts, for the tests that
 	// watch a pane end on its own rather than by the operator's key.
 	exits bool
+	// nilPane makes Open report success with a zero Opened — no Pane, no
+	// error — the shape a PaneHost must not be trusted to avoid on its own.
+	nilPane bool
 }
 
 func (h *fakeHost) Open(_ context.Context, kind Kind, row control.Row, cols, rows int) (Opened, error) {
@@ -49,6 +53,9 @@ func (h *fakeHost) Open(_ context.Context, kind Kind, row control.Row, cols, row
 	h.rows = append(h.rows, row)
 	if h.openErr != nil {
 		return Opened{}, h.openErr
+	}
+	if h.nilPane {
+		return Opened{}, nil
 	}
 	script := "sleep 30"
 	switch {
@@ -124,7 +131,8 @@ func pump(t *testing.T, m Model, cmd tea.Cmd) Model {
 
 func TestEnterOpensAClaudePaneAndSecondEnterFocusesIt(t *testing.T) {
 	h := &fakeHost{t: t}
-	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
+	a := &recordingActor{}
+	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, a, h)
 
 	m = stepPump(t, m, "enter")
 	mustTabs(t, m, 1)
@@ -133,6 +141,13 @@ func TestEnterOpensAClaudePaneAndSecondEnterFocusesIt(t *testing.T) {
 	}
 	if m.focus != focusMain {
 		t.Error("opening a pane did not move focus to the main area")
+	}
+	// Enter goes to the PaneHost now, never to the Actor: the step-3 attach
+	// dispatch is gone from this task on (Task 7 removes Actor.Attach
+	// itself), and a stray call here would mean the old path is still live
+	// underneath the new one.
+	if len(a.attach) != 0 {
+		t.Errorf("actor.Attach calls = %d, want 0 — Enter opens a pane now", len(a.attach))
 	}
 
 	// A second Enter on the same row focuses the tab it already has rather
@@ -184,8 +199,36 @@ func TestAFailedOpenBecomesAFooterErrorAndNoTab(t *testing.T) {
 	if !m.notice.isErr {
 		t.Error("a failed open left no error notice")
 	}
+	// Pins the footer's contract, not just that it errored: every caller of
+	// LabelOpenPane's failure text builds it as "open pane failed: <cause>",
+	// and a rename of that prefix should fail a test, not just look wrong.
+	if !strings.Contains(m.notice.text, "open pane failed: ") {
+		t.Errorf("notice text = %q, want it to start with %q", m.notice.text, "open pane failed: ")
+	}
 	if m.action != "" {
 		t.Error("the action gate is still held after a failed open")
+	}
+}
+
+// TestAnOpenWithNoPaneBecomesAFooterErrorAndNoTab is the PaneHost contract a
+// type system cannot enforce: Opened{} with a nil Pane and a nil error is a
+// success with nothing behind it. Every other code path treats a nil p as
+// "no process" (a KindSupervisor tab), so this would not crash — it would
+// become a tab that can never draw, resize, redraw or close: a zombie the
+// operator can neither use nor get rid of. Treat it as the open failure it
+// is instead.
+func TestAnOpenWithNoPaneBecomesAFooterErrorAndNoTab(t *testing.T) {
+	h := &fakeHost{t: t, nilPane: true}
+	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
+	m = stepPump(t, m, "enter")
+	if len(m.tabs) != 0 {
+		t.Errorf("tabs = %d, want none after an open with no pane", len(m.tabs))
+	}
+	if !m.notice.isErr || !strings.Contains(m.notice.text, "open pane failed: ") {
+		t.Errorf("notice = %+v, want an open pane failure", m.notice)
+	}
+	if m.action != "" {
+		t.Error("the action gate is still held after an open with no pane")
 	}
 }
 
@@ -308,25 +351,46 @@ func TestAnOpenThatWarnsGoesThroughResultWarn(t *testing.T) {
 // that fan-out itself, which is what pump's use of drain simulates. runCmd
 // does the same unwrapping and discards the spinner's own tick message,
 // which no caller here is ever asserting on.
+//
+// Everything else that survives the filter is collected rather than
+// returned on first sight: the paneOpenedMsg arm batches its redraw wait
+// with a warning's actionResultMsg (see TestAnOpenThatWarnsGoesThroughResultWarn),
+// and silently handing back only the first of those would make a caller
+// that only wanted one of them look like it worked while quietly dropping
+// the other. More than one non-spinner message is therefore a test bug —
+// this cmd was assumed to yield one thing — and it fails loudly, naming
+// what it found, rather than picking a survivor.
 func runCmd(t *testing.T, cmd tea.Cmd) tea.Msg {
 	t.Helper()
 	if cmd == nil {
 		t.Fatal("no command to run")
 	}
-	done := make(chan tea.Msg, 1)
+	done := make(chan []tea.Msg, 1)
 	go func() {
+		var msgs []tea.Msg
 		for _, msg := range drain(cmd) {
 			if _, isTick := msg.(spinner.TickMsg); isTick {
 				continue
 			}
-			done <- msg
-			return
+			msgs = append(msgs, msg)
 		}
-		done <- nil
+		done <- msgs
 	}()
 	select {
-	case msg := <-done:
-		return msg
+	case msgs := <-done:
+		switch len(msgs) {
+		case 0:
+			return nil
+		case 1:
+			return msgs[0]
+		default:
+			types := make([]string, len(msgs))
+			for i, m := range msgs {
+				types[i] = fmt.Sprintf("%T", m)
+			}
+			t.Fatalf("runCmd got %d messages, want at most 1: %v", len(msgs), types)
+			return nil
+		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("a command never produced a message")
 		return nil

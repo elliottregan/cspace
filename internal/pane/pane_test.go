@@ -356,6 +356,13 @@ func TestPaneCloseHonoursContextAgainstAWaiterThatNeverFinishes(t *testing.T) {
 	if !stub.wasClosed() {
 		t.Error("Close gave up on the waiter but never released the emulator")
 	}
+	// shutdown's defer runs on every return, including this give-up one, so
+	// Closed() must already report true even though the child itself is
+	// still alive (Exited() would say so) — Closed() is about Dirty and
+	// shutdown having run, not about the child.
+	if !p.Closed() {
+		t.Error("Closed() is false after a Close that gave up on the waiter")
+	}
 }
 
 // stubEmulator is a minimal Emulator whose Read blocks — like the real
@@ -697,6 +704,28 @@ func TestPaneDirtyIsClosedOnceThePaneIs(t *testing.T) {
 	// and calls it on its way out, after the close. Calling it directly is
 	// the only way to reach that ordering deterministically.
 	p.markDirty()
+}
+
+// TestPaneClosedReportsWhetherCloseHasRun pins Closed() as the structural
+// counterpart to Dirty's terminal state: a caller deciding whether to wait
+// on Dirty again should be able to ask this directly, rather than infer it
+// from Exited — which a give-up-on-the-waiter Close can leave false (the
+// child is still alive) even though Dirty is already closed and shutdown is
+// done.
+func TestPaneClosedReportsWhetherCloseHasRun(t *testing.T) {
+	p := openTestPane(t, `sleep 30`, 40, 6)
+	if p.Closed() {
+		t.Fatal("Closed() is true before Close ever ran")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := p.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !p.Closed() {
+		t.Error("Closed() is false after Close returned")
+	}
 }
 
 // TestOpenAndResizeClampAnOversizeScreen — both sizes end up in a uint16

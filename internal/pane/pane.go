@@ -412,6 +412,17 @@ func (p *Pane) Exited() (code int, err error, ok bool) {
 // not reading. Non-zero means a key or a paste was lost.
 func (p *Pane) Dropped() uint64 { return p.dropped.Load() }
 
+// Closed reports whether Close has run: true once Dirty is closed and a
+// receive on it returns immediately. It is the structural counterpart to
+// Dirty's own doc — a caller deciding whether to wait on Dirty again should
+// ask this rather than infer it from Exited, which give-up-on-the-waiter
+// paths can leave false even after Close has already torn the pane down.
+func (p *Pane) Closed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.dirtyClosed
+}
+
 // Close runs the teardown handshake and joins every goroutine, honouring
 // ctx: a join that does not complete before ctx is done makes Close return
 // an error naming the goroutine that would not join. The rest of the
