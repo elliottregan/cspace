@@ -38,7 +38,7 @@
 - **Findings this plan resolves** (append a timestamped entry under the finding's `## Updates` and put `(cs-finding:<slug>)` in that task's commit message):
   - Task 5 → `2026-09-18-sandbox-names-are-not-shape-validated-before-path-joins`
   - Task 6 → `2026-09-18-keep-state-drops-the-registry-entry-so-a-stopped-sandbox-leaves-the-dashboard`
-- **Worktree:** `/Users/elliott/Projects/cspace-control-plane-4`, branch `control-plane-4-panes`, starting at `074e6da`. Do not touch `/Users/elliott/Projects/cspace` or the sibling worktrees.
+- **Worktree:** `/Users/elliott/Projects/cspace-control-plane-4`, branch `control-plane-4a-pane-engine`, starting at `9be75b8` (the commit that added these two plans). Do not touch `/Users/elliott/Projects/cspace` or the sibling worktrees. Plan 4b is executed on `control-plane-4b-panes`, stacked on this branch's final head, in its own worktree `/Users/elliott/Projects/cspace-control-plane-4b`.
 - **Module path:** `github.com/elliottregan/cspace`. Commit messages are short imperative sentences ("Add the pane engine's teardown handshake"), and every commit ends with the two-line trailer this branch's commits carry:
 
   ```
@@ -54,7 +54,7 @@ New package `internal/pane` (all files `package pane`):
 
 | File | Responsibility | Task |
 |---|---|---|
-| `pane.go` | package doc, `Command`, `HostShell`, `Pane`, `Open`, the four goroutines, the bounded writer, the dirty signal, resize, exit state, the teardown handshake, `ScrollbackView` | 3, 4 |
+| `pane.go` | package doc, `Command`, `HostShell`, `Pane`, `Open`, the four goroutines, the bounded writer, the dirty signal, resize, exit state, the teardown handshake, `ScrollbackView` | 3 |
 | `emulator.go` | `Emulator`, `Scrollback`, `KeyEvent`, `KeyMod`, the key-code constants | 1 |
 | `vt.go` | `newVTEmulator` — the x/vt adapter, kitty tracking, the teardown-safe `Close` | 1 |
 | `keys.go` | `encodeKey` and its three tables (kitty CSI-u, xterm final, xterm tilde) | 2 |
@@ -96,7 +96,7 @@ Two facts read out of the pinned module drive this task's design, and both are l
 
 **Files:**
 - Create: `internal/pane/emulator.go`
-- Create: `internal/pane/vt.go`
+- Create: `internal/pane/vt.go` — every method is final here **except `SendKey`**, which hands every key straight to x/vt for now; Task 2 replaces it with the version that consults the key overlay. This task must not reference `encodeKey`: it does not exist yet, and `internal/pane` has to compile and pass `make check` at the end of every task.
 - Test: `internal/pane/emulator_test.go`
 - Modify: `go.mod`, `go.sum`
 
@@ -109,6 +109,8 @@ Two facts read out of the pinned module drive this task's design, and both are l
   - `type Scrollback interface { Len() int; Line(i int) string }`
   - `type Emulator interface { Write([]byte) (int, error); Read([]byte) (int, error); Resize(cols, rows int); Render() string; CursorPosition() (x, y int); SendKey(KeyEvent); Paste(string); Scrollback() Scrollback; Close() error }`
   - `func newVTEmulator(cols, rows int) *vtEmulator` (unexported; `Pane` is the only caller)
+  - `func (e *vtEmulator) kittyEnabled() bool` (unexported; asserted by this task's own probe and consulted by Task 2's overlay)
+  - `func (e *vtEmulator) SendKey(k KeyEvent)` — the **interim** version, a straight hand-off to x/vt. Task 2 replaces its body; nothing else in `vt.go` moves.
 
 - [ ] **Step 1: Add the dependencies**
 
@@ -128,6 +130,13 @@ concrete type in the cases themselves. The x/vt-specific probes — kitty flag
 tracking, and the `InputPipe` assumption `Close` is built on — sit outside the
 suite, because they are assertions about the adapter rather than about the
 interface.
+
+**The suite deliberately asserts nothing about `SendKey`.** `SendKey` is in
+the interface, but *what bytes a modified key produces* is the key overlay's
+contract, and the overlay is Task 2 — so the case that proves a modified key
+reaches it lives in `keys_test.go`, next to the table it belongs to. Do not
+add a `SendKey` case here: it would encode Task 2's behaviour into Task 1's
+suite and fail before the overlay exists.
 
 Create `internal/pane/emulator_test.go`:
 
@@ -645,15 +654,16 @@ func (e *vtEmulator) CursorPosition() (int, int) {
 	return pos.X, pos.Y
 }
 
-// SendKey hands x/vt what it encodes correctly and encodes the rest here.
-// keys.go owns that decision; this is the only caller.
+// SendKey hands the key to x/vt.
+//
+// This is the interim version and it is what makes this task's package
+// compile on its own: Task 2 adds the key overlay and replaces this body
+// with the version that consults it. Until then a modified special key
+// produces no bytes, which is exactly the gap Task 2 exists to close.
+//
+// Text is deliberately not forwarded: x/vt matches whole key structs, so a
+// non-empty Text makes every special key fall through its switch.
 func (e *vtEmulator) SendKey(k KeyEvent) {
-	if seq, ok := encodeKey(k, e.kittyEnabled()); ok {
-		e.term.SendText(seq)
-		return
-	}
-	// Text is deliberately not forwarded: x/vt matches whole key structs, so
-	// a non-empty Text makes every special key fall through its switch.
 	e.term.SendKey(uv.KeyPressEvent{Code: k.Code, Mod: uv.KeyMod(k.Mod)})
 }
 
@@ -742,6 +752,9 @@ func (e *vtEmulator) registerKitty() {
 		// drain's Read takes neither: vt.SafeEmulator.Read is deliberately
 		// unlocked and vtEmulator.Read leaves it that way. Do not "fix"
 		// either of them.
+		//
+		// The invariant, in one line: nothing on the response-drain path
+		// may take emuMu.
 		_, _ = io.WriteString(e.term.InputPipe(), "\x1b[?"+strconv.Itoa(flags)+"u")
 		return true
 	})
@@ -841,11 +854,11 @@ The design's rule: encode modified keys as CSI-u when the child has kitty on, xt
 
 **Files:**
 - Create: `internal/pane/keys.go`
-- Modify: `internal/pane/vt.go` (nothing — Task 1 already calls `encodeKey`; this task is what makes it exist)
+- Modify: `internal/pane/vt.go` — `SendKey`'s body only: Task 1 left it handing every key straight to x/vt, and Step 4 below replaces it with the version that asks the overlay first. Nothing else in the file moves.
 - Test: `internal/pane/keys_test.go`
 
 **Interfaces:**
-- Consumes: `KeyEvent`, `KeyMod`, `Mod*` and the `Key*` constants (Task 1).
+- Consumes: `KeyEvent`, `KeyMod`, `Mod*` and the `Key*` constants (Task 1); `vtEmulator.SendKey`, `vtEmulator.kittyEnabled`, and the `newTestEmulator`/`responses` helpers in `emulator_test.go` (Task 1).
 - Produces: `func encodeKey(k KeyEvent, kitty bool) (string, bool)` — the bytes to send and whether the overlay owns this key. `false` means "x/vt's own SendKey gets this right"; the adapter falls through to it.
 
 - [ ] **Step 1: Write the failing table test**
@@ -967,11 +980,34 @@ func TestModParam(t *testing.T) {
 		}
 	}
 }
+
+// TestVTEmulatorSendsAModifiedKeyThroughTheOverlay is the wiring, not the
+// table: the table above proves encodeKey is right, and this proves
+// vtEmulator.SendKey actually asks it. Task 1 shipped SendKey as a straight
+// hand-off to x/vt, whose switch drops Ctrl+Right entirely — zero bytes, not
+// a degraded key — so this case fails until Step 4 replaces that body.
+//
+// It reuses the drain helpers from emulator_test.go: x/vt answers through an
+// unbuffered pipe, so nothing a SendKey pushes is observable without a
+// reader already running.
+func TestVTEmulatorSendsAModifiedKeyThroughTheOverlay(t *testing.T) {
+	e, r := newTestEmulator(t, func(cols, rows int) Emulator { return newVTEmulator(cols, rows) }, 20, 4)
+
+	// The overlay owns this one: kitty is off, so it is the xterm modifier
+	// form, and x/vt on its own would have emitted nothing.
+	e.SendKey(KeyEvent{Code: KeyRight, Mod: ModCtrl})
+	r.waitFor(t, "\x1b[1;5C")
+
+	// ...and an unmodified key still falls through to x/vt, which encodes it
+	// mode-sensitively. The overlay must not claim it.
+	e.SendKey(KeyEvent{Code: KeyEnter})
+	r.waitFor(t, "\r")
+}
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `cd /Users/elliott/Projects/cspace-control-plane-4 && go test ./internal/pane/... -run 'TestEncodeKey|TestModParam'`
+Run: `cd /Users/elliott/Projects/cspace-control-plane-4 && go test ./internal/pane/... -run 'TestEncodeKey|TestModParam|TestVTEmulatorSendsAModifiedKey'`
 Expected: FAIL to build — `undefined: encodeKey`, `undefined: modParam`.
 
 - [ ] **Step 3: Write `keys.go`**
@@ -1143,17 +1179,47 @@ var xtermTilde = map[rune]int{
 }
 ```
 
-- [ ] **Step 4: Run the tests**
+- [ ] **Step 4: Modify `internal/pane/vt.go` to call the overlay**
 
-Run: `cd /Users/elliott/Projects/cspace-control-plane-4 && go test ./internal/pane/... -run 'TestEncodeKey|TestModParam' -v`
-Expected: PASS, one subtest per row of the table (36) plus `TestModParam`.
+The overlay exists now, so `SendKey` stops handing everything to x/vt.
+Replace the whole `SendKey` method in `internal/pane/vt.go` — Task 1's
+interim body, the two-line one whose comment says Task 2 replaces it — with
+exactly this:
 
-- [ ] **Step 5: Run the whole gate**
+```go
+// SendKey hands x/vt what it encodes correctly and encodes the rest here.
+// keys.go owns that decision; this is the only caller.
+//
+// Task 1 shipped this as a straight hand-off to x/vt, which drops every
+// modified special key — Ctrl+Right, Shift+Enter, Alt+Home — because its
+// switch matches whole key structs and its default branch emits nothing
+// unless Mod is zero. encodeKey's second return is what says "x/vt has this
+// one"; when it does, the fall-through below is unchanged from Task 1.
+func (e *vtEmulator) SendKey(k KeyEvent) {
+	if seq, ok := encodeKey(k, e.kittyEnabled()); ok {
+		e.term.SendText(seq)
+		return
+	}
+	// Text is deliberately not forwarded: x/vt matches whole key structs, so
+	// a non-empty Text makes every special key fall through its switch.
+	e.term.SendKey(uv.KeyPressEvent{Code: k.Code, Mod: uv.KeyMod(k.Mod)})
+}
+```
+
+`vt.go`'s import block does not move: `uv` is still used by the
+fall-through, and `encodeKey` is in this package.
+
+- [ ] **Step 5: Run the tests**
+
+Run: `cd /Users/elliott/Projects/cspace-control-plane-4 && go test ./internal/pane/... -run 'TestEncodeKey|TestModParam|TestVTEmulatorSendsAModifiedKey' -v`
+Expected: PASS, one subtest per row of the table (36), plus `TestModParam` and `TestVTEmulatorSendsAModifiedKeyThroughTheOverlay`. If the last one hangs rather than fails, the drain goroutine is not running — that is the unbuffered-pipe trap, and the fix is in the test.
+
+- [ ] **Step 6: Run the whole gate**
 
 Run: `cd /Users/elliott/Projects/cspace-control-plane-4 && make check`
-Expected: green.
+Expected: green — including Task 1's conformance suite, which this task's change to `SendKey` must not disturb (it asserts nothing about keys).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 cd /Users/elliott/Projects/cspace-control-plane-4
@@ -1191,11 +1257,11 @@ The teardown handshake is the part to get exactly right. The design's order is "
 - Consumes: `Emulator`, `newVTEmulator`, `KeyEvent` (Tasks 1-2).
 - Produces:
   - `type Command struct { Path string; Args []string; Env []string; Dir string }`
+  - `func HostShell() Command` — the `Command` for the operator's own login shell, `$SHELL -l`, with no container in the picture. Defined in `pane.go` by this task (Step 5) and consumed by plan 4b's Tasks 2 and 7; nothing in this plan calls it.
   - `func Open(cmd Command, cols, rows int) (*Pane, error)`
   - `func (p *Pane) Dirty() <-chan struct{}`
   - `func (p *Pane) SendKey(k KeyEvent)`
   - `func (p *Pane) Paste(text string)`
-  - `func (p *Pane) WriteInput(b []byte)`
   - `func (p *Pane) Resize(cols, rows int) error`
   - `func (p *Pane) Render() string`
   - `func (p *Pane) Cursor() (x, y int)`
@@ -1330,9 +1396,13 @@ func TestPaneDropsInputForAChildThatNeverReads(t *testing.T) {
 	p := openTestPane(t, `printf 'ALIVE'; sleep 30`, 40, 6)
 	waitForScreen(t, p, "ALIVE")
 
+	// Paste is the flood: it is the only public way to push bulk input, and
+	// it takes the same route a key does — into the emulator, out through
+	// the response drain, onto the bounded queue. The child enabled no
+	// bracketing, so these are 8 MiB of plain bytes.
 	chunk := strings.Repeat("x", 4096)
 	for i := 0; i < writeQueue*4; i++ {
-		p.WriteInput([]byte(chunk))
+		p.Paste(chunk)
 	}
 	if p.Dropped() == 0 {
 		t.Error("nothing was dropped; the queue is not bounded")
@@ -1680,10 +1750,6 @@ func (p *Pane) SendKey(k KeyEvent) { p.emu.SendKey(k) }
 
 // Paste queues text, bracketed when the child asked for bracketing.
 func (p *Pane) Paste(text string) { p.emu.Paste(text) }
-
-// WriteInput queues raw bytes for the child — the escape hatch for input that
-// is already encoded, such as the leader key passed through to the child.
-func (p *Pane) WriteInput(b []byte) { p.enqueue(b) }
 
 // Resize retells both halves: the emulator, so Render reflows, and the pty,
 // so the child gets SIGWINCH and re-queries its size. The emulator goes
@@ -2151,7 +2217,9 @@ EOF
 
 ### Task 5: Validate a sandbox name's shape in `up` and `down`
 
-`cspace down` joins a caller-supplied sandbox name straight into two host paths and `os.RemoveAll`s both (`wipeSandboxState`, `cmd_down.go`). The step-3 plan deferred a shape check deliberately, on the grounds that every name the dashboard passed came off a `control.Row` built from the registry and `container ls` — never from a person typing. Rollout step 4 is where that stops being true: the new-pane picker and the boot action take names from the UI.
+`cspace down` joins a caller-supplied sandbox name straight into two host paths and `os.RemoveAll`s both (`wipeSandboxState`, `cmd_down.go`). The step-3 plan deferred a shape check deliberately, on the grounds that every name the dashboard passed came off a `control.Row` built from the registry and `container ls` — never from a person typing.
+
+That is still true after rollout step 4, and the check lands anyway. Plan 4b's new-pane picker chooses among four fixed `Kind`s and its boot action passes a registry-derived `control.Row`, so no free-text sandbox name reaches `up` or `down` there either. What has changed is that the dashboard now has a picker at all: the argument for deferring was that no UI could ever produce a name, and the honest version of it is "no UI does yet". Closing the exposure ahead of the first one that can is cheaper than remembering to.
 
 This closes `.cspace/context/findings/2026-09-18-sandbox-names-are-not-shape-validated-before-path-joins.md`.
 
@@ -2248,10 +2316,13 @@ var sandboxNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`)
 
 // validateSandboxName rejects a name cspace will not take.
 //
-// Until rollout step 4 every name reaching `down` came off a registry entry
-// or a `container ls` row, so the shape was never in question; the control
-// plane's pane picker and boot action are the first callers where a person
-// types one. (cs-finding:2026-09-18-sandbox-names-are-not-shape-validated-before-path-joins)
+// Every name reaching `down` today comes off a registry entry or a
+// `container ls` row, so the shape has never been in question. The check is
+// here because `down`'s callers are no longer only cspace's own: the
+// control plane grew a pane picker in rollout step 4, and the next thing
+// that grows a text field is where a typed name would first reach
+// wipeSandboxState's two os.RemoveAlls.
+// (cs-finding:2026-09-18-sandbox-names-are-not-shape-validated-before-path-joins)
 func validateSandboxName(project, name string) error {
 	if name == "browser" {
 		return fmt.Errorf(
@@ -2288,8 +2359,8 @@ In `internal/cli/cmd_down.go`, in the `RunE`, immediately after the `names` slic
 			// checked before this change, so one legacy entry with a dot in
 			// it would otherwise make `cspace down --all` refuse to tear
 			// down anything at all. The single-name form still fails hard:
-			// there the name came from the caller, and a pane picker is one
-			// of those callers.
+			// there the name came from the caller, and the callers are no
+			// longer only cspace's own code.
 			kept := names[:0]
 			for _, name := range names {
 				if err := validateSandboxName(project, name); err != nil {
@@ -2319,8 +2390,15 @@ Append to the `## Updates` section of `.cspace/context/findings/2026-09-18-sandb
 dashes, underscores; no dots, no separators, no leading dot or dash; at most
 63 characters) and `cspace down` calls it for every name it is about to tear
 down, `--all` included. The exposure closed is `wipeSandboxState`'s two
-`os.RemoveAll`s; the trigger for closing it now is rollout step 4, whose pane
-picker is the first place a typed name reaches these paths.
+`os.RemoveAll`s.
+
+To be accurate about the trigger: nothing in rollout step 4 actually types a
+sandbox name into these paths. Its new-pane picker chooses among four fixed
+pane kinds and its boot action passes a registry-derived row, so every name
+still arrives from the registry or from `container ls`. The check lands
+*ahead* of a UI that can type one rather than because of one — the step-3
+deferral's premise was that no such UI would exist, and step 4 is where the
+dashboard stopped being a pure reader of its own row set.
 ```
 
 - [ ] **Step 7: Run the gate and commit**
@@ -2332,10 +2410,10 @@ git add internal/cli .cspace/context/findings
 git commit -m "$(cat <<'EOF'
 Validate a sandbox name's shape before it is joined into a path
 
-cspace down joins the name into two host directories and removes both. Until
-now every name it saw came off a registry entry or a container list; rollout
-step 4's pane picker is the first caller where a person types one, so the
-check lands before it does.
+cspace down joins the name into two host directories and removes both. Every
+name it sees still comes off a registry entry or a container list — rollout
+step 4's picker chooses a pane kind, not a name — so this closes the
+exposure ahead of the first UI that can type one rather than because of one.
 
 (cs-finding:2026-09-18-sandbox-names-are-not-shape-validated-before-path-joins)
 
@@ -2357,13 +2435,16 @@ This closes `.cspace/context/findings/2026-09-18-keep-state-drops-the-registry-e
 
 **Files:**
 - Modify: `internal/registry/registry.go` (`MarkStopped`)
-- Modify: `internal/cli/cmd_down.go` (`teardownSandbox`)
+- Modify: `internal/cli/cmd_down.go` (`teardownSandbox`, `wipeSandboxState`, `substrateDowner`, and the new `downSubstrate` seam)
 - Test: `internal/registry/registry_test.go`, `internal/cli/cmd_down_test.go`, `internal/control/correlate_test.go`
 - Modify: `.cspace/context/findings/2026-09-18-keep-state-drops-the-registry-entry-so-a-stopped-sandbox-leaves-the-dashboard.md`
 
 **Interfaces:**
 - Consumes: `registry.Registry`, `control.Correlate` (both unchanged in shape).
-- Produces: `func (r *Registry) MarkStopped(project, name string) error` — sets an existing entry's `State` to `"stopped"`, a no-op when the entry is missing (the same contract `MarkReady` has).
+- Produces:
+  - `func (r *Registry) MarkStopped(project, name string) error` — sets an existing entry's `State` to `"stopped"`, a no-op when the entry is missing (the same contract `MarkReady` has).
+  - `type downSubstrate interface { Stop; ListVolumes; RemoveVolume }` in `internal/cli` — the substrate surface `teardownSandbox` and `wipeSandboxState` use, so the tests below can inject a no-op. `*applecontainer.Adapter` satisfies it, so neither production caller changes.
+  - `var stopSidecarContainer = stopBrowserSidecar` — the same seam for the browser sidecar's stop, which is a package function rather than an adapter method.
 
 - [ ] **Step 1: Write the failing registry test**
 
@@ -2426,16 +2507,40 @@ func TestCorrelateShowsAKeptEntryAsStopped(t *testing.T) {
 Add to `internal/cli/cmd_down_test.go`:
 
 ```go
+// noSubstrate is the injected substrate: teardown is best-effort and has no
+// error return, so a no-op is a faithful stand-in for "the container was
+// already gone". It exists so `go test ./internal/cli/` never runs
+// `container rm --force cspace-demo-mercury` against whatever a developer
+// happens to have booted.
+type noSubstrate struct{}
+
+func (noSubstrate) Stop(context.Context, string) error { return nil }
+func (noSubstrate) ListVolumes(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+func (noSubstrate) RemoveVolume(context.Context, string) error { return nil }
+
+// noSidecars silences the two stopBrowserSidecar calls for one test. Those
+// run `container stop` and `container rm` by name and are not adapter
+// methods, so they need their own seam.
+func noSidecars(t *testing.T) {
+	t.Helper()
+	prev := stopSidecarContainer
+	stopSidecarContainer = func(context.Context, string) {}
+	t.Cleanup(func() { stopSidecarContainer = prev })
+}
+
 func TestTeardownKeepsTheRegistryEntryWithKeepState(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home) // teardownSandbox resolves $HOME itself; see below
+	noSidecars(t)
 	reg := &registry.Registry{Path: filepath.Join(home, "sandbox-registry.json")}
 	if err := reg.Register(registry.Entry{Project: "demo", Name: "mercury", State: "ready"}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	var out bytes.Buffer
 
-	teardownSandbox(context.Background(), applecontainer.New(), reg, "demo", "mercury", &out, false /* wipeState */)
+	teardownSandbox(context.Background(), noSubstrate{}, reg, "demo", "mercury", &out, false /* wipeState */)
 
 	e, err := reg.Lookup("demo", "mercury")
 	if err != nil {
@@ -2449,13 +2554,14 @@ func TestTeardownKeepsTheRegistryEntryWithKeepState(t *testing.T) {
 func TestTeardownUnregistersWithoutKeepState(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home) // this one reaches wipeSandboxState's RemoveAlls
+	noSidecars(t)
 	reg := &registry.Registry{Path: filepath.Join(home, "sandbox-registry.json")}
 	if err := reg.Register(registry.Entry{Project: "demo", Name: "mercury", State: "ready"}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	var out bytes.Buffer
 
-	teardownSandbox(context.Background(), applecontainer.New(), reg, "demo", "mercury", &out, true /* wipeState */)
+	teardownSandbox(context.Background(), noSubstrate{}, reg, "demo", "mercury", &out, true /* wipeState */)
 
 	if _, err := reg.Lookup("demo", "mercury"); err == nil {
 		t.Error("the default teardown left the registry entry behind")
@@ -2470,11 +2576,19 @@ isolation: `teardownSandbox` resolves the home directory itself, through
 second test `os.RemoveAll`s real paths under the developer's `~/.cspace`. The
 two tests already in this file set it at lines 19 and 46 for the same reason.
 
-Add `"context"`, `github.com/elliottregan/cspace/internal/registry` and
-`github.com/elliottregan/cspace/internal/substrate/applecontainer` to
+Add `"context"` and `github.com/elliottregan/cspace/internal/registry` to
 `cmd_down_test.go`'s import block (`"io"` and `"strings"` went in for Task 5).
+Do **not** import `internal/substrate/applecontainer` here: the point of
+`noSubstrate` is that no real adapter is constructed.
 
-These call the real `applecontainer.New()`, whose `Stop` fails harmlessly against a container that does not exist — `teardownSandbox` is best-effort by design and has no error return. If the `container` CLI is absent the adapter's calls still fail harmlessly.
+Passing a real `applecontainer.New()` would make `go test ./internal/cli/`
+shell out to `container rm --force cspace-demo-mercury` plus
+`container stop`/`rm` for two browser sidecar names. Those are best-effort
+and would fail harmlessly *only* because nobody happens to own a project
+called `demo` with a sandbox called `mercury` — which is not a property a
+unit test may rely on. The seam Step 6 adds is what removes the hazard;
+what the two tests are actually about is the registry, and those assertions
+are unchanged.
 
 - [ ] **Step 4: Run all three to verify they fail**
 
@@ -2485,7 +2599,7 @@ go test ./internal/registry/ -run TestMarkStopped
 go test ./internal/control/ -run TestCorrelateShowsAKeptEntry
 go test ./internal/cli/ -run TestTeardown
 ```
-Expected: the first fails to build (`undefined: MarkStopped`); the second passes already (`Correlate` needs no change — record that, it is the point of the test); the third fails on the kept-entry case.
+Expected: the first fails to build (`undefined: MarkStopped`); the second passes already (`Correlate` needs no change — record that, it is the point of the test); the third fails to build too (`undefined: stopSidecarContainer`, and `teardownSandbox` does not accept a `noSubstrate`) — both halves of that are what Step 6 adds, and once it does, the kept-entry case is the one that fails on behaviour.
 
 - [ ] **Step 5: Add `MarkStopped`**
 
@@ -2517,9 +2631,51 @@ func (r *Registry) MarkStopped(project, name string) error {
 }
 ```
 
-- [ ] **Step 6: Make `teardownSandbox` honour `wipeState`**
+- [ ] **Step 6: Make the substrate injectable, and make `teardownSandbox` honour `wipeState`**
 
-In `internal/cli/cmd_down.go`, replace the unconditional unregister and the ref-count that follows it:
+First the seam the tests need. In `internal/cli/cmd_down.go`, above
+`substrateDowner`, add:
+
+```go
+// downSubstrate is the substrate surface cspace down uses: the container
+// teardown, and the two volume calls behind the default (non-`--keep-state`)
+// wipe. *applecontainer.Adapter satisfies it as written, so neither
+// production caller — cmd_down.go's RunE and control_host.go — changes.
+//
+// It exists so a unit test can inject a no-op. `teardownSandbox` is
+// best-effort and has no error return, which made it easy to call from a
+// test with a real adapter; that test would then run
+// `container rm --force cspace-<project>-<sandbox>` against the developer's
+// own machine and be harmless only by luck of the names.
+type downSubstrate interface {
+	Stop(ctx context.Context, name string) error
+	ListVolumes(ctx context.Context, prefix string) ([]string, error)
+	RemoveVolume(ctx context.Context, name string) error
+}
+
+// stopSidecarContainer is stopBrowserSidecar behind a variable, for the same
+// reason: it runs `container stop` and `container rm` by name and is a
+// package function rather than an adapter method, so an interface cannot
+// reach it. Only teardownSandbox goes through the variable; every other
+// caller of stopBrowserSidecar is unchanged.
+var stopSidecarContainer = stopBrowserSidecar
+```
+
+Then retype the three places that name the concrete adapter — nothing else
+in their bodies moves:
+
+- `type substrateDowner struct { adapter *applecontainer.Adapter }` → `adapter downSubstrate`
+- `func teardownSandbox(ctx context.Context, a *applecontainer.Adapter, …)` → `a downSubstrate`
+- `func wipeSandboxState(ctx context.Context, a *applecontainer.Adapter, …)` → `a downSubstrate`
+
+and route `teardownSandbox`'s two sidecar stops through the variable:
+`stopBrowserSidecar(ctx, browserContainerName(project, name))` →
+`stopSidecarContainer(ctx, browserContainerName(project, name))`, and the
+same for the `browserSingletonName(project)` call in the block replaced
+below. `internal/cli` keeps its `applecontainer` import: `RunE` still calls
+`applecontainer.New()`.
+
+Then the behaviour change. Replace the unconditional unregister and the ref-count that follows it:
 
 ```go
 	// Remove this instance from the registry BEFORE counting so it is not
@@ -2535,7 +2691,7 @@ In `internal/cli/cmd_down.go`, replace the unconditional unregister and the ref-
 	}
 ```
 
-with:
+with (note the sidecar stop now goes through the variable):
 
 ```go
 	// The registry entry goes only when the state does. --keep-state promises
@@ -2572,7 +2728,7 @@ with:
 			}
 		}
 		if live == 0 {
-			stopBrowserSidecar(ctx, browserSingletonName(project))
+			stopSidecarContainer(ctx, browserSingletonName(project))
 		}
 	}
 ```
@@ -2790,7 +2946,16 @@ class Screen:
     def _csi(self, raw, final):
         if raw.startswith(("?", ">", "<", "!", "$", " ")):
             return  # private modes and device attributes draw nothing
-        p = [int(x) if x else 1 for x in raw.split(";")] if raw else [1]
+        try:
+            p = [int(x) if x else 1 for x in raw.split(";")] if raw else [1]
+        except ValueError:
+            # A colon sub-parameter is not an int: SGR truecolour written as
+            # 38:2::74:74:74, or an underline style 4:3. lipgloss v2 emits
+            # the semicolon form, so `cspace tui` never produces one — but a
+            # pane running another program can, and an unhandled ValueError
+            # here kills the harness instead of ignoring a sequence this
+            # interpreter draws nothing for anyway.
+            return
         if final in "Hf":
             row = p[0] if len(p) > 0 else 1
             col = p[1] if len(p) > 1 else 1
@@ -2854,12 +3019,22 @@ class Tui:
 
         pid, fd = pty.fork()
         if pid == 0:
-            os.chdir(cwd)
-            os.environ["TERM"] = "xterm-256color"
-            os.environ["COLORTERM"] = "truecolor"
-            for k, v in (env or {}).items():
-                os.environ[k] = v
-            os.execv(path, [os.path.basename(path)] + argv)
+            # Everything in this branch runs in the forked child, and it
+            # must never raise: an exception would unwind back into the
+            # caller's own code as a SECOND copy of the test script, both
+            # halves printing. A missing binary, an unreadable cwd and a
+            # failed execv all land here, so the child exits 127 — which
+            # reap() then reports — rather than escaping.
+            try:
+                os.chdir(cwd)
+                os.environ["TERM"] = "xterm-256color"
+                os.environ["COLORTERM"] = "truecolor"
+                for k, v in (env or {}).items():
+                    os.environ[k] = v
+                os.execv(path, [os.path.basename(path)] + argv)
+            except BaseException:
+                pass
+            os._exit(127)  # execv only returns by failing
         self.pid, self.fd = pid, fd
         # The model renders nothing until it learns the window size.
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
@@ -3013,7 +3188,13 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 3: Prove the screen model is resumable**
+- [ ] **Step 3: Prove the screen model is resumable** — *manual, skip if no host is available*
+
+This step starts the real binary against the real host, the way Task 8 of
+plan 4b does: it needs a Mac with Apple Container and a built
+`bin/cspace-go`. A headless executor should skip it and say so rather than
+fail the task; Step 5's `make check` is the gate that has to be green
+everywhere.
 
 The harness feeds `Screen` one pty read at a time, so the property that
 matters is that a split escape sequence survives the boundary. Replay a real
@@ -3053,7 +3234,10 @@ the pending buffer exists to stop, and the difference between a harness that
 agrees with `pyte` and one that only agrees when handed the whole capture at
 once.
 
-- [ ] **Step 4: Run it**
+- [ ] **Step 4: Run it** — *manual, skip if no host is available*
+
+Same condition as Step 3: the real binary, under a pty, against the real
+host.
 
 ```bash
 cd /Users/elliott/Projects/cspace-control-plane-4
@@ -3119,9 +3303,10 @@ Checked against the spec's `internal/pane` section, its Testing section, and rol
 - **The teardown handshake deviates from the spec's order, deliberately, twice, and both deviations are the interesting part.** The spec says to cancel the response drain and wait for it *before* closing the emulator, so that no `Read` is in flight when `Close` runs. Read against the pinned module, that is unreachable: the drain is blocked inside x/vt's unbuffered `io.Pipe` and only closing it returns. So Task 3 orders teardown input → child → pty → emulator → drain, and Task 1 buys the actual property a different way — `vtEmulator.Close` closes the input pipe (which `io.Pipe` synchronizes) instead of calling x/vt's `Close` (which writes the unguarded `closed` bool that `Read` reads). The second deviation is that **the pty closes before the writer is joined**, not after: `writer()` only sees `stopWriter` between two writes, so a writer parked inside `ptmx.Write` on a child that stopped reading — the case this package exists to survive — is returned by nothing but the close, and joining first would hang `Close` past its own context. `TestPaneDropsInputForAChildThatNeverReads` now asserts that `Close` returns inside a deadline, which is the property its comment always claimed. `make test-race` is the acceptance criterion the spec sets, and it is a task step; Task 3 Step 10 rewrites the spec's teardown paragraph to match. The spec's fallback — a `replace` patch to x/vt — is not needed.
 - **Four goroutines, and the bounded writer.** Task 3's `Pane` has exactly the design's four, with the drop-don't-block enqueue and a test (`TestPaneDropsInputForAChildThatNeverReads`) that floods a non-reading child with 8 MiB and asserts the pane stays renderable. Two things the spike got wrong are fixed: the writer now stops on a teardown signal as well as a write error (the spike leaked one parked goroutine per pane), and teardown signals the process **group**, since `pty.StartWithSize` uses `Setsid` and a bare `Process.Kill` leaves the child's own children behind.
 - **The waiter does not close the emulator**, which is the other spike behaviour changed on purpose. An exited pane has to keep its last screen — the design's "exited pane: the last screen dimmed, with the exit reason and a restart key" — so `Close` is the only closer and the exit is reported through `Exited()` instead. The cost is one parked drain goroutine per exited-but-not-closed pane, which 4b's close path reaps.
+- **The overlay is wired in by the task that creates it**, not by the one before. Task 1's `vt.go` hands every key straight to x/vt and Task 2 replaces that one method, so `internal/pane` compiles, tests and passes `make check` at the end of both tasks — the alternative, Task 1 calling an `encodeKey` that Task 2 creates, leaves an un-buildable package behind. The seam is asserted from both sides: Task 1's conformance suite deliberately says nothing about `SendKey`, and Task 2's `TestVTEmulatorSendsAModifiedKeyThroughTheOverlay` is the case that fails until the replacement lands.
 - **The key overlay** is the spike's `keys.go` rewritten as data with a test per row, plus three rules it lacked: a modified legacy key keeps its ESC prefix when Alt is held (the spike re-dispatched with the modifier stripped and lost it), a printable key held with Shift alone sends its own text (x/vt drops it for `Mod != 0`), and with kitty on any modified printable key takes the CSI-u form rather than only the four legacy ones. `Ctrl+C` with kitty **off** is left to x/vt, which encodes it as the C0 byte; with kitty **on** rule 3 claims it like any other modified printable key and it takes the CSI-u form `ESC[99;5u` the child itself asked for. Both are table rows, because a Claude pane always has kitty on and that is the interrupt the live verification presses.
 - **Kitty tracking** is the four CSI `u` registrations the design calls for, verified unopposed (no built-in x/vt handler claims final byte `u`). The query is answered in the report form `CSI ? flags u`; the spike answered with `ansi.KittyKeyboard`, which builds the *set* form, and a child parsing that reply would not have recognized its own flags.
 - **Testing** matches the spec's list: CPR answered from the pane (both in-process in Task 1 and end-to-end through a real pty in Task 3), bracketed paste preserved only when the child asked, the key sequences with kitty off and on (36 rows), resize arithmetic reaching `stty size` inside the child, an 8 MiB flood into a non-reading child leaving the pane responsive **and closable inside a deadline**, and teardown under `-race`. The scrollback walk asks for `ScrollbackView(p.ScrollbackLen(), 4)` rather than a literal offset: eight lines into a four-row screen scroll five off, not four, because the first three only move the cursor down. Golden screens go through `ansi.Strip`, as the repo's other view tests do.
 - **What is deliberately not here.** No `Kind` enum, no tab bookkeeping, no `PaneHost` seam, no supervisor view: those are 4b, and putting them here would mean `internal/pane` knowing about cspace. The `AttachSpec → pane.Command` conversion is 4b's too, in `internal/cli`, because `internal/control` must not import `internal/pane` and `internal/pane` must not import `internal/control`.
-- **The two follow-ups** are each their own task with their own finding update, as the brief requires. Task 5's name check is a single-label pattern, narrower than strictly needed for the path joins, because the same string becomes a DNS label; the one behaviour it takes away is a dotted sandbox name, whose `<sandbox>.<project>.cspace.test` never resolved anyway. Task 6 makes the browser's reference count state-aware rather than entry-count-aware, which the finding does not mention: `CountForProject` counts every entry regardless of state, so discounting only the entry being torn down would still leave the sidecar running after `cspace down --all --keep-state`, whose earlier siblings are all kept as `"stopped"`.
+- **The two follow-ups** are each their own task with their own finding update, as the brief requires. Task 5's name check is a single-label pattern, narrower than strictly needed for the path joins, because the same string becomes a DNS label; the one behaviour it takes away is a dotted sandbox name, whose `<sandbox>.<project>.cspace.test` never resolved anyway. Task 6 makes the browser's reference count state-aware rather than entry-count-aware, which the finding does not mention: `CountForProject` counts every entry regardless of state, so discounting only the entry being torn down would still leave the sidecar running after `cspace down --all --keep-state`, whose earlier siblings are all kept as `"stopped"`. Task 6 also retypes `teardownSandbox`/`wipeSandboxState` onto a three-method `downSubstrate` and puts the browser-sidecar stop behind a variable — not refactoring for its own sake, but because those two tests are the first callers of `teardownSandbox` from a test, and a `go test ./internal/cli/` that runs `container rm --force` against a live machine is a hazard the registry assertions do not need.
 - **The harness** is deliberately small and deliberately not in `make check`. Its screen model was validated against three of step 3's real captures and reproduces `pyte`'s final screen exactly. Three things in it are load-bearing rather than decorative: the scroll-region handling, because Bubble Tea inserts a line with `CSI 6;39r` / `ESC M` / `CSI 1;40r` and without it every row below the insertion is off by one; the pending buffer in `feed`, because `pump` hands it one pty read at a time and a sequence split across two reads is otherwise painted onto the grid (Step 3 replays a capture in 64/512/1024-byte chunks and asserts the screens match); and the `$` intermediate in the CSI pattern, because Bubble Tea opens with `CSI ? 2026 $ p` and `CSI ? 2027 $ p`, which a narrower class does not match.
