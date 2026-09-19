@@ -83,7 +83,17 @@ func (h *paneHost) Open(ctx context.Context, kind controlplane.Kind, row control
 		return controlplane.Opened{}, err
 	}
 
-	p, err := pane.Open(pane.Command{Path: bin, Args: argv}, cols, rows)
+	// A tmux client cannot negotiate the kitty keyboard protocol on the
+	// pane's behalf — it consumes the child's own negotiation and never
+	// passes it on — so the pane is told to send the extended form and let
+	// tmux decide what each application gets. See pane.ExtendedKeys. A
+	// no-tmux fallback pane runs `claude` directly, and that one does its
+	// own negotiating.
+	var opts []pane.Option
+	if spec.Session != "" {
+		opts = append(opts, pane.ExtendedKeys())
+	}
+	p, err := pane.Open(pane.Command{Path: bin, Args: argv}, cols, rows, opts...)
 	if err != nil {
 		// The bookkeeping is already open; close it rather than strand a
 		// lock and a record for a client that never appeared.

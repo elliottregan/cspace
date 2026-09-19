@@ -30,14 +30,14 @@ func shell(t *testing.T) string {
 
 // openTestPane starts a pane running `bash -c script` and registers its
 // teardown.
-func openTestPane(t *testing.T, script string, cols, rows int) *Pane {
+func openTestPane(t *testing.T, script string, cols, rows int, opts ...Option) *Pane {
 	t.Helper()
 	sh := shell(t)
 	p, err := Open(Command{
 		Path: sh,
 		Args: []string{"bash", "-c", script},
 		Env:  []string{"TERM=xterm-256color", "COLORTERM=truecolor", "PS1="},
-	}, cols, rows)
+	}, cols, rows, opts...)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -113,6 +113,34 @@ func TestPaneSendsKeysToItsChild(t *testing.T) {
 		p.SendKey(KeyEvent{Code: r, Text: string(r)})
 	}
 	p.SendKey(KeyEvent{Code: KeyEnter})
+	waitForScreen(t, p, "GOT[hi]")
+}
+
+// A child that never negotiates the kitty keyboard protocol still gets the
+// CSI-u form when the pane was opened with ExtendedKeys. This is the pane
+// side of Task 8 Step 5: run under tmux, Claude Code's own `ESC [ > 5 u`
+// goes to tmux and never reaches the host, so without the option Shift+Enter
+// degrades to a plain Enter — which sends the half-written message instead
+// of breaking the line.
+func TestExtendedKeysSendsCSIUWithoutTheChildAskingForIt(t *testing.T) {
+	p := openTestPane(t,
+		`IFS= read -r -s -d u seq; printf 'SEQ[%s]' "${seq#$'\033'[}"; sleep 30`,
+		40, 6, ExtendedKeys())
+	time.Sleep(300 * time.Millisecond)
+	p.SendKey(KeyEvent{Code: KeyEnter, Mod: ModShift})
+	waitForScreen(t, p, "SEQ[13;2")
+}
+
+// ...and without the option the same key degrades, which is the right
+// answer for a child that speaks for itself: it asked for nothing, so it
+// gets the encoding a legacy terminal would have sent.
+func TestWithoutExtendedKeysShiftEnterDegrades(t *testing.T) {
+	p := openTestPane(t, `read -r line; printf 'GOT[%s]' "$line"; sleep 30`, 40, 6)
+	time.Sleep(300 * time.Millisecond)
+	for _, r := range "hi" {
+		p.SendKey(KeyEvent{Code: r, Text: string(r)})
+	}
+	p.SendKey(KeyEvent{Code: KeyEnter, Mod: ModShift})
 	waitForScreen(t, p, "GOT[hi]")
 }
 

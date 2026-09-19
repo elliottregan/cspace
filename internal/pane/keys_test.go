@@ -231,7 +231,7 @@ func TestModParam(t *testing.T) {
 // unbuffered pipe, so nothing a SendKey pushes is observable without a
 // reader already running.
 func TestVTEmulatorSendsAModifiedKeyThroughTheOverlay(t *testing.T) {
-	e, r := newTestEmulator(t, func(cols, rows int) Emulator { return newVTEmulator(cols, rows) }, 20, 4)
+	e, r := newTestEmulator(t, func(cols, rows int) Emulator { return newVTEmulator(cols, rows, false) }, 20, 4)
 
 	// The overlay owns this one: kitty is off, so it is the xterm modifier
 	// form, and x/vt on its own would have emitted nothing.
@@ -259,7 +259,7 @@ func TestVTEmulatorSendsAModifiedKeyThroughTheOverlay(t *testing.T) {
 // so an unmasked Super bit riding along with Ctrl means zero bytes reach the
 // child.
 func TestVTEmulatorMasksAnInexpressibleModifier(t *testing.T) {
-	e, r := newTestEmulator(t, func(cols, rows int) Emulator { return newVTEmulator(cols, rows) }, 20, 4)
+	e, r := newTestEmulator(t, func(cols, rows int) Emulator { return newVTEmulator(cols, rows, false) }, 20, 4)
 
 	// Ctrl+A with the Command key also down, as ultraviolet reports it from
 	// a kitty-speaking host terminal. x/vt owns plain Ctrl+A, so this only
