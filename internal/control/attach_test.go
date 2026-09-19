@@ -849,3 +849,147 @@ func TestSweepActsOnTmuxEvidenceWhenTheContainerListFails(t *testing.T) {
 		t.Error("the stale record survived a listing that said its client was gone")
 	}
 }
+
+// Fix round 1, Important 1: a non-zero list-clients exit is not, by itself,
+// evidence that tmux said "nothing to list" — this package's Execer contract
+// makes `container exec` against an unreachable container surface as an
+// ordinary non-zero exit with a nil error too, and the two must not be read
+// the same way. This test is the failing-container-CLI-text half: the exec
+// reaches the container's own runtime, not tmux, and its complaint carries
+// none of tmux's own gone-client/gone-session markers, so it must not be
+// read as an answer.
+func TestSweepUnansweredListClientsKeepsTheRecord(t *testing.T) {
+	home := t.TempDir()
+	dir := ControlPlaneDir(home, "demo", "mars")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	path := filepath.Join(dir, "cspace-claude.dev-pts-5.json")
+	if err := os.WriteFile(path,
+		[]byte(`{"session":"cspace-claude","tty":"/dev/pts/5","pid":105}`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	f := &fakeExec{reply: func(int, []string) (string, int, error) {
+		return "Error: container not found or not running", 1, nil
+	}}
+	c := New(Options{
+		Home:         home,
+		Containers:   &fakeContainers{err: errors.New("container ls: connection refused")},
+		Tmux:         testTmux(f),
+		ProcessAlive: func(int) bool { return false },
+	})
+
+	res, err := c.SweepClientRecords(context.Background())
+	if err != nil {
+		t.Fatalf("SweepClientRecords: %v", err)
+	}
+	if res.Kept != 1 || res.Deleted != 0 || res.Errors != 1 {
+		t.Errorf("kept = %d, deleted = %d, errors = %d, want 1, 0 and 1 — a container CLI complaint is not tmux answering",
+			res.Kept, res.Deleted, res.Errors)
+	}
+	for _, call := range f.recorded() {
+		if len(call) > 1 && call[1] == "detach-client" {
+			t.Error("the sweep detached a tty it never saw listed")
+		}
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("the record was removed: %v", err)
+	}
+}
+
+// The mirror image: a non-zero list-clients exit that carries one of tmux's
+// own gone-client/gone-session markers (clientAlreadyGone, shared with
+// DetachClient) IS tmux answering, whatever its exit code, and the record is
+// litter once it does.
+func TestSweepRecognizesTmuxsOwnEmptyAnswerOnANonZeroExit(t *testing.T) {
+	home := t.TempDir()
+	dir := ControlPlaneDir(home, "demo", "jupiter")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	path := filepath.Join(dir, "cspace-claude.dev-pts-6.json")
+	if err := os.WriteFile(path,
+		[]byte(`{"session":"cspace-claude","tty":"/dev/pts/6","pid":106}`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	f := &fakeExec{reply: func(int, []string) (string, int, error) {
+		return "no server running on /tmp/tmux-1000/default", 1, nil
+	}}
+	c := New(Options{
+		Home:         home,
+		Containers:   &fakeContainers{err: errors.New("container ls: connection refused")},
+		Tmux:         testTmux(f),
+		ProcessAlive: func(int) bool { return false },
+	})
+
+	res, err := c.SweepClientRecords(context.Background())
+	if err != nil {
+		t.Fatalf("SweepClientRecords: %v", err)
+	}
+	if res.Deleted != 1 {
+		t.Errorf("deleted = %d, want 1", res.Deleted)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Error("the stale record survived tmux's own empty answer")
+	}
+}
+
+// Fix round 1, Important 2: the sandbox directory lock (lockAttach) closes
+// the window in which a concurrent BeginAttach could write a fresh record
+// over this one's path, but not the window in which the dead pid this
+// record names could become live again by other means — a respawn, most
+// plausibly. This test proves the sweep re-reads the record and re-checks
+// its pid immediately before the detach rather than trusting the check it
+// made before asking tmux: ProcessAlive answers dead on its first call (the
+// initial decision to proceed) and alive on every call after (the recheck),
+// and the sweep must back off instead of detaching.
+func TestSweepRechecksThePidImmediatelyBeforeDetaching(t *testing.T) {
+	home := t.TempDir()
+	dir := ControlPlaneDir(home, "demo", "saturn")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	path := filepath.Join(dir, "cspace-claude.dev-pts-7.json")
+	if err := os.WriteFile(path,
+		[]byte(`{"session":"cspace-claude","tty":"/dev/pts/7","pid":107}`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	f := &fakeExec{reply: func(_ int, cmdline []string) (string, int, error) {
+		if len(cmdline) > 1 && cmdline[1] == "list-clients" {
+			return "/dev/pts/7\n", 0, nil
+		}
+		return "", 0, nil
+	}}
+	var calls int
+	c := New(Options{
+		Home: home,
+		Containers: &fakeContainers{out: []applecontainer.ContainerSummary{
+			{Name: "cspace-demo-saturn", State: "running"},
+		}},
+		Tmux: testTmux(f),
+		ProcessAlive: func(int) bool {
+			calls++
+			// Dead on the first check (the initial decision to keep going),
+			// alive on the recheck right before the detach — standing in for
+			// a respawn between the two.
+			return calls > 1
+		},
+	})
+
+	res, err := c.SweepClientRecords(context.Background())
+	if err != nil {
+		t.Fatalf("SweepClientRecords: %v", err)
+	}
+	if res.Kept != 1 || res.Detached != 0 || res.Deleted != 0 {
+		t.Errorf("kept = %d, detached = %d, deleted = %d, want 1, 0 and 0 — the recheck must back off",
+			res.Kept, res.Detached, res.Deleted)
+	}
+	for _, call := range f.recorded() {
+		if len(call) > 1 && call[1] == "detach-client" {
+			t.Error("the sweep detached a client whose pid was alive on the recheck")
+		}
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("the record was removed: %v", err)
+	}
+}

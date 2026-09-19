@@ -84,7 +84,10 @@ func (h *fakeHost) Open(_ context.Context, kind Kind, row control.Row, cols, row
 	return Opened{Pane: p, Detach: &fakeDetacher{}, Warning: h.warn}, nil
 }
 
-func (h *fakeHost) Sweep(context.Context) (int, error) { h.sweeps++; return 0, nil }
+func (h *fakeHost) Sweep(context.Context) (SweepOutcome, error) {
+	h.sweeps++
+	return SweepOutcome{}, nil
+}
 
 type fakeDetacher struct{ closed int }
 
