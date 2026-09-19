@@ -130,12 +130,21 @@ func (m Model) handleLeaderKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if _, _, exited := t.p.Exited(); exited {
-			m.notice = notice{text: LabelPasteImage + ": the pane exited", isErr: true}
+			m.notice = pasteExitedNotice()
 			return m, nil
 		}
 		if m.action != "" {
 			// The one-action gate, as the other leader keys apply it: two
 			// concurrent osascript runs would race for one footer line.
+			//
+			// Unlike t and x this one says so. osascript is the slowest
+			// thing behind any of these gates — a ten-second budget, and a
+			// pasteboard conversion that can use it — so v is the key a
+			// person is most likely to press twice, and a second silent
+			// no-op reads as a broken binding rather than a busy one. The
+			// notice names the action that is actually holding the gate,
+			// which is not always this one.
+			m.notice = notice{text: m.action + " is still in progress", isErr: true}
 			return m, nil
 		}
 		return m.startAction(LabelPasteImage, m.pasteImageCmd(t))

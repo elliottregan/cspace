@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"errors"
+	"os"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -27,14 +28,22 @@ var ErrNoImage = errors.New("clipboard holds no image")
 // caller goes through a tea.Cmd with a bounded context.
 type Clipboard interface {
 	// Image writes the clipboard's image as a PNG somewhere the named
-	// sandbox's pane can read it, and returns the path to TYPE INTO that
-	// pane: the in-sandbox /sessions path for a sandbox pane, and a host
-	// path when project and sandbox are both empty, which is how a host
-	// shell asks (it has no sandbox and no bind mount).
+	// sandbox's pane can read it, and returns two paths for the one file.
+	//
+	// pane is the path to TYPE INTO that pane: the in-sandbox /sessions
+	// path for a sandbox pane, and a host path when project and sandbox are
+	// both empty, which is how a host shell asks (it has no sandbox and no
+	// bind mount).
+	//
+	// host is where the PNG actually landed. The two differ for a sandbox
+	// pane, which sees the file through a bind mount, and the caller needs
+	// this one so a paste that never reaches a pane can take its file back
+	// out — the pane path is meaningless on this side of the mount.
 	//
 	// It returns ErrNoImage, possibly wrapped, when the clipboard holds no
-	// image. Every other error is a real failure and reaches the footer.
-	Image(ctx context.Context, project, sandbox string) (string, error)
+	// image. Every other error is a real failure and reaches the footer. On
+	// any error both paths are empty and no file is left behind.
+	Image(ctx context.Context, project, sandbox string) (pane, host string, err error)
 
 	// Text is the clipboard's text, byte for byte, and empty when it holds
 	// none.
@@ -54,8 +63,12 @@ var errNoClipboard = errors.New("no clipboard configured")
 // one outcome an operator cannot diagnose.
 type nopClipboard struct{}
 
-func (nopClipboard) Image(context.Context, string, string) (string, error) {
-	return "", errNoClipboard
+func (nopClipboard) Image(context.Context, string, string) (string, string, error) {
+	// Deliberately not ErrNoImage: that is the fallback branch, and a
+	// missing seam is not a text-only clipboard. Returning it here would
+	// send the dispatcher on to Text and report whatever it found as a
+	// successful paste.
+	return "", "", errNoClipboard
 }
 
 func (nopClipboard) Text(context.Context) (string, error) { return "", errNoClipboard }
@@ -69,13 +82,49 @@ const LabelPasteImage = "paste image"
 // that can be slow to start under load, and the UI must never wait on it.
 const clipboardTimeout = 10 * time.Second
 
+// pasteExitedNotice is the refusal a pane whose child is gone gives an
+// image paste, shared by the keypress and the result that comes back for a
+// pane that died while osascript ran.
+//
+// Shared for the same reason noScrollbackNotice is: two hand-written copies
+// of one sentence about one pane are two things to keep in step, and this
+// file has already been round that loop once.
+func pasteExitedNotice() notice {
+	return notice{text: LabelPasteImage + ": the pane exited", isErr: true}
+}
+
 // pasteMsg carries one clipboard read's outcome back to the tab it was
-// started for. text is what to type into the pane: the path of the written
-// PNG, or the clipboard's own text when it held no image.
+// started for.
+//
+// text is what to type into the pane: the path of the written PNG, or the
+// clipboard's own text when it held no image. file is the same PNG's path
+// on THIS side of the sandbox's bind mount, empty when no file was written
+// — it is what the branches that cannot deliver the paste remove, so a
+// clipboard read whose tab went away does not leave an orphan in paste/.
 type pasteMsg struct {
 	id   int
 	text string
+	file string
 	err  error
+}
+
+// discardPaste removes a PNG no pane will ever read. Empty is nothing to
+// do, which is every text paste and every failure.
+//
+// A command rather than an inline os.Remove for the reason every other
+// syscall in this package is one: Update is the UI goroutine, and the rule
+// here is not "unlink is fast enough" but "Update does no I/O". The error
+// is deliberately dropped — the paste is already lost, the person has
+// already been told whatever there was to tell, and a second notice about
+// the cleanup of a file they never saw would only bury the first.
+func discardPaste(path string) tea.Cmd {
+	if path == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		_ = os.Remove(path)
+		return nil
+	}
 }
 
 // pasteImageCmd reads the clipboard for one tab, off the UI goroutine.
@@ -96,9 +145,9 @@ func (m Model) pasteImageCmd(t *tab) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), clipboardTimeout)
 		defer cancel()
 
-		path, err := clip.Image(ctx, project, sandbox)
+		path, file, err := clip.Image(ctx, project, sandbox)
 		if err == nil {
-			return pasteMsg{id: id, text: path}
+			return pasteMsg{id: id, text: path, file: file}
 		}
 		if !errors.Is(err, ErrNoImage) {
 			return pasteMsg{id: id, err: err}
@@ -107,6 +156,8 @@ func (m Model) pasteImageCmd(t *tab) tea.Cmd {
 		if err != nil {
 			return pasteMsg{id: id, err: err}
 		}
+		// No file: a text paste wrote nothing, so there is nothing for the
+		// undeliverable branches to take back out.
 		return pasteMsg{id: id, text: text}
 	}
 }

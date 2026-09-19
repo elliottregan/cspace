@@ -96,7 +96,7 @@ func TestClipboardWritesAPNGWhereTheSandboxPaneCanReadIt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	typed, err := c.Image(ctx, "alpha", "mercury")
+	typed, _, err := c.Image(ctx, "alpha", "mercury")
 	if err != nil {
 		t.Fatalf("Image: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestClipboardWritesAHostShellsImageOutsideAnySandbox(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	typed, err := c.Image(ctx, "", "")
+	typed, _, err := c.Image(ctx, "", "")
 	if err != nil {
 		t.Fatalf("Image: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestClipboardReportsErrNoImageForATextClipboard(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	if _, err := clip.Image(ctx, "alpha", "mercury"); !errors.Is(err, controlplane.ErrNoImage) {
+	if _, _, err := clip.Image(ctx, "alpha", "mercury"); !errors.Is(err, controlplane.ErrNoImage) {
 		t.Errorf("Image err = %v, want ErrNoImage", err)
 	}
 	text, err := clip.Text(ctx)
@@ -199,7 +199,7 @@ func TestClipboardImageLeavesNoFileWhenThereIsNoImage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	_, _ = clip.Image(ctx, "alpha", "mercury")
+	_, _, _ = clip.Image(ctx, "alpha", "mercury")
 	dir := filepath.Join(home, ".cspace", "sessions", "alpha", "mercury", "paste")
 	if entries, err := os.ReadDir(dir); err == nil && len(entries) > 0 {
 		t.Errorf("a failed probe left %d file(s) behind in %s", len(entries), dir)
@@ -258,7 +258,7 @@ func TestClipboardMapsTheSandboxPasteDirWithoutAPasteboard(t *testing.T) {
 	c := newClipboard(home)
 	c.now = func() time.Time { return time.Date(2026, 9, 19, 14, 30, 1, 123_000_000, time.UTC) }
 
-	typed, err := c.Image(testCtx(t), "alpha", "mercury")
+	typed, host, err := c.Image(testCtx(t), "alpha", "mercury")
 	if err != nil {
 		t.Fatalf("Image: %v", err)
 	}
@@ -269,6 +269,14 @@ func TestClipboardMapsTheSandboxPasteDirWithoutAPasteboard(t *testing.T) {
 		"paste", "20260919-143001.123.png")
 	if _, err := os.Stat(hostPath); err != nil {
 		t.Fatalf("nothing was written where the pane reads: %v", err)
+	}
+	// The second return is the same file as THIS process can reach it —
+	// not the pane's view of it. It is what the dashboard unlinks when a
+	// paste never reaches a pane, so a wrong value here would either
+	// delete nothing or, worse, delete by a path that means something
+	// else on the host.
+	if host != hostPath {
+		t.Errorf("host path = %q, want %q", host, hostPath)
 	}
 	info, err := os.Stat(filepath.Dir(hostPath))
 	if err != nil {
@@ -292,7 +300,7 @@ func TestClipboardImageReportsAnUnwritablePasteDir(t *testing.T) {
 		t.Fatalf("write the blocking file: %v", err)
 	}
 
-	typed, err := newClipboard(home).Image(testCtx(t), "alpha", "mercury")
+	typed, _, err := newClipboard(home).Image(testCtx(t), "alpha", "mercury")
 	if err == nil {
 		t.Fatalf("Image returned %q and no error for a directory it could not create", typed)
 	}
@@ -307,7 +315,7 @@ func TestClipboardImageReportsAnUnwritablePasteDir(t *testing.T) {
 func TestClipboardImageNamesTheMissingBinary(t *testing.T) {
 	stubPATH(t) // empty: a host with no osascript at all
 
-	_, err := newClipboard(t.TempDir()).Image(testCtx(t), "alpha", "mercury")
+	_, _, err := newClipboard(t.TempDir()).Image(testCtx(t), "alpha", "mercury")
 	if err == nil {
 		t.Fatal("Image must fail where osascript does not exist")
 	}
@@ -428,7 +436,7 @@ func TestClipboardImageRejectsANameItWouldJoinIntoAPath(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
-			_, err := newClipboard(home).Image(testCtx(t), tc.project, tc.sandbox)
+			_, _, err := newClipboard(home).Image(testCtx(t), tc.project, tc.sandbox)
 			if err == nil {
 				t.Fatalf("Image(%q, %q) was accepted", tc.project, tc.sandbox)
 			}
@@ -454,7 +462,7 @@ esac
 `)
 
 	home := t.TempDir()
-	typed, err := newClipboard(home).Image(testCtx(t), "alpha", "mercury")
+	typed, _, err := newClipboard(home).Image(testCtx(t), "alpha", "mercury")
 	if err == nil {
 		t.Fatalf("Image returned %q and no error for a write that failed", typed)
 	}

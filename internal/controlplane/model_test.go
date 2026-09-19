@@ -847,8 +847,8 @@ func TestNewSubstitutesAFailClosedClipboard(t *testing.T) {
 	if m.clip == nil {
 		t.Fatal("New left the clipboard nil")
 	}
-	if path, err := m.clip.Image(context.Background(), "alpha", "mercury"); err == nil {
-		t.Errorf("Image returned %q and no error; the stand-in must explain itself", path)
+	if path, file, err := m.clip.Image(context.Background(), "alpha", "mercury"); err == nil {
+		t.Errorf("Image returned %q/%q and no error; the stand-in must explain itself", path, file)
 	}
 	// Text fails too. An empty string and no error would look exactly like
 	// an empty clipboard, so the paste would type nothing and report

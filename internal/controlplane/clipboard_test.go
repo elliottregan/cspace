@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +20,10 @@ type fakeClipboard struct {
 	imgErr  error
 	text    string
 	textErr error
+	// file is the host path Image reports beside path — the PNG as this
+	// process can reach it. Tests that care about the cleanup point it at
+	// a real file under t.TempDir().
+	file string
 
 	calls []string
 	// bounded records whether the context Image was handed carries a
@@ -26,13 +32,13 @@ type fakeClipboard struct {
 	bounded bool
 }
 
-func (c *fakeClipboard) Image(ctx context.Context, project, sandbox string) (string, error) {
+func (c *fakeClipboard) Image(ctx context.Context, project, sandbox string) (string, string, error) {
 	_, c.bounded = ctx.Deadline()
 	c.calls = append(c.calls, fmt.Sprintf("image:%s/%s", project, sandbox))
 	if c.imgErr != nil {
-		return "", c.imgErr
+		return "", "", c.imgErr
 	}
-	return c.path, nil
+	return c.path, c.file, nil
 }
 
 func (c *fakeClipboard) Text(context.Context) (string, error) {
@@ -53,11 +59,49 @@ func newTestModelWithClipboard(h PaneHost, c Clipboard) Model {
 
 // pasteV arms the leader, presses v, runs the command it produced, and
 // feeds the result back.
+//
+// Note what it does NOT do: pump throws away the command the pasteMsg arm
+// returns, which is the cleanup. A test about the PNG has to run that one
+// itself — see runDiscard.
 func pasteV(t *testing.T, m Model) Model {
 	t.Helper()
 	m = step(t, m, "ctrl+space")
 	mm, cmd := m.Update(press("v"))
 	return pump(t, mm.(Model), cmd)
+}
+
+// runDiscard runs the cleanup command a pasteMsg arm handed back. It is a
+// plain unlink, so there is nothing to wait for — and nothing to feed back,
+// which it also asserts.
+func runDiscard(t *testing.T, cmd tea.Cmd) {
+	t.Helper()
+	if cmd == nil {
+		return
+	}
+	if msg := cmd(); msg != nil {
+		t.Fatalf("the cleanup command produced %T, want nothing", msg)
+	}
+}
+
+// pasteTempPNG stands in for the file osascript would have left on the
+// host, so a test can watch what becomes of it.
+func pasteTempPNG(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "20260919-143001.123.png")
+	if err := os.WriteFile(path, []byte("\x89PNG\r\n\x1a\n"), 0o600); err != nil {
+		t.Fatalf("write the stand-in PNG: %v", err)
+	}
+	return path
+}
+
+// gone reports whether the PNG is no longer on disk.
+func gone(t *testing.T, path string) bool {
+	t.Helper()
+	_, err := os.Stat(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	return err != nil
 }
 
 func TestLeaderVPastesTheImagePathIntoAClaudePane(t *testing.T) {
@@ -156,6 +200,13 @@ func TestLeaderVOnAnExitedPaneRefusesWithoutReadingTheClipboard(t *testing.T) {
 	if !m.notice.isErr || !strings.Contains(m.notice.text, "exited") {
 		t.Errorf("notice = %q, want it to say the pane exited", m.notice.text)
 	}
+	// The exact text, against the one shared definition rather than a copy
+	// of its wording — the same lock TestScrollRefusesAPaneWithNoScrollback
+	// puts on noScrollbackNotice, so the keypress and the result that comes
+	// back for a dead pane can never drift apart.
+	if m.notice.text != pasteExitedNotice().text {
+		t.Errorf("notice = %q, want the shared refusal %q", m.notice.text, pasteExitedNotice().text)
+	}
 	if m.action != "" {
 		t.Errorf("action = %q, want nothing in flight", m.action)
 	}
@@ -172,10 +223,18 @@ func TestAPasteForAPaneThatExitedIsRefused(t *testing.T) {
 	mustTabs(t, m, 1)
 	waitForExit(t, m.tabs[0])
 
-	mm, _ := m.Update(pasteMsg{id: m.tabs[0].id, text: "/sessions/paste/x.png"})
+	file := pasteTempPNG(t)
+	mm, cleanup := m.Update(pasteMsg{id: m.tabs[0].id, text: "/sessions/paste/x.png", file: file})
 	m = mm.(Model)
+	runDiscard(t, cleanup)
 	if !m.notice.isErr || !strings.Contains(m.notice.text, "exited") {
 		t.Errorf("notice = %q, want it to say the pane exited", m.notice.text)
+	}
+	if m.notice.text != pasteExitedNotice().text {
+		t.Errorf("notice = %q, want the shared refusal %q", m.notice.text, pasteExitedNotice().text)
+	}
+	if !gone(t, file) {
+		t.Error("the PNG survived a paste the pane could not receive")
 	}
 }
 
@@ -198,9 +257,12 @@ func TestAPasteFindsItsTabByIdentityNotIndex(t *testing.T) {
 	m = mm.(Model)
 	mustTabs(t, m, 1)
 
+	m.action = LabelPasteImage // the paste this result belongs to
 	mm, _ = m.Update(pasteMsg{id: first.id, text: "wrong-tab-sentinel"})
 	if got := mm.(Model); got.notice.isErr {
 		t.Errorf("notice = %q, want silence for a tab that is gone", got.notice.text)
+	} else if got.action != "" {
+		t.Errorf("action = %q, want the one-action gate released", got.action)
 	}
 	// Give a wrongly-routed paste time to round-trip through the pty and
 	// the echoing child before checking for its absence.
@@ -227,6 +289,11 @@ func TestLeaderVWhileAnotherActionIsInFlightIsIgnored(t *testing.T) {
 	}
 	if m.action != LabelClosePane {
 		t.Errorf("action = %q, want the in-flight one left alone", m.action)
+	}
+	// The notice names what is actually holding the gate, which here is
+	// not the paste.
+	if !m.notice.isErr || !strings.Contains(m.notice.text, LabelClosePane) {
+		t.Errorf("notice = %q, want it to name the close that is still running", m.notice.text)
 	}
 }
 
@@ -329,9 +396,223 @@ func TestAMissingOsascriptIsAFooterErrorNotACrash(t *testing.T) {
 func TestAPasteForATabThatClosedIsDropped(t *testing.T) {
 	c := &fakeClipboard{path: "/sessions/paste/x.png"}
 	m := newTestModelWithClipboard(&fakeHost{t: t}, c)
+	// A result only ever arrives with its own paste in flight.
+	m.action = LabelPasteImage
 	// No tab with this id has ever existed.
 	mm, _ := m.Update(pasteMsg{id: 4242, text: "/sessions/paste/x.png"})
+	got := mm.(Model)
+	if got.notice.isErr {
+		t.Errorf("notice = %q, want silence for a tab that is gone", got.notice.text)
+	}
+	// Silent is not the same as doing nothing: the gate still has to open,
+	// and this is the one branch with no notice to notice its absence by.
+	if got.action != "" {
+		t.Errorf("action = %q, want the one-action gate released", got.action)
+	}
+}
+
+// --- fix round 1: the focused tab, the gate, the file, the missing seam ---
+
+// openTwoPanes leaves a Claude pane on alpha/mercury at index 0 and a host
+// shell — which belongs to NO sandbox — focused at index 1. The two
+// identities differ, so the clipboard call itself names which tab the key
+// acted on.
+func openTwoPanes(t *testing.T, m Model) Model {
+	t.Helper()
+	m = stepPump(t, m, "enter")
+	m = openHostShell(t, m)
+	mustTabs(t, m, 2)
+	if m.focused != 1 {
+		t.Fatalf("focused = %d after opening a second pane, want 1", m.focused)
+	}
+	return m
+}
+
+// Leader v acts on the tab the main area is SHOWING. Nothing pinned this:
+// with one tab open, `m.tabs[0]` and `m.focusedTab()` are the same pointer,
+// so a version that read the first tab shipped green — and pasted a
+// screenshot into whichever sandbox happened to be opened first.
+func TestLeaderVPastesIntoTheFocusedTabNotTheFirst(t *testing.T) {
+	h := &fakeHost{t: t, echo: true}
+	c := &fakeClipboard{path: "/Users/x/.cspace/paste/focused.png"}
+	m := openTwoPanes(t, newTestModelWithClipboard(h, c))
+
+	m = pasteV(t, m)
+
+	if len(c.calls) != 1 || c.calls[0] != "image:/" {
+		t.Fatalf("clipboard calls = %v, want the FOCUSED tab's identity — "+
+			"a host shell's, which is empty — not the first tab's alpha/mercury", c.calls)
+	}
+	waitForPaneScreen(t, m.tabs[1], "focused.png")
+	if screen := plain(m.tabs[0].p.Render()); strings.Contains(screen, "focused.png") {
+		t.Errorf("the path was typed into the unfocused first tab:\n%s", screen)
+	}
+}
+
+// The keyboard being on the sidebar does not change which pane a paste
+// goes to: handleKey dispatches the leader before the focus split, and
+// focusedTab reads m.focused (which tab is on screen), not m.focus (who
+// owns the keyboard). That is the supported route — ⌃Space h, then ⌃Space
+// v — and it had no coverage at all.
+func TestLeaderVFromTheSidebarPastesIntoThePaneOnScreen(t *testing.T) {
+	h := &fakeHost{t: t, echo: true}
+	c := &fakeClipboard{path: "/Users/x/.cspace/paste/sidebar.png"}
+	m := openTwoPanes(t, newTestModelWithClipboard(h, c))
+	m.focus = focusSidebar
+
+	m = pasteV(t, m)
+
+	if len(c.calls) != 1 || c.calls[0] != "image:/" {
+		t.Fatalf("clipboard calls = %v, want the tab on screen, not the selected row", c.calls)
+	}
+	waitForPaneScreen(t, m.tabs[1], "sidebar.png")
+	if m.focus != focusSidebar {
+		t.Error("leader v moved the keyboard focus off the sidebar")
+	}
+}
+
+// TestADroppedPasteReleasesTheOneActionGate is the cost of the one branch
+// that returns without a notice. m.action is the gate leader t, leader x,
+// v itself, every sidebar key and both supervisor arms consult: a
+// dropped-paste path that forgot to clear it would take the whole window
+// out — no new pane, no close, no boot, no send — for the rest of the
+// session, behind a spinner that never stops.
+func TestADroppedPasteReleasesTheOneActionGate(t *testing.T) {
+	h := &fakeHost{t: t}
+	c := &fakeClipboard{path: "/sessions/paste/x.png"}
+	m := newTestModelWithClipboard(h, c)
+	m = stepPump(t, m, "enter")
+	mustTabs(t, m, 1)
+	id := m.tabs[0].id
+
+	m = step(t, m, "ctrl+space")
+	mm, cmd := m.Update(press("v"))
+	m = mm.(Model)
+	if m.action != LabelPasteImage {
+		t.Fatalf("action = %q, want the paste in flight", m.action)
+	}
+
+	// The tab goes while osascript runs. dropTab by hand rather than a
+	// paneClosedMsg on purpose: that arm clears m.action itself, which is
+	// the very thing this test is trying to observe.
+	m = m.dropTab(id)
+	mustTabs(t, m, 0)
+
+	mm, cleanup := m.Update(runCmd(t, cmd))
+	m = mm.(Model)
+	runDiscard(t, cleanup)
+	if m.action != "" {
+		t.Fatalf("action = %q after a paste nobody could receive; the gate is stuck", m.action)
+	}
+	// And the gate is open in the way that matters: a sidebar key it would
+	// have swallowed opens a pane again.
+	m = stepPump(t, m, "enter")
+	mustTabs(t, m, 1)
+}
+
+// A PNG nobody can be told about is an orphan: the paste/ directory is a
+// place a sandbox agent globs, and ~/.cspace/paste (the host shell's) is
+// never swept at all.
+func TestAPasteNoTabCanReceiveTakesItsPNGBackOut(t *testing.T) {
+	file := pasteTempPNG(t)
+	m := newTestModelWithClipboard(&fakeHost{t: t}, &fakeClipboard{})
+
+	mm, cleanup := m.Update(pasteMsg{id: 4242, text: "/sessions/paste/x.png", file: file})
+	runDiscard(t, cleanup)
+
 	if got := mm.(Model); got.notice.isErr {
 		t.Errorf("notice = %q, want silence for a tab that is gone", got.notice.text)
+	}
+	if !gone(t, file) {
+		t.Error("the PNG survived a paste no pane could receive")
+	}
+}
+
+// The mirror image, and the one branch that must NOT delete: a pane was
+// told to read this path, so the file has to be there when it does.
+func TestADeliveredPasteKeepsItsPNG(t *testing.T) {
+	h := &fakeHost{t: t, echo: true}
+	file := pasteTempPNG(t)
+	const typed = "/sessions/paste/20260919-143001.123.png"
+	c := &fakeClipboard{path: typed, file: file}
+	m := newTestModelWithClipboard(h, c)
+	m = stepPump(t, m, "enter")
+	mustTabs(t, m, 1)
+
+	m = step(t, m, "ctrl+space")
+	mm, cmd := m.Update(press("v"))
+	m = mm.(Model)
+
+	mm, cleanup := m.Update(runCmd(t, cmd))
+	m = mm.(Model)
+	if cleanup != nil {
+		t.Error("a delivered paste handed back a cleanup command")
+		runDiscard(t, cleanup)
+	}
+	waitForPaneScreen(t, m.tabs[0], typed)
+	if gone(t, file) {
+		t.Error("the PNG the pane was just told to read has been deleted")
+	}
+}
+
+// A Model built without a clipboard fails closed and says which seam is
+// missing, rather than dereferencing nil or typing nothing and reporting
+// success.
+func TestAModelWithNoClipboardSaysSoAndTypesNothing(t *testing.T) {
+	h := &fakeHost{t: t, echo: true}
+	m := newTestModelWithClipboard(h, nil)
+	m = stepPump(t, m, "enter")
+	mustTabs(t, m, 1)
+
+	m = pasteV(t, m)
+	if !m.notice.isErr || !strings.Contains(m.notice.text, "no clipboard configured") {
+		t.Errorf("notice = %q, want the missing seam named", m.notice.text)
+	}
+	// Give a paste that should never have happened time to round-trip
+	// through the pty and the echoing child before checking for it.
+	time.Sleep(250 * time.Millisecond)
+	if screen := strings.TrimSpace(plain(m.tabs[0].p.Render())); screen != "" {
+		t.Errorf("something was typed into the pane: %q", screen)
+	}
+
+	// And the stand-in must not report ErrNoImage: that is the fallback
+	// branch, so the dispatcher would go on to Text and diagnose a seam
+	// that was never wired up as a clipboard problem.
+	if _, _, err := (nopClipboard{}).Image(context.Background(), "alpha", "mercury"); errors.Is(err, ErrNoImage) {
+		t.Error("nopClipboard.Image reports ErrNoImage; the dispatcher would fall back to text")
+	}
+	if text, err := (nopClipboard{}).Text(context.Background()); err == nil {
+		t.Errorf("nopClipboard.Text returned %q and no error; that is indistinguishable "+
+			"from an empty clipboard", text)
+	}
+}
+
+// A second v during a slow osascript starts nothing — and, unlike t and x,
+// says why. Ten seconds is long enough that a silent key reads as broken.
+func TestASecondVWhileAPasteIsInFlightSaysSo(t *testing.T) {
+	h := &fakeHost{t: t}
+	c := &fakeClipboard{path: "/sessions/paste/x.png"}
+	m := newTestModelWithClipboard(h, c)
+	m = stepPump(t, m, "enter")
+	mustTabs(t, m, 1)
+
+	// The first paste, whose command is deliberately never run: it is
+	// still "in flight" for as long as the test wants.
+	m = step(t, m, "ctrl+space")
+	mm, _ := m.Update(press("v"))
+	m = mm.(Model)
+
+	m = step(t, m, "ctrl+space")
+	mm, cmd := m.Update(press("v"))
+	m = mm.(Model)
+	if cmd != nil {
+		t.Error("a second v started a second clipboard read")
+	}
+	if len(c.calls) != 0 {
+		t.Errorf("the clipboard was read from Update: %v", c.calls)
+	}
+	if !m.notice.isErr || !strings.Contains(m.notice.text, LabelPasteImage) ||
+		!strings.Contains(m.notice.text, "in progress") {
+		t.Errorf("notice = %q, want it to name the paste that is still running", m.notice.text)
 	}
 }
