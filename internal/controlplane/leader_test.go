@@ -93,11 +93,15 @@ func TestLeaderDispatch(t *testing.T) {
 	}
 }
 
-// A pane whose child keeps its own history — every Claude and shell pane,
-// because tmux switches to the alternate screen at startup and nothing
-// written there enters scrollback — must say so rather than arm a mode that
-// can only show "0 lines back" and eat the next key. Found by Task 8 Step 8
-// against a real sandbox: leader [ then PgUp moved nothing.
+// A pane with no scrollback — every Claude and shell pane, because tmux
+// switches to the alternate screen at startup and nothing written there
+// enters scrollback, but also an exited pane (no child left to hold any)
+// and a freshly opened host shell (no tmux, screen not yet full) — must say
+// so rather than arm a mode that can only show "0 lines back" and eat the
+// next key. Found by Task 8 Step 8 against a real sandbox: leader [ then
+// PgUp moved nothing. The exact-text check pins the refusal to the one
+// shared definition (noScrollbackNotice) rather than to a copy of its
+// wording, so leader [ and the wheel can never drift apart.
 func TestScrollRefusesAPaneWithNoScrollback(t *testing.T) {
 	h := &fakeHost{t: t}
 	m := openOne(t, h)
@@ -107,6 +111,9 @@ func TestScrollRefusesAPaneWithNoScrollback(t *testing.T) {
 	}
 	if !strings.Contains(got.notice.text, "nothing to scroll") {
 		t.Errorf("notice = %q, want it to say there is nothing to scroll", got.notice.text)
+	}
+	if got.notice.text != noScrollbackNotice().text {
+		t.Errorf("notice = %q, want the shared refusal %q", got.notice.text, noScrollbackNotice().text)
 	}
 }
 

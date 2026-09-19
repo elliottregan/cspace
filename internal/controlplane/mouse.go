@@ -156,6 +156,15 @@ func (m Model) handleWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 		// MouseWheelLeft / MouseWheelRight: nothing here scrolls sideways.
 		return m, nil
 	}
+	if m.leaderArmed {
+		// A half-typed chord, same hazard handleClick disarms for a click:
+		// the notch is not its second key, and leaving it armed sends the
+		// next ordinary key wherever the chord's second key means —
+		// including past scroll mode's own "any other key returns to live"
+		// banner, opening the new-pane picker or closing a tab under it.
+		m.leaderArmed = false
+		return m, nil
+	}
 	if m.mode != modeNormal || m.showHelp {
 		// A modal or the overlay owns the screen; there is nothing behind
 		// it the person can see to scroll.
@@ -169,7 +178,15 @@ func (m Model) handleWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 		// the selection IS scrolling the sidebar — and it is the move the
 		// person can act on afterwards, which a detached scroll offset
 		// would not be.
+		before := m.selected
 		m.moveSelection(-dir)
+		if m.selected == before {
+			// At either end there is nothing new for the detail band to
+			// follow, and a trackpad fires notches far faster than key
+			// repeat — the click path (selectListRow) already skips the
+			// read for the same reason.
+			return m, nil
+		}
 		return m, m.eventsCmd()
 
 	case g.main.contains(msg.X, msg.Y):

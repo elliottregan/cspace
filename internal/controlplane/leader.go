@@ -13,17 +13,22 @@ import (
 // leader [ and the wheel so the two can never drift into saying different
 // things about the same pane.
 //
-// This is the permanent state of every Claude and shell pane, not a rare
-// one. tmux switches the terminal to the ALTERNATE screen the moment it
-// starts (measured against the image's tmux 3.3a: its first bytes are
-// ESC[?1049h), and nothing written to the alternate screen ever enters
-// scrollback. The history is real, but it is on the child's side — tmux's
-// copy-mode holds it, and Claude Code scrolls its own transcript with
-// PgUp/PgDn, which reach the child precisely because this mode is off. See
-// the scroll-mode-never-reaches-a-tmux-backed-panes-history finding.
+// tmux is the dominant reason: it switches the terminal to the ALTERNATE
+// screen the moment it starts (measured against the image's tmux 3.3a: its
+// first bytes are ESC[?1049h), and nothing written to the alternate screen
+// ever enters scrollback — the permanent state of every Claude and shell
+// pane, not a rare one. See the
+// scroll-mode-never-reaches-a-tmux-backed-panes-history finding. But it is
+// not the only reason a pane has none: an exited pane has no child at all
+// to hold history for, and a freshly opened host shell (no tmux) simply
+// has not filled a screen yet. The wording leads with the one thing true of
+// all three — there is nothing here to scroll — and keeps the tmux
+// explanation as a trailing, general aside rather than a claim about this
+// particular pane.
 func noScrollbackNotice() notice {
 	return notice{
-		text:  "nothing to scroll: this pane has no scrollback — its child keeps its own history (PgUp/PgDn go to it)",
+		text: "nothing to scroll: this pane has no scrollback " +
+			"(a tmux-backed pane keeps its history on the child's side — PgUp/PgDn go there)",
 		isErr: true,
 	}
 }

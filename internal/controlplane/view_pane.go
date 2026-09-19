@@ -164,6 +164,24 @@ func (m Model) paneArea(width, height int) string {
 		return fitLines(styleErr.Render("this pane has no process"), height)
 	}
 
+	// Scroll mode wins over the exited line, not the other way around. Both
+	// branches call ScrollbackView, so the exited pane's history stays
+	// readable either way — the choice is only which banner sits above it.
+	// handlePaneKey already treats the two pane kinds identically while
+	// scrolling (its m.scrolling branch runs before its own exited guard),
+	// so a key press here already returns to live rather than acting on the
+	// exited pane; the render used to disagree; with the exited line
+	// winning, the mode was armed but invisible — no counter, no "any other
+	// key returns to live" hint — so the very key that silently left scroll
+	// mode looked like it had done nothing at all.
+	if m.scrolling {
+		return fitLines(strings.Join([]string{
+			styleDim.Render(fit(fmt.Sprintf("scroll · %d lines back · %s g or any other key returns to live",
+				m.scroll, lead), width)),
+			t.p.ScrollbackView(m.scroll, height-1),
+		}, "\n"), height)
+	}
+
 	if code, err, exited := t.p.Exited(); exited {
 		reason := fmt.Sprintf("exited with status %d", code)
 		if err != nil {
@@ -181,14 +199,6 @@ func (m Model) paneArea(width, height int) string {
 			styleErr.Render(fit(reason+" — "+lead+" x closes this tab", width)),
 			"",
 			body,
-		}, "\n"), height)
-	}
-
-	if m.scrolling {
-		return fitLines(strings.Join([]string{
-			styleDim.Render(fit(fmt.Sprintf("scroll · %d lines back · %s g or any other key returns to live",
-				m.scroll, lead), width)),
-			t.p.ScrollbackView(m.scroll, height-1),
 		}, "\n"), height)
 	}
 	return fitLines(t.p.Render(), height)
