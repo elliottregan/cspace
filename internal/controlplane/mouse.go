@@ -15,15 +15,20 @@ import (
 // handleClick routes a left-button press. Every branch either acts on the
 // dashboard or does nothing; the release that follows is dropped in Update.
 func (m Model) handleClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
-	if msg.Button != tea.MouseLeft {
-		// Middle and right have no meaning here, and inventing one for
-		// them is how a stray thumb button tears a sandbox down.
-		return m, nil
-	}
 	// An error notice stays until the next input, and a click is input —
-	// the same rule handleKey applies to a keypress.
+	// the same rule handleKey applies to a keypress. Above the button
+	// guard, because dismissing what the footer is saying is the one thing
+	// a click means whichever button made it: handleKey clears on EVERY
+	// key, and a right-click that left a stale error in the footer would be
+	// the only input in the dashboard that cannot dismiss one.
 	if m.notice.isErr {
 		m.notice = notice{}
+	}
+	if msg.Button != tea.MouseLeft {
+		// Beyond that, middle and right have no meaning here, and
+		// inventing one for them is how a stray thumb button tears a
+		// sandbox down.
+		return m, nil
 	}
 
 	if m.leaderArmed {
@@ -61,7 +66,13 @@ func (m Model) handleClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		m.scrolling, m.scroll = false, 0
 		return m, nil
 
-	case y == g.tabsY:
+	case y == g.tabsY && x >= g.main.x:
+		// Bounded on x as well as y. The sidebar arms above already claim
+		// every column left of the main area on this row, so today the
+		// bound changes nothing — but tabsY is 0 only because the tabs row
+		// happens to be the top line, and a future layout that moves it,
+		// or gives the sidebar a header, would otherwise have this arm
+		// silently claiming the whole screen row.
 		for _, s := range g.tabs {
 			if x >= s.from && x < s.to {
 				return m.focusTab(s.index), nil
