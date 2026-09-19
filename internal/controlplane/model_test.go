@@ -850,11 +850,11 @@ func TestNewSubstitutesAFailClosedClipboard(t *testing.T) {
 	if path, err := m.clip.Image(context.Background(), "alpha", "mercury"); err == nil {
 		t.Errorf("Image returned %q and no error; the stand-in must explain itself", path)
 	}
-	// Text is the fallback half: empty and no error, so a paste with no
-	// clipboard configured types nothing rather than reporting a failure
-	// the operator cannot act on.
+	// Text fails too. An empty string and no error would look exactly like
+	// an empty clipboard, so the paste would type nothing and report
+	// success — the one outcome the operator cannot diagnose.
 	text, err := m.clip.Text(context.Background())
-	if err != nil || text != "" {
-		t.Errorf("Text = %q, %v; want empty and no error", text, err)
+	if err == nil {
+		t.Errorf("Text returned %q and no error; the stand-in must explain itself", text)
 	}
 }

@@ -45,6 +45,23 @@ const pasteStamp = "20060102-150405.000"
 // through the same non-zero exit and must not be confused: one is the
 // design's text-paste fallback and the other belongs in the footer.
 func (c *osaClipboard) Image(ctx context.Context, project, sandbox string) (string, error) {
+	// Shape-check before any path work. Both names are joined into a
+	// directory this function then creates 0700 and writes a file into, and
+	// filepath.Join cleans "../.." rather than rejecting it. Every caller
+	// today passes control.Row fields, which come off the registry and
+	// `container ls` — but the pane picker's text field is exactly where a
+	// typed name would first reach a path join, which is the reason
+	// validateSandboxName exists at all.
+	// (cs-finding:2026-09-18-sandbox-names-are-not-shape-validated-before-path-joins)
+	if project != "" || sandbox != "" {
+		if err := validateSandboxName(project, project); err != nil {
+			return "", fmt.Errorf("project name: %w", err)
+		}
+		if err := validateSandboxName(project, sandbox); err != nil {
+			return "", fmt.Errorf("sandbox name: %w", err)
+		}
+	}
+
 	has, err := c.hasImage(ctx)
 	if err != nil {
 		return "", err
@@ -61,7 +78,16 @@ func (c *osaClipboard) Image(ctx context.Context, project, sandbox string) (stri
 		return "", fmt.Errorf("create paste dir: %w", err)
 	}
 	name := c.now().Format(pasteStamp) + ".png"
-	if err := c.writePNG(ctx, filepath.Join(hostDir, name)); err != nil {
+	dst := filepath.Join(hostDir, name)
+	if err := c.writePNG(ctx, dst); err != nil {
+		// A half-written probe is not an image. AppleScript's `open for
+		// access` creates the file before the write that failed, and
+		// paste/ is a directory a sandbox agent is about to glob — so
+		// take the empty file back out. No temp-and-rename: nothing has
+		// been told this path yet, so there is no reader to be atomic
+		// against, and os.Remove of a file that was never created is
+		// already a no-op.
+		_ = os.Remove(dst)
 		return "", err
 	}
 	return filepath.Join(paneDir, name), nil
@@ -113,25 +139,32 @@ func (c *osaClipboard) hasImage(ctx context.Context) (bool, error) {
 // on 2026-09-19, `osascript -e try -e 'error "boom"' -e 'end try'` exits 0,
 // so a failed write would come back as success and leader `v` would type
 // the path of a zero-byte file into a pane.
+// writePNGScript is that script. It is a package variable rather than a
+// literal in the call below so a test can assert the three orderings the
+// comment above argues for: no hermetic test can make a real AppleScript
+// write fail after the file is open, and the gated tests only ever take the
+// happy path, so without this the re-raise could be deleted and every test
+// would still pass (it was, and they did).
+var writePNGScript = []string{
+	"on run argv",
+	"set p to item 1 of argv",
+	"set d to (the clipboard as «class PNGf»)",
+	"set f to open for access (POSIX file p) with write permission",
+	"try",
+	"set eof f to 0",
+	"write d to f",
+	"close access f",
+	"on error e",
+	"try",
+	"close access f",
+	"end try",
+	"error e",
+	"end try",
+	"end run",
+}
+
 func (c *osaClipboard) writePNG(ctx context.Context, path string) error {
-	_, err := osascript(ctx, []string{
-		"on run argv",
-		"set p to item 1 of argv",
-		"set d to (the clipboard as «class PNGf»)",
-		"set f to open for access (POSIX file p) with write permission",
-		"try",
-		"set eof f to 0",
-		"write d to f",
-		"close access f",
-		"on error e",
-		"try",
-		"close access f",
-		"end try",
-		"error e",
-		"end try",
-		"end run",
-	}, path)
-	if err != nil {
+	if _, err := osascript(ctx, writePNGScript, path); err != nil {
 		return fmt.Errorf("write the clipboard's png: %w", err)
 	}
 	return nil
@@ -146,14 +179,45 @@ func (c *osaClipboard) writePNG(ctx context.Context, path string) error {
 // changed on the way through. pbpaste writes the pasteboard's bytes and
 // nothing else.
 func (c *osaClipboard) Text(ctx context.Context) (string, error) {
-	out, err := exec.CommandContext(ctx, "pbpaste").Output()
+	cmd := exec.CommandContext(ctx, "pbpaste")
+	cmd.Env = utf8Env(os.Environ())
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		if errors.Is(err, exec.ErrNotFound) {
-			return "", errors.New("pbpaste not found: reading the clipboard needs macOS")
-		}
-		return "", fmt.Errorf("pbpaste: %w", err)
+		return "", execError(ctx, err, "pbpaste",
+			"pbpaste not found: reading the clipboard needs macOS", stderr.String())
 	}
 	return string(out), nil
+}
+
+// utf8Env is env with the child's text encoding pinned to UTF-8.
+//
+// "byte for byte" is only true if the child agrees about the encoding:
+// pbpaste transcodes the pasteboard to the locale's, and takes the locale
+// from the environment it inherits. Measured on this Mac 2026-09-19 with
+// "héllo ✓" on a scratch pasteboard:
+//
+//	env -i                        h 8e llo 3f      MacRoman; ✓ became "?"
+//	env -i LC_ALL=UTF-8           h 8e llo 3f      same — see below
+//	env -i LC_CTYPE=UTF-8         h c3a9 llo e29c93  byte-exact
+//	env -i LC_ALL=C LC_CTYPE=UTF-8  h 8e llo 3f    LC_ALL wins, and loses
+//
+// So LC_CTYPE, not LC_ALL: macOS has no locale *named* "UTF-8", it only
+// accepts it as a charmap for LC_CTYPE, and setting LC_ALL to it fails
+// silently back to MacRoman. And LC_ALL has to be dropped rather than left
+// alone, because it outranks LC_CTYPE — a caller with LC_ALL=C in its
+// environment (a cron, a stripped ssh session) would otherwise get the
+// mangling back.
+func utf8Env(env []string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "LC_ALL=") || strings.HasPrefix(kv, "LC_CTYPE=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "LC_CTYPE=UTF-8")
 }
 
 // osascript runs a script given one line per -e, with args after it, where
@@ -173,13 +237,30 @@ func osascript(ctx context.Context, script []string, args ...string) (string, er
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		if errors.Is(err, exec.ErrNotFound) {
-			return "", errors.New("osascript not found: image paste needs macOS")
-		}
-		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return "", fmt.Errorf("osascript: %s", msg)
-		}
-		return "", fmt.Errorf("osascript: %w", err)
+		return "", execError(ctx, err, "osascript",
+			"osascript not found: image paste needs macOS", stderr.String())
 	}
 	return string(out), nil
+}
+
+// execError is what a failed host binary comes back as, in the one shape
+// both of cspace's clipboard binaries use.
+//
+// The context check is not cosmetic: a child killed at the deadline
+// surfaces as "signal: killed", which tells the operator nothing and which
+// no caller can errors.Is against. Reporting ctx.Err() instead lets the
+// footer say "deadline exceeded" and lets a test assert it. The stderr fold
+// is what carries osascript's own text — "Can't make some data into the
+// expected type. (-1700)" — past a naked exit status.
+func execError(ctx context.Context, err error, bin, missing, stderr string) error {
+	if errors.Is(err, exec.ErrNotFound) {
+		return errors.New(missing)
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("%s: %w", bin, ctxErr)
+	}
+	if msg := strings.TrimSpace(stderr); msg != "" {
+		return fmt.Errorf("%s: %s", bin, msg)
+	}
+	return fmt.Errorf("%s: %w", bin, err)
 }
