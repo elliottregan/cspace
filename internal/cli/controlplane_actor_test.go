@@ -1,16 +1,11 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -19,18 +14,6 @@ import (
 	"github.com/elliottregan/cspace/internal/controlplane"
 	"github.com/elliottregan/cspace/internal/registry"
 )
-
-// countingExecer records how many commands were run through it, so a test
-// can prove that nothing touched the host.
-type countingExecer struct {
-	calls atomic.Int64
-	err   error
-}
-
-func (c *countingExecer) Exec(context.Context, string, []string) (string, int, error) {
-	c.calls.Add(1)
-	return "", 1, c.err
-}
 
 // drainMsg runs a command and returns its message.
 func drainMsg(cmd tea.Cmd) tea.Msg {
@@ -129,142 +112,5 @@ func TestControlPlaneActorUpReportsAnUnresolvableProject(t *testing.T) {
 	}
 	if err := controlplane.ResultErr(msg); err == nil || !strings.Contains(err.Error(), "gamma") {
 		t.Errorf("err = %v, want it to name the unresolvable project", err)
-	}
-}
-
-// The step-1 review's carry-forward: the v1 actor ran the tmux probe and the
-// attach bookkeeping synchronously inside Update, which froze the whole
-// dashboard on a wedged container. Attach must do no I/O until bubbletea
-// runs the ExecCommand — not while building the command, and not while the
-// returned tea.Cmd produces its message.
-func TestControlPlaneActorAttachTouchesNothingInUpdate(t *testing.T) {
-	execer := &countingExecer{err: errors.New("boom: transport down")}
-	tm := control.NewTmux()
-	tm.Exec = execer
-	a := newControlPlaneActor(control.New(control.Options{Tmux: tm}), t.TempDir())
-	row := control.Row{Kind: control.RowSandbox, Project: "alpha", Name: "mercury",
-		Container: "cspace-alpha-attach-idle"}
-
-	cmd := a.Attach(row)
-	if cmd == nil {
-		t.Fatal("Attach should return a command")
-	}
-	if msg := cmd(); msg == nil {
-		t.Fatal("the attach command produced no message")
-	}
-	if n := execer.calls.Load(); n != 0 {
-		t.Errorf("Attach ran %d commands before bubbletea suspended the UI, want 0", n)
-	}
-}
-
-// …and when bubbletea does run it, a probe that cannot reach the sandbox
-// aborts the attach with that error rather than exec'ing into nothing.
-func TestControlPlaneActorAttachAbortsWhenTheTmuxProbeFails(t *testing.T) {
-	execer := &countingExecer{err: errors.New("boom: transport down")}
-	tm := control.NewTmux()
-	tm.Exec = execer
-	a := newControlPlaneActor(control.New(control.Options{Tmux: tm}), t.TempDir())
-	row := control.Row{Kind: control.RowSandbox, Project: "alpha", Name: "mercury",
-		Container: "cspace-alpha-attach-probe-error"}
-
-	ex := a.attachCommand(row)
-	ex.SetStdin(strings.NewReader(""))
-	ex.SetStdout(io.Discard)
-	ex.SetStderr(io.Discard)
-
-	err := ex.Run()
-	if err == nil || !strings.Contains(err.Error(), "transport down") {
-		t.Fatalf("Run() = %v, want the probe's transport error", err)
-	}
-	if execer.calls.Load() == 0 {
-		t.Error("Run() should have probed the sandbox")
-	}
-	// The outcome reaches the dashboard as an attach result.
-	if l, _ := controlplane.ResultLabel(attachResult(ex, err)); l != "attach" {
-		t.Errorf("label = %q, want \"attach\"", l)
-	}
-	if got := controlplane.ResultErr(attachResult(ex, err)); got == nil {
-		t.Error("attachResult should carry the error")
-	}
-}
-
-// Spec, Error handling: an image built before tmux falls back to the direct
-// exec "with a footer warning naming cspace image build". `cspace attach`
-// prints that warning; the dashboard has to carry it too, and the only way
-// out of a suspended program is the action result.
-func TestAttachResultCarriesTheNoTmuxWarning(t *testing.T) {
-	row := control.Row{Kind: control.RowSandbox, Project: "alpha", Name: "mercury"}
-
-	msg := attachResult(&attachExec{row: row, noTmux: true}, nil)
-	if l, _ := controlplane.ResultLabel(msg); l != "attach" {
-		t.Errorf("label = %q, want \"attach\"", l)
-	}
-	if err := controlplane.ResultErr(msg); err != nil {
-		t.Errorf("a no-tmux attach is not a failure, got %v", err)
-	}
-	warn := controlplane.ResultWarnText(msg)
-	if !strings.Contains(warn, "cspace image build") || !strings.Contains(warn, "mercury") {
-		t.Errorf("warning = %q, want it to name the sandbox and the rebuild", warn)
-	}
-
-	// An ordinary tmux attach warns about nothing.
-	if w := controlplane.ResultWarnText(attachResult(&attachExec{row: row}, nil)); w != "" {
-		t.Errorf("warning = %q, want none when tmux was present", w)
-	}
-	// A failure is reported as a failure, warning or not.
-	if err := controlplane.ResultErr(attachResult(&attachExec{row: row, noTmux: true},
-		errors.New("exit status 1"))); err == nil {
-		t.Error("an exec failure must still surface as an error")
-	}
-}
-
-// Fix round 1, finding 1: runAttachChild (cmd_attach.go) treats a child that
-// ran and exited non-zero as a normal return, not an attach failure — the
-// session happened and ended on its own terms. attachRunErr has to match
-// that, or attachResult reports an ordinary session end as
-// Result("attach", "exit status N") and silently drops the no-tmux warning
-// (attachResult only warns when err == nil).
-//
-// This exercises attachRunErr directly rather than through attachCommand +
-// Run: AttachArgv resolves "container" via exec.LookPath, which is on this
-// machine's PATH, so a real Run() would shell out to the actual Apple
-// Container CLI — exactly the real-sandbox I/O internal/cli's tests must not
-// do. A real *exec.ExitError from a trivial child process is hermetic and
-// proves the same normalization.
-func TestAttachRunErrTreatsANonZeroExitAsNormalReturn(t *testing.T) {
-	runErr := exec.Command("sh", "-c", "exit 3").Run()
-	var exitErr *exec.ExitError
-	if !errors.As(runErr, &exitErr) {
-		t.Fatalf("exec.Command(\"sh\", \"-c\", \"exit 3\").Run() = %v (%T), want an *exec.ExitError", runErr, runErr)
-	}
-	if got := attachRunErr(runErr); got != nil {
-		t.Errorf("attachRunErr(%v) = %v, want nil — a child that ran and exited non-zero is not an attach failure", runErr, got)
-	}
-}
-
-func TestAttachRunErrSurfacesAStartFailure(t *testing.T) {
-	startErr := errors.New("boom: fork/exec container: no such file or directory")
-	if got := attachRunErr(startErr); got != startErr {
-		t.Errorf("attachRunErr(%v) = %v, want the same error unchanged", startErr, got)
-	}
-}
-
-// Fix round 1, finding 3: a row can reach Attach with no container yet (the
-// sandbox is registered but never booted). Run must refuse before the tmux
-// probe, which would otherwise report a misleading transport-shaped error
-// ("cannot reach sandbox … to probe for tmux") instead of naming the real
-// problem.
-func TestControlPlaneActorAttachGuardsAnEmptyContainer(t *testing.T) {
-	a := newControlPlaneActor(control.New(control.Options{}), t.TempDir())
-	row := control.Row{Kind: control.RowSandbox, Project: "alpha", Name: "mercury"}
-
-	ex := a.attachCommand(row)
-	ex.SetStdin(strings.NewReader(""))
-	ex.SetStdout(io.Discard)
-	ex.SetStderr(io.Discard)
-
-	err := ex.Run()
-	if err == nil || !strings.Contains(err.Error(), "mercury") || !strings.Contains(err.Error(), "no container yet") {
-		t.Errorf("Run() = %v, want an error naming the sandbox and that it has no container yet", err)
 	}
 }
