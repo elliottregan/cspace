@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"charm.land/bubbles/v2/key"
@@ -38,6 +39,28 @@ func bindingFor(k KeyMap, action string) key.Binding {
 		return k.Quit
 	case ActionLeader:
 		return k.Leader
+	case ActionShell:
+		return k.Shell
+	case ActionSupervisor:
+		return k.Supervisor
+	case ActionFocusMain:
+		return k.FocusMain
+	case ActionFocusSidebar:
+		return k.FocusSidebar
+	case ActionNextTab:
+		return k.NextTab
+	case ActionPrevTab:
+		return k.PrevTab
+	case ActionNewPane:
+		return k.NewPane
+	case ActionClosePane:
+		return k.ClosePane
+	case ActionScroll:
+		return k.Scroll
+	case ActionLive:
+		return k.Live
+	case ActionPasteImage:
+		return k.PasteImage
 	}
 	return key.Binding{}
 }
@@ -134,6 +157,10 @@ func TestForRowDisablesWhatTheSelectionCannotDo(t *testing.T) {
 		{"interrupt an idle agent", idle, liveState{}, ActionInterrupt, false},
 		{"browser restart on a sandbox", working, liveState{}, ActionBrowserRestart, true},
 		{"browser restart on the browser row", browser, liveState{}, ActionBrowserRestart, true},
+		{"shell in a running sandbox", working, liveState{}, ActionShell, true},
+		{"shell in a stopped sandbox", stopped, liveState{}, ActionShell, false},
+		{"shell on the browser row", browser, liveState{}, ActionShell, false},
+		{"supervisor on the browser row", browser, liveState{}, ActionSupervisor, false},
 		// The fast ticker's fresher status wins over the snapshot's: a
 		// sandbox the snapshot saw idle but that is working now can be
 		// interrupted without waiting for the next snapshot.
@@ -233,5 +260,60 @@ func TestDefaultKeysRestatedKeepTheCuratedLabel(t *testing.T) {
 	k := NewKeyMap(map[string][]string{ActionMoveUp: {"up", "k"}})
 	if got := k.MoveUp.Help().Key; got != "↑/k" {
 		t.Errorf("moveUp label = %q, want ↑/k", got)
+	}
+}
+
+func TestPaneBindingsHaveDefaults(t *testing.T) {
+	k := NewKeyMap(nil)
+	want := map[string][]string{
+		ActionShell:        {"s"},
+		ActionSupervisor:   {"a"},
+		ActionFocusMain:    {"tab"},
+		ActionFocusSidebar: {"h"},
+		ActionNextTab:      {"n"},
+		ActionPrevTab:      {"p"},
+		ActionNewPane:      {"t"},
+		ActionClosePane:    {"x"},
+		ActionScroll:       {"["},
+		ActionLive:         {"g"},
+		ActionPasteImage:   {"v"},
+	}
+	for action, keys := range want {
+		if got := bindingFor(k, action).Keys(); !reflect.DeepEqual(got, keys) {
+			t.Errorf("%s keys = %v, want %v", action, got, keys)
+		}
+	}
+	// The leader must not be ctrl+b: Claude Code uses it to background a task.
+	for _, s := range k.Leader.Keys() {
+		if s == "ctrl+b" {
+			t.Error("the leader is ctrl+b, which Claude Code owns")
+		}
+	}
+}
+
+func TestLeaderHelpNamesTheSecondKeys(t *testing.T) {
+	k := NewKeyMap(nil)
+	var descs []string
+	for _, b := range k.LeaderHelp() {
+		descs = append(descs, b.Help().Key+" "+b.Help().Desc)
+	}
+	joined := strings.Join(descs, " · ")
+	for _, want := range []string{"h ", "n ", "t ", "x ", "[ ", "v "} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("leader help %q is missing %q", joined, want)
+		}
+	}
+}
+
+// The supervisor view reads events.ndjson from the host's session directory,
+// which outlives the container — so a sandbox stopped with
+// `cspace down --keep-state` still has a history worth opening, and
+// canSupervisor is deliberately wider than canAttach and canShell. This is
+// its own test rather than a row in the table below because the reason is
+// the whole point of the predicate.
+func TestSupervisorStaysOpenableOnAStoppedSandbox(t *testing.T) {
+	stopped := control.Row{Kind: control.RowSandbox, State: control.StateStopped}
+	if !NewKeyMap(nil).forRow(stopped, liveState{}).Supervisor.Enabled() {
+		t.Error("supervisor is off for a stopped sandbox")
 	}
 }
