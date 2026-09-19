@@ -270,7 +270,7 @@ func firstAliveEntry(ctx context.Context, entries []registry.Entry) (registry.En
 		if e.IP == "" {
 			continue
 		}
-		if e.State == "starting" {
+		if e.State == registry.StateStarting {
 			continue
 		}
 		if !containerExists(ctx, containerNameForEntry(e)) {
@@ -589,7 +589,9 @@ func credentialContainerChecks(ctx context.Context, project string, sel credenti
 }
 
 // ProbeSandboxes summarizes the sandbox registry: how many alive, how many
-// stuck booting, how many dead-but-still-registered.
+// stuck booting, how many dead-but-still-registered, and how many are kept
+// (stopped) — `cspace down --keep-state` entries, which have no container
+// on purpose and must not be counted or advised-upon as dead.
 func ProbeSandboxes(ctx context.Context) ProbeResult {
 	r := ProbeResult{Subsystem: "Sandboxes"}
 
@@ -624,17 +626,26 @@ func ProbeSandboxes(ctx context.Context) ProbeResult {
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	var alive, stuckBooting, deadRegistered []string
+	var alive, stuckBooting, deadRegistered, keptStopped []string
 	for _, e := range entries {
 		name := e.Name
 		if e.Project != "" {
 			name = e.Project + ":" + e.Name
 		}
 		if !containerExists(probeCtx, containerNameForEntry(e)) {
-			deadRegistered = append(deadRegistered, name)
+			if e.State == registry.StateStopped {
+				// Not stale: `cspace down --keep-state` removed the
+				// container and kept the entry on purpose, the same as
+				// `cspace registry prune` treats it. Reported separately so
+				// this never gets folded into "dead registry entries" and
+				// advised toward a prune that deliberately leaves it alone.
+				keptStopped = append(keptStopped, name)
+			} else {
+				deadRegistered = append(deadRegistered, name)
+			}
 			continue
 		}
-		if e.State == "starting" {
+		if e.State == registry.StateStarting {
 			stuckBooting = append(stuckBooting, name)
 			continue
 		}
@@ -671,6 +682,19 @@ func ProbeSandboxes(ctx context.Context) ProbeResult {
 			Title:  fmt.Sprintf("%d dead registry entries%s", len(deadRegistered), bracketed(deadRegistered)),
 			Details: []string{
 				"run `cspace registry prune` to remove",
+			},
+		})
+	}
+
+	// Kept (stopped) — informational, not a problem. These are `cspace down
+	// --keep-state` entries; `cspace registry prune` deliberately leaves
+	// them alone, so this is never a warning.
+	if len(keptStopped) > 0 {
+		r.Checks = append(r.Checks, ProbeCheck{
+			Status: ProbePass,
+			Title:  fmt.Sprintf("%d kept (stopped) sandboxes%s", len(keptStopped), bracketed(keptStopped)),
+			Details: []string{
+				"cspace up <name> boots one, cspace down <name> purges it",
 			},
 		})
 	}

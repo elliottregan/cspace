@@ -382,6 +382,7 @@ func TestValidateSandboxName(t *testing.T) {
 		errHas  string // substring expected in error message when wantErr is true
 	}{
 		{"browser reserved", "test-project", "browser", true, "browser.test-project.cspace.test"},
+		{"Browser reserved case-insensitively", "test-project", "Browser", true, "browser.test-project.cspace.test"},
 		{"issue-42 allowed", "test-project", "issue-42", false, ""},
 		{"mercury allowed", "test-project", "mercury", false, ""},
 		{"custom-name allowed", "test-project", "custom-name", false, ""},
@@ -657,5 +658,33 @@ func TestWaitSupervisorHealthCtxCancelNamesPhase(t *testing.T) {
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("expected the phase-naming error to still satisfy errors.Is(context.DeadlineExceeded), got: %v", err)
+	}
+}
+
+func TestValidateSandboxNameShape(t *testing.T) {
+	good := []string{"mercury", "issue-42", "agent_alice", "a", "A1", strings.Repeat("x", 63)}
+	for _, name := range good {
+		if err := validateSandboxName("demo", name); err != nil {
+			t.Errorf("validateSandboxName(%q) = %v, want nil", name, err)
+		}
+	}
+
+	bad := []string{
+		"",                      // nothing to name
+		"..",                    // the traversal this exists to stop
+		"../../etc",             //
+		"a/b",                   // a separator would escape the project dir
+		"a\\b",                  //
+		".hidden",               // a leading dot is a relative-path prefix
+		"-lead",                 // a leading dash reads as a flag
+		"has space",             //
+		"dotted.name",           // a name is one DNS label
+		"browser",               // reserved for the shared sidecar
+		strings.Repeat("x", 64), // longer than a DNS label
+	}
+	for _, name := range bad {
+		if err := validateSandboxName("demo", name); err == nil {
+			t.Errorf("validateSandboxName(%q) = nil, want an error", name)
+		}
 	}
 }

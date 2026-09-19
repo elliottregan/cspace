@@ -36,13 +36,30 @@ type Entry struct {
 	// guessing where the project lives. Empty on entries written before
 	// this field existed; readers fall back rather than fail.
 	ProjectRoot string `json:"project_root,omitempty"`
-	// State is the entry-internal lifecycle: "starting" while cspace up is
-	// still booting the sandbox, "ready" once /health responded 200. Empty
+	// State is the entry-internal lifecycle; see the State* constants. Empty
 	// State on legacy entries (written before this field existed) is treated
-	// as "ready" by callers — those sandboxes were already past boot when
+	// as StateReady by callers — those sandboxes were already past boot when
 	// they were registered under the old single-write flow.
 	State string `json:"state,omitempty"`
 }
+
+// The words Entry.State can carry. They are compared across four packages —
+// registry, cli, control and the daemon's own DNS and idle paths — and a
+// disagreement between two of them is invisible until a sandbox is in the
+// one state the other package did not spell the same way, so they are
+// symbols rather than literals. Untyped on purpose: State is a plain string
+// field, written by anything that builds an Entry.
+const (
+	// StateStarting: cspace up is still booting this sandbox.
+	StateStarting = "starting"
+	// StateReady: the supervisor's /health responded 200.
+	StateReady = "ready"
+	// StateStopped: nothing is running, but the entry is kept on purpose —
+	// `cspace down --keep-state` preserves the clone, sessions and volumes
+	// and leaves this row behind so the same name can be resumed. Callers
+	// that count or reap entries must treat it as neither live nor stale.
+	StateStopped = "stopped"
+)
 
 type Registry struct {
 	Path string
@@ -142,7 +159,45 @@ func (r *Registry) MarkReady(project, name string) error {
 		if !ok {
 			return nil
 		}
-		e.State = "ready"
+		e.State = StateReady
+		m[key(project, name)] = e
+		return r.save(m)
+	})
+}
+
+// MarkStopped transitions an existing entry's State to StateStopped: the
+// sandbox is registered and resumable, but nothing is running. `cspace down
+// --keep-state` uses it in place of Unregister, so the sandbox keeps its row
+// in the dashboard — a row the boot action is offered on — instead of
+// vanishing. No-op if the entry is missing, for the same reason MarkReady is.
+//
+// The state matters as well as the entry: Correlate reads StateStarting as
+// booting, so a sandbox torn down mid-boot would otherwise show ◐ forever.
+//
+// It also clears IP and ControlURL, because both describe a container that
+// no longer exists. The IP is the load-bearing one: the daemon's DNS
+// handler skips entries with no IP, and without this it would keep
+// answering <name>.<project>.cspace.test with the address the sandbox had
+// before teardown — an address vmnet is free to hand to a different
+// container, so the name can resolve to a stranger for the host, for
+// sibling sandboxes and for a browser sidecar navigating to
+// $CSPACE_WORKSPACE_HOST. Before kept entries existed the row was deleted
+// and the name simply NXDOMAIN'd; clearing the IP restores that. Nothing
+// reads either field from a stopped entry: the dashboard takes IP from
+// `container ls`, control.Snapshot skips an empty ControlURL, and
+// `cspace up` re-registers both when the sandbox boots again.
+func (r *Registry) MarkStopped(project, name string) error {
+	return r.withLock(func() error {
+		m, err := r.load()
+		if err != nil {
+			return err
+		}
+		e, ok := m[key(project, name)]
+		if !ok {
+			return nil
+		}
+		e.State = StateStopped
+		e.IP, e.ControlURL = "", ""
 		m[key(project, name)] = e
 		return r.save(m)
 	})
@@ -193,7 +248,8 @@ func (r *Registry) List() ([]Entry, error) {
 }
 
 // CountForProject returns how many registered sandboxes belong to project.
-// Counts all states (a "starting" sibling still needs the shared browser).
+// Counts all states (a StateStarting sibling still needs the shared browser,
+// and a StateStopped one still holds the name).
 // Snapshot semantics: built on List(), so it can race a concurrent
 // Register/Unregister — callers that need a teardown decision should
 // Unregister first, then count.

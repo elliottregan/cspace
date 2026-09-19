@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -700,7 +701,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				StartedAt:        startedAt,
 				BrowserContainer: browserContainer,
 				ProjectRoot:      projectRoot,
-				State:            "starting",
+				State:            registry.StateStarting,
 			}); regErr != nil {
 				err = fmt.Errorf("register entry: %w", regErr)
 				return err
@@ -773,7 +774,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 
 			ctlURL := fmt.Sprintf("http://%s:%d", ip, supervisorPort)
 
-			// Re-register with the real ControlURL/IP. State stays "starting"
+			// Re-register with the real ControlURL/IP. State stays StateStarting
 			// until /health responds 200 below.
 			if regErr := r.Register(registry.Entry{
 				Project:          project,
@@ -784,7 +785,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				StartedAt:        startedAt,
 				BrowserContainer: browserContainer,
 				ProjectRoot:      projectRoot,
-				State:            "starting",
+				State:            registry.StateStarting,
 			}); regErr != nil {
 				_ = a.Stop(context.Background(), containerName)
 				err = regErr
@@ -1273,16 +1274,39 @@ func pickPlanetName(project string) (string, error) {
 	return "", fmt.Errorf("all 8 planet names are in use for project %q; pass an explicit name (e.g. `cspace up issue-42`)", project)
 }
 
-// validateSandboxName checks if an explicit sandbox name is allowed. The name
-// "browser" is reserved for the shared browser sidecar container, which uses
-// the naming pattern cspace-<project>-browser and is referenced as
-// browser.<project>.cspace.test in DNS. Returns an error for "browser";
-// nil otherwise.
+// sandboxNamePattern is the shape a sandbox name must have: one label of
+// letters, digits, underscores and dashes, starting with a letter or digit,
+// at most 63 characters.
+//
+// It is deliberately narrower than "a string that happens to work". A sandbox
+// name is joined into host paths that `cspace down` then removes outright
+// (~/.cspace/clones/<project>/<name>, ~/.cspace/sessions/<project>/<name>),
+// it becomes part of a container name, and it becomes a DNS label in
+// <sandbox>.<project>.cspace.test. Dots are rejected for the last of those
+// reasons: a dotted name would silently become a sub-subdomain nothing
+// resolves.
+var sandboxNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`)
+
+// validateSandboxName rejects a name cspace will not take.
+//
+// Every name reaching `down` today comes off a registry entry or a
+// `container ls` row, so the shape has never been in question. The check is
+// here because `down`'s callers are no longer only cspace's own: the
+// control plane grew a pane picker in rollout step 4, and the next thing
+// that grows a text field is where a typed name would first reach
+// wipeSandboxState's two os.RemoveAlls.
+// (cs-finding:2026-09-18-sandbox-names-are-not-shape-validated-before-path-joins)
 func validateSandboxName(project, name string) error {
-	if name == "browser" {
+	if strings.EqualFold(name, "browser") {
 		return fmt.Errorf(
 			`"browser" is reserved for the shared browser sidecar (browser.%s.cspace.test)`,
 			project)
+	}
+	if !sandboxNamePattern.MatchString(name) {
+		return fmt.Errorf(
+			"invalid sandbox name %q: use letters, digits, dashes and underscores only, "+
+				"starting with a letter or digit, at most 63 characters",
+			name)
 	}
 	return nil
 }

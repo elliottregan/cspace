@@ -2,7 +2,7 @@
 title: sandbox names are not shape-validated before they're joined into teardown paths
 date: 2026-09-18
 kind: finding
-status: open
+status: resolved
 category: bug
 tags: control-plane, cli, down, security
 ---
@@ -60,3 +60,18 @@ name.
 Filed from the control-plane-3-dashboard final review, carried forward from
 step 2 of the plan's Global Constraints, which deferred this validation and
 required a finding file to record it before rollout step 4.
+
+### 2026-09-18 — status: resolved
+`validateSandboxName` now enforces a single-label shape (letters, digits,
+dashes, underscores; no dots, no separators, no leading dot or dash; at most
+63 characters) and `cspace down` calls it for every name it is about to tear
+down, `--all` included. The exposure closed is `wipeSandboxState`'s two
+`os.RemoveAll`s.
+
+To be accurate about the trigger: nothing in rollout step 4 actually types a
+sandbox name into these paths. Its new-pane picker chooses among four fixed
+pane kinds and its boot action passes a registry-derived row, so every name
+still arrives from the registry or from `container ls`. The check lands
+*ahead* of a UI that can type one rather than because of one — the step-3
+deferral's premise was that no such UI would exist, and step 4 is where the
+dashboard stopped being a pure reader of its own row set.

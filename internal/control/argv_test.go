@@ -1,6 +1,7 @@
 package control
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -260,5 +261,47 @@ func TestApplyTerminalEnvHeadlessBootAddsNothing(t *testing.T) {
 
 	if len(env) != 0 {
 		t.Errorf("env = %v, want it untouched", env)
+	}
+}
+
+func TestShellAttachMirrorsClaudeAttach(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("COLORTERM", "truecolor")
+
+	spec := ShellAttach("cspace-demo-mercury", true)
+	if spec.Session != SessionShell {
+		t.Errorf("session = %q, want %q", spec.Session, SessionShell)
+	}
+	if got, want := spec.Command, []string{"bash", "-l"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("command = %v, want %v", got, want)
+	}
+	if spec.TERM != "xterm-256color" || spec.COLORTERM != "truecolor" {
+		t.Errorf("terminal env = %q/%q, want the host's", spec.TERM, spec.COLORTERM)
+	}
+
+	// Without tmux the session is empty, which AttachArgv reads as "exec the
+	// command directly" — the fallback for an image built before tmux.
+	if got := ShellAttach("cspace-demo-mercury", false).Session; got != "" {
+		t.Errorf("no-tmux session = %q, want empty", got)
+	}
+
+	_, argv, err := AttachArgv(spec)
+	if err != nil {
+		// container may not be on PATH in CI, exactly as TestAttachArgv
+		// above already handles. The spec assertions are unconditional; only
+		// the argv comparison needs the binary resolved.
+		t.Skipf("container CLI not resolvable: %v", err)
+	}
+	want := []string{
+		"container", "exec", "-it",
+		"-e", "COLORTERM=truecolor",
+		"-e", "TERM=xterm-256color",
+		"cspace-demo-mercury",
+		"tmux", "-f", "/usr/local/etc/cspace-tmux.conf",
+		"new-session", "-A", "-s", "cspace-shell", "-c", "/workspace",
+		"bash", "-l",
+	}
+	if !reflect.DeepEqual(argv, want) {
+		t.Errorf("argv =\n%v\nwant\n%v", argv, want)
 	}
 }

@@ -43,6 +43,27 @@ func ClaudeAttach(container string, tmux bool) AttachSpec {
 	return spec
 }
 
+// ShellAttach returns the spec for an interactive login shell inside a
+// sandbox — the control plane's shell pane, and the sibling of ClaudeAttach.
+//
+// `bash -l` because the sandbox image's user shell is /bin/bash and a login
+// shell is what reads the profile the entrypoint seeds. The session is
+// SessionShell, not SessionClaude: one tmux session per pane kind means a
+// shell pane and a Claude pane on one sandbox never contend for a current
+// window, and closing the shell never touches the agent's screen.
+func ShellAttach(container string, tmux bool) AttachSpec {
+	spec := AttachSpec{
+		Container: container,
+		Command:   []string{"bash", "-l"},
+		TERM:      os.Getenv("TERM"),
+		COLORTERM: os.Getenv("COLORTERM"),
+	}
+	if tmux {
+		spec.Session = SessionShell
+	}
+	return spec
+}
+
 // AttachArgv resolves the container binary and builds the exec argv. argv[0]
 // is the literal "container" per exec convention, so callers running it as a
 // child pass argv[1:].

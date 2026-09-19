@@ -24,8 +24,9 @@ its control URL, IP, token, and (when applicable) browser-sidecar name.
 
 Stale entries accumulate when cspace down doesn't run cleanly (Ctrl-C
 mid-teardown, host reboot, externally stopped containers). These subcommands
-inspect the registry against live container state and clean up entries whose
-containers are gone.`,
+inspect the registry against live container state: prune removes stale
+entries and reports, but keeps, ones stopped on purpose with
+` + "`cspace down --keep-state`" + `.`,
 	}
 	parent.AddCommand(newRegistryListCmd())
 	parent.AddCommand(newRegistryPruneCmd())
@@ -47,6 +48,14 @@ func newRegistryPruneCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "prune",
 		Short: "Remove registry entries whose containers no longer exist",
+		Long: `Remove registry entries whose containers no longer exist.
+
+Entries in state ` + "`stopped`" + ` are KEPT, not pruned. ` + "`cspace down --keep-state`" + `
+removes the container and leaves the entry behind on purpose, so the same
+sandbox name can be resumed later with its clone, sessions and volumes
+intact — a kept entry is the opposite of a stale one, even though neither
+has a container. They are reported as ` + "`kept (stopped)`" + ` and left alone; to
+purge one for good, run ` + "`cspace down <name>`" + ` (without --keep-state).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runRegistryPrune(cmd.OutOrStdout(), dryRun)
 		},
@@ -54,6 +63,13 @@ func newRegistryPruneCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "report what would be removed without changing the registry")
 	return cmd
 }
+
+// containerAlive is containerExists behind a variable, for the registry
+// commands only. Their liveness decisions are the whole subject of their
+// tests — a kept entry must survive a prune that a stale one does not — and
+// without the seam a test would have to shell out to `container inspect`
+// against whatever the developer happens to have booted.
+var containerAlive = containerExists
 
 // containerExists reports whether a container with the given name exists.
 //
@@ -110,14 +126,19 @@ func runRegistryList(out io.Writer) error {
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "PROJECT\tSANDBOX\tIP\tBROWSER\tSTATE\tLIFECYCLE\tSTARTED")
 	for _, e := range entries {
-		alive := containerExists(ctx, containerNameForEntry(e))
+		alive := containerAlive(ctx, containerNameForEntry(e))
 		lifecycleState := "dead"
-		if alive {
+		switch {
+		case alive:
 			lifecycleState = "alive"
+		case e.State == registry.StateStopped:
+			// Not stale: `cspace down --keep-state` removed the container
+			// and kept the entry deliberately. prune says the same word.
+			lifecycleState = "kept (stopped)"
 		}
 		browserCol := "—"
 		if e.BrowserContainer != "" {
-			if containerExists(ctx, e.BrowserContainer) {
+			if containerAlive(ctx, e.BrowserContainer) {
 				browserCol = "alive"
 			} else {
 				browserCol = "dead"
@@ -131,7 +152,7 @@ func runRegistryList(out io.Writer) error {
 		// under the old single-write flow.
 		entryState := e.State
 		if entryState == "" {
-			entryState = "ready"
+			entryState = registry.StateReady
 		}
 		started := "—"
 		if !e.StartedAt.IsZero() {
@@ -175,13 +196,23 @@ func runRegistryPrune(out io.Writer, dryRun bool) error {
 	pruneCount := 0
 	clearedBrowserCount := 0
 	stuckBootingCount := 0
+	keptCount := 0
 	// Track every project that had an entry this run so we can check for
 	// orphaned shared browser singletons after the per-entry loop.
 	seenProjects := map[string]struct{}{}
 	for _, e := range entries {
 		seenProjects[e.Project] = struct{}{}
-		sandboxAlive := containerExists(ctx, containerNameForEntry(e))
+		sandboxAlive := containerAlive(ctx, containerNameForEntry(e))
 		switch {
+		case !sandboxAlive && e.State == registry.StateStopped:
+			// A kept entry, not a stale one. `cspace down --keep-state`
+			// removed the container and left this row behind on purpose so
+			// the sandbox can be resumed under the same name; removing it
+			// here would undo exactly that, and `cspace down --all`'s own
+			// skip message points operators at this command. Reported, not
+			// touched. `cspace down <name>` is what purges one.
+			_, _ = fmt.Fprintf(out, "kept (stopped): %s:%s\n", e.Project, e.Name)
+			keptCount++
 		case !sandboxAlive:
 			// Dead container — remove the entry. This catches both
 			// state=ready entries whose sandbox went away, and orphaned
@@ -195,7 +226,7 @@ func runRegistryPrune(out io.Writer, dryRun bool) error {
 				_, _ = fmt.Fprintf(out, "removed: %s:%s\n", e.Project, e.Name)
 			}
 			pruneCount++
-		case e.State == "starting":
+		case e.State == registry.StateStarting:
 			// Container alive but the entry never reached state=ready.
 			// Boot might still be in progress, or cspace up may have
 			// died after Run returned but before /health responded. Don't
@@ -232,16 +263,23 @@ func runRegistryPrune(out io.Writer, dryRun bool) error {
 	// container still exists, stop it now.
 	stoppedSingletonCount := 0
 	for project := range seenProjects {
-		remaining, err := r.CountForProject(project)
-		if err != nil {
-			_, _ = fmt.Fprintf(out, "warning: registry count for %s: %v\n", project, err)
-			continue
+		// liveEntryCount, not r.CountForProject: CountForProject counts
+		// every state, so one entry kept stopped by `cspace down
+		// --keep-state` would pin the browser sidecar alive forever even
+		// though nothing is left running that could use it. entries is
+		// already the full List() read from the top of this function, so
+		// filter it in place rather than re-reading the registry.
+		var projectEntries []registry.Entry
+		for _, e := range entries {
+			if e.Project == project {
+				projectEntries = append(projectEntries, e)
+			}
 		}
-		if remaining > 0 {
+		if liveEntryCount(projectEntries) > 0 {
 			continue
 		}
 		singletonName := browserSingletonName(project)
-		if !containerExists(ctx, singletonName) {
+		if !containerAlive(ctx, singletonName) {
 			continue
 		}
 		if dryRun {
@@ -255,6 +293,10 @@ func runRegistryPrune(out io.Writer, dryRun bool) error {
 
 	switch {
 	case pruneCount == 0 && clearedBrowserCount == 0 && stuckBootingCount == 0 && stoppedSingletonCount == 0:
+		if keptCount > 0 {
+			_, _ = fmt.Fprintf(out, "no dead entries to prune (%d kept)\n", keptCount)
+			break
+		}
 		_, _ = fmt.Fprintln(out, "no dead entries to prune")
 	case pruneCount == 0 && clearedBrowserCount == 0:
 		// Only stuck-booting entries — nothing to prune, but the warnings

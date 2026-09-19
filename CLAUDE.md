@@ -33,6 +33,8 @@ make test         # go tests (runs sync-embedded first)
 make vet
 make lint
 make test-scripts # bash tests (scripts/*.test.sh, lib/runtime/scripts/*.test.sh)
+make test-race    # -race over internal/pane only; NOT part of make check
+python3 scripts/tui-smoke/smoke.py   # drive `cspace tui` under a pty (Mac, by hand)
 make check        # fmt-check + vet + lint + test + test-scripts
 cspace image build  # rebuild the sandbox image after Dockerfile/scripts changes
 
@@ -44,6 +46,13 @@ bun run typecheck                            # supervisor typecheck — NOT run 
 **Typecheck the supervisor after any SDK bump.** `bun test` and `bun build.ts` both use Bun's transpiler, which strips types without checking them — so the supervisor can compile and pass all 45 tests with broken types. Its tests deliberately type the SDK query handle structurally (`routes.ts`) so they run without a real SDK, which means an upstream signature change is invisible to them. `bun run typecheck` (`tsc --noEmit`) is the only thing that catches it; `@anthropic-ai/claude-agent-sdk` 0.3.x widening `Query.interrupt()`'s resolved value was caught exactly this way and nothing else flagged it. It is not wired into `make check`, which covers the Go side only — run it by hand after touching the supervisor or its deps.
 
 **Always build via `make`** (or run `make sync-embedded` first). `internal/assets/embedded/` is gitignored and populated from `lib/` by `make sync-embedded`; a bare `go build`/`go install` on a clean checkout embeds an empty asset tree and fails only at runtime.
+
+**`scripts/tui-smoke/` drives the dashboard under a pty.** `tuilib.py` is a
+stdlib-only Python harness — a small VT interpreter plus a pty fork that
+answers the terminal queries Bubble Tea makes at startup — so a change to
+`cspace tui` can be checked against the screen a person would have seen, with
+captures. `smoke.py` is the one-shot version. Neither is run by `make check`:
+they start the real binary against the real host.
 
 ## Releases
 
