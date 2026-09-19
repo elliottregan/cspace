@@ -32,6 +32,16 @@ const (
 
 	// killGrace is how long a child gets between the hangup and the kill.
 	killGrace = 2 * time.Second
+
+	// maxDimension is the largest screen dimension a pty can carry:
+	// TIOCSWINSZ's ws_col and ws_row are both uint16, and so are
+	// creack/pty's Winsize fields. An int that does not fit wraps silently
+	// on the conversion — 70000 columns becomes 4464 — so every size this
+	// package converts is clamped here first. Validation cannot reject the
+	// oversize case instead: the caller is the UI, sizing a pane from a
+	// window, and a refusal there would be a blank pane rather than a
+	// wide one.
+	maxDimension = 65535
 )
 
 // Command is the child one pane runs.
@@ -123,6 +133,11 @@ type Pane struct {
 	// Guarded by mu because shutdown's goroutine and the waiter's are
 	// different goroutines.
 	closing bool
+	// dirtyClosed records that the dirty channel has been closed, which is
+	// Dirty's terminal state: see Dirty and closeDirty. Guarded by mu
+	// because markDirty runs on the pump's and the waiter's goroutines
+	// while shutdown's runs on the closer's.
+	dirtyClosed bool
 
 	closeOnce sync.Once
 	closeErr  error
@@ -156,6 +171,9 @@ func Open(cmd Command, cols, rows int) (*Pane, error) {
 	if err := validateOpen(cmd, cols, rows); err != nil {
 		return nil, err
 	}
+	// Clamp before the emulator is built as well as before the pty is
+	// sized: x/vt allocates its screen from these two numbers.
+	cols, rows = clampSize(cols, rows)
 	// Validate before building the emulator: x/vt's constructor allocates a
 	// fixed 4 MiB parser buffer eagerly, and a bad Command or size should
 	// fail before paying for it.
@@ -174,6 +192,18 @@ func validateOpen(cmd Command, cols, rows int) error {
 	return nil
 }
 
+// clampSize holds a screen size inside what a pty can express. See
+// maxDimension: everything below converts these to uint16.
+func clampSize(cols, rows int) (int, int) {
+	if cols > maxDimension {
+		cols = maxDimension
+	}
+	if rows > maxDimension {
+		rows = maxDimension
+	}
+	return cols, rows
+}
+
 // open is Open with the emulator injected, so a replacement implementation
 // can be driven through the whole engine by a test.
 func open(cmd Command, cols, rows int, emu Emulator) (*Pane, error) {
@@ -181,6 +211,8 @@ func open(cmd Command, cols, rows int, emu Emulator) (*Pane, error) {
 		_ = emu.Close()
 		return nil, err
 	}
+	// Re-clamped for a caller that builds its own emulator and skips Open.
+	cols, rows = clampSize(cols, rows)
 
 	path := cmd.Path
 	if !strings.ContainsRune(path, os.PathSeparator) {
@@ -228,6 +260,14 @@ func open(cmd Command, cols, rows int, emu Emulator) (*Pane, error) {
 // slot: a burst of writes between two reads collapses into one signal, which
 // is the coalescing the design asks for. Reading it is how the control plane
 // schedules a redraw.
+//
+// The channel is CLOSED once the pane is closed; a receive then returns
+// immediately, forever — check Exited. That terminal state is what keeps a
+// caller whose redraw loop parks on `<-p.Dirty()` from parking on it for the
+// life of the process once the pane behind it is gone: after Close the pump
+// and the waiter have both exited, so nothing would ever signal the channel
+// again. A receive that returns from a closed Dirty means "look at this pane
+// once more, and stop waiting on it", not "there is new output".
 func (p *Pane) Dirty() <-chan struct{} { return p.dirty }
 
 // SendKey encodes a keypress and queues it for the child.
@@ -255,6 +295,7 @@ func (p *Pane) Resize(cols, rows int) error {
 	if cols <= 0 || rows <= 0 {
 		return fmt.Errorf("pane: bad size %dx%d", cols, rows)
 	}
+	cols, rows = clampSize(cols, rows)
 	p.emu.Resize(cols, rows)
 	p.markDirty()
 	return setWinsize(p.ptmx, cols, rows)
@@ -306,6 +347,15 @@ func (p *Pane) ScrollbackLen() int { return p.emu.Scrollback().Len() }
 // live screen: offset 0 is the live screen itself, and the offset is clamped
 // to the history that exists, so an over-scroll shows the oldest lines rather
 // than blank ones.
+//
+// A caller that asks for more rows than history + screen actually hold gets
+// the shortfall as empty lines appended at the BOTTOM, so the returned block
+// is always exactly rows lines. That only happens on a pane whose child has
+// not yet filled its own screen — the emulator renders a full screen once it
+// has one — and the alternative, padding at the top to anchor content to the
+// bottom the way a terminal viewport does, would push the live cursor row
+// away from where Cursor() reports it. Content-at-the-top is the shape this
+// package promises.
 func (p *Pane) ScrollbackView(offset, rows int) string {
 	if rows <= 0 {
 		return ""
@@ -430,6 +480,11 @@ func (p *Pane) Close(ctx context.Context) error {
 }
 
 func (p *Pane) shutdown(ctx context.Context) error {
+	// Every return below — the normal one and each of the four
+	// give-up-on-a-join ones — ends with Dirty in its terminal state, so a
+	// caller parked on it unparks and can then see Exited. See Dirty.
+	defer p.closeDirty()
+
 	// Stop accepting new input. closing is set before endChild ever signals
 	// the child, so the waiter can tell a death Close itself caused apart
 	// from a foreign one — see waiter's doc.
@@ -486,12 +541,15 @@ func (p *Pane) shutdown(ctx context.Context) error {
 // either, so a pump still parked in Read keeps both alive regardless. What
 // it DOES buy immediately: the drain goroutine exits, a later Resize fails
 // fast, and SendKey/Paste both drop instead of blocking — see Close's own
-// doc for the detail. Errors are discarded deliberately — there is nothing
-// left to do differently with them once Close has already decided to give
-// up.
+// doc for the detail. It also puts Dirty into its terminal state, for the
+// same reason shutdown's own deferred closeDirty does: a caller parked on
+// Dirty has to unpark even when the teardown gave up. Errors are discarded
+// deliberately — there is nothing left to do differently with them once
+// Close has already decided to give up.
 func (p *Pane) closeDescriptors() {
 	_ = p.ptmx.Close()
 	_ = p.emu.Close()
+	p.closeDirty()
 }
 
 // join waits for one teardown goroutine to finish, or for ctx to expire
@@ -676,9 +734,33 @@ func (p *Pane) enqueue(b []byte) {
 	}
 }
 
+// markDirty coalesces a redraw request into the channel's single slot, and
+// does nothing at all once Dirty has reached its terminal state — sending on
+// a closed channel panics, and the pump's final markDirty can race
+// shutdown's closeDirty on the timeout paths, where the pump is still parked
+// when Close gives up on it.
 func (p *Pane) markDirty() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.dirtyClosed {
+		return
+	}
 	select {
 	case p.dirty <- struct{}{}:
 	default:
 	}
+}
+
+// closeDirty puts Dirty into its terminal state, exactly once: see Dirty.
+// Every path out of shutdown runs it, including the ones that give up on a
+// join, because a caller parked on Dirty has to be released whether or not
+// the teardown completed.
+func (p *Pane) closeDirty() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.dirtyClosed {
+		return
+	}
+	p.dirtyClosed = true
+	close(p.dirty)
 }
