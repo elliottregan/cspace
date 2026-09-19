@@ -934,6 +934,49 @@ func TestSweepRecognizesTmuxsOwnEmptyAnswerOnANonZeroExit(t *testing.T) {
 	}
 }
 
+// The same answer in the wording the sandbox image's tmux actually uses.
+// Debian ships tmux 3.3a, which says `error connecting to <socket> (<errno>)`
+// where 3.4+ says "no server running on <socket>" — so in a freshly booted
+// sandbox, where nothing has attached yet and there is no server at all,
+// EVERY list-clients answers in this older form. Task 8's live verification
+// found the sweep reading it as "the exec never reached tmux" and reporting
+// "startup sweep: 1 error" instead of reaping the planted record.
+func TestSweepRecognizesTmux33sNoServerWording(t *testing.T) {
+	home := t.TempDir()
+	dir := ControlPlaneDir(home, "demo", "neptune")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	path := filepath.Join(dir, "cspace-claude.dev-ttys999.json")
+	if err := os.WriteFile(path,
+		[]byte(`{"session":"cspace-claude","tty":"/dev/ttys999","pid":108}`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	f := &fakeExec{reply: func(int, []string) (string, int, error) {
+		return "error connecting to /tmp/tmux-1000/default (No such file or directory)", 1, nil
+	}}
+	c := New(Options{
+		Home: home,
+		Containers: &fakeContainers{out: []applecontainer.ContainerSummary{
+			{Name: "cspace-demo-neptune", State: "running"},
+		}},
+		Tmux:         testTmux(f),
+		ProcessAlive: func(int) bool { return false },
+	})
+
+	res, err := c.SweepClientRecords(context.Background())
+	if err != nil {
+		t.Fatalf("SweepClientRecords: %v", err)
+	}
+	if res.Deleted != 1 || res.Errors != 0 {
+		t.Errorf("deleted = %d, errors = %d, want 1 and 0 — tmux 3.3a saying there is no server IS an answer",
+			res.Deleted, res.Errors)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Error("the stale record survived tmux's own no-server answer")
+	}
+}
+
 // Fix round 1, Important 2: the sandbox directory lock (lockAttach) closes
 // the window in which a concurrent BeginAttach could write a fresh record
 // over this one's path, but not the window in which the dead pid this
