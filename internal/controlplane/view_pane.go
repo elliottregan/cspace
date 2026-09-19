@@ -7,7 +7,18 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// renderTabs draws the tabs row: one tab per open pane, titled
+// tabsPlan is the tabs row before it is a string: the row itself, and where
+// each tab's label landed. The columns are relative to the row's own start,
+// so the caller adds the sidebar's width to get screen columns.
+//
+// One function decides both, because a click that lands on the wrong tab is
+// exactly what two copies of the elision arithmetic would produce.
+type tabsPlan struct {
+	row   string
+	spans []tabSpan
+}
+
+// planTabs lays out the tabs row: one tab per open pane, titled
 // "<project>/<sandbox> · <kind>".
 //
 // active says whether the keyboard is pointed at the main area. It is the
@@ -26,9 +37,12 @@ import (
 // Which side gives way is decided by distance from the focused tab, so its
 // neighbours — the ones n/p reaches next — are the last to go, and a tie
 // goes to the left, which is the documented default.
-func renderTabs(tabs []*tab, focused, width int, active bool) string {
+//
+// The elision markers get no span: a click on "+2" does nothing, because
+// "+2" is not a tab and there is no sensible tab for it to mean.
+func planTabs(tabs []*tab, focused, width int, active bool) tabsPlan {
 	if len(tabs) == 0 {
-		return ""
+		return tabsPlan{}
 	}
 	focusedStyle := styleTabFocused
 	if active {
@@ -48,7 +62,10 @@ func renderTabs(tabs []*tab, focused, width int, active bool) string {
 		left, right := tabsElided(from, true), tabsElided(len(tabs)-to, false)
 		row := strings.Join(rendered[from:to], "")
 		if ansi.StringWidth(left)+ansi.StringWidth(row)+ansi.StringWidth(right) <= width {
-			return left + row + right
+			return tabsPlan{
+				row:   left + row + right,
+				spans: tabSpansFor(rendered, from, to, ansi.StringWidth(left)),
+			}
 		}
 		if to-from <= 1 {
 			break
@@ -77,7 +94,31 @@ func renderTabs(tabs []*tab, focused, width int, active bool) string {
 	if budget < 1 {
 		budget = 1
 	}
-	return left + focusedStyle.Render(fit(tabs[focused].title(), budget)) + right
+	label := focusedStyle.Render(fit(tabs[focused].title(), budget))
+	x := ansi.StringWidth(left)
+	return tabsPlan{
+		row:   left + label + right,
+		spans: []tabSpan{{index: focused, from: x, to: x + ansi.StringWidth(label)}},
+	}
+}
+
+// tabSpansFor walks the rendered tabs from column x, giving each one the
+// columns it occupies. Widths are measured, not assumed: the styles carry
+// padding and a title can hold a multi-byte separator.
+func tabSpansFor(rendered []string, from, to, x int) []tabSpan {
+	spans := make([]tabSpan, 0, to-from)
+	for i := from; i < to; i++ {
+		w := ansi.StringWidth(rendered[i])
+		spans = append(spans, tabSpan{index: i, from: x, to: x + w})
+		x += w
+	}
+	return spans
+}
+
+// renderTabs is planTabs' row. Every caller that only draws goes through
+// this; the mouse goes through planTabs for the spans.
+func renderTabs(tabs []*tab, focused, width int, active bool) string {
+	return planTabs(tabs, focused, width, active).row
 }
 
 // tabsElided is one side's "+N" marker, and nothing at all when that side
@@ -187,19 +228,7 @@ func (m Model) sidebarColumn(height int) string {
 	if height <= 0 {
 		return ""
 	}
-	band := height / 3
-	switch {
-	case height < 12:
-		band = 0
-	case band < 6:
-		band = 6
-	case band > 14:
-		band = 14
-	}
-	list := height
-	if band > 0 {
-		list = height - band - 1 // the rule
-	}
+	list, band := sidebarSplit(height)
 	parts := []string{renderSidebar(m.rows, m.live, m.ports, m.selected, list)}
 	if band > 0 {
 		row := m.selectedRow()
