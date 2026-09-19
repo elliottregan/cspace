@@ -429,7 +429,9 @@ func TestClipboardImageRejectsANameItWouldJoinIntoAPath(t *testing.T) {
 	}{
 		{"traversal in the sandbox", "alpha", "../../../../tmp/x", "sandbox name"},
 		{"traversal in the project", "../../../../tmp", "mercury", "project name"},
+		{"a bare .. as the project", "..", "mercury", "project name"},
 		{"a slash in the sandbox", "alpha", "a/b", "sandbox name"},
+		{"a slash in the project", "a/b", "mercury", "project name"},
 		{"a dotted sandbox", "alpha", "mercury.two", "sandbox name"},
 		{"the reserved browser name", "alpha", "browser", "sandbox name"},
 		{"an empty half", "", "mercury", "project name"},
@@ -446,6 +448,35 @@ func TestClipboardImageRejectsANameItWouldJoinIntoAPath(t *testing.T) {
 			// Nothing may be created on the way to that error.
 			if entries, err := os.ReadDir(filepath.Join(home, ".cspace")); err == nil && len(entries) > 0 {
 				t.Errorf("a rejected name still created %d entry(ies) under .cspace", len(entries))
+			}
+		})
+	}
+}
+
+// TestClipboardImageAcceptsOrdinaryProjectNames pins the fix for the
+// project half being over-validated as if it were a sandbox name: a
+// project name is filepath.Base of a checkout (config.go) and cspace
+// validates it nowhere else, so a dot, a space, or the sandbox-only
+// "browser" reservation must not turn image paste off for that project.
+func TestClipboardImageAcceptsOrdinaryProjectNames(t *testing.T) {
+	dir := stubPATH(t)
+	stubBin(t, dir, "osascript", stubImageOsascript)
+
+	// None of these is a legal *sandbox* name — sandboxNamePattern rejects
+	// the dot and the space, and validateSandboxName reserves "browser" —
+	// but every one is an ordinary project name.
+	for _, project := range []string{"next.js", "site.com", "My Project", "browser"} {
+		t.Run(project, func(t *testing.T) {
+			home := t.TempDir()
+			paneDir, hostDir, err := newClipboard(home).Image(testCtx(t), project, "mercury")
+			if err != nil {
+				t.Fatalf("Image(%q, mercury) = %v, want it to succeed", project, err)
+			}
+			if !strings.HasPrefix(paneDir, "/sessions/paste/") {
+				t.Errorf("pane path = %q, want it under /sessions/paste/", paneDir)
+			}
+			if _, err := os.Stat(hostDir); err != nil {
+				t.Errorf("host path %q was not written: %v", hostDir, err)
 			}
 		})
 	}

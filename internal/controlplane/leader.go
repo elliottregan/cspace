@@ -25,10 +25,16 @@ import (
 // all three — there is nothing here to scroll — and keeps the tmux
 // explanation as a trailing, general aside rather than a claim about this
 // particular pane.
+//
+// Kept to <= 78 cells on purpose: the footer's fit() elides at 120 columns
+// and, worse, silently drops trailing clauses at 80 — and the trailing
+// clause here is "PgUp/PgDn go there", the only actionable part of the
+// whole sentence. A longer wording that reads fine at 120 becomes a
+// refusal with no way forward at 80. Measured with lipgloss.Width.
 func noScrollbackNotice() notice {
 	return notice{
-		text: "nothing to scroll: this pane has no scrollback " +
-			"(a tmux-backed pane keeps its history on the child's side — PgUp/PgDn go there)",
+		text: "nothing to scroll: a tmux pane keeps its history inside — " +
+			"PgUp/PgDn go there",
 		isErr: true,
 	}
 }
