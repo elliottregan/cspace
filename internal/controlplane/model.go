@@ -121,7 +121,18 @@ type Model struct {
 	showHelp bool
 	input    textinput.Model
 	action   string // in-flight action label; "" when idle
-	spinner  spinner.Model
+	// actionNote is an aside about the action currently in flight — today,
+	// the answer to a key the one-action gate refused.
+	//
+	// It is NOT a notice, and that is the whole point. footer() ranks the
+	// spinner above the notice, so a notice written while an action is in
+	// flight cannot be seen until the action ends — and is then rendered,
+	// as an error, about an action that has already finished. A note that
+	// is only ever drawn INSIDE the action arm cannot go stale on screen:
+	// the condition that makes it true is the condition that renders it.
+	// startAction clears it, so each action starts with a clean line.
+	actionNote string
+	spinner    spinner.Model
 
 	notice    notice
 	noticeGen int
@@ -568,6 +579,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// newline, so Claude gets the path in its input box and sends
 		// nothing.
 		t.p.Paste(msg.text)
+		// This arm is the action's whole report, and the report is the
+		// path now sitting in the pane. Anything the footer was carrying
+		// before belongs to something else — and a *stale error* under a
+		// path that has just arrived reads as the paste having failed.
+		m.notice = notice{}
 		return m, nil
 
 	case tea.KeyPressMsg:
