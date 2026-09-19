@@ -179,21 +179,41 @@ func (t *Tmux) Present(ctx context.Context, container string) (bool, error) {
 // The first attach creates both, and the snapshot taken just before it has to
 // succeed or there is nothing to diff against.
 func (t *Tmux) ListClients(ctx context.Context, container, session string) ([]string, error) {
-	out, code, err := t.Exec.Exec(ctx, container,
+	ttys, _, err := t.listClients(ctx, container, session)
+	return ttys, err
+}
+
+// listClients is ListClients' implementation, plus the one thing
+// ListClients itself throws away: whether a non-zero exit was tmux's own
+// answer that there is nothing to list, or something else entirely.
+// ListClients' every existing caller is fine collapsing the two — "no
+// session yet" and "container unreachable" both mean "nothing found" to
+// them — but the startup sweep (attach.go) is not: reading an unreachable
+// container's failed exec as "tmux says no clients" would delete a record
+// that may still name an attached client.
+//
+// answered is true exactly when tmux itself is the one who said there was
+// nothing: a clean exit with parsed output, or a non-zero exit carrying one
+// of tmux's own gone-client/gone-session markers (clientAlreadyGone, shared
+// with DetachClient). It is false for a non-zero exit that says anything
+// else — most commonly the `container` CLI's own "not found"/"not running"
+// text, or a refused connection, for a container list-clients could not
+// reach at all.
+func (t *Tmux) listClients(ctx context.Context, container, session string) (ttys []string, answered bool, err error) {
+	out, code, execErr := t.Exec.Exec(ctx, container,
 		[]string{"tmux", "list-clients", "-t", session, "-F", "#{client_tty}"})
-	if err != nil {
-		return nil, err
+	if execErr != nil {
+		return nil, false, execErr
 	}
 	if code != 0 {
-		return nil, nil
+		return nil, clientAlreadyGone(strings.TrimSpace(out)), nil
 	}
-	var ttys []string
 	for _, line := range strings.Split(out, "\n") {
 		if tty := strings.TrimSpace(line); tty != "" {
 			ttys = append(ttys, tty)
 		}
 	}
-	return ttys, nil
+	return ttys, true, nil
 }
 
 // ErrClientGone marks a DetachClient failure that means the client (and

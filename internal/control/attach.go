@@ -42,6 +42,14 @@ func attachLockWait(tm *Tmux) time.Duration {
 // not have to wait out the real value.
 var detachTimeout = 5 * time.Second
 
+// sweepExecTimeout bounds each list-clients exec the sweep runs, inside the
+// sweep's own overall context. Without its own bound, one sandbox whose
+// container is wedged rather than cleanly unreachable (a hung `container
+// exec`, not a fast connection-refused) could eat the whole sweep's budget
+// and leave every sandbox after it unswept. A var so tests do not have to
+// wait out the real value.
+var sweepExecTimeout = 5 * time.Second
+
 // ClientRecord is the on-disk record of one live tmux client, written to
 // <ControlPlaneDir>/<session>.<tty>.json.
 //
@@ -409,7 +417,31 @@ func (c *Client) SweepClientRecords(ctx context.Context) (SweepResult, error) {
 // when an authoritative container list did not mention this container; a
 // list that could not be taken arrives here as false, because "gone" and
 // "unanswered" authorise different things.
+//
+// The whole directory is processed under the sandbox's own attach.lock — the
+// same file BeginAttach holds while it is discovering its own client's tty
+// (see attachLockWait). Without it, a sweep that read a stale record for a
+// tty a concurrent attach is about to reuse could see that attach's own
+// brand-new client show up in list-clients, read it as the dead record's
+// client still being attached, and detach it — deleting the fresh record
+// that names it in the same stroke. Held for the whole directory, the two
+// can never interleave: BeginAttach cannot start its own discovery window
+// until the sweep releases the lock, and vice versa. A lock that cannot be
+// taken in time — real contention with an attach mid-window, or a local
+// bookkeeping problem opening the lock file at all — leaves the whole
+// directory unswept this pass rather than guess past it; the next sweep is
+// the retry.
 func (c *Client) sweepDir(ctx context.Context, dir, container string, containerKnownGone bool, res *SweepResult) {
+	lock, lockErr := lockAttach(ctx, dir, attachLockWait(c.tmux))
+	if lockErr != nil {
+		res.Errors++
+		return
+	}
+	defer func() {
+		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		_ = lock.Close()
+	}()
+
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		// Same rule as the per-project read above: a directory that could
@@ -421,11 +453,22 @@ func (c *Client) sweepDir(ctx context.Context, dir, container string, containerK
 	// One list-clients per session, not per record: a sandbox with a Claude
 	// pane and a shell pane has two sessions and any number of records.
 	//
-	// `answered` is the second half of the evidence. ListClients returns an
-	// error only when the exec itself failed — an unreachable container —
-	// and returns an empty list with a nil error when tmux answered that
-	// there is no such session or no server. Those two look identical in the
-	// tty set and mean opposite things, so the set alone can never be read.
+	// `answered` is the second half of the evidence, and it is NOT simply
+	// "the exec returned no error". This package's Execer contract treats a
+	// `container exec` against a missing, stopped or otherwise unreachable
+	// container as an ordinary non-zero exit with a nil error (tmux.go's own
+	// doc), and ListClients' public contract folds every non-zero exit —
+	// whatever caused it — into "no clients, no error", because every other
+	// caller is fine treating "no session yet" and "container unreachable"
+	// alike. That fold is exactly wrong here: both produce the identical
+	// empty tty set, but only one of them is evidence this sweep may delete
+	// a record on. listClients (unexported, this sweep's only caller) keeps
+	// them apart by reading a failed exec's own output the same way
+	// DetachClient already does: one of tmux's own gone-client/gone-session
+	// markers (clientAlreadyGone) means tmux itself answered; any other
+	// non-zero exit — the `container` CLI's own "not found"/"not running"
+	// text, a refused connection, a daemon mid-restart — means the exec
+	// never reached tmux at all.
 	type listing struct {
 		ttys     map[string]bool
 		answered bool
@@ -436,9 +479,11 @@ func (c *Client) sweepDir(ctx context.Context, dir, container string, containerK
 			return got
 		}
 		got := listing{ttys: map[string]bool{}}
-		ttys, err := c.tmux.ListClients(ctx, container, session)
+		execCtx, cancel := context.WithTimeout(ctx, sweepExecTimeout)
+		ttys, answered, err := c.tmux.listClients(execCtx, container, session)
+		cancel()
 		if err == nil {
-			got.answered = true
+			got.answered = answered
 			for _, tty := range ttys {
 				got.ttys[tty] = true
 			}
@@ -448,15 +493,21 @@ func (c *Client) sweepDir(ctx context.Context, dir, container string, containerK
 	}
 
 	// remove is the only place a record file is unlinked, so every delete in
-	// this function is one of the four evidence branches below. A failed
-	// unlink leaves the record, which is the kept-plus-error outcome.
-	remove := func(path string) {
-		if os.Remove(path) == nil {
+	// this function runs through one of the evidence branches below. A
+	// target already gone (fs.ErrNotExist — its owner's own Close, or an
+	// earlier sweep, got there first) is success, not failure, matching
+	// Attachment.Close's own rule. It reports whether the delete counted, so
+	// a caller that also wants to count Detached does so only once the
+	// record is actually gone — Detached is documented as a subset of
+	// Deleted, and counting it before a failed unlink could make that false.
+	remove := func(path string) bool {
+		if err := os.Remove(path); err == nil || errors.Is(err, fs.ErrNotExist) {
 			res.Deleted++
-			return
+			return true
 		}
 		res.Kept++
 		res.Errors++
+		return false
 	}
 
 	for _, entry := range entries {
@@ -488,11 +539,11 @@ func (c *Client) sweepDir(ctx context.Context, dir, container string, containerK
 
 		clients := clientsFor(rec.Session)
 		if !clients.answered {
-			// No evidence either way: the exec failed, so this container is
-			// unreachable, not gone. This is the branch the whole shape of
-			// the function exists for — deleting here is what would wipe
-			// live clients' records on one bad `container ls` plus one
-			// failed exec.
+			// No evidence either way: the exec failed, or reached a
+			// container that could not answer as tmux. This is the branch
+			// the whole shape of the function exists for — deleting here is
+			// what would wipe live clients' records on one bad `container
+			// ls` plus one unreachable container.
 			res.Kept++
 			res.Errors++
 			continue
@@ -503,7 +554,30 @@ func (c *Client) sweepDir(ctx context.Context, dir, container string, containerK
 			remove(path)
 			continue
 		}
-		if err := c.tmux.DetachClient(ctx, container, rec.TTY); err != nil && !errors.Is(err, ErrClientGone) {
+
+		// Belt and braces: the directory lock keeps a concurrent BeginAttach
+		// from writing a fresh record over this exact path while the sweep
+		// is deciding, but not from the pid itself becoming live again in
+		// the time since the check above — a respawn, or simply the time
+		// this directory's other records took to process. Re-reading the
+		// record and re-checking its pid immediately before the detach is
+		// the last chance to notice and back off before ending a client
+		// this record no longer accurately describes.
+		fresh, err := readClientRecord(path)
+		if err != nil {
+			// Gone or changed since this sweep first read it; either way
+			// there is nothing left here it is safe to act on.
+			continue
+		}
+		if c.processAlive(fresh.PID) {
+			res.Kept++
+			continue
+		}
+
+		detachCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachTimeout)
+		detachErr := c.tmux.DetachClient(detachCtx, container, fresh.TTY)
+		cancel()
+		if detachErr != nil && !errors.Is(detachErr, ErrClientGone) {
 			// Leave the record: the next sweep is the retry, and deleting
 			// it would hide a client that is still attached. ErrClientGone
 			// is not a failure — it means the detach had already happened.
@@ -512,8 +586,9 @@ func (c *Client) sweepDir(ctx context.Context, dir, container string, containerK
 			continue
 		}
 		// Evidence: the client was listed and is now detached.
-		res.Detached++
-		remove(path)
+		if remove(path) {
+			res.Detached++
+		}
 	}
 }
 
