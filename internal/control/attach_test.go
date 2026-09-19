@@ -977,6 +977,49 @@ func TestSweepRecognizesTmux33sNoServerWording(t *testing.T) {
 	}
 }
 
+// ...and the same sentence with a different errno is NOT that answer.
+// tmux prints whatever strerror gave it, so "error connecting to <socket>
+// (Permission denied)" comes out of a server that is alive and simply will
+// not talk to this client. Deleting on that would wipe the only handle the
+// sweep has on a client that is still attached — the one outcome the
+// evidence rules exist to prevent — so the record is kept and counted as
+// the failure to reach tmux that it is.
+func TestSweepRejectsANoServerSentenceWithTheWrongErrno(t *testing.T) {
+	home := t.TempDir()
+	dir := ControlPlaneDir(home, "demo", "neptune")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	path := filepath.Join(dir, "cspace-claude.dev-ttys999.json")
+	if err := os.WriteFile(path,
+		[]byte(`{"session":"cspace-claude","tty":"/dev/ttys999","pid":108}`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	f := &fakeExec{reply: func(int, []string) (string, int, error) {
+		return "error connecting to /tmp/tmux-1000/default (Permission denied)", 1, nil
+	}}
+	c := New(Options{
+		Home: home,
+		Containers: &fakeContainers{out: []applecontainer.ContainerSummary{
+			{Name: "cspace-demo-neptune", State: "running"},
+		}},
+		Tmux:         testTmux(f),
+		ProcessAlive: func(int) bool { return false },
+	})
+
+	res, err := c.SweepClientRecords(context.Background())
+	if err != nil {
+		t.Fatalf("SweepClientRecords: %v", err)
+	}
+	if res.Deleted != 0 || res.Kept != 1 {
+		t.Errorf("deleted = %d, kept = %d, want 0 and 1 — EACCES is not tmux saying there is no server",
+			res.Deleted, res.Kept)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("the record was deleted on no evidence: %v", err)
+	}
+}
+
 // Fix round 1, Important 2: the sandbox directory lock (lockAttach) closes
 // the window in which a concurrent BeginAttach could write a fresh record
 // over this one's path, but not the window in which the dead pid this

@@ -333,6 +333,12 @@ func TestDetachClientDoesNotMistakeTheContainerCLIForTmux(t *testing.T) {
 		"Error: get failed: container cspace-demo-mercury not found",
 		"Error: container is not running",
 		"Error: error connecting to the container runtime",
+		// tmux's own no-server sentence, with an errno that does NOT mean
+		// no server: the socket is there and a server is listening, this
+		// client just may not touch it. Reading it as "tmux says nothing
+		// is attached" would delete the record of a live client.
+		"error connecting to /tmp/tmux-1000/default (Permission denied)",
+		"error connecting to /tmp/tmux-1000/default (Operation not permitted)",
 	}
 	for _, out := range cases {
 		out := out

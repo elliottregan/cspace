@@ -250,7 +250,30 @@ var clientGoneMarkers = []string{
 // it cannot match the `container` CLI's own transport complaints — the thing
 // the sweep must never mistake for an answer. Apple Container's are shaped
 // `Error: get failed: container <name> not found`.
-var noServerRunning = regexp.MustCompile(`(?m)^error connecting to .+ \(.+\)$`)
+//
+// The trailing anchor tolerates trailing whitespace and a \r, which is not
+// theoretical hardening of a parser: it is one `-t` away. CLIExecer passes
+// no `-t` today (see its Exec), so nothing arrives through a pty and no
+// line ends in CRLF; an executor that did would otherwise silently stop
+// matching every line here.
+var noServerRunning = regexp.MustCompile(`(?m)^error connecting to .+ \((.+?)\)\s*$`)
+
+// noServerErrnos are the strerror texts in that message that actually mean
+// "nothing is listening on the socket". tmux prints whatever strerror gave
+// it, and only these two are evidence of a dead server: ENOENT (the socket
+// file is not there) and ECONNREFUSED (it is, but nobody is accepting).
+//
+// The rest are not. EACCES ("permission denied") and a socket-path mismatch
+// both produce the same sentence with a server very much alive — and
+// answering the sweep "tmux says nothing is attached" on those would delete
+// the record of a client that is still attached, which is the one outcome
+// attach.go's evidence rules exist to prevent. Unreachable today (attach
+// and sweep both exec as the same user against the same
+// /tmp/tmux-<uid>/default), so this is hardening rather than a fix.
+var noServerErrnos = []string{
+	"No such file or directory",
+	"Connection refused",
+}
 
 // DetachClient ends one client's attachment to its session.
 //
@@ -287,7 +310,22 @@ func clientAlreadyGone(out string) bool {
 			return true
 		}
 	}
-	return noServerRunning.MatchString(out)
+	return saysNoServer(out)
+}
+
+// saysNoServer reports whether the output is tmux's pre-3.4 no-server line
+// AND its errno is one that means nothing is listening. The whole line has
+// to be tmux's own and the reason has to be the right one: see
+// noServerRunning and noServerErrnos.
+func saysNoServer(out string) bool {
+	for _, m := range noServerRunning.FindAllStringSubmatch(out, -1) {
+		for _, errno := range noServerErrnos {
+			if strings.Contains(m[1], errno) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ListClients reports the ttys attached to one of the sandbox's tmux
