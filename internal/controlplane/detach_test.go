@@ -8,7 +8,7 @@ import (
 
 func TestInitRunsTheStartupSweep(t *testing.T) {
 	h := &fakeHost{t: t}
-	m := New(&fakeData{snap: testSnapshot()}, &recordingActor{}, h, NewKeyMap(nil))
+	m := New(&fakeData{snap: testSnapshot()}, &recordingActor{}, h, nopClipboard{}, NewKeyMap(nil))
 	for _, msg := range drain(m.Init()) {
 		if _, ok := msg.(sweepMsg); ok {
 			if h.sweeps != 1 {
@@ -28,7 +28,7 @@ func TestInitRunsTheStartupSweep(t *testing.T) {
 func runSweep(t *testing.T, outcome SweepOutcome, sweepErr error) Model {
 	t.Helper()
 	h := &fakeHost{t: t, sweep: outcome, sweepErr: sweepErr}
-	m := New(&fakeData{snap: testSnapshot()}, &recordingActor{}, h, NewKeyMap(nil))
+	m := New(&fakeData{snap: testSnapshot()}, &recordingActor{}, h, nopClipboard{}, NewKeyMap(nil))
 	for _, msg := range drain(m.Init()) {
 		if _, ok := msg.(sweepMsg); ok {
 			mm, _ := m.Update(msg)
