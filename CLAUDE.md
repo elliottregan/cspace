@@ -33,7 +33,7 @@ make test         # go tests (runs sync-embedded first)
 make vet
 make lint
 make test-scripts # bash tests (scripts/*.test.sh, lib/runtime/scripts/*.test.sh)
-make test-race    # -race over internal/pane only; NOT part of make check
+make test-race    # -race over internal/pane + internal/controlplane; NOT part of make check
 python3 scripts/tui-smoke/smoke.py   # drive `cspace tui` under a pty (Mac, by hand)
 make check        # fmt-check + vet + lint + test + test-scripts
 cspace image build  # rebuild the sandbox image after Dockerfile/scripts changes

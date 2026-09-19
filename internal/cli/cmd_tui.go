@@ -70,6 +70,7 @@ bindings come from tui.keys in ~/.cspace/config.json.`,
 			}
 
 			model := controlplane.New(ctrl, newControlPlaneActor(ctrl, home),
+				nil, // the pane host lands in Task 7
 				controlplane.NewKeyMap(userCfg.TUI.Keys))
 			_, err = tea.NewProgram(model).Run()
 			return err
