@@ -69,8 +69,9 @@ bindings come from tui.keys in ~/.cspace/config.json.`,
 				return fmt.Errorf("load %s: %w", config.UserConfigPath(home), err)
 			}
 
-			model := controlplane.New(ctrl, newControlPlaneActor(ctrl, home),
-				nil, // the pane host lands in Task 7
+			model := controlplane.New(ctrl,
+				newControlPlaneActor(ctrl, home),
+				newPaneHost(ctrl, home),
 				controlplane.NewKeyMap(userCfg.TUI.Keys))
 			_, err = tea.NewProgram(model).Run()
 			return err

@@ -236,24 +236,33 @@ URLs.
 
 Tabs: one per open pane, titled `<project>/<sandbox> · <kind>`.
 
-Rollout step 3 places both of those differently, and step 4 moves them.
-With no panes to compete for it, the detail band occupies the main area —
-24 columns cannot hold a URL, and `renderDetail` takes its width as a
-parameter so that move is a layout change, not a rewrite. The reserved tabs
-row carries the selection's title and daemon health rather than sitting
-empty, because an empty line above the main area reads as a rendering bug
-and not as a promise. When panes land, the band moves under the sidebar and
-the row becomes the tabs it is named for.
+Rollout step 3 placed both of those differently and step 4 moved them, as
+planned: the detail band now renders under the sidebar at 24 columns — where
+a URL does not fit, which is why the sidebar's own port lines carry it as an
+OSC 8 hyperlink — and the tabs row carries the tabs it is named for, falling
+back to daemon health while no pane is open. `renderDetail` takes its width
+as a parameter, which is what made that a layout change rather than a
+rewrite.
 
 Main area, by tab kind:
 
-- Claude pane and shell pane: the emulator's rendered screen inside a border
-  colored by state.
+- Claude pane and shell pane: the emulator's rendered screen, filling the
+  main area. It carries no border: a frame costs two of the pane's columns
+  and two of its rows, and step 4 buys the same cue for nothing by lighting
+  the focused tab (`styleTabActive` while the keyboard is in the main area,
+  `styleTabFocused` while it is not), switching the footer to the leader's
+  keys, and placing the terminal cursor only while the pane has focus.
 - Supervisor view: a viewport over the event tail with assistant text
   rendered as markdown, a text area for the next prompt (Enter sends through
-  `Send`; a key interrupts), and a spinner while working.
+  `Send`; Esc interrupts), and a spinner while working.
 - Host shell: the emulator screen.
-- Exited pane: the last screen dimmed, with the exit reason and a restart key.
+- Exited pane: the last screen dimmed, under the exit reason and the key that
+  closes the tab. The pane's own teardown — the detach and the engine's
+  handshake — runs the moment the child exits, not when the tab is dismissed,
+  so nothing stays attached inside the sandbox while the screen is being
+  read. There is no separate restart key: closing the tab and opening the
+  pane again from the sidebar *is* the restart, and it rejoins the same tmux
+  session with its screen intact.
 
 Widgets: `bubbles/v2/tree` for the sidebar, decided at implementation: if it
 cannot express non-selectable project headers with selectable children, the
@@ -434,8 +443,10 @@ empty or text-only clipboard falls back to a text paste.
 
 ## Error handling
 
-- Exec failure for a pane: the pane area shows the error and a retry key.
-  Other panes and the sidebar are unaffected.
+- Exec failure for a pane: no tab opens, and the footer carries the error
+  until the next keypress. Retrying is pressing the same key again, so there
+  is no separate retry binding and no empty tab to hold one. Other panes and
+  the sidebar are unaffected.
 - Sandbox image without tmux (built before this change): detected once per
   sandbox by probing for the binary; the pane and `cspace attach` fall back
   to the direct `claude` exec with a footer warning naming
@@ -472,16 +483,10 @@ empty or text-only clipboard falls back to a text paste.
 
 ## Rollout
 
-1. **Sandbox side.** tmux, its config, the state script and hooks in the
-   entrypoint seed, and `cspace attach` on the tmux argv with detach on exit.
-   Independently useful, fixes the orphan bug, bumps the image.
-2. **Control API.** Extract `internal/control` from the dashboard's data code
-   with its tests; the old dashboard is repointed at it and keeps working.
-3. **Dashboard on v2.** New `cspace tui` with sidebar, detail band, actions,
-   and no panes, landing in the same change that deletes `internal/tui` and
-   `tui_actor.go`, so `cspace tui` is never absent from `main`.
-4. **Panes.** `internal/pane`, the Claude, shell and host-shell panes, the
-   supervisor view, the detach protocol and sweep.
+1. ~~**Sandbox side.**~~ Landed.
+2. ~~**Control API.**~~ Landed.
+3. ~~**Dashboard on v2.**~~ Landed.
+4. ~~**Panes.**~~ Landed, as two plans: `2026-09-18-control-plane-4a-pane-engine.md` (the engine, the pane commands, the two step-3 follow-ups, the smoke harness) and `2026-09-18-control-plane-4b-panes-in-the-dashboard.md` (tabs, focus, the leader, the detach protocol, the supervisor view).
 5. **Mouse and image paste.**
 
 Each step lands on its own and leaves `make check` green.

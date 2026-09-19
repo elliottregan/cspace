@@ -174,9 +174,9 @@ func (m Model) Init() tea.Cmd {
 }
 
 // paused reports whether a cadence should skip its poll this time round: a
-// modal owns the screen, and attach owns the terminal outright (the program
-// is suspended into `container exec`), so neither is a moment to replace the
-// row set underneath the person.
+// modal owns the screen, and an open pane in flight owns the row it is
+// opening against, so neither is a moment to replace the row set underneath
+// the person.
 //
 // Every other action is deliberately *not* paused. They run as ordinary
 // commands with the dashboard fully on screen, and they are the long ones —
@@ -185,7 +185,7 @@ func (m Model) Init() tea.Cmd {
 // its ports is exactly what the poll loop is for. The one-action-at-a-time
 // gate lives in handleNormalKey and is unaffected by this.
 func (m Model) paused() bool {
-	return m.mode != modeNormal || m.action == LabelAttach || m.action == LabelOpenPane
+	return m.mode != modeNormal || m.action == LabelOpenPane
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
