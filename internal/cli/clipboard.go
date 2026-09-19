@@ -38,13 +38,14 @@ func newClipboard(home string) *osaClipboard {
 // pasted in the same second are two files, and the name still sorts.
 const pasteStamp = "20060102-150405.000"
 
-// Image probes the clipboard, writes its PNG, and reports the path to type.
+// Image probes the clipboard, writes its PNG, and reports the path to
+// type into the pane and the path the file occupies on this host.
 //
 // The probe is a separate osascript run rather than an attempt-and-catch,
 // because "the clipboard holds no image" and "AppleScript failed" arrive
 // through the same non-zero exit and must not be confused: one is the
 // design's text-paste fallback and the other belongs in the footer.
-func (c *osaClipboard) Image(ctx context.Context, project, sandbox string) (string, error) {
+func (c *osaClipboard) Image(ctx context.Context, project, sandbox string) (pane, host string, err error) {
 	// Shape-check before any path work. Both names are joined into a
 	// directory this function then creates 0700 and writes a file into, and
 	// filepath.Join cleans "../.." rather than rejecting it. Every caller
@@ -55,19 +56,19 @@ func (c *osaClipboard) Image(ctx context.Context, project, sandbox string) (stri
 	// (cs-finding:2026-09-18-sandbox-names-are-not-shape-validated-before-path-joins)
 	if project != "" || sandbox != "" {
 		if err := validateSandboxName(project, project); err != nil {
-			return "", fmt.Errorf("project name: %w", err)
+			return "", "", fmt.Errorf("project name: %w", err)
 		}
 		if err := validateSandboxName(project, sandbox); err != nil {
-			return "", fmt.Errorf("sandbox name: %w", err)
+			return "", "", fmt.Errorf("sandbox name: %w", err)
 		}
 	}
 
 	has, err := c.hasImage(ctx)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if !has {
-		return "", controlplane.ErrNoImage
+		return "", "", controlplane.ErrNoImage
 	}
 
 	hostDir, paneDir := c.pasteDirs(project, sandbox)
@@ -75,7 +76,7 @@ func (c *osaClipboard) Image(ctx context.Context, project, sandbox string) (stri
 	// home directory, and nothing but this process and the sandbox's own
 	// bind mount has business reading them.
 	if err := os.MkdirAll(hostDir, 0o700); err != nil {
-		return "", fmt.Errorf("create paste dir: %w", err)
+		return "", "", fmt.Errorf("create paste dir: %w", err)
 	}
 	name := c.now().Format(pasteStamp) + ".png"
 	dst := filepath.Join(hostDir, name)
@@ -88,9 +89,12 @@ func (c *osaClipboard) Image(ctx context.Context, project, sandbox string) (stri
 		// against, and os.Remove of a file that was never created is
 		// already a no-op.
 		_ = os.Remove(dst)
-		return "", err
+		return "", "", err
 	}
-	return filepath.Join(paneDir, name), nil
+	// The pane path is what gets typed; dst is the same file as this
+	// process can reach it, which is what a paste that never lands needs
+	// in order to clean up after itself.
+	return filepath.Join(paneDir, name), dst, nil
 }
 
 // pasteDirs is where the file goes on the host, and the directory the pane

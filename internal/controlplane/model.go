@@ -533,14 +533,22 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case pasteMsg:
+		// Cleared FIRST, and on every branch below, including the silent
+		// one: m.action is the one-action gate every other key consults, so
+		// a path that returns without clearing it wedges the whole window —
+		// no new pane, no close, no boot, no send — for the rest of the
+		// session, with a spinner that never stops.
 		m.action = ""
+		// Every branch that cannot deliver the paste takes its PNG back
+		// out; the successful one is the only one that keeps the file,
+		// because it is the only one that told a pane where to find it.
 		if msg.err != nil {
 			m.notice = notice{text: LabelPasteImage + " failed: " + msg.err.Error(), isErr: true}
-			return m, nil
+			return m, discardPaste(msg.file)
 		}
 		if msg.text == "" {
 			m.notice = notice{text: LabelPasteImage + ": the clipboard is empty", isErr: true}
-			return m, nil
+			return m, discardPaste(msg.file)
 		}
 		// By identity, never by position: a tab closing while the clipboard
 		// was being read shifts every index after it, so an index would
@@ -549,11 +557,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if t == nil || t.p == nil {
 			// The tab closed while the clipboard was being read. There is
 			// nowhere to put this and nobody to tell: the person closed it.
-			return m, nil
+			return m, discardPaste(msg.file)
 		}
 		if _, _, exited := t.p.Exited(); exited {
-			m.notice = notice{text: LabelPasteImage + ": the pane exited", isErr: true}
-			return m, nil
+			m.notice = pasteExitedNotice()
+			return m, discardPaste(msg.file)
 		}
 		// Through Emulator.Paste, which brackets when the child asked —
 		// the same path a terminal paste takes — and with no trailing
