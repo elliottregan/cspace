@@ -149,7 +149,18 @@ func testSnapshot() control.Snapshot {
 
 // newTestModel returns a sized model with one snapshot already applied.
 func newTestModel(d *fakeData, a Actor) Model {
-	m := New(d, a, NewKeyMap(nil))
+	m := New(d, a, nopPaneHost{}, NewKeyMap(nil))
+	m.now = func() time.Time { return time.Unix(1_000_060, 0) }
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	m = mm.(Model)
+	mm, _ = m.Update(snapshotMsg{snap: d.snap})
+	return mm.(Model)
+}
+
+// newTestModelWithHost is newTestModel with a pane host, for the tests that
+// open tabs.
+func newTestModelWithHost(d *fakeData, a Actor, h PaneHost) Model {
+	m := New(d, a, h, NewKeyMap(nil))
 	m.now = func() time.Time { return time.Unix(1_000_060, 0) }
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m = mm.(Model)
@@ -158,7 +169,7 @@ func newTestModel(d *fakeData, a Actor) Model {
 }
 
 func TestInitKicksAllThreeCadences(t *testing.T) {
-	m := New(&fakeData{snap: testSnapshot()}, &recordingActor{}, NewKeyMap(nil))
+	m := New(&fakeData{snap: testSnapshot()}, &recordingActor{}, nopPaneHost{}, NewKeyMap(nil))
 	cmd := m.Init()
 	if cmd == nil {
 		t.Fatal("Init must start the poll loop")
@@ -296,7 +307,7 @@ func TestFirstSnapshotTriggersAnImmediateSlowPoll(t *testing.T) {
 	d := &fakeData{snap: testSnapshot(), ports: []control.Port{
 		{Port: 5173, Label: "web", URL: "http://mercury.alpha.cspace.test:5173/"},
 	}}
-	m := New(d, &recordingActor{}, NewKeyMap(nil))
+	m := New(d, &recordingActor{}, nopPaneHost{}, NewKeyMap(nil))
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m = mm.(Model)
 	_ = m.Init() // the cadences start; their own ticks are irrelevant here
@@ -765,7 +776,7 @@ func TestViewGeometry(t *testing.T) {
 // alternate screen like every other one, or it can be painted on the normal
 // screen and left behind in scrollback once the real layout takes over.
 func TestPreSizeViewRunsInTheAlternateScreen(t *testing.T) {
-	m := New(&fakeData{}, &recordingActor{}, NewKeyMap(nil))
+	m := New(&fakeData{}, &recordingActor{}, nopPaneHost{}, NewKeyMap(nil))
 	v := m.View()
 	if !strings.Contains(v.Content, "starting cspace tui") {
 		t.Errorf("pre-size view content = %q, want the placeholder", v.Content)

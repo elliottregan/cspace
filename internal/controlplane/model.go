@@ -50,9 +50,23 @@ type noticeExpireMsg struct{ gen int }
 type Model struct {
 	data  Data
 	actor Actor
-	keys  KeyMap
-	help  help.Model
-	now   func() time.Time
+	host  PaneHost
+
+	tabs      []*tab
+	focused   int // index into tabs; -1 when there are none
+	nextTabID int
+	focus     focusArea
+
+	// scrolling and scroll are the focused pane's scrollback position:
+	// scroll is how many lines above the live screen the view sits, and
+	// scrolling is whether the arrow keys are moving it rather than reaching
+	// the child. Both reset whenever the focused tab changes.
+	scrolling bool
+	scroll    int
+
+	keys KeyMap
+	help help.Model
+	now  func() time.Time
 
 	rows     []control.Row
 	selected int
@@ -108,15 +122,19 @@ type Model struct {
 	quitting bool
 }
 
-// New builds the dashboard over the query and action seams and the resolved
-// keymap. Nothing is polled until Init runs.
-func New(data Data, actor Actor, keys KeyMap) Model {
+// New builds the dashboard over the query, action and pane seams and the
+// resolved keymap. Nothing is polled and nothing is opened until Init runs.
+func New(data Data, actor Actor, host PaneHost, keys KeyMap) Model {
 	ti := textinput.New()
 	ti.Placeholder = "message"
 	ti.CharLimit = 2000
+	if host == nil {
+		host = nopPaneHost{}
+	}
 	return Model{
 		data:     data,
 		actor:    actor,
+		host:     host,
 		keys:     keys,
 		help:     help.New(),
 		now:      time.Now,
@@ -126,6 +144,7 @@ func New(data Data, actor Actor, keys KeyMap) Model {
 		memory:   map[string]int64{},
 		ports:    map[sandboxKey][]control.Port{},
 		portsErr: map[sandboxKey]error{},
+		focused:  -1,
 	}
 }
 
@@ -152,7 +171,9 @@ func (m Model) Init() tea.Cmd {
 // on the host for the whole boot. Watching a booting sandbox turn ○ and gain
 // its ports is exactly what the poll loop is for. The one-action-at-a-time
 // gate lives in handleNormalKey and is unaffected by this.
-func (m Model) paused() bool { return m.mode != modeNormal || m.action == LabelAttach }
+func (m Model) paused() bool {
+	return m.mode != modeNormal || m.action == LabelAttach || m.action == LabelOpenPane
+}
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -161,6 +182,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.help.SetWidth(msg.Width)
 		if m.mode == modeInput {
 			m.input.SetWidth(sendInputWidth(m.pending.Name, msg.Width))
+		}
+		cols, rows := m.paneSize()
+		for _, t := range m.tabs {
+			if t.p != nil {
+				// The error is the ioctl's; a pane whose pty has gone will
+				// be reaped by its own exit, and failing the resize of one
+				// must not stop the others.
+				_ = t.p.Resize(cols, rows)
+			}
+			if t.sup != nil {
+				t.sup.resize(m.paneWidth(), rows)
+			}
 		}
 		return m, nil
 
@@ -266,6 +299,87 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
+
+	case paneOpenedMsg:
+		m.action = ""
+		if msg.err != nil {
+			m.notice = notice{text: LabelOpenPane + " failed: " + msg.err.Error(), isErr: true}
+			return m, nil
+		}
+		project, sandbox := msg.row.Project, msg.row.Name
+		if msg.kind == KindHostShell {
+			// It was opened from whatever row happened to be selected and
+			// belongs to none of them: leave the identity empty rather than
+			// let a later reader take it for a pane on that sandbox.
+			project, sandbox = "", ""
+		}
+		m = m.addTab(&tab{
+			kind:    msg.kind,
+			project: project,
+			sandbox: sandbox,
+			p:       msg.opened.Pane,
+			detach:  msg.opened.Detach,
+		})
+		wait := awaitOutput(m.tabs[m.focused])
+		if msg.opened.Warning != "" {
+			// Through ResultWarn rather than written into m.notice here:
+			// "it worked, now read this" already has a mechanism, and the
+			// actionResultMsg arm is where the rule that such a notice is
+			// sticky lives. A second copy of that rule is a second place to
+			// forget it.
+			warning := msg.opened.Warning
+			return m, tea.Batch(wait, func() tea.Msg { return ResultWarn(LabelOpenPane, warning) })
+		}
+		return m, wait
+
+	case paneOutputMsg:
+		// The redraw is the Update itself; the rest is deciding whether to
+		// wait again. A tab closed while its wait was in flight drops the
+		// message, and so does one whose teardown is already running.
+		t, _ := m.tabByID(msg.id)
+		if t == nil || t.p == nil {
+			return m, nil
+		}
+		if _, _, exited := t.p.Exited(); exited {
+			// The child ended on its own, and this signal — the waiter's
+			// final markDirty — is the last one this pane will ever emit:
+			// Dirty is closed by Pane.Close and by nothing else. Tear the
+			// pane down here, or its tmux client stays attached inside the
+			// sandbox and its record file on the host until the operator
+			// presses leader x. The tab survives the reap.
+			if !t.closing && !t.reaped {
+				t.closing = true
+				return m, m.reapExited(t)
+			}
+			return m, nil
+		}
+		if !t.closing {
+			return m, awaitOutput(t)
+		}
+		return m, nil
+
+	case paneClosedMsg:
+		m.action = ""
+		m = m.dropTab(msg.id)
+		if msg.err != nil {
+			m.notice = notice{text: LabelClosePane + ": " + msg.err.Error(), isErr: true}
+		}
+		return m, nil
+
+	case paneReapedMsg:
+		// No dropTab and no m.action: the reap was nobody's action, and the
+		// tab stays to show the dead pane's last screen. Clearing closing
+		// and setting reaped is what stops a second signal starting the
+		// teardown again; dropping the detacher is what keeps a later
+		// leader x from closing an attachment this already closed (Pane.Close
+		// is idempotent on its own).
+		if t, _ := m.tabByID(msg.id); t != nil {
+			t.closing, t.reaped, t.detach = false, true, nil
+		}
+		if msg.err != nil {
+			m.notice = notice{text: LabelClosePane + ": " + msg.err.Error(), isErr: true}
+		}
+		return m, nil
 
 	case tea.KeyPressMsg:
 		// Ctrl+C is not configurable and is never routed to a modal: a
@@ -416,4 +530,26 @@ func (m *Model) restoreSelection(prev control.Row) {
 		}
 	}
 	m.selected = 0
+}
+
+// paneSize is the emulator geometry for the main area: the window less the
+// sidebar and the one column of padding on each side, and less the tabs row
+// and the footer. Floored so a very small window still gets a legal size.
+func (m Model) paneSize() (cols, rows int) {
+	cols = m.paneWidth()
+	rows = m.height - 2 // the tabs row and the footer
+	if rows < 2 {
+		rows = 2
+	}
+	return cols, rows
+}
+
+// paneWidth is the main area's usable width, which the supervisor view wraps
+// its markdown to as well.
+func (m Model) paneWidth() int {
+	w := mainWidthFor(m.width) - 2 // styleMain's padding
+	if w < 4 {
+		w = 4
+	}
+	return w
 }

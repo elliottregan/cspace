@@ -59,6 +59,12 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.pollingMedium = true
 		return m, m.snapshotCmd()
+	case key.Matches(msg, m.keys.FocusMain):
+		if len(m.tabs) == 0 {
+			return m, nil
+		}
+		m.focus = focusMain
+		return m, nil
 	}
 
 	// One action at a time: the footer reports one outcome, and attach hands
@@ -71,7 +77,11 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	keys := m.keys.forRow(row, m.live[keyOf(row)])
 	switch {
 	case key.Matches(msg, keys.Attach):
-		return m.startAction(LabelAttach, m.actor.Attach(row))
+		return m.openOrFocus(KindClaude, row)
+	case key.Matches(msg, keys.Shell):
+		return m.openOrFocus(KindShell, row)
+	case key.Matches(msg, keys.Supervisor):
+		return m.openOrFocus(KindSupervisor, row)
 	case key.Matches(msg, keys.Teardown):
 		m.mode = modeConfirmDown
 		// pending pins the row the prompt was opened against: a poll can

@@ -56,12 +56,12 @@ test-scripts:
 		bash "$$t" || exit 1; \
 	done
 
-# Race check for the pane engine: four goroutines per pane around an emulator
-# whose upstream does not guard its own Close. Deliberately not part of
-# `make check` — a race build is slow and this is the one package that needs
-# it. Run it after touching internal/pane.
+# Race check for the pane engine and the tab bookkeeping over it: four
+# goroutines per pane, plus the dashboard that opens, resizes and closes
+# them. Deliberately not part of `make check` — a race build is slow and
+# these are the two packages that need it. Run it after touching either.
 test-race: sync-embedded
-	go test -race -count=1 ./internal/pane/...
+	go test -race -count=1 ./internal/pane/... ./internal/controlplane/...
 
 vet: sync-embedded
 	go vet ./...
