@@ -65,7 +65,30 @@ func (m Model) handleLeaderKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.startAction(LabelClosePane, m.closeTab(t.id))
 
 	case key.Matches(msg, m.keys.Scroll):
-		if t := m.focusedTab(); t == nil || t.p == nil {
+		t := m.focusedTab()
+		if t == nil || t.p == nil {
+			return m, nil
+		}
+		if t.p.ScrollbackLen() == 0 {
+			// Refused rather than armed: there is nothing to walk back
+			// through, and the mode is not inert — it swallows the next
+			// keypress as the one that returns to live, so arming it here
+			// costs a keystroke and shows a counter that can only ever say
+			// "0 lines back".
+			//
+			// This is the permanent state of every Claude and shell pane,
+			// not a rare one. tmux switches the terminal to the ALTERNATE
+			// screen the moment it starts (measured against the image's
+			// tmux 3.3a: its first bytes are ESC[?1049h), and nothing
+			// written to the alternate screen ever enters scrollback. The
+			// history is real, but it is on the child's side — tmux's
+			// copy-mode holds it, and Claude Code scrolls its own
+			// transcript with PgUp/PgDn, which reach the child precisely
+			// because this mode is off.
+			m.notice = notice{
+				text:  "nothing to scroll: this pane has no scrollback — its child keeps its own history (PgUp/PgDn go to it)",
+				isErr: true,
+			}
 			return m, nil
 		}
 		m.scrolling = true
