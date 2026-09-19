@@ -26,7 +26,7 @@ import (
 //     keys by their fixed codepoints, printable keys by their rune — but
 //     only when something besides Shift is held. The kitty spec only
 //     escape-codes Esc, alt+key, ctrl+key, ctrl+alt+key and shift+alt+key;
-//     a bare Shift+<printable> is still plain text (rule 7 below) because
+//     a bare Shift+<printable> is still plain text (rule 8 below) because
 //     the terminal already applied the shift to it. Code is documented as
 //     the BASE, unshifted codepoint (bubbletea's and ultraviolet's Key.Code:
 //     shift+a leaves Code == 'a' and reports the shift in Mod), so the
@@ -49,8 +49,15 @@ import (
 //     entirely. This is exactly the gap rule 6 exists to close; it declines
 //     whenever x/vt's own combination (Ctrl, optionally with Alt) already
 //     covers the key.
-//  7. A printable key held with Shift alone is its own text: the terminal
-//     already applied the shift, and x/vt would drop it for Mod != 0.
+//  7. Without kitty, Shift+Alt+<printable> sends ESC followed by the
+//     produced text. x/vt strips the Alt bit and prepends ESC itself, but
+//     what is left — Mod == ModShift — matches none of its case literals, so
+//     its default branch (which only appends a rune when Mod == 0) emits
+//     nothing after the ESC and the letter is lost. The terminal already
+//     applied the shift to Text, so only the ESC needs adding back.
+//  8. A printable key held with Shift alone (no Alt) is its own text: the
+//     terminal already applied the shift, and x/vt would drop it for
+//     Mod != 0.
 //
 // ok == false means "x/vt has this one"; the adapter falls through to
 // SendKey.
@@ -94,7 +101,11 @@ func encodeKey(k KeyEvent, kitty bool) (string, bool) {
 		}
 	}
 
-	if k.Mod == ModShift && k.Text != "" { // rule 7
+	if !kitty && k.Mod == ModShift|ModAlt && isPrintable(k.Code) && k.Text != "" { // rule 7
+		return "\x1b" + k.Text, true
+	}
+
+	if k.Mod == ModShift && k.Text != "" { // rule 8
 		return k.Text, true
 	}
 	return "", false
