@@ -168,32 +168,40 @@ otherwise, and degrades a modified legacy key to its plain byte when neither
 applies, which is what a real terminal does.
 
 Teardown handshake: stop accepting input, end the child's process group and
-reap it, send the group one more unconditional `SIGKILL` (a member that
-ignored the first `SIGHUP` — bash gives a backgrounded job in a
-non-interactive script `SIG_IGN` for it, for instance — would otherwise
-survive), close the PTY, then `Close` the emulator once via `sync.Once` and
-join the response drain. What actually returns a writer parked in a PTY
-write, or the output pump parked in a PTY read, is the child dying, just
-reaped above — not the PTY close that follows it: creack/pty's master
-descriptor is a plain blocking fd outside Go's runtime poller, so closing it
-only marks it closed and does not itself return an in-flight read or write —
-a probe against a real pane confirmed both stayed parked seconds after
-`Close` returned and were released the instant the child was killed. The PTY
-close still has to run, and be joined, before the emulator's `Close`,
-because it and the output pump's own exit are what guarantee no pump write
-into the emulator is in flight when that runs. On Linux, which has no
-tty-revoke equivalent to macOS's, a setsid grandchild that ignored `SIGHUP`
-and still holds the PTY's slave side open could leave the output pump parked
-even after the direct child is reaped, which is what the extra group
-`SIGKILL` above closes. The response drain cannot be cancelled first: it is
-parked inside x/vt's unbuffered input pipe, and only closing that pipe
-returns it. The property the original ordering was buying — a `Close` that
-cannot race a `Read` — is bought instead by the adapter's `Close`, which
-closes the emulator's input pipe (synchronized by `io.Pipe`) rather than
-calling x/vt's own `Close`, which writes an unguarded `closed` bool that
-`Read` reads. The scrollback is read under the adapter's own lock for the
-same reason: `SafeEmulator` wraps the accessor but not the buffer it
-returns. `make test-race` is the acceptance check for both.
+reap it, send the group one more `SIGKILL` (a member that ignored the first
+`SIGHUP` — bash gives a backgrounded job in a non-interactive script
+`SIG_IGN` for it, for instance — would otherwise survive), close the PTY,
+then `Close` the emulator once via `sync.Once` and join the response drain.
+That follow-up `SIGKILL` goes out only when this `Close` actually signalled
+the group itself: a child that had already exited and been reaped before
+`Close` ran is never signalled, because the kernel is free to have handed
+its pgid to a stranger by then, and "the pid is non-zero" cannot tell the
+difference. What actually returns a writer parked in a PTY write, or the
+output pump parked in a PTY read, is the child dying, just reaped above —
+not the PTY close that follows it: creack/pty's master descriptor is a plain
+blocking fd outside Go's runtime poller, so closing it only marks it closed
+and does not itself return an in-flight read or write — a probe against a
+real pane confirmed both stayed parked seconds after `Close` returned and
+were released the instant the child was killed. The PTY close still has to
+run, and be joined, before the emulator's `Close`, because it and the output
+pump's own exit are what guarantee no pump write into the emulator is in
+flight when that runs. On Linux, which has no tty-revoke equivalent to
+macOS's, a setsid grandchild that ignored `SIGHUP` and still holds the PTY's
+slave side open could leave the output pump parked even after the direct
+child is reaped, which is what the extra group `SIGKILL` above closes — but
+only in the case where this `Close` signalled the group. Where it did not,
+that group member is left alone on Linux, the pump can stay parked behind
+it, and `Close` returns a "pump did not stop" error once its context
+expires: a hung `Close` is the trade this engine makes rather than fire a
+cross-process `SIGKILL` at a pgid it never touched. The response drain
+cannot be cancelled first: it is parked inside x/vt's unbuffered input pipe,
+and only closing that pipe returns it. The property the original ordering
+was buying — a `Close` that cannot race a `Read` — is bought instead by the
+adapter's `Close`, which closes the emulator's input pipe (synchronized by
+`io.Pipe`) rather than calling x/vt's own `Close`, which writes an unguarded
+`closed` bool that `Read` reads. The scrollback is read under the adapter's
+own lock for the same reason: `SafeEmulator` wraps the accessor but not the
+buffer it returns. `make test-race` is the acceptance check for both.
 
 Host-shell panes use the engine with `$SHELL` and no container exec.
 
