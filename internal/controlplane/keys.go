@@ -230,8 +230,7 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 }
 
 // LeaderHelp is the footer the main area gets: what the leader's second keys
-// do, in the design's order. PasteImage is listed because it is bound and
-// the config shape is stable; rollout step 5 is what makes it act.
+// do, in the design's order.
 //
 // It is deliberately shorter than the full set of second keys. This is ONE
 // line shared with the leader's own label, and help.ShortHelpView elides
