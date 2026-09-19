@@ -49,7 +49,7 @@ func TestRectContains(t *testing.T) {
 // the same arithmetic.
 
 func TestGeometryIsEmptyBeforeTheFirstWindowSize(t *testing.T) {
-	m := New(&fakeData{snap: testSnapshot()}, &recordingActor{}, nopPaneHost{}, NewKeyMap(nil))
+	m := New(&fakeData{snap: testSnapshot()}, &recordingActor{}, nopPaneHost{}, nopClipboard{}, NewKeyMap(nil))
 	mm, _ := m.Update(snapshotMsg{snap: testSnapshot()})
 	g := mm.(Model).geom
 	if g.list.contains(0, 0) || g.main.contains(30, 5) || g.sidebar.contains(0, 0) {

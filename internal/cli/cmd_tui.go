@@ -75,6 +75,7 @@ from tui.keys in ~/.cspace/config.json.`,
 			model := controlplane.New(ctrl,
 				newControlPlaneActor(ctrl, home),
 				newPaneHost(ctrl, home),
+				newClipboard(home),
 				controlplane.NewKeyMap(userCfg.TUI.Keys))
 			_, err = tea.NewProgram(model).Run()
 			return err

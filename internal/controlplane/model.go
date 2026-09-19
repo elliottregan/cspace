@@ -54,6 +54,7 @@ type Model struct {
 	data  Data
 	actor Actor
 	host  PaneHost
+	clip  Clipboard
 
 	tabs      []*tab
 	focused   int // index into tabs; -1 when there are none
@@ -138,19 +139,24 @@ type Model struct {
 	quitting bool
 }
 
-// New builds the dashboard over the query, action and pane seams and the
-// resolved keymap. Nothing is polled and nothing is opened until Init runs.
-func New(data Data, actor Actor, host PaneHost, keys KeyMap) Model {
+// New builds the dashboard over the query, action, pane and clipboard seams
+// and the resolved keymap. Nothing is polled and nothing is opened until
+// Init runs.
+func New(data Data, actor Actor, host PaneHost, clip Clipboard, keys KeyMap) Model {
 	ti := textinput.New()
 	ti.Placeholder = "message"
 	ti.CharLimit = 2000
 	if host == nil {
 		host = nopPaneHost{}
 	}
+	if clip == nil {
+		clip = nopClipboard{}
+	}
 	return Model{
 		data:     data,
 		actor:    actor,
 		host:     host,
+		clip:     clip,
 		keys:     keys,
 		help:     help.New(),
 		now:      time.Now,
