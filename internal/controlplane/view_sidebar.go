@@ -200,6 +200,36 @@ func renderSidebar(rows []control.Row, live map[sandboxKey]liveState, ports map[
 	return strings.Join(out, "\n")
 }
 
+// sidebarSplit divides the sidebar column of `height` lines into the row
+// list and the detail band beneath it, and reports how many lines each
+// gets. A zero band means there is no band and no rule: below twelve lines
+// there is not enough for both, and the row list is the thing you cannot
+// navigate without.
+//
+// It is a function rather than four lines inside sidebarColumn because the
+// mouse has to know where the list ends without rendering anything, and two
+// copies of this arithmetic is two places for the list's last line to move
+// out from under a click.
+func sidebarSplit(height int) (list, band int) {
+	if height <= 0 {
+		return 0, 0
+	}
+	band = height / 3
+	switch {
+	case height < 12:
+		band = 0
+	case band < 6:
+		band = 6
+	case band > 14:
+		band = 14
+	}
+	list = height
+	if band > 0 {
+		list = height - band - 1 // the rule
+	}
+	return list, band
+}
+
 // fit pads s with spaces, or truncates it with an ellipsis, so it occupies
 // exactly w cells. Width is measured in display cells (ansi.StringWidth), so
 // a glyph like ● or a multi-byte name is never cut mid-character.

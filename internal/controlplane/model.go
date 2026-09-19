@@ -126,6 +126,10 @@ type Model struct {
 	noticeGen int
 
 	width, height int
+	// geom is where the last layout put everything, so a mouse message can
+	// be hit-tested without rendering. Update refreshes it after every
+	// message; View never writes it.
+	geom geometry
 	// quitting is nothing in production — tea.Quit is what actually ends the
 	// program — but it is the observable two tests assert on: that `q` quits
 	// from the sidebar and does *not* from inside the send box, where the
@@ -188,7 +192,29 @@ func (m Model) paused() bool {
 	return m.mode != modeNormal || m.action == LabelOpenPane
 }
 
+// Update refreshes the layout geometry after handling a message, and does
+// nothing else the method below does not.
+//
+// The refresh is here rather than at each of update's thirty-odd return
+// points, and rather than in View, which has a value receiver and can store
+// nothing. It runs on every message, including a pane's ~30/s redraw
+// signal: it re-renders the row list and the tabs — the same work View
+// does for those two regions, and small beside the emulator render that
+// same signal triggers.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	mm, ok := next.(Model)
+	if !ok {
+		// Unreachable: every return in update is a Model. Kept so a future
+		// arm that returns something else degrades to "no geometry" rather
+		// than panicking under the operator's cursor.
+		return next, cmd
+	}
+	mm.geom = mm.computeGeometry()
+	return mm, cmd
+}
+
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
