@@ -574,6 +574,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseClickMsg:
 		return m.handleClick(msg)
 
+	case tea.MouseWheelMsg:
+		return m.handleWheel(msg)
+
 	case tea.MouseReleaseMsg, tea.MouseMotionMsg:
 		// Cell motion mode reports a release for every click, and motion
 		// while a button is held — a drag. The design has no drag gesture
