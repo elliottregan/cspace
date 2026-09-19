@@ -62,6 +62,12 @@ type vtEmulator struct {
 	kittyFlags int
 	kittyOn    bool
 
+	// forcedKitty makes kittyEnabled answer yes whatever the child
+	// negotiated. Set once at construction, before any goroutine exists;
+	// read under mu with the rest of the kitty state so there is one rule
+	// rather than two. See newVTEmulator's doc and pane.ExtendedKeys.
+	forcedKitty bool
+
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -71,8 +77,13 @@ var _ Emulator = (*vtEmulator)(nil)
 // newVTEmulator builds the adapter. Handlers are registered before it is
 // returned — and therefore before the engine starts any goroutine — because
 // x/vt's RegisterCsiHandler appends to a plain map with no lock of its own.
-func newVTEmulator(cols, rows int) *vtEmulator {
-	e := &vtEmulator{term: vt.NewSafeEmulator(cols, rows)}
+//
+// forceKitty short-circuits the negotiation the handlers exist to track, for
+// a child that cannot conduct it on its own behalf: see pane.ExtendedKeys.
+// The handlers are still registered, because such a child may sit behind
+// something that does negotiate, and a `?u` query still has to be answered.
+func newVTEmulator(cols, rows int, forceKitty bool) *vtEmulator {
+	e := &vtEmulator{term: vt.NewSafeEmulator(cols, rows), forcedKitty: forceKitty}
 	e.term.SetScrollbackSize(scrollbackLines)
 	e.registerKitty()
 	return e
@@ -261,7 +272,7 @@ func (e *vtEmulator) registerKitty() {
 func (e *vtEmulator) kittyEnabled() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.kittyOn && e.kittyFlags != 0
+	return e.forcedKitty || (e.kittyOn && e.kittyFlags != 0)
 }
 
 // vtScrollback adapts x/vt's history to Scrollback.

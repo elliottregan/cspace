@@ -242,7 +242,7 @@ func runEmulatorSuite(t *testing.T, newEmu newEmulator) {
 // TestVTEmulatorConformance is the one implementation there is, run through
 // the suite. This is the whole cost of adding a second one.
 func TestVTEmulatorConformance(t *testing.T) {
-	runEmulatorSuite(t, func(cols, rows int) Emulator { return newVTEmulator(cols, rows) })
+	runEmulatorSuite(t, func(cols, rows int) Emulator { return newVTEmulator(cols, rows, false) })
 }
 
 // TestVTEmulatorTracksTheKittyKeyboardProtocol is x/vt-specific: the kitty
@@ -250,7 +250,7 @@ func TestVTEmulatorConformance(t *testing.T) {
 // has nowhere to put them), so it is asserted against the concrete type
 // rather than through the interface.
 func TestVTEmulatorTracksTheKittyKeyboardProtocol(t *testing.T) {
-	e := newVTEmulator(20, 4)
+	e := newVTEmulator(20, 4, false)
 	r := &responses{done: make(chan struct{})}
 	go func() {
 		defer close(r.done)
@@ -357,7 +357,7 @@ func TestVTEmulatorTracksTheKittyKeyboardProtocol(t *testing.T) {
 // a write to the wrong end) keeps exactly 16 entries while holding the wrong
 // sixteen. Pushing the same flags twenty times cannot tell those apart.
 func TestVTEmulatorCapsKittyStack(t *testing.T) {
-	e := newVTEmulator(20, 4)
+	e := newVTEmulator(20, 4, false)
 	r := &responses{done: make(chan struct{})}
 	go func() {
 		defer close(r.done)
@@ -418,7 +418,7 @@ func TestVTEmulatorCapsKittyStack(t *testing.T) {
 // x/vt's own Close writes. If this ever fails, Close falls back to x/vt's
 // Close and the data race comes back.
 func TestVTInputPipeIsAnIOCloser(t *testing.T) {
-	e := newVTEmulator(10, 2)
+	e := newVTEmulator(10, 2, false)
 	defer func() { _ = e.Close() }()
 	if _, ok := e.term.InputPipe().(interface{ Close() error }); !ok {
 		t.Fatalf("InputPipe() is %T, not an io.Closer", e.term.InputPipe())
