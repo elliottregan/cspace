@@ -142,9 +142,14 @@ func (m Model) handleLeaderKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			// pasteboard conversion that can use it — so v is the key a
 			// person is most likely to press twice, and a second silent
 			// no-op reads as a broken binding rather than a busy one. The
-			// notice names the action that is actually holding the gate,
+			// answer names the action that is actually holding the gate,
 			// which is not always this one.
-			m.notice = notice{text: m.action + " is still in progress", isErr: true}
+			//
+			// Through actionNote rather than m.notice: footer() ranks the
+			// spinner above the notice, so a notice set here would be
+			// invisible for exactly as long as it was true, and would then
+			// surface in red once the action it describes had finished.
+			m.actionNote = m.action + " is still in progress"
 			return m, nil
 		}
 		return m.startAction(LabelPasteImage, m.pasteImageCmd(t))

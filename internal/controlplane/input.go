@@ -148,6 +148,9 @@ func (m Model) startAction(label string, cmd tea.Cmd) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.action = label
+	// A new action gets a clean line: whatever the last one was asked
+	// while it was busy has nothing to do with this one.
+	m.actionNote = ""
 	return m, tea.Batch(cmd, m.spinner.Tick)
 }
 

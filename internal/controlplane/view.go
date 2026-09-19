@@ -217,7 +217,16 @@ func (m Model) footer() string {
 		// confirm).
 		return sendBoxLine(sendBoxPrefix(m.pending.Name), m.input.View(), m.width)
 	case m.action != "":
-		return m.spinner.View() + " " + m.action + "…"
+		line := m.spinner.View() + " " + m.action + "…"
+		if m.actionNote != "" {
+			// fit() on the composed line, not on the note alone: the
+			// spinner frame is a single rune and the label is plain text,
+			// so there is no ANSI in front of the truncation point here —
+			// unlike the notice arms, which are styled before they are
+			// measured.
+			line = fit(line+"  "+m.actionNote, m.width)
+		}
+		return line
 	case m.notice.text != "":
 		if m.notice.isErr {
 			return styleErr.Render(fit(m.notice.text, m.width))
