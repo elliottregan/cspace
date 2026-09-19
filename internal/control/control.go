@@ -48,10 +48,19 @@ const (
 	ResolverFile = "/etc/resolver/" + DNSDomain
 )
 
+// controlPlaneRoot is the directory ControlPlaneDir hangs off, and the one
+// SweepClientRecords walks. It is factored out because two definitions of
+// this path is one too many: a sweep that looked anywhere but where the
+// writer writes would find nothing, report a clean pass, and leave every
+// stale client attached.
+func controlPlaneRoot(home string) string {
+	return filepath.Join(home, ".cspace", "controlplane")
+}
+
 // ControlPlaneDir is where cspace keeps its per-sandbox attach bookkeeping on
 // the host: the attach lock and one record file per live tmux client. It is
 // deliberately not the session directory — `cspace down` wipes that, and a
 // client record must outlive nothing but its own client.
 func ControlPlaneDir(home, project, sandbox string) string {
-	return filepath.Join(home, ".cspace", "controlplane", project, sandbox)
+	return filepath.Join(controlPlaneRoot(home), project, sandbox)
 }

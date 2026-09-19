@@ -27,9 +27,12 @@ func newTuiCmd() *cobra.Command {
 project: lifecycle and agent state per sandbox, its labeled URLs, its
 compose sidecars and the project's shared browser.
 
-Actions follow the selection — attach, send a turn, interrupt, tear down,
-boot, restart the browser sidecar. Press ? for the full binding list;
-bindings come from tui.keys in ~/.cspace/config.json.`,
+Actions follow the selection — open a Claude pane, a shell or the
+supervisor's events, send a turn, interrupt, tear down, boot, restart the
+browser sidecar. A pane runs inside the window: every key goes to it
+except the leader, ctrl+space, whose second keys move between tabs and
+open and close them. Press ? for the full binding list; bindings come
+from tui.keys in ~/.cspace/config.json.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			home, err := os.UserHomeDir()
@@ -69,7 +72,9 @@ bindings come from tui.keys in ~/.cspace/config.json.`,
 				return fmt.Errorf("load %s: %w", config.UserConfigPath(home), err)
 			}
 
-			model := controlplane.New(ctrl, newControlPlaneActor(ctrl, home),
+			model := controlplane.New(ctrl,
+				newControlPlaneActor(ctrl, home),
+				newPaneHost(ctrl, home),
 				controlplane.NewKeyMap(userCfg.TUI.Keys))
 			_, err = tea.NewProgram(model).Run()
 			return err

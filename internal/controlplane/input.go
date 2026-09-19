@@ -9,8 +9,8 @@ import (
 	"github.com/elliottregan/cspace/internal/control"
 )
 
-// handleKey routes a keypress to whatever owns the keyboard. Ctrl+C never
-// arrives here — Update takes it first, so no mode can swallow the way out.
+// handleKey routes a keypress to whatever owns the keyboard: a modal, the
+// leader, the focused pane, or the sidebar.
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// An error notice stays until the next keypress; any key dismisses it.
 	// Success notices fade on their own timer, so leave those alone.
@@ -22,6 +22,35 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.updateConfirm(msg)
 	case modeInput:
 		return m.handleInputKey(msg)
+	case modePicker:
+		return m.updatePicker(msg)
+	}
+	if m.leaderArmed {
+		m.leaderArmed = false
+		return m.handleLeaderKey(msg)
+	}
+	if m.showHelp {
+		// The overlay swallows the very next key, whatever it is — including
+		// the leader itself, which must not arm behind an overlay it cannot
+		// then be used to read: the very next key would need to be blindly
+		// the leader's second key. That check has to sit HERE rather than at
+		// the top of handleNormalKey where step 3 left it, and above the
+		// leader-arm check below it. With a pane focused the route further
+		// down never reaches handleNormalKey, so without both of those the
+		// overlay would be dismissible only by a second leader `?` while
+		// every other key went to a child the overlay is covering — typing
+		// blind into Claude while reading help.
+		m.showHelp = false
+		return m, nil
+	}
+	if key.Matches(msg, m.keys.Leader) {
+		m.leaderArmed = true
+		return m, nil
+	}
+	if m.focus == focusMain && m.focusedTab() != nil {
+		// Every key but the leader belongs to the child. That is the point
+		// of a pane, and it is why the leader must not be ctrl+b.
+		return m.handlePaneKey(msg)
 	}
 	return m.handleNormalKey(msg)
 }
@@ -32,21 +61,13 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // nothing rather than failing on press, and the footer has already stopped
 // offering it.
 func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	// The help overlay swallows the very next key regardless of what it is:
-	// it closes on anything, not just `?`. Without this, a key that also
-	// dispatches an action (d, for instance) would both close help and fire
-	// that action against a main area the overlay had been covering.
-	if m.showHelp {
-		m.showHelp = false
-		return m, nil
-	}
 	switch {
 	case key.Matches(msg, m.keys.Help):
 		m.showHelp = !m.showHelp
 		return m, nil
 	case key.Matches(msg, m.keys.Quit):
 		m.quitting = true
-		return m, tea.Quit
+		return m, m.quitCmd()
 	case key.Matches(msg, m.keys.MoveUp):
 		m.moveSelection(-1)
 		return m, m.eventsCmd()
@@ -59,10 +80,18 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.pollingMedium = true
 		return m, m.snapshotCmd()
+	case key.Matches(msg, m.keys.FocusMain):
+		if len(m.tabs) == 0 {
+			return m, nil
+		}
+		m.focus = focusMain
+		return m, nil
 	}
 
-	// One action at a time: the footer reports one outcome, and attach hands
-	// the terminal away entirely while it runs.
+	// One action at a time: the footer reports one outcome, so a second
+	// action started under the first would have the pair of them racing
+	// for that line and the first result to land clearing the gate for
+	// both.
 	if m.action != "" {
 		return m, nil
 	}
@@ -71,7 +100,11 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	keys := m.keys.forRow(row, m.live[keyOf(row)])
 	switch {
 	case key.Matches(msg, keys.Attach):
-		return m.startAction(LabelAttach, m.actor.Attach(row))
+		return m.openOrFocus(KindClaude, row)
+	case key.Matches(msg, keys.Shell):
+		return m.openOrFocus(KindShell, row)
+	case key.Matches(msg, keys.Supervisor):
+		return m.openOrFocus(KindSupervisor, row)
 	case key.Matches(msg, keys.Teardown):
 		m.mode = modeConfirmDown
 		// pending pins the row the prompt was opened against: a poll can

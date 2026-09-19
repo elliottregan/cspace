@@ -242,7 +242,7 @@ func runEmulatorSuite(t *testing.T, newEmu newEmulator) {
 // TestVTEmulatorConformance is the one implementation there is, run through
 // the suite. This is the whole cost of adding a second one.
 func TestVTEmulatorConformance(t *testing.T) {
-	runEmulatorSuite(t, func(cols, rows int) Emulator { return newVTEmulator(cols, rows) })
+	runEmulatorSuite(t, func(cols, rows int) Emulator { return newVTEmulator(cols, rows, false) })
 }
 
 // TestVTEmulatorTracksTheKittyKeyboardProtocol is x/vt-specific: the kitty
@@ -250,7 +250,7 @@ func TestVTEmulatorConformance(t *testing.T) {
 // has nowhere to put them), so it is asserted against the concrete type
 // rather than through the interface.
 func TestVTEmulatorTracksTheKittyKeyboardProtocol(t *testing.T) {
-	e := newVTEmulator(20, 4)
+	e := newVTEmulator(20, 4, false)
 	r := &responses{done: make(chan struct{})}
 	go func() {
 		defer close(r.done)
@@ -357,7 +357,7 @@ func TestVTEmulatorTracksTheKittyKeyboardProtocol(t *testing.T) {
 // a write to the wrong end) keeps exactly 16 entries while holding the wrong
 // sixteen. Pushing the same flags twenty times cannot tell those apart.
 func TestVTEmulatorCapsKittyStack(t *testing.T) {
-	e := newVTEmulator(20, 4)
+	e := newVTEmulator(20, 4, false)
 	r := &responses{done: make(chan struct{})}
 	go func() {
 		defer close(r.done)
@@ -412,13 +412,70 @@ func TestVTEmulatorCapsKittyStack(t *testing.T) {
 	r.waitFor(t, "\x1b[?19u")
 }
 
+// TestForcedExtendedKeysAreNotAKittyNegotiation covers what
+// newVTEmulator's doc claims about a forced emulator and nothing else did:
+// that the child's own kitty bookkeeping still runs behind the option, that
+// a real negotiation outranks it, that a pop the child never balanced cannot
+// switch it off, and that the `?u` query answers with the CHILD's flags —
+// forcing is this package's decision and the child must not read it back as
+// a protocol it enabled.
+func TestForcedExtendedKeysAreNotAKittyNegotiation(t *testing.T) {
+	var vte *vtEmulator
+	e, r := newTestEmulator(t, func(cols, rows int) Emulator {
+		vte = newVTEmulator(cols, rows, true)
+		return vte
+	}, 20, 4)
+
+	if got := vte.encoding(); got != encForced {
+		t.Fatalf("encoding of a forced emulator = %v, want encForced", got)
+	}
+	if vte.kittyEnabled() {
+		t.Error("a forced emulator reports the child negotiated kitty; it did not")
+	}
+	// Nothing was negotiated, so the report is flags 0 even though the
+	// pane is sending CSI-u forms.
+	if _, err := e.Write([]byte("\x1b[?u")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	r.waitFor(t, "\x1b[?0u")
+
+	// A child that does negotiate takes over: the whole protocol, not the
+	// narrow forced subset.
+	if _, err := e.Write([]byte("\x1b[>1u")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if got := vte.encoding(); got != encKitty {
+		t.Fatalf("encoding after the child pushed flags 1 = %v, want encKitty", got)
+	}
+	if _, err := e.Write([]byte("\x1b[?u")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	r.waitFor(t, "\x1b[?1u")
+
+	// ...and popping it back off returns to forced, never to legacy. A pop
+	// is how a child turns the protocol off; it must not be able to turn
+	// off a form it never turned on.
+	if _, err := e.Write([]byte("\x1b[<1u")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if got := vte.encoding(); got != encForced {
+		t.Fatalf("encoding after the pop = %v, want encForced", got)
+	}
+	if _, err := e.Write([]byte("\x1b[?u")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	// Anchored on the previous answer so this matches the third report and
+	// not the first, which is still in the collected buffer.
+	r.waitFor(t, "\x1b[?1u\x1b[?0u")
+}
+
 // TestVTInputPipeIsAnIOCloser locks the assumption Close is built on: x/vt's
 // InputPipe hands back the io.PipeWriter itself, so closing it is what
 // unblocks a blocked Read without touching the unguarded `closed` bool that
 // x/vt's own Close writes. If this ever fails, Close falls back to x/vt's
 // Close and the data race comes back.
 func TestVTInputPipeIsAnIOCloser(t *testing.T) {
-	e := newVTEmulator(10, 2)
+	e := newVTEmulator(10, 2, false)
 	defer func() { _ = e.Close() }()
 	if _, ok := e.term.InputPipe().(interface{ Close() error }); !ok {
 		t.Fatalf("InputPipe() is %T, not an io.Closer", e.term.InputPipe())

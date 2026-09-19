@@ -8,9 +8,9 @@ import (
 
 // Actor runs the dashboard's side effects. It is declared here — by the
 // consumer — and implemented in internal/cli, whose actor delegates to
-// internal/control for everything but attach, which needs to hand the
-// terminal to a child and is therefore a Bubble Tea concern. Injecting it is
-// what keeps this package from importing internal/cli.
+// internal/control for all of them. Injecting it is what keeps this package
+// from importing internal/cli. Panes are a separate seam (PaneHost), because
+// opening one produces a live process this package then owns.
 //
 // Every method returns a tea.Cmd that eventually emits the message Result
 // builds. None of them may do I/O before the returned command runs: Update
@@ -21,7 +21,6 @@ import (
 // it arrives; a nil Cmd means "nothing to do" and must not be returned for an
 // action the caller marked in flight.
 type Actor interface {
-	Attach(row control.Row) tea.Cmd
 	Down(row control.Row) tea.Cmd
 	Send(row control.Row, text string) tea.Cmd
 	Interrupt(row control.Row) tea.Cmd
@@ -36,7 +35,6 @@ type Actor interface {
 // action whatever its label says, leaving only a footer reading the wrong
 // verb.
 const (
-	LabelAttach         = "attach"
 	LabelDown           = "down"
 	LabelSend           = "send"
 	LabelInterrupt      = "interrupt"

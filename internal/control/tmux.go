@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -179,21 +180,41 @@ func (t *Tmux) Present(ctx context.Context, container string) (bool, error) {
 // The first attach creates both, and the snapshot taken just before it has to
 // succeed or there is nothing to diff against.
 func (t *Tmux) ListClients(ctx context.Context, container, session string) ([]string, error) {
-	out, code, err := t.Exec.Exec(ctx, container,
+	ttys, _, err := t.listClients(ctx, container, session)
+	return ttys, err
+}
+
+// listClients is ListClients' implementation, plus the one thing
+// ListClients itself throws away: whether a non-zero exit was tmux's own
+// answer that there is nothing to list, or something else entirely.
+// ListClients' every existing caller is fine collapsing the two — "no
+// session yet" and "container unreachable" both mean "nothing found" to
+// them — but the startup sweep (attach.go) is not: reading an unreachable
+// container's failed exec as "tmux says no clients" would delete a record
+// that may still name an attached client.
+//
+// answered is true exactly when tmux itself is the one who said there was
+// nothing: a clean exit with parsed output, or a non-zero exit carrying one
+// of tmux's own gone-client/gone-session markers (clientAlreadyGone, shared
+// with DetachClient). It is false for a non-zero exit that says anything
+// else — most commonly the `container` CLI's own "not found"/"not running"
+// text, or a refused connection, for a container list-clients could not
+// reach at all.
+func (t *Tmux) listClients(ctx context.Context, container, session string) (ttys []string, answered bool, err error) {
+	out, code, execErr := t.Exec.Exec(ctx, container,
 		[]string{"tmux", "list-clients", "-t", session, "-F", "#{client_tty}"})
-	if err != nil {
-		return nil, err
+	if execErr != nil {
+		return nil, false, execErr
 	}
 	if code != 0 {
-		return nil, nil
+		return nil, clientAlreadyGone(strings.TrimSpace(out)), nil
 	}
-	var ttys []string
 	for _, line := range strings.Split(out, "\n") {
 		if tty := strings.TrimSpace(line); tty != "" {
 			ttys = append(ttys, tty)
 		}
 	}
-	return ttys, nil
+	return ttys, true, nil
 }
 
 // ErrClientGone marks a DetachClient failure that means the client (and
@@ -214,6 +235,44 @@ var clientGoneMarkers = []string{
 	"no server running",
 	"can't find session",
 	"no such session",
+}
+
+// noServerRunning is the same answer in the wording tmux used before 3.4:
+// `error connecting to <socket> (<strerror>)`, printed when there is no
+// server to connect to at all. "no server running on <socket>" above is the
+// 3.4+ replacement — but the sandbox image ships Debian's tmux 3.3a, so in
+// a real sandbox that has not been attached to since boot EVERY list-clients
+// and detach-client answers in this older form. Reading it as "the exec
+// never reached tmux" is what left the startup sweep unable to reap a single
+// record in a freshly booted sandbox (Task 8, Step 3).
+//
+// Anchored on the whole line, with tmux's parenthesised errno at the end, so
+// it cannot match the `container` CLI's own transport complaints — the thing
+// the sweep must never mistake for an answer. Apple Container's are shaped
+// `Error: get failed: container <name> not found`.
+//
+// The trailing anchor tolerates trailing whitespace and a \r, which is not
+// theoretical hardening of a parser: it is one `-t` away. CLIExecer passes
+// no `-t` today (see its Exec), so nothing arrives through a pty and no
+// line ends in CRLF; an executor that did would otherwise silently stop
+// matching every line here.
+var noServerRunning = regexp.MustCompile(`(?m)^error connecting to .+ \((.+?)\)\s*$`)
+
+// noServerErrnos are the strerror texts in that message that actually mean
+// "nothing is listening on the socket". tmux prints whatever strerror gave
+// it, and only these two are evidence of a dead server: ENOENT (the socket
+// file is not there) and ECONNREFUSED (it is, but nobody is accepting).
+//
+// The rest are not. EACCES ("permission denied") and a socket-path mismatch
+// both produce the same sentence with a server very much alive — and
+// answering the sweep "tmux says nothing is attached" on those would delete
+// the record of a client that is still attached, which is the one outcome
+// attach.go's evidence rules exist to prevent. Unreachable today (attach
+// and sweep both exec as the same user against the same
+// /tmp/tmux-<uid>/default), so this is hardening rather than a fix.
+var noServerErrnos = []string{
+	"No such file or directory",
+	"Connection refused",
 }
 
 // DetachClient ends one client's attachment to its session.
@@ -249,6 +308,21 @@ func clientAlreadyGone(out string) bool {
 	for _, marker := range clientGoneMarkers {
 		if strings.Contains(out, marker) {
 			return true
+		}
+	}
+	return saysNoServer(out)
+}
+
+// saysNoServer reports whether the output is tmux's pre-3.4 no-server line
+// AND its errno is one that means nothing is listening. The whole line has
+// to be tmux's own and the reason has to be the right one: see
+// noServerRunning and noServerErrnos.
+func saysNoServer(out string) bool {
+	for _, m := range noServerRunning.FindAllStringSubmatch(out, -1) {
+		for _, errno := range noServerErrnos {
+			if strings.Contains(m[1], errno) {
+				return true
+			}
 		}
 	}
 	return false

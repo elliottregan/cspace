@@ -165,11 +165,63 @@ func (c cmdHandle) Pid() int {
 	return c.Process.Pid
 }
 
+// Option adjusts one pane at open time.
+type Option func(*openConfig)
+
+// openConfig is what the Options set. Nothing here can change after Open
+// returns: these decide how the emulator is built.
+type openConfig struct{ extendedKeys bool }
+
+// ExtendedKeys encodes a modified key in the CSI-u form — but only where
+// the legacy form would arrive with one of its modifiers missing. Every key
+// a legacy terminal can express faithfully keeps the bytes it has always
+// sent. keys.go's legacyLosesModifier is that rule, and keys_test.go's
+// forced block is its specification.
+//
+// It exists for one child: a tmux client. A pane normally learns that the
+// program it runs speaks CSI-u by watching for the protocol's own push
+// sequence in its output (vt.go's registerKitty) — Claude Code sends
+// `ESC [ > 5 u` a moment after it starts. Run under tmux, it still sends it,
+// but to tmux, which consumes it: measured against the sandbox image's tmux
+// 3.3a, not one byte of the negotiation reaches the host side, so the pane
+// can never see it and every modified key degrades. Shift+Enter degrading to
+// plain Enter is the one that matters — it SENDS the half-written message
+// instead of breaking the line.
+//
+// What keeps the other keys legacy is this package, NOT tmux. The first cut
+// of this option assumed tmux hands an application the extended form "only
+// for a key with no legacy byte"; tmux 3.3a's rule is narrower than that.
+// It folds Ctrl+<letter> (and ctrl+space/2/6/-/?/|) back to its C0 byte at
+// parse time (`tty-keys.c`) and turns Alt+<ascii> into ESC+byte
+// (`input-keys.c`), but everything else with no entry in its built-in table
+// is re-emitted verbatim in the extended form, legacy byte or not —
+// `extended-keys always` in cspace's tmux.conf puts MODE_KEXTENDED on every
+// pane and the application cannot turn it off. So `ESC [ 9;2 u` for
+// Shift+Tab reaches the application as `ESC [ 9;2 u`, not as the `ESC [ Z`
+// it has always had. The two keys that were measured through tmux
+// (`ESC [ 99;5 u` arriving as a real ctrl+c, `ESC [ 105;5 u` as a tab) are
+// both from the one family tmux folds, which is what made the wider claim
+// look true.
+//
+// Do not pass it for a child that talks to the terminal itself: that one can
+// negotiate (and a negotiation wins over this — see vtEmulator.encoding),
+// and forcing the form on a program that never asked for it is how a
+// modified key turns into visible garbage in its input box. A shell is the
+// worked example: bash and zsh answer `ESC [ 13;2 u` with a beep and `3;2u`
+// typed onto the command line.
+func ExtendedKeys() Option {
+	return func(c *openConfig) { c.extendedKeys = true }
+}
+
 // Open starts cmd on a new pseudo-terminal of the given size and begins
 // interpreting its output.
-func Open(cmd Command, cols, rows int) (*Pane, error) {
+func Open(cmd Command, cols, rows int, opts ...Option) (*Pane, error) {
 	if err := validateOpen(cmd, cols, rows); err != nil {
 		return nil, err
+	}
+	var cfg openConfig
+	for _, opt := range opts {
+		opt(&cfg)
 	}
 	// Clamp before the emulator is built as well as before the pty is
 	// sized: x/vt allocates its screen from these two numbers.
@@ -177,7 +229,7 @@ func Open(cmd Command, cols, rows int) (*Pane, error) {
 	// Validate before building the emulator: x/vt's constructor allocates a
 	// fixed 4 MiB parser buffer eagerly, and a bad Command or size should
 	// fail before paying for it.
-	return open(cmd, cols, rows, newVTEmulator(cols, rows))
+	return open(cmd, cols, rows, newVTEmulator(cols, rows, cfg.extendedKeys))
 }
 
 // validateOpen is Open's precondition check. open re-runs it for a caller
@@ -411,6 +463,17 @@ func (p *Pane) Exited() (code int, err error, ok bool) {
 // Dropped is how many bytes of input were thrown away because the child was
 // not reading. Non-zero means a key or a paste was lost.
 func (p *Pane) Dropped() uint64 { return p.dropped.Load() }
+
+// Closed reports whether Close has run: true once Dirty is closed and a
+// receive on it returns immediately. It is the structural counterpart to
+// Dirty's own doc — a caller deciding whether to wait on Dirty again should
+// ask this rather than infer it from Exited, which give-up-on-the-waiter
+// paths can leave false even after Close has already torn the pane down.
+func (p *Pane) Closed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.dirtyClosed
+}
 
 // Close runs the teardown handshake and joins every goroutine, honouring
 // ctx: a join that does not complete before ctx is done makes Close return

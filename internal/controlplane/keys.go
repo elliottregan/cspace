@@ -25,6 +25,22 @@ const (
 	ActionHelp           = "help"
 	ActionQuit           = "quit"
 	ActionLeader         = "leader"
+
+	// The pane actions. The first two are sidebar keys the design reserved
+	// in step 3 and step 4 now binds; the rest are the leader's second keys,
+	// declared as ordinary actions so one config mechanism covers every
+	// binding in the program.
+	ActionShell        = "shell"
+	ActionSupervisor   = "supervisor"
+	ActionFocusMain    = "focusMain"
+	ActionFocusSidebar = "focusSidebar"
+	ActionNextTab      = "nextTab"
+	ActionPrevTab      = "prevTab"
+	ActionNewPane      = "newPane"
+	ActionClosePane    = "closePane"
+	ActionScroll       = "scroll"
+	ActionLive         = "live"
+	ActionPasteImage   = "pasteImage"
 )
 
 // defaultKeys is the built-in keystroke list per action, and must stay
@@ -32,16 +48,17 @@ const (
 // together). Go carries it as well as the JSON so a binary whose embedded
 // assets are missing an action still has a working dashboard.
 //
-// `s` and `a` are the spec's sidebar keys for the shell pane and the
-// supervisor view, which arrive with panes in rollout step 4. Neither is
-// bound here — a default this ships and step 4 has to take back is a
-// user-visible breaking change, and these strings are published in
-// lib/defaults.json. So attach is Enter alone, and send is on `m` (for
-// message) rather than on the `s` that is spoken for.
+// The leader's second keys are ordinary actions here rather than a nested
+// map: one mechanism covers every binding, `tui.keys` stays flat, and
+// key.Matches works the same in both contexts. `?` and `q` are deliberately
+// shared between the sidebar and the leader — the design lists them under
+// both, and one binding means one label in both footers.
 var defaultKeys = map[string][]string{
 	ActionMoveUp:         {"up", "k"},
 	ActionMoveDown:       {"down", "j"},
 	ActionAttach:         {"enter"},
+	ActionShell:          {"s"},
+	ActionSupervisor:     {"a"},
 	ActionSend:           {"m"},
 	ActionInterrupt:      {"i"},
 	ActionTeardown:       {"d"},
@@ -51,6 +68,15 @@ var defaultKeys = map[string][]string{
 	ActionHelp:           {"?"},
 	ActionQuit:           {"q"},
 	ActionLeader:         {"ctrl+space"},
+	ActionFocusMain:      {"tab"},
+	ActionFocusSidebar:   {"h"},
+	ActionNextTab:        {"n"},
+	ActionPrevTab:        {"p"},
+	ActionNewPane:        {"t"},
+	ActionClosePane:      {"x"},
+	ActionScroll:         {"["},
+	ActionLive:           {"g"},
+	ActionPasteImage:     {"v"},
 }
 
 // actionHelp is the label and description each binding shows in the footer
@@ -62,7 +88,7 @@ var defaultKeys = map[string][]string{
 var actionHelp = map[string][2]string{
 	ActionMoveUp:         {"↑/k", "up"},
 	ActionMoveDown:       {"↓/j", "down"},
-	ActionAttach:         {"enter", "attach"},
+	ActionAttach:         {"enter", "claude pane"},
 	ActionSend:           {"m", "send a turn"},
 	ActionInterrupt:      {"i", "interrupt"},
 	ActionTeardown:       {"d", "tear down"},
@@ -71,6 +97,18 @@ var actionHelp = map[string][2]string{
 	ActionRefresh:        {"r", "refresh"},
 	ActionHelp:           {"?", "help"},
 	ActionQuit:           {"q", "quit"},
+	ActionLeader:         {"⌃Space", "leader"},
+	ActionShell:          {"s", "shell pane"},
+	ActionSupervisor:     {"a", "supervisor"},
+	ActionFocusMain:      {"tab", "focus pane"},
+	ActionFocusSidebar:   {"h", "sidebar"},
+	ActionNextTab:        {"n", "next tab"},
+	ActionPrevTab:        {"p", "prev tab"},
+	ActionNewPane:        {"t", "new"},
+	ActionClosePane:      {"x", "close"},
+	ActionScroll:         {"[", "scroll"},
+	ActionLive:           {"g", "live"},
+	ActionPasteImage:     {"v", "paste image"},
 }
 
 // forceQuit is Ctrl+C: always bound, never configurable, and handled before
@@ -96,11 +134,22 @@ type KeyMap struct {
 	Help           key.Binding
 	Quit           key.Binding
 
-	// Leader is declared for rollout step 4's pane bindings so the config
-	// shape is stable now. Nothing in step 3 dispatches it, and it is kept
-	// out of ShortHelp/FullHelp so the footer does not advertise a key that
-	// does nothing yet.
+	// Leader is the prefix for every pane binding. Ctrl+Space by default,
+	// and it must not be Ctrl+B — Claude Code uses that to background a
+	// task, and the whole point of a pane is that Claude's keys reach it.
 	Leader key.Binding
+
+	Shell        key.Binding
+	Supervisor   key.Binding
+	FocusMain    key.Binding
+	FocusSidebar key.Binding
+	NextTab      key.Binding
+	PrevTab      key.Binding
+	NewPane      key.Binding
+	ClosePane    key.Binding
+	Scroll       key.Binding
+	Live         key.Binding
+	PasteImage   key.Binding
 }
 
 // NewKeyMap builds the bindings, applying the user-level config's tui.keys
@@ -134,6 +183,17 @@ func NewKeyMap(overrides map[string][]string) KeyMap {
 		Help:           binding(ActionHelp),
 		Quit:           binding(ActionQuit),
 		Leader:         binding(ActionLeader),
+		Shell:          binding(ActionShell),
+		Supervisor:     binding(ActionSupervisor),
+		FocusMain:      binding(ActionFocusMain),
+		FocusSidebar:   binding(ActionFocusSidebar),
+		NextTab:        binding(ActionNextTab),
+		PrevTab:        binding(ActionPrevTab),
+		NewPane:        binding(ActionNewPane),
+		ClosePane:      binding(ActionClosePane),
+		Scroll:         binding(ActionScroll),
+		Live:           binding(ActionLive),
+		PasteImage:     binding(ActionPasteImage),
 	}
 }
 
@@ -169,6 +229,42 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 	}
 }
 
+// LeaderHelp is the footer the main area gets: what the leader's second keys
+// do, in the design's order. PasteImage is listed because it is bound and
+// the config shape is stable; rollout step 5 is what makes it act.
+//
+// It is deliberately shorter than the full set of second keys. This is ONE
+// line shared with the leader's own label, and help.ShortHelpView elides
+// from the right once it runs out of width — so a list that does not fit is
+// a list whose tail nobody ever reads. All nine render to about 98 cells,
+// which overflows the design's 100-column reference window before the
+// leader's seven-cell prefix is even counted; these seven fit in 76. The two
+// that give are the ones already advertised elsewhere: PrevTab is in
+// PaneFullHelp below, and Help is in FullHelp, which the overlay renders
+// first.
+func (k KeyMap) LeaderHelp() []key.Binding {
+	return []key.Binding{k.FocusSidebar, k.NextTab, k.NewPane,
+		k.ClosePane, k.Scroll, k.PasteImage, k.Quit}
+}
+
+// PaneFullHelp is the help overlay's second block: the sidebar keys that
+// open a pane, and the leader's second keys.
+//
+// It is a separate method rather than three more columns on FullHelp
+// because help.FullHelpView drops whole columns once their total exceeds
+// its width and appends an ellipsis. The overlay renders into the main
+// area — 74 columns at a 100-column window — and FullHelp's four columns
+// already fill that, so a fifth and sixth would never be drawn at any
+// realistic size. helpView renders this as its own row instead, which
+// gives it the width back.
+func (k KeyMap) PaneFullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{k.Shell, k.Supervisor, k.FocusMain},
+		{k.FocusSidebar, k.NextTab, k.PrevTab},
+		{k.NewPane, k.ClosePane, k.Scroll, k.Live},
+	}
+}
+
 // forRow returns a copy with every binding the selection cannot act on
 // disabled. Disabling rather than branching at dispatch time is what keeps
 // the footer and the gate from ever disagreeing: key.Matches ignores a
@@ -180,6 +276,8 @@ func (k KeyMap) forRow(row control.Row, live liveState) KeyMap {
 	k.Send.SetEnabled(canSend(row, live))
 	k.Interrupt.SetEnabled(canInterrupt(row, live))
 	k.BrowserRestart.SetEnabled(canBrowser(row))
+	k.Shell.SetEnabled(canShell(row))
+	k.Supervisor.SetEnabled(canSupervisor(row))
 	return k
 }
 
@@ -212,6 +310,19 @@ func canInterrupt(r control.Row, l liveState) bool {
 func canBrowser(r control.Row) bool {
 	return r.Kind == control.RowBrowser || r.Kind == control.RowSandbox
 }
+
+// canShell mirrors canAttach: a shell pane runs inside the container, so
+// there has to be one.
+func canShell(r control.Row) bool {
+	return r.Kind == control.RowSandbox && r.State != control.StateStopped
+}
+
+// canSupervisor is wider than the other two on purpose. The supervisor view
+// reads events.ndjson from the host's session directory, which survives the
+// container — so a sandbox stopped with `cspace down --keep-state` still has
+// a readable history, and reading it is often exactly what a person wants
+// before deciding whether to boot it again.
+func canSupervisor(r control.Row) bool { return r.Kind == control.RowSandbox }
 
 // agentOf prefers the fast ticker's fresh status and falls back to the one
 // the snapshot carried, so the first second after start — before any fast

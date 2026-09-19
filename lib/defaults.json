@@ -43,6 +43,8 @@
       "moveUp": ["up", "k"],
       "moveDown": ["down", "j"],
       "attach": ["enter"],
+      "shell": ["s"],
+      "supervisor": ["a"],
       "send": ["m"],
       "interrupt": ["i"],
       "teardown": ["d"],
@@ -51,7 +53,16 @@
       "refresh": ["r"],
       "help": ["?"],
       "quit": ["q"],
-      "leader": ["ctrl+space"]
+      "leader": ["ctrl+space"],
+      "focusMain": ["tab"],
+      "focusSidebar": ["h"],
+      "nextTab": ["n"],
+      "prevTab": ["p"],
+      "newPane": ["t"],
+      "closePane": ["x"],
+      "scroll": ["["],
+      "live": ["g"],
+      "pasteImage": ["v"]
     }
   }
 }

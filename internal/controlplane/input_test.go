@@ -23,6 +23,12 @@ func press(s string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyUp}
 	case "down":
 		return tea.KeyPressMsg{Code: tea.KeyDown}
+	case "ctrl+space":
+		return tea.KeyPressMsg{Code: tea.KeySpace, Mod: tea.ModCtrl}
+	case "ctrl+c":
+		return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
+	case "tab":
+		return tea.KeyPressMsg{Code: tea.KeyTab}
 	}
 	r := []rune(s)[0]
 	return tea.KeyPressMsg{Code: r, Text: string(r)}
@@ -92,7 +98,7 @@ func TestMoveKeysChangeTheSelection(t *testing.T) {
 	}
 }
 
-func TestAttachAndInterruptDispatch(t *testing.T) {
+func TestInterruptDispatch(t *testing.T) {
 	a := &recordingActor{}
 	d := &fakeData{snap: testSnapshot()}
 	m := newTestModel(d, a)
@@ -104,19 +110,13 @@ func TestAttachAndInterruptDispatch(t *testing.T) {
 	}})
 	m = mm.(Model)
 
-	m2 := step(t, m, "enter")
-	if len(a.attach) != 1 || a.attach[0].Name != "mercury" {
-		t.Fatalf("attach calls = %+v, want one for mercury", a.attach)
-	}
-	if m2.action != "attach" {
-		t.Errorf("action = %q, want attach in flight", m2.action)
-	}
-
-	m3 := step(t, m, "i")
+	got := step(t, m, "i")
 	if len(a.interrupt) != 1 {
-		t.Errorf("interrupt calls = %d, want 1", len(a.interrupt))
+		t.Errorf("interrupt calls = %d, want 1 (model %v)", len(a.interrupt), got.action)
 	}
-	_ = m3
+	if got.action != LabelInterrupt {
+		t.Errorf("action = %q, want %q in flight", got.action, LabelInterrupt)
+	}
 }
 
 func TestInterruptIsGatedOnAWorkingAgent(t *testing.T) {
@@ -385,6 +385,9 @@ func TestHelpOverlayToggles(t *testing.T) {
 	}
 	if !strings.Contains(out, "~/.cspace/config.json") {
 		t.Errorf("the help overlay should say where bindings come from:\n%s", out)
+	}
+	if !strings.Contains(out, "shell pane") {
+		t.Errorf("the help overlay should list the pane bindings too:\n%s", out)
 	}
 	if !strings.Contains(out, "mercury") {
 		t.Error("the sidebar stays visible behind the help overlay")

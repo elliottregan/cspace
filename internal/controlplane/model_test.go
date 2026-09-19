@@ -89,8 +89,8 @@ func (f *fakeData) calls() (snapshots, ports, agents int) {
 
 // recordingActor records what the dashboard asked for and reports success.
 type recordingActor struct {
-	attach, down, interrupt, browser, up []control.Row
-	sends                                []struct {
+	down, interrupt, browser, up []control.Row
+	sends                        []struct {
 		row  control.Row
 		text string
 	}
@@ -98,10 +98,6 @@ type recordingActor struct {
 
 func (a *recordingActor) result(label string) tea.Cmd {
 	return func() tea.Msg { return Result(label, nil) }
-}
-func (a *recordingActor) Attach(r control.Row) tea.Cmd {
-	a.attach = append(a.attach, r)
-	return a.result("attach")
 }
 func (a *recordingActor) Down(r control.Row) tea.Cmd {
 	a.down = append(a.down, r)
@@ -149,7 +145,7 @@ func testSnapshot() control.Snapshot {
 
 // newTestModel returns a sized model with one snapshot already applied.
 func newTestModel(d *fakeData, a Actor) Model {
-	m := New(d, a, NewKeyMap(nil))
+	m := New(d, a, nopPaneHost{}, NewKeyMap(nil))
 	m.now = func() time.Time { return time.Unix(1_000_060, 0) }
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m = mm.(Model)
@@ -157,8 +153,19 @@ func newTestModel(d *fakeData, a Actor) Model {
 	return mm.(Model)
 }
 
-func TestInitKicksAllThreeCadences(t *testing.T) {
-	m := New(&fakeData{snap: testSnapshot()}, &recordingActor{}, NewKeyMap(nil))
+// newTestModelWithHost is newTestModel with a pane host, for the tests that
+// open tabs.
+func newTestModelWithHost(d *fakeData, a Actor, h PaneHost) Model {
+	m := New(d, a, h, NewKeyMap(nil))
+	m.now = func() time.Time { return time.Unix(1_000_060, 0) }
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	m = mm.(Model)
+	mm, _ = m.Update(snapshotMsg{snap: d.snap})
+	return mm.(Model)
+}
+
+func TestInitKicksThreeCadencesAndTheStartupSweep(t *testing.T) {
+	m := New(&fakeData{snap: testSnapshot()}, &recordingActor{}, nopPaneHost{}, NewKeyMap(nil))
 	cmd := m.Init()
 	if cmd == nil {
 		t.Fatal("Init must start the poll loop")
@@ -168,8 +175,8 @@ func TestInitKicksAllThreeCadences(t *testing.T) {
 	if !ok {
 		t.Fatalf("Init should batch its ticks, got %T", cmd())
 	}
-	if len(batch) != 3 {
-		t.Errorf("Init started %d cadences, want 3", len(batch))
+	if len(batch) != 4 {
+		t.Errorf("Init started %d commands, want 4 — three cadences plus the sweep", len(batch))
 	}
 }
 
@@ -296,7 +303,7 @@ func TestFirstSnapshotTriggersAnImmediateSlowPoll(t *testing.T) {
 	d := &fakeData{snap: testSnapshot(), ports: []control.Port{
 		{Port: 5173, Label: "web", URL: "http://mercury.alpha.cspace.test:5173/"},
 	}}
-	m := New(d, &recordingActor{}, NewKeyMap(nil))
+	m := New(d, &recordingActor{}, nopPaneHost{}, NewKeyMap(nil))
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m = mm.(Model)
 	_ = m.Init() // the cadences start; their own ticks are irrelevant here
@@ -447,9 +454,14 @@ func TestAPortsFailureIsScopedToItsOwnSandbox(t *testing.T) {
 	if got := m.selectedRow().Name; got != "mercury" {
 		t.Fatalf("test setup: selected %q, want mercury", got)
 	}
+	// Rollout step 4 moved the band under the sidebar, 24 columns wide,
+	// where a full URL does not fit (view_pane.go's sidebarColumn doc). The
+	// port number does — both in the band's own (now-folded) ports line and
+	// in the row list's port sub-line, which is what carries the address
+	// itself now, as an OSC 8 hyperlink on "5173 web" rather than as text.
 	out := plain(m.View().Content)
-	if !strings.Contains(out, "http://mercury.alpha.cspace.test:5173/") {
-		t.Errorf("mercury's band should still list its URLs; got:\n%s", out)
+	if !strings.Contains(out, "5173") {
+		t.Errorf("mercury's ports should still be listed; got:\n%s", out)
 	}
 	if strings.Contains(out, "ports unavailable") {
 		t.Errorf("another sandbox's Ports failure blanked mercury's ports; got:\n%s", out)
@@ -463,9 +475,11 @@ func TestAPortsFailureIsScopedToItsOwnSandbox(t *testing.T) {
 	if !strings.Contains(out, "ports unavailable") {
 		t.Errorf("the sandbox whose probe failed should say so; got:\n%s", out)
 	}
-	if !strings.Contains(out, "no such process") {
-		t.Errorf("the band should carry its own probe's error; got:\n%s", out)
-	}
+	// The error's own text ("container exec: no such process") no longer
+	// fits the 23-column band alongside "ports unavailable: " — that specific
+	// degradation is TestRenderDetailPortsError's job, at a width where it
+	// survives. What this test still owns is the scoping: each sandbox's
+	// band reflects only its own probe, never its neighbour's.
 }
 
 // Ports arrive on the slow cadence alone, so a sandbox that stops must lose
@@ -701,7 +715,7 @@ func TestActionWarningStaysInTheFooter(t *testing.T) {
 	}
 }
 
-// Only attach suspends the dashboard. A ten-minute `up` must not freeze
+// Only an open pane pauses the dashboard. A ten-minute `up` must not freeze
 // every row on the host while it runs — watching the booting sandbox is the
 // point of the poll loop.
 func TestPollingContinuesWhileALongActionRuns(t *testing.T) {
@@ -715,11 +729,11 @@ func TestPollingContinuesWhileALongActionRuns(t *testing.T) {
 		t.Error("the medium ticker should still poll while `up` is in flight")
 	}
 
-	m.pollingMedium, m.action = false, "attach"
+	m.pollingMedium, m.action = false, LabelOpenPane
 	mm, _ = m.Update(mediumTickMsg{})
 	m = mm.(Model)
 	if m.pollingMedium {
-		t.Error("attach owns the terminal: its poll must be skipped")
+		t.Error("a pane open holds the row it is opening against: its poll must be skipped")
 	}
 }
 
@@ -752,7 +766,7 @@ func TestViewGeometry(t *testing.T) {
 	if !strings.Contains(out, "5173") {
 		t.Error("the ports the slow poll found should be on screen")
 	}
-	if !strings.Contains(lines[len(lines)-1], "attach") {
+	if !strings.Contains(lines[len(lines)-1], "claude pane") {
 		t.Errorf("the last line should be the footer's short help; got %q", lines[len(lines)-1])
 	}
 	if !m.View().AltScreen {
@@ -765,7 +779,7 @@ func TestViewGeometry(t *testing.T) {
 // alternate screen like every other one, or it can be painted on the normal
 // screen and left behind in scrollback once the real layout takes over.
 func TestPreSizeViewRunsInTheAlternateScreen(t *testing.T) {
-	m := New(&fakeData{}, &recordingActor{}, NewKeyMap(nil))
+	m := New(&fakeData{}, &recordingActor{}, nopPaneHost{}, NewKeyMap(nil))
 	v := m.View()
 	if !strings.Contains(v.Content, "starting cspace tui") {
 		t.Errorf("pre-size view content = %q, want the placeholder", v.Content)
@@ -775,22 +789,20 @@ func TestPreSizeViewRunsInTheAlternateScreen(t *testing.T) {
 	}
 }
 
-// tabsLine clamps its gap to a minimum of 1 but, before this fix, never
-// truncated title or health — so a narrow window (a project/sandbox title
-// alongside "daemon <version>") could render a couple of cells wider than
-// the pane. Reproduces the design's own example: W=57 -> mainWidth 33,
-// "alpha/mercury" + "daemon 1.0.0-rc.48" don't fit with even a 1-cell gap
-// once styleTabs' own padding is counted.
-func TestTabsLineFitsANarrowWindow(t *testing.T) {
+// With no panes open the row carries daemon health, right-aligned, and it
+// has to fit a narrow window — the design's own example: W=57 -> mainWidth
+// 33, where the old selection title and "daemon 1.0.0-rc.48" together did
+// not fit even with a one-cell gap.
+func TestTabsRowFitsANarrowWindow(t *testing.T) {
 	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
 	const mainWidth = 57 - sidebarWidth // 33
 
-	line := plain(m.tabsLine(mainWidth))
+	line := plain(m.tabsRow(mainWidth))
 	if w := ansi.StringWidth(line); w > mainWidth {
-		t.Errorf("tabs line width = %d, want <= %d: %q", w, mainWidth, line)
+		t.Errorf("tabs row width = %d, want <= %d: %q", w, mainWidth, line)
 	}
 	if !strings.Contains(line, "daemon") {
-		t.Errorf("tabs line should still show daemon health; got %q", line)
+		t.Errorf("with no tabs the row should still show daemon health; got %q", line)
 	}
 }
 

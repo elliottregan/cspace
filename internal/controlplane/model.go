@@ -1,6 +1,8 @@
 package controlplane
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/help"
@@ -22,6 +24,7 @@ const (
 	modeNormal uiMode = iota
 	modeConfirmDown
 	modeInput
+	modePicker
 )
 
 // noticeLifetime is how long a success notice stays in the footer. Error
@@ -50,9 +53,29 @@ type noticeExpireMsg struct{ gen int }
 type Model struct {
 	data  Data
 	actor Actor
-	keys  KeyMap
-	help  help.Model
-	now   func() time.Time
+	host  PaneHost
+
+	tabs      []*tab
+	focused   int // index into tabs; -1 when there are none
+	nextTabID int
+	focus     focusArea
+
+	// scrolling and scroll are the focused pane's scrollback position:
+	// scroll is how many lines above the live screen the view sits, and
+	// scrolling is whether the arrow keys are moving it rather than reaching
+	// the child. Both reset whenever the focused tab changes.
+	scrolling bool
+	scroll    int
+
+	keys KeyMap
+	help help.Model
+	now  func() time.Time
+
+	// leaderArmed is whether the leader's first key has been pressed and the
+	// next key is its second key rather than an ordinary one. It resets the
+	// moment that next key is dispatched, in handleKey — there is no mode to
+	// get stuck in.
+	leaderArmed bool
 
 	rows     []control.Row
 	selected int
@@ -84,6 +107,9 @@ type Model struct {
 
 	mode    uiMode
 	confirm *huh.Form
+	// picker is the new-pane picker's form, arriving in Task 4; the field is
+	// declared here so mainArea's modePicker branch compiles now.
+	picker *huh.Form
 	// pending is the row a prompt (the send box or the teardown
 	// confirmation) was opened against. Its completion path acts on this,
 	// not on selectedRow(): moveSelection or a snapshot landing while the
@@ -108,15 +134,19 @@ type Model struct {
 	quitting bool
 }
 
-// New builds the dashboard over the query and action seams and the resolved
-// keymap. Nothing is polled until Init runs.
-func New(data Data, actor Actor, keys KeyMap) Model {
+// New builds the dashboard over the query, action and pane seams and the
+// resolved keymap. Nothing is polled and nothing is opened until Init runs.
+func New(data Data, actor Actor, host PaneHost, keys KeyMap) Model {
 	ti := textinput.New()
 	ti.Placeholder = "message"
 	ti.CharLimit = 2000
+	if host == nil {
+		host = nopPaneHost{}
+	}
 	return Model{
 		data:     data,
 		actor:    actor,
+		host:     host,
 		keys:     keys,
 		help:     help.New(),
 		now:      time.Now,
@@ -126,6 +156,7 @@ func New(data Data, actor Actor, keys KeyMap) Model {
 		memory:   map[string]int64{},
 		ports:    map[sandboxKey][]control.Port{},
 		portsErr: map[sandboxKey]error{},
+		focused:  -1,
 	}
 }
 
@@ -135,6 +166,7 @@ func New(data Data, actor Actor, keys KeyMap) Model {
 // first real tick.
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
+		m.sweepCmd(),
 		func() tea.Msg { return fastTickMsg{} },
 		func() tea.Msg { return mediumTickMsg{} },
 		func() tea.Msg { return slowTickMsg{} },
@@ -142,9 +174,9 @@ func (m Model) Init() tea.Cmd {
 }
 
 // paused reports whether a cadence should skip its poll this time round: a
-// modal owns the screen, and attach owns the terminal outright (the program
-// is suspended into `container exec`), so neither is a moment to replace the
-// row set underneath the person.
+// modal owns the screen, and an open pane in flight owns the row it is
+// opening against, so neither is a moment to replace the row set underneath
+// the person.
 //
 // Every other action is deliberately *not* paused. They run as ordinary
 // commands with the dashboard fully on screen, and they are the long ones —
@@ -152,7 +184,9 @@ func (m Model) Init() tea.Cmd {
 // on the host for the whole boot. Watching a booting sandbox turn ○ and gain
 // its ports is exactly what the poll loop is for. The one-action-at-a-time
 // gate lives in handleNormalKey and is unaffected by this.
-func (m Model) paused() bool { return m.mode != modeNormal || m.action == LabelAttach }
+func (m Model) paused() bool {
+	return m.mode != modeNormal || m.action == LabelOpenPane
+}
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -161,6 +195,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.help.SetWidth(msg.Width)
 		if m.mode == modeInput {
 			m.input.SetWidth(sendInputWidth(m.pending.Name, msg.Width))
+		}
+		cols, rows := m.paneSize()
+		for _, t := range m.tabs {
+			if t.p != nil {
+				// The error is the ioctl's; a pane whose pty has gone will
+				// be reaped by its own exit, and failing the resize of one
+				// must not stop the others.
+				_ = t.p.Resize(cols, rows)
+			}
+			if t.sup != nil {
+				t.sup.resize(m.paneWidth(), rows)
+			}
 		}
 		return m, nil
 
@@ -177,6 +223,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.pollingMedium && !m.paused() {
 			m.pollingMedium = true
 			cmds = append(cmds, m.snapshotCmd())
+			cmds = append(cmds, m.supervisorTickCmds()...)
 		}
 		return m, tea.Batch(cmds...)
 
@@ -231,6 +278,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.events, m.eventsErr = msg.lines, msg.err
 		return m, nil
 
+	case supervisorEventsMsg:
+		if t, _ := m.tabByID(msg.id); t != nil && t.sup != nil {
+			t.sup.err = msg.err
+			t.sup.setEvents(msg.lines)
+			t.sup.reading = false
+			// Whether the agent is working is the fast ticker's answer, not
+			// a guess from the tail. "The last event is not a result" can
+			// never go false — events.ndjson carries lines that are not
+			// sdk-events at all, and any tail ending in one of those would
+			// leave the spinner's tick chain alive for the rest of the
+			// session, redrawing the whole dashboard at spinner cadence.
+			// AgentStatus is what the fast cadence already polls for exactly
+			// this question.
+			working := m.live[sandboxKey{Project: t.project, Name: t.sandbox}].Agent.State == "working"
+			started := working && !t.sup.working
+			t.sup.working = working
+			if started {
+				// Start this spinner's own tick chain. bubbles tags each
+				// TickMsg with the spinner's id and drops the ones that are
+				// not its own, so every spinner needs its own chain — the
+				// model's own animates only while an Actor action is in
+				// flight, which a supervisor read is not.
+				return m, t.sup.spin.Tick
+			}
+		}
+		return m, nil
+
 	case actionResultMsg:
 		m.action = ""
 		if msg.err != nil {
@@ -251,6 +325,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		gen := m.noticeGen
 		return m, tea.Tick(noticeLifetime, func(time.Time) tea.Msg { return noticeExpireMsg{gen: gen} })
 
+	case sweepMsg:
+		// Advisory: a swept record was already stale. Only a failure to run
+		// the sweep at all is worth a sticky line — isErr, because that
+		// branch schedules no expiry, and a notice that is neither timed nor
+		// dismissible would otherwise sit in the footer for the rest of the
+		// session. A successful sweep that nonetheless found unfinished work
+		// (SweepOutcome.Errors — a record it could not decide, not a call
+		// that failed outright) is still just information, so it takes the
+		// same timed notice a Detached/Deleted count does; there is nothing
+		// for the operator to do about any of these three besides know.
+		if msg.err != nil {
+			m.notice = notice{text: "attach sweep: " + msg.err.Error(), isErr: true}
+			return m, nil
+		}
+		o := msg.outcome
+		if o.Detached == 0 && o.Deleted == 0 && o.Errors == 0 {
+			return m, nil
+		}
+		var parts []string
+		if o.Detached > 0 {
+			parts = append(parts, fmt.Sprintf("detached %d", o.Detached))
+		}
+		if o.Deleted > 0 {
+			parts = append(parts, fmt.Sprintf("deleted %d", o.Deleted))
+		}
+		if o.Errors > 0 {
+			noun := "error"
+			if o.Errors != 1 {
+				noun = "errors"
+			}
+			parts = append(parts, fmt.Sprintf("%d %s", o.Errors, noun))
+		}
+		m.notice = notice{text: "startup sweep: " + strings.Join(parts, ", ")}
+		m.noticeGen++
+		gen := m.noticeGen
+		return m, tea.Tick(noticeLifetime, func(time.Time) tea.Msg { return noticeExpireMsg{gen: gen} })
+
 	case noticeExpireMsg:
 		if msg.gen == m.noticeGen && !m.notice.isErr {
 			m.notice = notice{}
@@ -258,23 +369,181 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		// Animate only while an action is in flight; when idle let the tick
-		// chain die rather than redraw a whole dashboard forever.
-		if m.action == "" {
+		// Each spinner has its own id and its own chain; Update drops a tick
+		// that is not its own, so both are fed and whichever one it belonged
+		// to re-arms.
+		var cmds []tea.Cmd
+		for _, t := range m.tabs {
+			if t.sup != nil && t.sup.working {
+				var cmd tea.Cmd
+				t.sup.spin, cmd = t.sup.spin.Update(msg)
+				cmds = append(cmds, cmd)
+			}
+		}
+		// Animate the model's own only while an action is in flight; when
+		// idle let its chain die rather than redraw a whole dashboard
+		// forever.
+		if m.action != "" {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			cmds = append(cmds, cmd)
+		}
+		return m, tea.Batch(cmds...)
+
+	case paneOpenedMsg:
+		m.action = ""
+		if msg.err != nil {
+			m.notice = notice{text: LabelOpenPane + " failed: " + msg.err.Error(), isErr: true}
 			return m, nil
 		}
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
+		if msg.opened.Pane == nil {
+			// A PaneHost that reports success with no pane would otherwise
+			// become a tab with a nil p — every place that reads it already
+			// treats nil as "no process" (KindSupervisor's own tabs), so
+			// nothing downstream would crash, but the tab could never draw,
+			// resize, redraw or close: a zombie the operator can neither use
+			// nor get rid of. Treat it as the failure it is instead.
+			m.notice = notice{text: LabelOpenPane + " failed: host returned no pane", isErr: true}
+			// A host that booked an attachment and then failed to hand
+			// back a pane still took the sandbox's attach lock and wrote a
+			// client record. Nothing else will ever close that: no tab is
+			// made, so no leader x and no quit can reach it.
+			return m, closeDetacher(msg.opened.Detach)
+		}
+		project, sandbox := msg.row.Project, msg.row.Name
+		if msg.kind == KindHostShell {
+			// It was opened from whatever row happened to be selected and
+			// belongs to none of them: leave the identity empty rather than
+			// let a later reader take it for a pane on that sandbox.
+			project, sandbox = "", ""
+		}
+		// Re-apply the current layout before the tab exists. The size that
+		// went into Open was the one at the keypress, and a Claude pane
+		// takes seconds to appear — a WindowSizeMsg landing in between
+		// resizes every tab there is, and this one was not yet among them.
+		// The error is the pane's to report on its next write; there is no
+		// tab to hang a notice on yet.
+		_ = msg.opened.Pane.Resize(m.paneSize())
+		m = m.addTab(&tab{
+			kind:    msg.kind,
+			project: project,
+			sandbox: sandbox,
+			p:       msg.opened.Pane,
+			detach:  msg.opened.Detach,
+		})
+		wait := awaitOutput(m.tabs[m.focused])
+		if msg.opened.Warning != "" {
+			// Through ResultWarn rather than written into m.notice here:
+			// "it worked, now read this" already has a mechanism, and the
+			// actionResultMsg arm is where the rule that such a notice is
+			// sticky lives. A second copy of that rule is a second place to
+			// forget it.
+			warning := msg.opened.Warning
+			return m, tea.Batch(wait, func() tea.Msg { return ResultWarn(LabelOpenPane, warning) })
+		}
+		return m, wait
+
+	case paneOutputMsg:
+		// The redraw is the Update itself; the rest is deciding whether to
+		// wait again. A tab closed while its wait was in flight drops the
+		// message, and so does one whose teardown is already running.
+		t, _ := m.tabByID(msg.id)
+		if t == nil || t.p == nil {
+			return m, nil
+		}
+		_, _, exited := t.p.Exited()
+		if exited {
+			// The child ended on its own, and this signal — the waiter's
+			// final markDirty — is the last one this pane will ever emit:
+			// Dirty is closed by Pane.Close and by nothing else. Tear the
+			// pane down here, or its tmux client stays attached inside the
+			// sandbox and its record file on the host until the operator
+			// presses leader x. The tab survives the reap.
+			if !t.closing && !t.reaped {
+				t.closing = true
+				return m, m.reapExited(t)
+			}
+			return m, nil
+		}
+		// t.p.Closed() is the structural backstop Exited() alone cannot
+		// promise: a Close that gave up on a wedged waiter (4a) — or, once
+		// Task 7's host owns Close on its own paths, any close this tab's
+		// own bookkeeping never saw — leaves Dirty already closed while
+		// Exited() still reports the child live. Re-arming on that pane
+		// would spin the redraw loop at the tick rate forever, waiting on a
+		// channel nothing will ever refill again.
+		if !t.closing && !exited && !t.p.Closed() {
+			return m, awaitOutput(t)
+		}
+		return m, nil
+
+	case paneClosedMsg:
+		m.action = ""
+		m = m.dropTab(msg.id)
+		if msg.err != nil {
+			m.notice = notice{text: LabelClosePane + ": " + msg.err.Error(), isErr: true}
+		}
+		return m, nil
+
+	case paneReapedMsg:
+		// No dropTab and no m.action: the reap was nobody's action, and the
+		// tab stays to show the dead pane's last screen. Clearing closing
+		// and setting reaped is what stops a second signal starting the
+		// teardown again; dropping the detacher is what keeps a later
+		// leader x from closing an attachment this already closed (Pane.Close
+		// is idempotent on its own).
+		if t, _ := m.tabByID(msg.id); t != nil {
+			t.closing, t.reaped, t.detach = false, true, nil
+		}
+		if msg.err != nil {
+			m.notice = notice{text: LabelClosePane + ": " + msg.err.Error(), isErr: true}
+		}
+		return m, nil
 
 	case tea.KeyPressMsg:
-		// Ctrl+C is not configurable and is never routed to a modal: a
-		// dashboard with no way out is a bug.
-		if key.Matches(msg, forceQuit) {
+		// Ctrl+C quits from everywhere except a live pane, which is what
+		// helpView promises. Only a running child earns the exemption —
+		// interrupting Claude is the single most-used key — and the
+		// exemption is exactly as wide as that reason. A modal over a pane
+		// must not swallow the one key that always gets out; neither must
+		// a supervisor tab, whose textarea binds no ctrl+c at all, nor an
+		// exited pane, whose key handler drops the key on the floor. Both
+		// of those used to leave leader q as the only way out.
+		if key.Matches(msg, forceQuit) && !m.childOwnsKeyboard() {
 			m.quitting = true
-			return m, tea.Quit
+			return m, m.quitCmd()
 		}
 		return m.handleKey(msg)
+
+	case tea.PasteMsg:
+		// A paste reaches a live pane only when nothing else owns the
+		// keyboard: modeNormal, focused on the main area, on a real
+		// process. Every other case falls through to the mode switch below
+		// instead of being handled here — modeInput's textinput inserts a
+		// paste itself (bracketed paste is on by default in bubbletea v2,
+		// so without this fall-through a paste into the send box would
+		// silently vanish), and a modal open over a focused pane (the
+		// picker, the teardown confirm) must not leak the paste through to
+		// the child behind it.
+		if m.mode == modeNormal && m.focus == focusMain {
+			if t := m.focusedTab(); t != nil {
+				if t.p != nil {
+					t.p.Paste(msg.Content)
+					return m, nil
+				}
+				if t.sup != nil {
+					// A supervisor tab's send box is a textarea, which
+					// handles PasteMsg itself — but only if it is given
+					// one. Returning unconditionally here is what used to
+					// swallow a pasted stack trace or diff, which is the
+					// obvious thing to put in that box.
+					var cmd tea.Cmd
+					t.sup.input, cmd = t.sup.input.Update(msg)
+					return m, cmd
+				}
+			}
+			return m, nil
+		}
 	}
 
 	// Anything the branches above did not consume goes to whichever widget
@@ -289,6 +558,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case modeConfirmDown:
 		if m.confirm != nil {
 			return m.updateConfirm(msg)
+		}
+	case modePicker:
+		if m.picker != nil {
+			return m.updatePicker(msg)
 		}
 	}
 	return m, nil
@@ -416,4 +689,50 @@ func (m *Model) restoreSelection(prev control.Row) {
 		}
 	}
 	m.selected = 0
+}
+
+// childOwnsKeyboard reports whether the keys are reaching a running child
+// rather than the dashboard. It is the exemption Ctrl+C is tested against,
+// and the reason for it is the whole of the condition: there has to be a
+// live process for the interrupt to mean anything.
+//
+// A supervisor tab has no process (t.p is nil) and its textarea binds no
+// ctrl+c; an exited pane's key handler drops every key. In both, Ctrl+C
+// reaching "the pane" means Ctrl+C doing nothing at all. The help overlay
+// is the same story from the other side: it covers the pane without moving
+// focus off it (see view.go's cursor guard, which excludes it for the same
+// reason), and handleKey dismisses it and swallows the key that opened it —
+// so with it up, "the pane" is not reachable either.
+func (m Model) childOwnsKeyboard() bool {
+	if m.mode != modeNormal || m.focus != focusMain || m.showHelp {
+		return false
+	}
+	t := m.focusedTab()
+	if t == nil || t.p == nil {
+		return false
+	}
+	_, _, exited := t.p.Exited()
+	return !exited
+}
+
+// paneSize is the emulator geometry for the main area: the window less the
+// sidebar and the one column of padding on each side, and less the tabs row
+// and the footer. Floored so a very small window still gets a legal size.
+func (m Model) paneSize() (cols, rows int) {
+	cols = m.paneWidth()
+	rows = m.height - 2 // the tabs row and the footer
+	if rows < 2 {
+		rows = 2
+	}
+	return cols, rows
+}
+
+// paneWidth is the main area's usable width, which the supervisor view wraps
+// its markdown to as well.
+func (m Model) paneWidth() int {
+	w := mainWidthFor(m.width) - 2 // styleMain's padding
+	if w < 4 {
+		w = 4
+	}
+	return w
 }

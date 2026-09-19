@@ -30,14 +30,14 @@ func shell(t *testing.T) string {
 
 // openTestPane starts a pane running `bash -c script` and registers its
 // teardown.
-func openTestPane(t *testing.T, script string, cols, rows int) *Pane {
+func openTestPane(t *testing.T, script string, cols, rows int, opts ...Option) *Pane {
 	t.Helper()
 	sh := shell(t)
 	p, err := Open(Command{
 		Path: sh,
 		Args: []string{"bash", "-c", script},
 		Env:  []string{"TERM=xterm-256color", "COLORTERM=truecolor", "PS1="},
-	}, cols, rows)
+	}, cols, rows, opts...)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -113,6 +113,48 @@ func TestPaneSendsKeysToItsChild(t *testing.T) {
 		p.SendKey(KeyEvent{Code: r, Text: string(r)})
 	}
 	p.SendKey(KeyEvent{Code: KeyEnter})
+	waitForScreen(t, p, "GOT[hi]")
+}
+
+// A child that never negotiates the kitty keyboard protocol still gets the
+// CSI-u form when the pane was opened with ExtendedKeys. This is the pane
+// side of Task 8 Step 5: run under tmux, Claude Code's own `ESC [ > 5 u`
+// goes to tmux and never reaches the host, so without the option Shift+Enter
+// degrades to a plain Enter — which sends the half-written message instead
+// of breaking the line.
+func TestExtendedKeysSendsCSIUWithoutTheChildAskingForIt(t *testing.T) {
+	p := openTestPane(t,
+		`IFS= read -r -s -d u seq; printf 'SEQ[%s]' "${seq#$'\033'[}"; sleep 30`,
+		40, 6, ExtendedKeys())
+	time.Sleep(300 * time.Millisecond)
+	p.SendKey(KeyEvent{Code: KeyEnter, Mod: ModShift})
+	waitForScreen(t, p, "SEQ[13;2")
+}
+
+// ...while a key whose legacy form carries its modifier keeps that form
+// even with the option on. Shift+Tab is the case: ESC[Z says "shift" out
+// loud, tmux forwards a CSI-u Shift+Tab verbatim (it has no table entry to
+// fold it back to), and in a Claude pane this is the permission-mode cycle.
+// The first cut of ExtendedKeys changed it to ESC[9;2u for every pane.
+func TestExtendedKeysLeaveShiftTabLegacy(t *testing.T) {
+	// cat -v prints the bytes it reads in caret notation, so ESC[Z lands on
+	// the screen as ^[[Z and a CSI-u form would land as ^[[9;2u.
+	p := openTestPane(t, `stty raw -echo; cat -v`, 40, 6, ExtendedKeys())
+	time.Sleep(300 * time.Millisecond)
+	p.SendKey(KeyEvent{Code: KeyTab, Mod: ModShift})
+	waitForScreen(t, p, "^[[Z")
+}
+
+// ...and without the option the same key degrades, which is the right
+// answer for a child that speaks for itself: it asked for nothing, so it
+// gets the encoding a legacy terminal would have sent.
+func TestWithoutExtendedKeysShiftEnterDegrades(t *testing.T) {
+	p := openTestPane(t, `read -r line; printf 'GOT[%s]' "$line"; sleep 30`, 40, 6)
+	time.Sleep(300 * time.Millisecond)
+	for _, r := range "hi" {
+		p.SendKey(KeyEvent{Code: r, Text: string(r)})
+	}
+	p.SendKey(KeyEvent{Code: KeyEnter, Mod: ModShift})
 	waitForScreen(t, p, "GOT[hi]")
 }
 
@@ -355,6 +397,13 @@ func TestPaneCloseHonoursContextAgainstAWaiterThatNeverFinishes(t *testing.T) {
 	// x/vt's 4 MiB parser buffer for the rest of the process's life.
 	if !stub.wasClosed() {
 		t.Error("Close gave up on the waiter but never released the emulator")
+	}
+	// shutdown's defer runs on every return, including this give-up one, so
+	// Closed() must already report true even though the child itself is
+	// still alive (Exited() would say so) — Closed() is about Dirty and
+	// shutdown having run, not about the child.
+	if !p.Closed() {
+		t.Error("Closed() is false after a Close that gave up on the waiter")
 	}
 }
 
@@ -697,6 +746,28 @@ func TestPaneDirtyIsClosedOnceThePaneIs(t *testing.T) {
 	// and calls it on its way out, after the close. Calling it directly is
 	// the only way to reach that ordering deterministically.
 	p.markDirty()
+}
+
+// TestPaneClosedReportsWhetherCloseHasRun pins Closed() as the structural
+// counterpart to Dirty's terminal state: a caller deciding whether to wait
+// on Dirty again should be able to ask this directly, rather than infer it
+// from Exited — which a give-up-on-the-waiter Close can leave false (the
+// child is still alive) even though Dirty is already closed and shutdown is
+// done.
+func TestPaneClosedReportsWhetherCloseHasRun(t *testing.T) {
+	p := openTestPane(t, `sleep 30`, 40, 6)
+	if p.Closed() {
+		t.Fatal("Closed() is true before Close ever ran")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := p.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !p.Closed() {
+		t.Error("Closed() is false after Close returned")
+	}
 }
 
 // TestOpenAndResizeClampAnOversizeScreen — both sizes end up in a uint16
