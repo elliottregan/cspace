@@ -270,7 +270,7 @@ func firstAliveEntry(ctx context.Context, entries []registry.Entry) (registry.En
 		if e.IP == "" {
 			continue
 		}
-		if e.State == "starting" {
+		if e.State == registry.StateStarting {
 			continue
 		}
 		if !containerExists(ctx, containerNameForEntry(e)) {
@@ -634,7 +634,7 @@ func ProbeSandboxes(ctx context.Context) ProbeResult {
 			deadRegistered = append(deadRegistered, name)
 			continue
 		}
-		if e.State == "starting" {
+		if e.State == registry.StateStarting {
 			stuckBooting = append(stuckBooting, name)
 			continue
 		}

@@ -1056,3 +1056,88 @@ func TestSidecarRestartHandlerRejectsEmptyService(t *testing.T) {
 		t.Fatal("ladder ran with an empty service name")
 	}
 }
+
+// TestLiveEntryCountIgnoresKeptEntries — the daemon exits after 30 idle
+// minutes only when the registry has nothing in it. A kept entry needs no
+// DNS (MarkStopped clears its IP) and no registry service, so counting it
+// would mean one `cspace down --keep-state` pins a daemon on the host
+// forever.
+func TestLiveEntryCountIgnoresKeptEntries(t *testing.T) {
+	cases := []struct {
+		name    string
+		entries []registry.Entry
+		want    int
+	}{
+		{"empty registry", nil, 0},
+		{"only kept entries", []registry.Entry{
+			{Project: "demo", Name: "a", State: registry.StateStopped},
+			{Project: "demo", Name: "b", State: registry.StateStopped},
+		}, 0},
+		{"a booting sibling still counts", []registry.Entry{
+			{Project: "demo", Name: "a", State: registry.StateStopped},
+			{Project: "demo", Name: "b", State: registry.StateStarting},
+		}, 1},
+		{"a legacy entry with no state word counts", []registry.Entry{
+			{Project: "demo", Name: "a", State: ""},
+		}, 1},
+		{"ready entries count", []registry.Entry{
+			{Project: "demo", Name: "a", State: registry.StateReady},
+			{Project: "other", Name: "b", State: registry.StateReady},
+		}, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := liveEntryCount(tc.entries); got != tc.want {
+				t.Errorf("liveEntryCount = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDaemonDNSHandlerKeptEntryNXDOMAIN — before kept entries existed, a
+// torn-down sandbox's row was deleted and its name stopped resolving. A
+// kept row must behave the same way: the container is gone, and vmnet is
+// free to hand its old address to a different container, so answering with
+// the recorded IP points the host (and sibling sandboxes, and the browser
+// sidecar) at a stranger. MarkStopped clears the IP, which is what the
+// handler's own `e.IP == ""` skip keys on.
+func TestDaemonDNSHandlerKeptEntryNXDOMAIN(t *testing.T) {
+	regPath := filepath.Join(t.TempDir(), "registry.json")
+	r := &registry.Registry{Path: regPath}
+	if err := r.Register(registry.Entry{
+		Project: "keptproj", Name: "keptsandbox", IP: "192.168.64.40",
+		ControlURL: "http://192.168.64.40:6201", State: registry.StateReady,
+		StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	var lastActivity atomic.Int64
+
+	// The container is gone, so inspect cannot answer either — the exact
+	// state in which the handler used to fall back to the recorded IP.
+	stubInspectContainerIP(t, func(string) (string, error) {
+		return "", errContainerGone
+	})
+
+	name := "keptsandbox.keptproj." + daemonDNSDomain
+	w := &recordingDNSWriter{}
+	daemonDNSHandler(r, &lastActivity).ServeDNS(w, dnsQuestion(name))
+	if w.msg == nil || len(w.msg.Answer) != 1 {
+		t.Fatalf("precondition: a live entry did not resolve: %+v", w.msg)
+	}
+
+	if err := r.MarkStopped("keptproj", "keptsandbox"); err != nil {
+		t.Fatalf("MarkStopped: %v", err)
+	}
+
+	for _, q := range []string{name, "keptsandbox." + daemonDNSDomain} {
+		w := &recordingDNSWriter{}
+		daemonDNSHandler(r, &lastActivity).ServeDNS(w, dnsQuestion(q))
+		if w.msg == nil || w.msg.Rcode != dns.RcodeNameError {
+			t.Errorf("%s: got %+v, want NXDOMAIN for a kept entry", q, w.msg)
+		}
+		if w.msg != nil && len(w.msg.Answer) != 0 {
+			t.Errorf("%s: answered %+v, want no answer", q, w.msg.Answer)
+		}
+	}
+}

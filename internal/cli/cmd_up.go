@@ -701,7 +701,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				StartedAt:        startedAt,
 				BrowserContainer: browserContainer,
 				ProjectRoot:      projectRoot,
-				State:            "starting",
+				State:            registry.StateStarting,
 			}); regErr != nil {
 				err = fmt.Errorf("register entry: %w", regErr)
 				return err
@@ -774,7 +774,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 
 			ctlURL := fmt.Sprintf("http://%s:%d", ip, supervisorPort)
 
-			// Re-register with the real ControlURL/IP. State stays "starting"
+			// Re-register with the real ControlURL/IP. State stays StateStarting
 			// until /health responds 200 below.
 			if regErr := r.Register(registry.Entry{
 				Project:          project,
@@ -785,7 +785,7 @@ that 8-deep convention — e.g. "issue-123" or "agent-alice".`,
 				StartedAt:        startedAt,
 				BrowserContainer: browserContainer,
 				ProjectRoot:      projectRoot,
-				State:            "starting",
+				State:            registry.StateStarting,
 			}); regErr != nil {
 				_ = a.Stop(context.Background(), containerName)
 				err = regErr
