@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/elliottregan/cspace/internal/pane"
 )
@@ -116,6 +117,16 @@ func TestScrollRefusesAPaneWithNoScrollback(t *testing.T) {
 	}
 	if got.notice.text != noScrollbackNotice().text {
 		t.Errorf("notice = %q, want the shared refusal %q", got.notice.text, noScrollbackNotice().text)
+	}
+}
+
+// The footer's fit() elides at 120 columns and drops trailing clauses
+// silently at 80 — and the trailing clause here, "PgUp/PgDn go there", is
+// the only actionable part of the sentence. 78 keeps two cells of slack
+// under the 80-column case so the notice never loses its way forward.
+func TestNoScrollbackNoticeFitsAnEightyColumnFooter(t *testing.T) {
+	if w := lipgloss.Width(noScrollbackNotice().text); w > 78 {
+		t.Errorf("noScrollbackNotice() is %d cells wide, want <= 78", w)
 	}
 }
 
