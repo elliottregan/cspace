@@ -452,8 +452,8 @@ select nothing — or focuses a tab, or focuses the main area; a click on an
 elision marker, on the empty end of the tabs row, or in a main area with no
 tabs open does nothing. A click disarms an armed leader, dismisses the help
 overlay, and is swallowed under a modal without answering it. The wheel over
-the sidebar moves the selection, three lines to a notch; over the main area
-it scrolls the focused pane's scrollback, entering scroll mode exactly as
+the sidebar moves the selection one row to a notch; over the main area it
+scrolls the focused pane's scrollback three lines to a notch, entering scroll mode exactly as
 leader `[` does — which means it works on a host shell and refuses with the
 same notice on every tmux-backed pane (the
 `scroll-mode-never-reaches-a-tmux-backed-panes-history` finding) — and over
