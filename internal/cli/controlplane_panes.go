@@ -103,11 +103,24 @@ func (h *paneHost) Open(ctx context.Context, kind controlplane.Kind, row control
 
 	warning := ""
 	if !present {
-		warning = fmt.Sprintf(
-			"%s has no tmux: this session will not survive the window, and its process keeps running inside the sandbox. Rebuild with `cspace image build`, then `cspace down %s && cspace up %s`.",
-			row.Name, row.Name, row.Name)
+		warning = noTmuxWarning(row.Name)
 	}
 	return controlplane.Opened{Pane: p, Detach: att, Warning: warning}, nil
+}
+
+// noTmuxWarning is the sticky footer line a pane opened without tmux
+// carries. It has to FIT: the footer truncates to the window width, and at
+// 120 columns the longer wording this replaced was cut off three words
+// before the remedy it exists to name (found by Task 8, Step 14, against a
+// sandbox whose image carries no tmux). The two facts that survived the cut
+// are the one that costs work — the pane dies with the window and leaves
+// the child running inside the sandbox — and the command that fixes it; the
+// `cspace down && cspace up` that has to follow the rebuild is left to the
+// rebuild's own output rather than pushing the line over the edge again.
+func noTmuxWarning(name string) string {
+	return fmt.Sprintf(
+		"%s has no tmux: this pane dies with the window, leaving its child running. Rebuild: cspace image build",
+		name)
 }
 
 // Sweep reaps the client records of attaches whose host process is gone.
