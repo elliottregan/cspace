@@ -38,13 +38,21 @@ type Clipboard interface {
 	Text(ctx context.Context) (string, error)
 }
 
+// errNoClipboard is what both halves of nopClipboard answer with.
+var errNoClipboard = errors.New("no clipboard configured")
+
 // nopClipboard is what a Model built without one gets: the same fail-closed
 // rule nopPaneHost applies, so a missing seam is an explained footer error
 // rather than a nil dereference.
+//
+// Both methods fail, Text included. An empty string and no error would be
+// indistinguishable from an empty clipboard, so a paste with no clipboard
+// wired up would type nothing and report success — a silent no-op is the
+// one outcome an operator cannot diagnose.
 type nopClipboard struct{}
 
 func (nopClipboard) Image(context.Context, string, string) (string, error) {
-	return "", errors.New("no clipboard configured")
+	return "", errNoClipboard
 }
 
-func (nopClipboard) Text(context.Context) (string, error) { return "", nil }
+func (nopClipboard) Text(context.Context) (string, error) { return "", errNoClipboard }

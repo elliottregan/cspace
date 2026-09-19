@@ -358,13 +358,193 @@ func TestOsascriptStopsAtTheContextsDeadline(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	if _, err := osascript(ctx, []string{"clipboard info"}); err == nil {
+	_, err := osascript(ctx, []string{"clipboard info"})
+	if err == nil {
 		t.Fatal("a script killed at the deadline must come back as an error")
+	}
+	// "signal: killed" names the symptom, not the cause: the footer cannot
+	// explain it and no caller can test for it.
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want it to carry context.DeadlineExceeded", err)
 	}
 	// The deadline is what the UI depends on: this call is made from a
 	// tea.Cmd, and an osascript that ignores its context is a paste that
 	// never finishes.
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Errorf("osascript ran for %s; the deadline never reached the process", elapsed)
+	}
+}
+
+func TestPasteDirsPutEachCaseWhereItsPaneCanReadIt(t *testing.T) {
+	c := newClipboard("/home/x")
+	sessions := filepath.Join("/home/x", ".cspace", "sessions")
+	for _, tc := range []struct {
+		name             string
+		project, sandbox string
+		hostDir, paneDir string
+	}{
+		{"a sandbox pane reads through the /sessions mount",
+			"alpha", "mercury",
+			filepath.Join(sessions, "alpha", "mercury", "paste"), "/sessions/paste"},
+		{"a host shell has no mount and no sandbox",
+			"", "",
+			filepath.Join("/home/x", ".cspace", "paste"), filepath.Join("/home/x", ".cspace", "paste")},
+		// Only *both* empty means "host shell". A row with half a name is
+		// still a sandbox, and handing its pane a host path it cannot open
+		// would be a paste that silently points at nothing.
+		{"half a name is still a sandbox",
+			"", "mercury",
+			filepath.Join(sessions, "mercury", "paste"), "/sessions/paste"},
+		{"half a name is still a sandbox, the other half",
+			"alpha", "",
+			filepath.Join(sessions, "alpha", "paste"), "/sessions/paste"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hostDir, paneDir := c.pasteDirs(tc.project, tc.sandbox)
+			if hostDir != tc.hostDir {
+				t.Errorf("host dir = %q, want %q", hostDir, tc.hostDir)
+			}
+			if paneDir != tc.paneDir {
+				t.Errorf("pane dir = %q, want %q", paneDir, tc.paneDir)
+			}
+		})
+	}
+}
+
+func TestClipboardImageRejectsANameItWouldJoinIntoAPath(t *testing.T) {
+	// No stub PATH: validation has to come before anything is probed,
+	// created or written, so these never reach a binary at all.
+	for _, tc := range []struct {
+		name             string
+		project, sandbox string
+		wantField        string
+	}{
+		{"traversal in the sandbox", "alpha", "../../../../tmp/x", "sandbox name"},
+		{"traversal in the project", "../../../../tmp", "mercury", "project name"},
+		{"a slash in the sandbox", "alpha", "a/b", "sandbox name"},
+		{"a dotted sandbox", "alpha", "mercury.two", "sandbox name"},
+		{"the reserved browser name", "alpha", "browser", "sandbox name"},
+		{"an empty half", "", "mercury", "project name"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			_, err := newClipboard(home).Image(testCtx(t), tc.project, tc.sandbox)
+			if err == nil {
+				t.Fatalf("Image(%q, %q) was accepted", tc.project, tc.sandbox)
+			}
+			if !strings.Contains(err.Error(), tc.wantField) {
+				t.Errorf("err = %v, want it to name the %s", err, tc.wantField)
+			}
+			// Nothing may be created on the way to that error.
+			if entries, err := os.ReadDir(filepath.Join(home, ".cspace")); err == nil && len(entries) > 0 {
+				t.Errorf("a rejected name still created %d entry(ies) under .cspace", len(entries))
+			}
+		})
+	}
+}
+
+func TestClipboardImageRemovesTheFileWhenTheWriteFails(t *testing.T) {
+	dir := stubPATH(t)
+	// An osascript that gets as far as creating the file and then fails,
+	// which is the shape of a write that dies after `open for access`.
+	stubBin(t, dir, "osascript", `case "$*" in
+  *"clipboard info"*) echo "«class PNGf», 73" ;;
+  *) for a in "$@"; do last=$a; done; : > "$last"; echo "simulated write failure" >&2; exit 1 ;;
+esac
+`)
+
+	home := t.TempDir()
+	typed, err := newClipboard(home).Image(testCtx(t), "alpha", "mercury")
+	if err == nil {
+		t.Fatalf("Image returned %q and no error for a write that failed", typed)
+	}
+	if !strings.Contains(err.Error(), "simulated write failure") {
+		t.Errorf("err = %v, want the script's own stderr", err)
+	}
+	pasteDir := filepath.Join(home, ".cspace", "sessions", "alpha", "mercury", "paste")
+	if entries, err := os.ReadDir(pasteDir); err == nil && len(entries) > 0 {
+		t.Errorf("a failed write left %d file(s) behind in %s — an agent globbing "+
+			"that directory would find a zero-byte png", len(entries), pasteDir)
+	}
+}
+
+// The AppleScript body cannot be exercised hermetically: making a real
+// write fail after `open for access` needs an image on the pasteboard and a
+// disk that refuses the write, and the PATH stubs above never read the
+// script at all. So its three load-bearing orderings are asserted
+// structurally instead — each one was measured, and each one silently
+// survives its own deletion without this test.
+func TestWritePNGScriptKeepsTheOrderingsItsCommentsClaim(t *testing.T) {
+	idx := func(want string) int {
+		for i, line := range writePNGScript {
+			if line == want {
+				return i
+			}
+		}
+		t.Fatalf("writePNGScript has no %q line:\n%s", want, strings.Join(writePNGScript, "\n"))
+		return -1
+	}
+
+	// Coerce before opening. The one realistic mid-flight failure is the
+	// clipboard losing its image between the probe and the write; raising
+	// -1700 before any file exists is what keeps paste/ clean.
+	if coerce, open := idx("set d to (the clipboard as «class PNGf»)"),
+		idx("set f to open for access (POSIX file p) with write permission"); coerce > open {
+		t.Error("the script opens the file before it coerces the clipboard: " +
+			"a clipboard that lost its image mid-flight would leave an empty file")
+	}
+
+	// Truncate before writing, so a retry onto a name that already exists
+	// cannot leave a tail of the previous image spliced onto the new one.
+	if eof, write := idx("set eof f to 0"), idx("write d to f"); eof > write {
+		t.Error("the script writes before it truncates")
+	}
+
+	// Re-raise. Measured 2026-09-19: `osascript -e try -e 'error "boom"'
+	// -e 'end try'` exits 0, so a handler that only closes the file turns a
+	// failed write into a success — and Image would then hand a pane the
+	// path of a zero-byte png.
+	reRaised := false
+	for _, line := range writePNGScript[idx("on error e"):] {
+		if line == "error e" {
+			reRaised = true
+			break
+		}
+	}
+	if !reRaised {
+		t.Error("the on-error handler never re-raises: a failed write would exit 0 " +
+			"and Image would report the path of a zero-byte file")
+	}
+}
+
+func TestClipboardTextPinsTheChildsTextEncoding(t *testing.T) {
+	dir := stubPATH(t)
+	stubBin(t, dir, "pbpaste", `printf 'LC_ALL=[%s] LC_CTYPE=[%s]' "$LC_ALL" "$LC_CTYPE"`)
+	// The hostile case: a caller whose own environment pins a non-UTF-8
+	// locale. LC_ALL outranks LC_CTYPE, so leaving it in place would put
+	// the MacRoman transcoding back.
+	t.Setenv("LC_ALL", "C")
+	t.Setenv("LC_CTYPE", "C")
+
+	got, err := newClipboard(t.TempDir()).Text(testCtx(t))
+	if err != nil {
+		t.Fatalf("Text: %v", err)
+	}
+	if want := "LC_ALL=[] LC_CTYPE=[UTF-8]"; got != want {
+		t.Errorf("the child saw %q, want %q — pbpaste transcodes to its locale, "+
+			"so anything but UTF-8 here is a paste that changed on the way through", got, want)
+	}
+}
+
+func TestClipboardTextKeepsPbpastesOwnErrorText(t *testing.T) {
+	dir := stubPATH(t)
+	stubBin(t, dir, "pbpaste", `echo "pbpaste: cannot read the pasteboard" >&2; exit 1`)
+
+	text, err := newClipboard(t.TempDir()).Text(testCtx(t))
+	if err == nil {
+		t.Fatalf("Text returned %q and no error", text)
+	}
+	if !strings.Contains(err.Error(), "cannot read the pasteboard") {
+		t.Errorf("err = %v, want it to carry pbpaste's own message rather than an exit status", err)
 	}
 }
