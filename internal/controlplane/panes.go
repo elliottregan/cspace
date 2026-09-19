@@ -207,7 +207,56 @@ type (
 		outcome SweepOutcome
 		err     error
 	}
+	// paneNudgeMsg is the one-shot repaint nudge for the tab that just
+	// opened, carried by id because a close reorders the slice.
+	paneNudgeMsg struct{ id int }
 )
+
+// paneNudgeDelay is how long after a tmux-backed pane opens the repaint
+// nudge fires. It has to outlast tmux's own attach draw — a Claude pane
+// needs ~4-6s to paint its UI, but what the nudge is cleaning up is the
+// *first* frame tmux writes, which lands within a few hundred
+// milliseconds — and it has to be short enough that nobody has time to read
+// the garbled frame. 600ms is the design's number.
+const paneNudgeDelay = 600 * time.Millisecond
+
+// nudgeRepaint schedules the repaint nudge for one tab.
+//
+// The problem it exists for: tmux draws a session it is reattaching at the
+// size that session already had, and the app inside then repaints
+// incrementally over it, so the emulator's first frame interleaves two
+// layouts until something forces a full redraw. A SIGWINCH is what forces
+// one, and the operator gets it for free on the next terminal resize — this
+// just does it for them, once, immediately.
+func nudgeRepaint(id int) tea.Cmd {
+	return tea.Tick(paneNudgeDelay, func(time.Time) tea.Msg { return paneNudgeMsg{id: id} })
+}
+
+// nudgePane makes a pane repaint by taking it one row off the current
+// layout and straight back, which is two SIGWINCHes to the child.
+//
+// Only a live pane is touched: a tab whose child exited keeps its last
+// screen (view_pane.go's exited branch) and resizing it would rewrap a
+// frozen frame, and a pane already closed or closing has no pty left to
+// take the ioctl. Both errors are dropped — this is cosmetic, and a pane
+// whose resize fails has worse problems that its own next write reports.
+//
+// Called from the UI goroutine, like every other Resize fan-out.
+func (m Model) nudgePane(id int) {
+	t, _ := m.tabByID(id)
+	if t == nil || t.p == nil || t.closing || t.reaped || t.p.Closed() {
+		return
+	}
+	if _, _, exited := t.p.Exited(); exited {
+		return
+	}
+	cols, rows := m.paneSize()
+	if rows < 3 {
+		return // paneSize's floor is 2; one row less is not a legal size
+	}
+	_ = t.p.Resize(cols, rows-1)
+	_ = t.p.Resize(cols, rows)
+}
 
 // sweepCmd reaps the client records of attaches whose host process is gone.
 // It runs once, from Init, before any pane can open.

@@ -48,6 +48,10 @@ type fakeHost struct {
 	// exits makes the child die the moment it starts, for the tests that
 	// watch a pane end on its own rather than by the operator's key.
 	exits bool
+	// noDetach makes Open hand back a pane with no Detacher, which is what
+	// a host shell is: a process this dashboard spawned itself, with no
+	// tmux session behind it and nothing stale for it to repaint over.
+	noDetach bool
 	// nilPane makes Open report success with no Pane and no error — the
 	// shape a PaneHost must not be trusted to avoid on its own. It still
 	// hands back a detacher, because the real host books the attach before
@@ -92,7 +96,11 @@ func (h *fakeHost) Open(_ context.Context, kind Kind, row control.Row, cols, row
 		defer cancel()
 		_ = p.Close(ctx)
 	})
-	return Opened{Pane: p, Detach: &fakeDetacher{}, Warning: h.warn}, nil
+	var detach Detacher
+	if !h.noDetach {
+		detach = &fakeDetacher{}
+	}
+	return Opened{Pane: p, Detach: detach, Warning: h.warn}, nil
 }
 
 func (h *fakeHost) Sweep(context.Context) (SweepOutcome, error) {
@@ -367,6 +375,152 @@ func TestAPaneOpenedDuringAResizeGetsTheCurrentLayout(t *testing.T) {
 	if got := ansi.StringWidth(lines[0]); got != wantCols {
 		t.Errorf("the new pane renders %d columns, want the current layout's %d",
 			got, wantCols)
+	}
+}
+
+// paneGeometry reads an emulator's size back the only way it is observable
+// from outside: Render draws the whole screen, so its line count is the row
+// count and each line is exactly as wide as the screen.
+func paneGeometry(t *testing.T, p *pane.Pane) (cols, rows int) {
+	t.Helper()
+	lines := strings.Split(plain(p.Render()), "\n")
+	return ansi.StringWidth(lines[0]), len(lines)
+}
+
+// openPaneForTest runs one open all the way to a tab, without the follow-up
+// commands (the redraw wait would park on a `sleep 30`, and the nudge tick
+// is what the caller is usually about to deliver by hand).
+func openPaneForTest(t *testing.T, m Model) (Model, tea.Cmd) {
+	t.Helper()
+	mm, cmd := m.Update(press("enter"))
+	m = mm.(Model)
+	opened, ok := runCmd(t, cmd).(paneOpenedMsg)
+	if !ok {
+		t.Fatal("enter did not open a pane")
+	}
+	mm, cmd = m.Update(opened)
+	return mm.(Model), cmd
+}
+
+// TestTheRepaintNudgeResizesTheOpenedPaneToTheCurrentLayout is the reattach
+// nudge's contract: the tick resizes the tab it names, to the layout as it
+// is when the tick lands, and leaves it there.
+//
+// The window is changed underneath the model without a WindowSizeMsg, which
+// is not something bubbletea does — it is how the test tells the nudge's
+// resize apart from the fan-out's. A nudge that did nothing would leave the
+// pane at the size it opened with.
+func TestTheRepaintNudgeResizesTheOpenedPaneToTheCurrentLayout(t *testing.T) {
+	h := &fakeHost{t: t}
+	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
+	m, _ = openPaneForTest(t, m)
+	mustTabs(t, m, 1)
+	m.focus = focusSidebar
+	m = stepPump(t, m, "s") // a second tab, so "the right pane" can be wrong
+	mustTabs(t, m, 2)
+
+	otherCols, otherRows := paneGeometry(t, m.tabs[1].p)
+	m.width, m.height = 140, 44
+	wantCols, wantRows := m.paneSize()
+
+	mm, _ := m.Update(paneNudgeMsg{id: m.tabs[0].id})
+	m = mm.(Model)
+
+	if cols, rows := paneGeometry(t, m.tabs[0].p); cols != wantCols || rows != wantRows {
+		t.Errorf("the nudged pane is %dx%d, want the current layout's %dx%d",
+			cols, rows, wantCols, wantRows)
+	}
+	if cols, rows := paneGeometry(t, m.tabs[1].p); cols != otherCols || rows != otherRows {
+		t.Errorf("the nudge resized tab 1 too (%dx%d, was %dx%d)",
+			cols, rows, otherCols, otherRows)
+	}
+}
+
+// TestTheRepaintNudgeIgnoresATabThatIsGoneOrDead covers the three ways the
+// 600ms between the open and the tick can invalidate it. None of them may
+// panic, and none may resize: an exited pane keeps its last screen, and
+// rewrapping a frozen frame is a visible change to something the operator
+// is still reading.
+func TestTheRepaintNudgeIgnoresATabThatIsGoneOrDead(t *testing.T) {
+	t.Run("the tab was closed", func(t *testing.T) {
+		h := &fakeHost{t: t}
+		m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
+		m, _ = openPaneForTest(t, m)
+		id := m.tabs[0].id
+		m = m.dropTab(id)
+		mustTabs(t, m, 0)
+		mm, cmd := m.Update(paneNudgeMsg{id: id})
+		if cmd != nil {
+			t.Error("a nudge for a tab that is gone produced a command")
+		}
+		_ = mm
+	})
+
+	t.Run("the pane exited", func(t *testing.T) {
+		h := &fakeHost{t: t, exits: true}
+		m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
+		m, cmd := openPaneForTest(t, m)
+		mustTabs(t, m, 1)
+		// Run the redraw wait so the exit is observed the way it is in
+		// production, by the paneOutputMsg arm.
+		for _, msg := range drain(cmd) {
+			if msg == nil {
+				continue
+			}
+			mm, _ := m.Update(msg)
+			m = mm.(Model)
+		}
+		if _, _, exited := m.tabs[0].p.Exited(); !exited {
+			t.Skip("the child had not exited yet; nothing to assert")
+		}
+		beforeCols, beforeRows := paneGeometry(t, m.tabs[0].p)
+		m.width, m.height = 140, 44
+		mm, _ := m.Update(paneNudgeMsg{id: m.tabs[0].id})
+		m = mm.(Model)
+		if cols, rows := paneGeometry(t, m.tabs[0].p); cols != beforeCols || rows != beforeRows {
+			t.Errorf("an exited pane was resized to %dx%d, want its last screen at %dx%d",
+				cols, rows, beforeCols, beforeRows)
+		}
+	})
+
+	t.Run("the tab is closing", func(t *testing.T) {
+		h := &fakeHost{t: t}
+		m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
+		m, _ = openPaneForTest(t, m)
+		m.tabs[0].closing = true
+		beforeCols, beforeRows := paneGeometry(t, m.tabs[0].p)
+		m.width, m.height = 140, 44
+		mm, _ := m.Update(paneNudgeMsg{id: m.tabs[0].id})
+		m = mm.(Model)
+		if cols, rows := paneGeometry(t, m.tabs[0].p); cols != beforeCols || rows != beforeRows {
+			t.Errorf("a closing pane was resized to %dx%d, want %dx%d",
+				cols, rows, beforeCols, beforeRows)
+		}
+	})
+}
+
+// TestOnlyATmuxBackedPaneIsNudged: the nudge is scheduled off the presence
+// of a Detacher, which is what tells a reattached tmux session apart from a
+// process the dashboard spawned itself at the right size.
+func TestOnlyATmuxBackedPaneIsNudged(t *testing.T) {
+	nudged := func(t *testing.T, h *fakeHost) bool {
+		t.Helper()
+		m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
+		_, cmd := openPaneForTest(t, m)
+		for _, msg := range drain(cmd) {
+			if _, ok := msg.(paneNudgeMsg); ok {
+				return true
+			}
+		}
+		return false
+	}
+	// exits, so the redraw wait batched alongside the nudge comes back at
+	// once instead of parking drain on a child that never writes.
+	if !nudged(t, &fakeHost{t: t, exits: true}) {
+		t.Error("a tmux-backed pane was not nudged")
+	}
+	if nudged(t, &fakeHost{t: t, exits: true, noDetach: true}) {
+		t.Error("a pane with no tmux session behind it was nudged")
 	}
 }
 
