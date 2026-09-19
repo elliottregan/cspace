@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -236,6 +237,21 @@ var clientGoneMarkers = []string{
 	"no such session",
 }
 
+// noServerRunning is the same answer in the wording tmux used before 3.4:
+// `error connecting to <socket> (<strerror>)`, printed when there is no
+// server to connect to at all. "no server running on <socket>" above is the
+// 3.4+ replacement — but the sandbox image ships Debian's tmux 3.3a, so in
+// a real sandbox that has not been attached to since boot EVERY list-clients
+// and detach-client answers in this older form. Reading it as "the exec
+// never reached tmux" is what left the startup sweep unable to reap a single
+// record in a freshly booted sandbox (Task 8, Step 3).
+//
+// Anchored on the whole line, with tmux's parenthesised errno at the end, so
+// it cannot match the `container` CLI's own transport complaints — the thing
+// the sweep must never mistake for an answer. Apple Container's are shaped
+// `Error: get failed: container <name> not found`.
+var noServerRunning = regexp.MustCompile(`(?m)^error connecting to .+ \(.+\)$`)
+
 // DetachClient ends one client's attachment to its session.
 //
 // This is the call that makes a closed window actually stop being attached:
@@ -271,7 +287,7 @@ func clientAlreadyGone(out string) bool {
 			return true
 		}
 	}
-	return false
+	return noServerRunning.MatchString(out)
 }
 
 // ListClients reports the ttys attached to one of the sandbox's tmux
