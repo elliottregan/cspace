@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"sort"
 	"strconv"
@@ -37,52 +38,70 @@ func newPortsCmd() *cobra.Command {
 		Short: "List ports listening inside a sandbox with friendly URLs",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			sandbox := args[0]
-			project := projectName()
-
-			path, err := registry.DefaultPath()
-			if err != nil {
-				return err
-			}
-			r := &registry.Registry{Path: path}
-			entry, err := r.Lookup(project, sandbox)
-			if err != nil {
-				return err
-			}
-
-			open := probePorts(entry.IP, portsToProbe, 200*time.Millisecond)
-			sort.Ints(open)
-
-			out := cmd.OutOrStdout()
-			_, _ = fmt.Fprintf(out, "ports listening on sandbox %s (%s):\n", sandbox, entry.IP)
-			if len(open) == 0 {
-				_, _ = fmt.Fprintln(out, "  (none — supervisor /control may not be ready yet)")
-				return nil
-			}
-
-			useFriendly := dnsInstalled()
-			fqdn := fmt.Sprintf("%s.%s.%s", sandbox, project, dnsDomain)
-			for _, port := range open {
-				label := portLabel[port]
-				if label == "" {
-					label = "generic"
-				}
-				var url string
-				if useFriendly {
-					url = fmt.Sprintf("http://%s:%d/", fqdn, port)
-				} else {
-					url = fmt.Sprintf("http://%s:%d/", entry.IP, port)
-				}
-				_, _ = fmt.Fprintf(out, "  %-6d %-22s %s\n", port, label, url)
-			}
-			if !useFriendly {
-				_, _ = fmt.Fprintln(out, "")
-				_, _ = fmt.Fprintf(out, "note: friendly URLs disabled. Run `cspace dns install` once to enable http://<sandbox>.%s/.\n", dnsDomain)
-			}
-			return nil
+			return runPorts(cmd.OutOrStdout(), projectName(), args[0])
 		},
 	}
 }
+
+func runPorts(out io.Writer, project, sandbox string) error {
+	path, err := registry.DefaultPath()
+	if err != nil {
+		return err
+	}
+	r := &registry.Registry{Path: path}
+	entry, err := r.Lookup(project, sandbox)
+	if err != nil {
+		return err
+	}
+
+	// `cspace down --keep-state` removes the container and leaves the
+	// entry behind with State == StateStopped and no IP/ControlURL. Without
+	// this guard, probePorts got net.JoinHostPort("", port) => ":<port>",
+	// which net.DialTimeout happily connects to on the OPERATOR'S OWN
+	// loopback — so `cspace ports <kept-sandbox>` reported the host's own
+	// listening ports as the sandbox's. There is nothing to probe until the
+	// sandbox is booted again.
+	if entry.State == registry.StateStopped || entry.IP == "" {
+		_, _ = fmt.Fprintf(out, "%s is stopped (kept with --keep-state); no ports to probe — run cspace up %s to boot it\n", sandbox, sandbox)
+		return nil
+	}
+
+	open := probePortsFn(entry.IP, portsToProbe, 200*time.Millisecond)
+	sort.Ints(open)
+
+	_, _ = fmt.Fprintf(out, "ports listening on sandbox %s (%s):\n", sandbox, entry.IP)
+	if len(open) == 0 {
+		_, _ = fmt.Fprintln(out, "  (none — supervisor /control may not be ready yet)")
+		return nil
+	}
+
+	useFriendly := dnsInstalled()
+	fqdn := fmt.Sprintf("%s.%s.%s", sandbox, project, dnsDomain)
+	for _, port := range open {
+		label := portLabel[port]
+		if label == "" {
+			label = "generic"
+		}
+		var url string
+		if useFriendly {
+			url = fmt.Sprintf("http://%s:%d/", fqdn, port)
+		} else {
+			url = fmt.Sprintf("http://%s:%d/", entry.IP, port)
+		}
+		_, _ = fmt.Fprintf(out, "  %-6d %-22s %s\n", port, label, url)
+	}
+	if !useFriendly {
+		_, _ = fmt.Fprintln(out, "")
+		_, _ = fmt.Fprintf(out, "note: friendly URLs disabled. Run `cspace dns install` once to enable http://<sandbox>.%s/.\n", dnsDomain)
+	}
+	return nil
+}
+
+// probePortsFn is probePorts behind a variable, for runPorts's own tests: a
+// stopped sandbox must never reach a real dial (the whole point of the
+// stopped-sandbox guard above), and a stub here lets a test fail loudly if
+// it does rather than merely observe an empty, dial-timeout-shaped result.
+var probePortsFn = probePorts
 
 // probePorts returns the subset of ports that accept a TCP connection at
 // host within the given timeout. Probes run concurrently so total elapsed
