@@ -222,7 +222,14 @@ func (m Model) footer() string {
 		// anything that still does not is dropped whole rather than sliced.
 		h := m.help
 		h.SetWidth(max(1, m.width-ansi.StringWidth(lead)-1))
-		return lead + " " + h.ShortHelpView(m.keys.LeaderHelp())
+		leadRendered := lead
+		if m.leaderArmed {
+			// The held prefix gets the accent style so the armed state is
+			// visible — the width budget above is still figured from the
+			// unstyled label, since the style adds no cells.
+			leadRendered = styleOK.Render(lead)
+		}
+		return leadRendered + " " + h.ShortHelpView(m.keys.LeaderHelp())
 	}
 	row := m.selectedRow()
 	return m.help.ShortHelpView(m.keys.forRow(row, m.live[keyOf(row)]).ShortHelp())

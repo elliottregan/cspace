@@ -410,24 +410,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyPressMsg:
-		// Ctrl+C quits from the sidebar and from a modal, where a dashboard
-		// with no way out would be a bug. With a pane focused it belongs to
-		// the child — interrupting Claude is the single most-used key in
-		// there — so the way out is the leader's quit.
-		if key.Matches(msg, forceQuit) && (m.focus != focusMain || m.focusedTab() == nil) {
+		// Ctrl+C quits from the sidebar and from any modal — a picker or
+		// confirmation left open over a focused pane must not swallow the
+		// one key that always gets out, which is what helpView promises
+		// ("ctrl+c quits from anywhere"). Only modeNormal with a pane
+		// focused routes it to the child instead, where interrupting Claude
+		// is the single most-used key.
+		if key.Matches(msg, forceQuit) &&
+			(m.mode != modeNormal || m.focus != focusMain || m.focusedTab() == nil) {
 			m.quitting = true
 			return m, m.quitCmd()
 		}
 		return m.handleKey(msg)
 
 	case tea.PasteMsg:
-		// A text paste goes to the focused pane, which brackets it when the
-		// child asked for bracketing. With the sidebar focused there is
-		// nothing to paste into.
-		if t := m.focusedTab(); t != nil && t.p != nil && m.focus == focusMain {
-			t.p.Paste(msg.Content)
+		// A paste reaches a live pane only when nothing else owns the
+		// keyboard: modeNormal, focused on the main area, on a real
+		// process. Every other case falls through to the mode switch below
+		// instead of being handled here — modeInput's textinput inserts a
+		// paste itself (bracketed paste is on by default in bubbletea v2,
+		// so without this fall-through a paste into the send box would
+		// silently vanish), and a modal open over a focused pane (the
+		// picker, the teardown confirm) must not leak the paste through to
+		// the child behind it.
+		if m.mode == modeNormal && m.focus == focusMain {
+			if t := m.focusedTab(); t != nil && t.p != nil {
+				t.p.Paste(msg.Content)
+			}
+			return m, nil
 		}
-		return m, nil
 	}
 
 	// Anything the branches above did not consume goes to whichever widget
