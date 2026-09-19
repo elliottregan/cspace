@@ -144,6 +144,11 @@ func TestEncodeKey(t *testing.T) {
 		// rather than double-encode it. TestVTEmulatorSendsAModifiedKeyThroughTheOverlay
 		// proves x/vt still delivers \x01 for this one end to end.
 		{"ctrl+a is x/vt's alone", KeyEvent{Code: 'a', Mod: ModCtrl}, encLegacy, "", false},
+		// N1: ctrlLetterByte's widened set covers '[' too (classic byte
+		// 0x1b), but plain Ctrl+[ carries no extra bit, so it stays x/vt's
+		// own case (key.go's KeyPressEvent{Code: '[', Mod: ModCtrl}) in
+		// legacy mode exactly as plain Ctrl+<letter> does.
+		{"ctrl+[ is x/vt's own control byte (0x1b)", KeyEvent{Code: '[', Mod: ModCtrl}, encLegacy, "", false},
 
 		// A printable key with only Shift held is its own text. x/vt's
 		// default branch drops it because Mod != 0; the terminal that
@@ -190,11 +195,11 @@ func TestEncodeKey(t *testing.T) {
 		// encForced — pane.ExtendedKeys, i.e. a Claude pane whose kitty
 		// negotiation tmux ate. THIS BLOCK IS THE RULE: the CSI-u form is
 		// used only where the legacy bytes would arrive with a modifier
-		// missing (keys.go's legacyLosesModifier), and every other key
-		// keeps exactly what encLegacy sends it. A row that moves between
-		// the two halves below is a key whose meaning changed inside a
-		// running Claude session, which is what the first cut of this
-		// option did to Shift+Tab.
+		// missing, or would not arrive at all (keys.go's
+		// legacyLosesModifier), and every other key keeps exactly what
+		// encLegacy sends it. A row that moves between the two halves below
+		// is a key whose meaning changed inside a running Claude session,
+		// which is what the first cut of this option did to Shift+Tab.
 		//
 		// Lossy under legacy, so forced: rule 5's four control-byte keys
 		// with a modifier the byte cannot carry...
@@ -207,6 +212,14 @@ func TestEncodeKey(t *testing.T) {
 		// ...and rule 6's Ctrl+<letter> with a Shift the control byte drops.
 		{"forced ctrl+shift+c", KeyEvent{Code: 'c', Mod: ModCtrl | ModShift}, encForced, "\x1b[99;6u", true},
 		{"forced meta+ctrl+a", KeyEvent{Code: 'a', Mod: ModCtrl | ModMeta}, encForced, "\x1b[97;13u", true},
+		// ...and N1 (2026-09-18 review-fixwave.md): a Ctrl-held printable
+		// ctrlLetterByte does not recognize at all has no legacy byte
+		// whatsoever, with or without an extra bit — a stronger loss than a
+		// missing modifier, escalated the same way. At 488738d these two
+		// went out as CSI-u before the narrowing regressed them to zero
+		// bytes; this pins the same two sequences again.
+		{"forced ctrl+shift+minus (typed ctrl+_) has no legacy byte", KeyEvent{Code: '-', Mod: ModCtrl | ModShift}, encForced, "\x1b[45;6u", true},
+		{"forced ctrl+slash has no legacy byte", KeyEvent{Code: '/', Mod: ModCtrl}, encForced, "\x1b[47;5u", true},
 
 		// Faithful under legacy, so left alone. Shift+Tab is the one this
 		// list exists for: ESC[Z is a distinct sequence, and in a Claude
@@ -221,6 +234,14 @@ func TestEncodeKey(t *testing.T) {
 		// Alt+<printable> all reach the child with their modifier intact.
 		{"forced ctrl+c is x/vt's control byte", KeyEvent{Code: 'c', Mod: ModCtrl}, encForced, "", false},
 		{"forced ctrl+alt+a is x/vt's", KeyEvent{Code: 'a', Mod: ModCtrl | ModAlt}, encForced, "", false},
+		// ctrlLetterByte's widened set (@ [ \ ] ^ _ and space, N1) now
+		// recognizes '_' too, but plain Ctrl+_ carries no extra bit for
+		// rule 6 to degrade — it is x/vt's own case (key.go's
+		// KeyPressEvent{Code: '_', Mod: ModCtrl}, which already sends the
+		// classic byte 0x1f) just like plain Ctrl+<letter> above, and this
+		// row is the regression guard: legacyLosesModifier must still
+		// decline it rather than route it through rule 3 as well.
+		{"forced ctrl+underscore is x/vt's control byte (0x1f)", KeyEvent{Code: '_', Mod: ModCtrl}, encForced, "", false},
 		{"forced alt+x is x/vt's", KeyEvent{Code: 'x', Mod: ModAlt, Text: "x"}, encForced, "", false},
 		// Rule 4's xterm forms already carry the modifier as a parameter.
 		{"forced ctrl+right keeps the xterm form", KeyEvent{Code: KeyRight, Mod: ModCtrl}, encForced, "\x1b[1;5C", true},
