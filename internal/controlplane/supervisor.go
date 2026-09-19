@@ -23,7 +23,6 @@ func (s *supervisor) view(width, height int) string { return "" }
 
 func (m Model) supervisorEventsCmd(*tab) tea.Cmd { return nil }
 
-//nolint:unused // filled in by Task 4, which is the first caller
 func (m Model) handleSupervisorKey(*tab, tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }

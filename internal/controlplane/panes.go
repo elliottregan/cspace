@@ -378,8 +378,6 @@ func (m Model) dropTab(id int) Model {
 // closes have to finish before the program ends, and because a sequence's
 // own message is unexported and therefore unobservable from a test: the
 // thing that must not regress here is that quitting detaches.
-//
-//nolint:unused // filled in by Task 4, which is the first caller
 func (m Model) quitCmd() tea.Cmd {
 	type teardown struct {
 		detach Detacher
