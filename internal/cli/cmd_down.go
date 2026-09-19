@@ -81,6 +81,34 @@ Without it, exactly one <name> argument is required.`,
 				names = []string{args[0]}
 			}
 
+			// Every name here is about to be joined into two host paths that
+			// wipeSandboxState removes outright. Registry-derived names are
+			// no excuse to skip the check: the registry is a file on disk,
+			// and this is the last point before the joins. `project` is the
+			// cwd-derived one, used only for the "browser" message's wording
+			// — the shape check itself does not depend on it, and the
+			// per-name project resolution happens further down.
+			//
+			// Under --all a bad name is skipped rather than fatal. These
+			// names come from registry entries, which were never shape-
+			// checked before this change, so one legacy entry with a dot in
+			// it would otherwise make `cspace down --all` refuse to tear
+			// down anything at all. The single-name form still fails hard:
+			// there the name came from the caller, and the callers are no
+			// longer only cspace's own code.
+			kept := names[:0]
+			for _, name := range names {
+				if err := validateSandboxName(project, name); err != nil {
+					if !all {
+						return err
+					}
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "[cspace] skipping %q: %v\n", name, err)
+					continue
+				}
+				kept = append(kept, name)
+			}
+			names = kept
+
 			a := applecontainer.New()
 			for _, name := range names {
 				// Resolve the sandbox's actual project. The cwd-derived

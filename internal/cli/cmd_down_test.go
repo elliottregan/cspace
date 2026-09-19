@@ -2,8 +2,10 @@ package cli
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/elliottregan/cspace/internal/control"
@@ -50,5 +52,19 @@ func TestRemoveControlPlaneDirIgnoresAMissingDir(t *testing.T) {
 
 	if buf.Len() != 0 {
 		t.Errorf("unexpected warning output for a directory that never existed: %q", buf.String())
+	}
+}
+
+func TestDownRefusesAnUnsafeName(t *testing.T) {
+	cmd := newDownCmd()
+	cmd.SetArgs([]string{"../../etc"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("down accepted a traversal-shaped name")
+	}
+	if !strings.Contains(err.Error(), "sandbox name") {
+		t.Errorf("error = %v, want it to name the sandbox name", err)
 	}
 }
