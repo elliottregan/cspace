@@ -570,6 +570,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+
+	case tea.MouseClickMsg:
+		return m.handleClick(msg)
+
+	case tea.MouseReleaseMsg, tea.MouseMotionMsg:
+		// Cell motion mode reports a release for every click, and motion
+		// while a button is held — a drag. The design has no drag gesture
+		// and forwards nothing to the child, so both are dropped HERE
+		// rather than left to fall through to the widget switch at the
+		// bottom of Update, which would hand them to a textinput or a huh
+		// form.
+		return m, nil
 	}
 
 	// Anything the branches above did not consume goes to whichever widget

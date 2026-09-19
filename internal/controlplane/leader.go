@@ -119,15 +119,14 @@ func (m Model) handleLeaderKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// moveTab steps the focus through the tabs, wrapping.
+// moveTab steps the focus through the tabs, wrapping. The step is the only
+// thing it decides; focusTab does the rest, so the leader's n/p and a click
+// on a tab cannot end up leaving the model in different states.
 func (m Model) moveTab(dir int) Model {
 	if len(m.tabs) == 0 {
 		return m
 	}
-	m.focused = (m.focused + dir + len(m.tabs)) % len(m.tabs)
-	m.focus = focusMain
-	m.scrolling, m.scroll = false, 0
-	return m
+	return m.focusTab((m.focused + dir + len(m.tabs)) % len(m.tabs))
 }
 
 // handlePaneKey is what a focused pane's keyboard does: in scroll mode, move
