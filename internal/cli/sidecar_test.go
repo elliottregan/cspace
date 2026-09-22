@@ -13,14 +13,26 @@ import (
 // errStub stands in for any failure the container CLI can return.
 var errStub = errors.New("stub failure")
 
-// stubContainerCLI replaces browserExecCmd — the single seam every substrate
-// call in the restart ladder routes through — with a recorder. The handler
+// stubContainerCLI replaces browserExecCmd — the seam every substrate call
+// in the restart ladder routes through — with a recorder. The handler
 // receives the argv and returns (stdout, error).
+//
+// The ladder's last step, refreshSidecarHosts, does not go through
+// browserExecCmd: it lists containers through the substrate adapter and
+// injects /etc/hosts, both behind their own seams. Those are stubbed here
+// too (no containers, no injection), because otherwise the test reaches for
+// the real `container` binary — invisible on a Mac that has it, a failure on
+// CI's ubuntu runners, which is how main was red from 2026-09-18 to
+// 2026-09-22. A test that wants to exercise the refresh itself overrides
+// the two seams after calling this.
 func stubContainerCLI(t *testing.T, handler func(args []string) (string, error)) *[]string {
 	t.Helper()
 	var calls []string
 	orig := browserExecCmd
-	t.Cleanup(func() { browserExecCmd = orig })
+	origList, origInject := listContainersFn, injectHostsFn
+	t.Cleanup(func() { browserExecCmd, listContainersFn, injectHostsFn = orig, origList, origInject })
+	listContainersFn = func(context.Context) ([]applecontainer.ContainerSummary, error) { return nil, nil }
+	injectHostsFn = func(context.Context, string, map[string]string) error { return nil }
 	browserExecCmd = func(_ context.Context, name string, args ...string) (string, error) {
 		calls = append(calls, strings.TrimSpace(name+" "+strings.Join(args, " ")))
 		return handler(append([]string{name}, args...))
