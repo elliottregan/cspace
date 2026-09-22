@@ -87,8 +87,15 @@ func AttachArgv(spec AttachSpec) (bin string, argv []string, err error) {
 	argv = append(argv, TerminalEnvArgs(spec.TERM, spec.COLORTERM)...)
 	argv = append(argv, spec.Container)
 	if spec.Session != "" {
+		// -u: write UTF-8 to the client no matter what its locale says.
+		// `container exec` starts the client with no LANG at all, so
+		// without it tmux marks the client non-UTF-8 (client_utf8=0) and
+		// draws every non-ASCII glyph as `_` — Claude Code's logo, its
+		// status-line icons, every box-drawing character. Measured in a
+		// live sandbox on 2026-09-22 through both the dashboard's pane
+		// and this same argv.
 		argv = append(argv,
-			"tmux", "-f", TmuxConf,
+			"tmux", "-u", "-f", TmuxConf,
 			"new-session", "-A", "-s", spec.Session, "-c", Workspace)
 	}
 	argv = append(argv, spec.Command...)
