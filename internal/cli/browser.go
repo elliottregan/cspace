@@ -399,7 +399,13 @@ func browserSidecarRunArgs(containerName, plVersion, gateway string) []string {
 			//    Puppeteer recommendation for containerized Chrome — see
 			//    cs-finding 2026-05-06-browser-sidecar-chromium-hits-err-
 			//    insufficient-resources-on for the diagnostic trail.
-			"/ms-playwright/chromium-*/chrome-linux/chrome " +
+			//
+			//    The glob tolerates both directory layouts the Playwright
+			//    image has shipped: `chrome-linux/` up to 1.62 and
+			//    `chrome-linux-arm64/` from 1.63 (chromium-1243). A glob
+			//    that misses makes bash print "No such file" once and the
+			//    CDP wait below time out with no hint of why.
+			"/ms-playwright/chromium-*/chrome-linux*/chrome " +
 			"--headless=new --no-sandbox --disable-gpu " +
 			"--disable-dev-shm-usage " +
 			"--remote-debugging-port=9223 about:blank & " +
