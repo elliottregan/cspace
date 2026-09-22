@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -655,5 +656,33 @@ func TestRemainingBudgetUsesRemainingWhenSmaller(t *testing.T) {
 	got := remainingBudget(ctx, 30*time.Second)
 	if got <= 0 || got > 50*time.Millisecond {
 		t.Errorf("remainingBudget = %v, want (0, 50ms]", got)
+	}
+}
+
+// TestBrowserSidecarChromeGlobMatchesEveryImageLayout pins the Chromium path
+// against the two directory layouts the Playwright image has shipped:
+// chrome-linux/ (1.62 and earlier, chromium-1234) and chrome-linux-arm64/
+// (1.63, chromium-1243). The second one silently broke every sidecar boot
+// on 2026-09-22 — bash printed "No such file" once and cspace up reported a
+// CDP timeout with no hint of why.
+func TestBrowserSidecarChromeGlobMatchesEveryImageLayout(t *testing.T) {
+	args := browserSidecarRunArgs("cspace-x-browser", "1.63.0", "192.168.64.1")
+	script := args[len(args)-1]
+	start := strings.Index(script, "/ms-playwright/chromium-")
+	if start < 0 {
+		t.Fatalf("no chromium path in the sidecar script: %q", script)
+	}
+	glob := strings.Fields(script[start:])[0]
+
+	for _, layout := range []string{
+		"chromium-1234/chrome-linux/chrome",
+		"chromium-1243/chrome-linux-arm64/chrome",
+	} {
+		if ok, err := filepath.Match(glob, "/ms-playwright/"+layout); err != nil || !ok {
+			t.Errorf("glob %q does not match %s (err %v)", glob, layout, err)
+		}
+	}
+	if ok, _ := filepath.Match(glob, "/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux-arm64/chrome-headless-shell"); ok {
+		t.Errorf("glob %q must not pick the headless shell", glob)
 	}
 }
