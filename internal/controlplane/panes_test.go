@@ -77,7 +77,17 @@ func (h *fakeHost) Open(_ context.Context, kind Kind, row control.Row, cols, row
 		// -echo so what lands on the screen is the child's doing and not
 		// the line discipline's, and `cat -v` so a control byte is visible
 		// (NUL prints as ^@).
-		script = "stty raw -echo; cat -v"
+		//
+		// The printf after stty is a readiness marker: it is the child's
+		// first output, so the pane's first Dirty signal means raw mode
+		// is on, and Open waits for it before handing the pane over.
+		// Input that lands while the pty is still cooked gets echoed by
+		// the line discipline AND printed by cat, so a pasted path showed
+		// up twice — on Linux CI reliably, on macOS when the shell lost
+		// the race. The marker erases itself (CR, erase-to-end-of-line)
+		// in the same write, so a test that expects a blank pane still
+		// gets one.
+		script = "stty raw -echo; printf 'READY\\r\\033[K'; cat -v"
 	case h.exits:
 		script = "exit 0"
 	}
@@ -92,6 +102,23 @@ func (h *fakeHost) Open(_ context.Context, kind Kind, row control.Row, cols, row
 		defer cancel()
 		_ = p.Close(ctx)
 	})
+	if h.echo {
+		// Hand the pane over only once the child is in raw mode (see the
+		// script above): its first output is the marker, and the marker
+		// is gone again once the erase in the same write has been drawn.
+		select {
+		case <-p.Dirty():
+		case <-time.After(5 * time.Second):
+			h.t.Fatalf("echo pane never produced its readiness marker")
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for strings.Contains(plain(p.Render()), "READY") {
+			if time.Now().After(deadline) {
+				h.t.Fatalf("echo pane's readiness marker never erased:\n%s", plain(p.Render()))
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
 	return Opened{Pane: p, Detach: &fakeDetacher{}, Warning: h.warn}, nil
 }
 
