@@ -25,6 +25,8 @@ const (
 	modeConfirmDown
 	modeInput
 	modePicker
+	modeDetails
+	modeCreate
 )
 
 // noticeLifetime is how long a success notice stays in the footer. Error
@@ -51,10 +53,27 @@ type noticeExpireMsg struct{ gen int }
 // instead, because a Model is copied on every Update and an in-place write
 // would be visible to a copy that had already been handed elsewhere.
 type Model struct {
-	data  Data
-	actor Actor
-	host  PaneHost
-	clip  Clipboard
+	data            Data
+	actor           Actor
+	host            PaneHost
+	clip            Clipboard
+	opener          LinkOpener
+	project         string
+	navID           string
+	collapsed       map[string]bool
+	sessions        map[sandboxKey][]control.Session
+	sessionErrors   map[sandboxKey]error
+	pollingSessions bool
+	headers         map[sandboxKey]headerSample
+	services        map[sandboxKey][]control.ServiceStatus
+	readingHeader   bool
+	refreshHeader   bool
+	dialog          *detailsDialog
+	modalScroll     int
+	createForm      *huh.Form
+	creating        control.Row
+	actionTarget    control.Row
+	exitWarning     string
 
 	tabs      []*tab
 	focused   int // index into tabs; -1 when there are none
@@ -164,20 +183,26 @@ func New(data Data, actor Actor, host PaneHost, clip Clipboard, keys KeyMap) Mod
 		clip = nopClipboard{}
 	}
 	return Model{
-		data:     data,
-		actor:    actor,
-		host:     host,
-		clip:     clip,
-		keys:     keys,
-		help:     help.New(),
-		now:      time.Now,
-		input:    ti,
-		spinner:  spinner.New(spinner.WithSpinner(spinner.Dot)),
-		live:     map[sandboxKey]liveState{},
-		memory:   map[string]int64{},
-		ports:    map[sandboxKey][]control.Port{},
-		portsErr: map[sandboxKey]error{},
-		focused:  -1,
+		data:          data,
+		actor:         actor,
+		host:          host,
+		clip:          clip,
+		keys:          keys,
+		help:          help.New(),
+		now:           time.Now,
+		input:         ti,
+		spinner:       spinner.New(spinner.WithSpinner(spinner.Dot)),
+		live:          map[sandboxKey]liveState{},
+		memory:        map[string]int64{},
+		ports:         map[sandboxKey][]control.Port{},
+		portsErr:      map[sandboxKey]error{},
+		focused:       -1,
+		nextTabID:     1,
+		collapsed:     map[string]bool{},
+		sessions:      map[sandboxKey][]control.Session{},
+		sessionErrors: map[sandboxKey]error{},
+		headers:       map[sandboxKey]headerSample{},
+		services:      map[sandboxKey][]control.ServiceStatus{},
 	}
 }
 
@@ -206,7 +231,7 @@ func (m Model) Init() tea.Cmd {
 // its ports is exactly what the poll loop is for. The one-action-at-a-time
 // gate lives in handleNormalKey and is unaffected by this.
 func (m Model) paused() bool {
-	return m.mode != modeNormal || m.action == LabelOpenPane
+	return m.mode != modeNormal && m.mode != modeDetails || m.action == LabelOpenPane
 }
 
 // Update refreshes the layout geometry after handling a message, and does
@@ -215,8 +240,8 @@ func (m Model) paused() bool {
 // The refresh is here rather than at each of update's thirty-odd return
 // points, and rather than in View, which has a value receiver and can store
 // nothing. It runs on every message, including a pane's ~30/s redraw
-// signal: it re-renders the row list and the tabs — the same work View
-// does for those two regions, and small beside the emulator render that
+// signal: it lays out navigation and header links, which is small beside
+// the emulator render that
 // same signal triggers.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.update(msg)
@@ -227,15 +252,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// than panicking under the operator's cursor.
 		return next, cmd
 	}
+	if mm.quitting && m.action == LabelUp {
+		r := m.actionTarget
+		mm.exitWarning = fmt.Sprintf("Boot of %s/%s is unfinished. Check cspace tui; if stuck, run cspace down --keep-state %s from that project.", r.Project, r.Name, r.Name)
+	}
 	mm.geom = mm.computeGeometry()
+	if keyOf(m.activeRow()) != keyOf(mm.activeRow()) && !mm.readingHeader {
+		if hc := mm.headerCmd(false); hc != nil {
+			mm.readingHeader = true
+			cmd = tea.Batch(cmd, hc)
+		}
+	}
 	return mm, cmd
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if next, cmd, handled := m.updateWorkspace(msg); handled {
+		return next, cmd
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.help.SetWidth(msg.Width)
+		_, modalWidth, _ := m.modalFrame()
+		if m.confirm != nil {
+			m.confirm.WithWidth(modalWidth)
+		}
+		if m.picker != nil {
+			m.picker.WithWidth(modalWidth)
+		}
+		if m.createForm != nil {
+			m.createForm.WithWidth(modalWidth)
+		}
 		if m.mode == modeInput {
 			m.input.SetWidth(sendInputWidth(m.pending.Name, msg.Width))
 		}
@@ -281,12 +329,41 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case liveMsg:
 		m.pollingFast = false
 		m.live = msg.states
+		if msg.sessions != nil {
+			next := make(map[sandboxKey][]control.Session, len(m.sessions))
+			for k, ss := range m.sessions {
+				next[k] = append([]control.Session(nil), ss...)
+				if m.sessionErrors[k] != nil {
+					continue
+				}
+				for i, s := range next[k] {
+					for _, fresh := range msg.sessions[k] {
+						if s.ID == fresh.ID && s.Name == fresh.Name {
+							next[k][i].State = fresh.State
+						}
+					}
+				}
+			}
+			m.sessions = next
+		}
 		return m, nil
 
 	case snapshotMsg:
 		m.pollingMedium = false
 		m.applySnapshot(msg.snap)
 		cmds := []tea.Cmd{m.eventsCmd()}
+		if !m.pollingSessions {
+			if sc := m.sessionsCmd(); sc != nil {
+				m.pollingSessions = true
+				cmds = append(cmds, sc)
+			}
+		}
+		if !m.readingHeader {
+			if hc := m.headerCmd(false); hc != nil {
+				m.readingHeader = true
+				cmds = append(cmds, hc)
+			}
+		}
 		// Seed the slow cadence right after the first successful snapshot
 		// rather than waiting out the first slowInterval: ports and stats
 		// would otherwise stay blank for up to 10s after a fresh start,
@@ -306,6 +383,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// stopped. The other order would let a sample taken against the
 		// previous row set reinstate them.
 		m.ports, m.portsErr = msg.ports, msg.portsErr
+		if msg.services != nil {
+			m.services = msg.services
+		}
 		m.applySnapshot(msg.snap)
 		return m, nil
 
@@ -315,7 +395,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// concurrent and neither cancels the other. Dropping the mismatched
 		// one is what stops another sandbox's events rendering under this
 		// sandbox's name until the next medium tick.
-		if msg.key != keyOf(m.selectedRow()) {
+		target := m.selectedRow()
+		if m.dialog != nil && !m.dialog.environment {
+			target = m.dialog.row
+		}
+		if msg.key != keyOf(target) {
 			return m, nil
 		}
 		m.events, m.eventsErr = msg.lines, msg.err
@@ -473,6 +557,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			sandbox: sandbox,
 			p:       msg.opened.Pane,
 			detach:  msg.opened.Detach,
+			session: msg.opened.Session,
 		})
 		wait := awaitOutput(m.tabs[m.focused])
 		if msg.opened.Warning != "" {
@@ -611,7 +696,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// silently vanish), and a modal open over a focused pane (the
 		// picker, the teardown confirm) must not leak the paste through to
 		// the child behind it.
-		if m.mode == modeNormal && m.focus == focusMain {
+		if m.mode == modeNormal && !m.showHelp && m.focus == focusMain {
 			if t := m.focusedTab(); t != nil {
 				if t.p != nil {
 					t.p.Paste(msg.Content)
@@ -660,6 +745,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.confirm != nil {
 			return m.updateConfirm(msg)
 		}
+	case modeCreate:
+		return m.updateCreate(msg)
 	case modePicker:
 		if m.picker != nil {
 			return m.updatePicker(msg)
@@ -669,22 +756,20 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // applySnapshot folds a poll's rows into the model. A failed `container ls`
-// keeps the last-known rows and only records the error: the footer marks how
-// stale they are, and the sidebar never blanks. control leaves Daemon zeroed
-// on its error paths too, so m.daemon is only updated on success — otherwise
-// a snapshot failure would flip the tabs line from "daemon 1.0.0-rc.48" to
-// "daemon unreachable" on every poll error, which is not what happened.
+// keeps the last-known rows. Daemon health comes from an independent HTTP
+// probe and remains useful even when Apple Container cannot list containers.
 func (m *Model) applySnapshot(snap control.Snapshot) {
 	prev := m.selectedRow()
 	m.snapErr = snap.Err
+	m.daemon = snap.Daemon
 	if snap.Err != nil {
 		return
 	}
-	m.daemon = snap.Daemon
 	m.rows = snap.Rows
 	m.lastSnap = snap.TakenAt
 	m.memory = mergeMemory(m.memory, snap.Rows)
 	m.ports, m.portsErr = dropStalePorts(m.ports, m.portsErr, snap.Rows)
+	m.reconcileWorkspace(snap.Rows)
 	m.restoreSelection(prev)
 }
 
@@ -735,6 +820,13 @@ func mergeMemory(prev map[string]int64, rows []control.Row) map[string]int64 {
 
 // selectedRow is the current selection, or a zero Row when there is none.
 func (m Model) selectedRow() control.Row {
+	if m.navID != "" {
+		for _, n := range m.navigation() {
+			if n.id == m.navID {
+				return n.row
+			}
+		}
+	}
 	if m.selected >= 0 && m.selected < len(m.rows) {
 		return m.rows[m.selected]
 	}
@@ -817,11 +909,11 @@ func (m Model) childOwnsKeyboard() bool {
 }
 
 // paneSize is the emulator geometry for the main area: the window less the
-// sidebar and the one column of padding on each side, and less the tabs row
+// sidebar and the one column of padding on each side, and less the header
 // and the footer. Floored so a very small window still gets a legal size.
 func (m Model) paneSize() (cols, rows int) {
 	cols = m.paneWidth()
-	rows = m.height - 2 // the tabs row and the footer
+	rows = m.height - 3 // the two-line header and footer
 	if rows < 2 {
 		rows = 2
 	}

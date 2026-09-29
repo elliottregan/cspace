@@ -170,6 +170,7 @@ type Client struct {
 	// test drives it without spawning anything.
 	executable func() (string, error)
 	runCommand func(ctx context.Context, dir, bin string, args ...string) (string, error)
+	prCache    pullRequestCache
 
 	probeClient  *http.Client
 	actionClient *http.Client

@@ -276,3 +276,135 @@ func TestClientPortsSurfacesExecFailure(t *testing.T) {
 		t.Error("a non-zero ss exit must surface as an error")
 	}
 }
+
+func TestServicesDeclaredLiveStoppedAndUnknown(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		lifecycle  string
+		execErr    error
+		execExit   int
+		wantStates []ServiceState
+		wantError  bool
+		wantExec   int
+	}{
+		{"healthy probe", registry.StateReady, nil, 0, []ServiceState{ServiceRunning, ServiceStopped}, false, 1},
+		{"transport failure", registry.StateReady, errors.New("container unavailable"), 0, []ServiceState{ServiceUnknown, ServiceUnknown}, true, 1},
+		{"missing ss", registry.StateReady, nil, 127, []ServiceState{ServiceUnknown, ServiceUnknown}, true, 1},
+		{"stopped sandbox", registry.StateStopped, nil, 0, []ServiceState{ServiceStopped, ServiceStopped}, false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			clone := CloneDir(home, "alpha", "mercury")
+			if err := os.MkdirAll(filepath.Join(clone, ".devcontainer"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(clone, ".devcontainer", "devcontainer.json"), []byte(`{"portsAttributes":{"3000":{"label":"dev"},"4173":{"label":"preview"}}}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(clone, ".cspace.json"), []byte(`{"container":{"ports":{"9999":"legacy"}}}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			reg := &registry.Registry{Path: filepath.Join(t.TempDir(), "reg.json")}
+			if err := reg.Register(registry.Entry{Project: "alpha", Name: "mercury", IP: "10.0.0.1", State: tc.lifecycle}); err != nil {
+				t.Fatal(err)
+			}
+			fc := &fakeContainers{execOut: "LISTEN 0 511 0.0.0.0:3000 0.0.0.0:*\nLISTEN 0 511 0.0.0.0:9999 0.0.0.0:*\n", execErr: tc.execErr, execExit: tc.execExit}
+			c := New(Options{Home: home, Containers: fc, Entries: reg, ResolverInstalled: func() bool { return true }})
+			got, err := c.Services(context.Background(), "alpha", "mercury")
+			want := []ServiceStatus{
+				{Port: 3000, Label: "dev", URL: "http://mercury.alpha.cspace.test:3000/", State: tc.wantStates[0], Declared: true},
+				{Port: 4173, Label: "preview", URL: "http://mercury.alpha.cspace.test:4173/", State: tc.wantStates[1], Declared: true},
+			}
+			if (err != nil) != tc.wantError || !reflect.DeepEqual(got, want) {
+				t.Fatalf("Services = %+v, %v; want %+v, error=%v", got, err, want, tc.wantError)
+			}
+			if len(fc.execCalls) != tc.wantExec {
+				t.Fatalf("exec calls = %d, want %d", len(fc.execCalls), tc.wantExec)
+			}
+		})
+	}
+}
+
+func TestServiceStatusesCurationAndRuntimePorts(t *testing.T) {
+	cases := []struct {
+		name    string
+		labels  map[int]string
+		browser bool
+		want    []ServiceStatus
+	}{
+		{
+			name: "unlabeled fallback",
+			want: []ServiceStatus{{Port: 3000, State: ServiceRunning}, {Port: 9222, State: ServiceRunning}},
+		},
+		{
+			name:    "browser relay excluded",
+			browser: true,
+			want:    []ServiceStatus{{Port: 3000, State: ServiceRunning}},
+		},
+		{
+			name:    "runtime ports excluded even when labeled",
+			browser: true,
+			labels:  map[int]string{53: "dns", 6201: "control", 9222: "relay", 4173: "preview"},
+			want:    []ServiceStatus{{Port: 4173, Label: "preview", Declared: true, State: ServiceStopped}},
+		},
+		{
+			name:   "9222 without a browser is a user port",
+			labels: map[int]string{9222: "debug"},
+			want:   []ServiceStatus{{Port: 9222, Label: "debug", Declared: true, State: ServiceRunning}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := serviceStatuses([]int{9222, 6201, 3000, 53}, tc.labels, ServiceStopped, tc.browser)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("services = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestServicesBrowserRelayAndPortsShareDiscovery(t *testing.T) {
+	home := t.TempDir()
+	reg := &registry.Registry{Path: filepath.Join(t.TempDir(), "reg.json")}
+	if err := reg.Register(registry.Entry{Project: "alpha", Name: "mercury", IP: "10.0.0.1", State: registry.StateReady, BrowserContainer: "cspace-alpha-browser"}); err != nil {
+		t.Fatal(err)
+	}
+	c := New(Options{Home: home, Entries: reg, Containers: &fakeContainers{execOut: "LISTEN 0 511 127.0.0.1:9222 0.0.0.0:*\nLISTEN 0 511 127.0.0.1:3000 0.0.0.0:*\n"}, ResolverInstalled: func() bool { return false }})
+	services, err := c.Services(context.Background(), "alpha", "mercury")
+	if err != nil || len(services) != 1 || services[0].Port != 3000 || services[0].URL != "http://10.0.0.1:3000/" || services[0].Declared {
+		t.Fatalf("Services = %+v, %v", services, err)
+	}
+	ports, err := c.Ports(context.Background(), "alpha", "mercury")
+	if err != nil || len(ports) != 1 || ports[0].Port != 3000 || ports[0].URL != services[0].URL {
+		t.Fatalf("Ports disagrees with Services: %+v, %v", ports, err)
+	}
+}
+
+func TestServicesMissingDependenciesRetainsUnknownDeclarations(t *testing.T) {
+	home := t.TempDir()
+	clone := CloneDir(home, "alpha", "mercury")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, ".cspace.json"), []byte(`{"container":{"ports":{"3000":"dev"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg := &registry.Registry{Path: filepath.Join(t.TempDir(), "reg.json")}
+	if err := reg.Register(registry.Entry{Project: "alpha", Name: "mercury", State: registry.StateReady}); err != nil {
+		t.Fatal(err)
+	}
+	for _, entries := range []EntryStore{nil, reg} {
+		c := New(Options{Home: home, Entries: entries, ResolverInstalled: func() bool { return false }})
+		got, err := c.Services(context.Background(), "alpha", "mercury")
+		wantErr := ErrNoContainerCLI
+		if entries == nil {
+			wantErr = ErrNoEntryStore
+		}
+		if !errors.Is(err, wantErr) || len(got) != 1 || got[0].State != ServiceUnknown || got[0].URL != "" {
+			t.Fatalf("Services = %+v, %v; want unknown declaration + %v", got, err, wantErr)
+		}
+	}
+	if _, err := New(Options{}).Services(context.Background(), "alpha", "mercury"); !errors.Is(err, ErrNoHome) {
+		t.Fatalf("no home error = %v", err)
+	}
+}

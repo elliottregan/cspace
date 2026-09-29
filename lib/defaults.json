@@ -51,6 +51,7 @@
       "browserRestart": ["b"],
       "boot": ["u"],
       "refresh": ["r"],
+      "details": ["o"],
       "help": ["?"],
       "quit": ["q"],
       "leader": ["ctrl+space"],

@@ -21,6 +21,8 @@ func bindingFor(k KeyMap, action string) key.Binding {
 		return k.MoveDown
 	case ActionAttach:
 		return k.Attach
+	case ActionDetails:
+		return k.Details
 	case ActionSend:
 		return k.Send
 	case ActionInterrupt:

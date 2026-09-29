@@ -2,7 +2,7 @@
 title: Quitting the dashboard during a boot abandons the boot and leaves the registry at starting
 date: 2026-09-19
 kind: finding
-status: open
+status: acknowledged
 category: bug
 tags: control-plane, dashboard, registry, up, teardown
 ---
@@ -47,3 +47,6 @@ folded into the fix wave.
 ### 2026-09-19 — status: open
 Filed from the plan 4b whole-branch review's ruling on Task 8's observation
 4.
+
+### 2026-09-29 — status: acknowledged
+Quit now reports the unfinished boot target and the cspace down --keep-state recovery command after leaving the alternate screen. Boot lifetime, cancellation, and rollback semantics are unchanged, as scoped for this redesign.

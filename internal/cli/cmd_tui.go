@@ -23,15 +23,17 @@ func newTuiCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "tui",
 		Short: "Full-screen dashboard of cspace containers with common actions",
-		Long: `Full-screen dashboard of every cspace container on this host, grouped by
-project: lifecycle and agent state per sandbox, its labeled URLs, its
-compose sidecars and the project's shared browser.
+		Long: `Full-screen dashboard of cspace projects, containers and agent sessions.
+The sidebar switches sessions and creates containers or independent sessions.
+The active pane's header shows its branch, pull request and dev/preview links.
+Press o for container details; environment details are below the sidebar.
 
 Actions follow the selection — open a Claude pane, a shell or the
 supervisor's events, send a turn, interrupt, tear down, boot, restart the
 browser sidecar. A pane runs inside the window: every key goes to it
-except the leader, ctrl+space, whose second keys move between tabs and
-open and close them. Press ? for the full binding list; bindings come
+except the leader, ctrl+space, whose second keys move between panes and
+open and close them. Closing a pane detaches; tmux sessions keep running.
+Press ? for the full binding list; bindings come
 from tui.keys in ~/.cspace/config.json.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -76,8 +78,12 @@ from tui.keys in ~/.cspace/config.json.`,
 				newControlPlaneActor(ctrl, home),
 				newPaneHost(ctrl, home),
 				newClipboard(home),
-				controlplane.NewKeyMap(userCfg.TUI.Keys))
-			_, err = tea.NewProgram(model).Run()
+				controlplane.NewKeyMap(userCfg.TUI.Keys)).WithLinkOpener(newLinkOpener()).WithProject(project)
+			final, runErr := tea.NewProgram(model).Run()
+			err = runErr
+			if dashboard, ok := final.(controlplane.Model); ok && dashboard.QuitWarning() != "" {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), dashboard.QuitWarning())
+			}
 			return err
 		},
 	}

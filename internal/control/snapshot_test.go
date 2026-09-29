@@ -126,6 +126,48 @@ func TestSnapshotListErrorCarriedAndDaemonUnreachable(t *testing.T) {
 	}
 }
 
+func TestSnapshotReportsDaemonHealthIndependentlyOfContainerErrors(t *testing.T) {
+	listErr := errors.New("container ls: XPC Connection invalid")
+	reg := writeRegistry(t, "alpha", "mercury", "", "")
+	for _, tc := range []struct {
+		name       string
+		containers ContainerCLI
+		entries    EntryStore
+		wantErr    error
+		wantRows   int
+	}{
+		{name: "container list failed", containers: &fakeContainers{err: listErr}, entries: reg, wantErr: listErr, wantRows: 2},
+		{name: "container client missing", entries: reg, wantErr: ErrNoContainerCLI},
+		{name: "entry store missing", containers: &fakeContainers{}, wantErr: ErrNoEntryStore},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if req.URL.Path != "/health" || req.Method != http.MethodGet {
+					t.Errorf("unexpected daemon request: %s %s", req.Method, req.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": "1.0.0-rc.49"})
+			}))
+			defer daemon.Close()
+			c := New(Options{Containers: tc.containers, Entries: tc.entries, DaemonURL: daemon.URL})
+			snap := c.SnapshotWith(context.Background(), SnapshotOpts{SkipStats: true})
+			if !errors.Is(snap.Err, tc.wantErr) {
+				t.Fatalf("snapshot error = %v, want %v", snap.Err, tc.wantErr)
+			}
+			if !snap.Daemon.Reachable || snap.Daemon.Version != "1.0.0-rc.49" {
+				t.Fatalf("container failure hid the reachable daemon: %+v", snap.Daemon)
+			}
+			if len(snap.Rows) != tc.wantRows {
+				t.Fatalf("snapshot has %d rows, want %d", len(snap.Rows), tc.wantRows)
+			}
+			if tc.wantRows > 0 && (snap.Rows[1].Project != "alpha" || snap.Rows[1].Name != "mercury") {
+				t.Fatalf("container-list failure dropped the registry identity: %+v", snap.Rows)
+			}
+		})
+	}
+}
+
 // A Client built with no ContainerCLI must fail closed rather than nil-panic
 // on c.containers.List.
 func TestSnapshotErrorsWithoutContainerCLI(t *testing.T) {

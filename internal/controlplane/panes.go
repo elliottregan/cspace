@@ -75,6 +75,7 @@ type Opened struct {
 	// Warning is a notice the person must read even though the open worked —
 	// the no-tmux fallback, whose session will not survive this window.
 	Warning string
+	Session control.Session
 }
 
 // SweepOutcome is what a PaneHost's Sweep reports: the subset of
@@ -123,6 +124,7 @@ type tab struct {
 	kind    Kind
 	project string
 	sandbox string
+	session control.Session
 
 	// p is nil for KindSupervisor, which runs no process.
 	p *pane.Pane
@@ -231,11 +233,8 @@ func (m Model) openOrFocus(kind Kind, row control.Row) (tea.Model, tea.Cmd) {
 	// whichever was opened first.
 	if kind != KindHostShell {
 		for i, t := range m.tabs {
-			if t.kind == kind && t.project == row.Project && t.sandbox == row.Name {
-				m.focused = i
-				m.focus = focusMain
-				m.scrolling, m.scroll = false, 0
-				return m, nil
+			if t.kind == kind && t.project == row.Project && t.sandbox == row.Name && (kind != KindClaude || t.attachable() && (t.session.Name == "" || t.session.Name == control.SessionClaude)) {
+				return m.focusTab(i), nil
 			}
 		}
 	}
@@ -267,10 +266,17 @@ func (m Model) addTab(t *tab) Model {
 	t.id = m.nextTabID
 	m.nextTabID++
 	m.tabs = append(append([]*tab{}, m.tabs...), t)
-	m.focused = len(m.tabs) - 1
-	m.focus = focusMain
-	m.scrolling, m.scroll = false, 0
-	return m
+	return m.focusTab(len(m.tabs) - 1)
+}
+
+// An exited tmux client leaves its last screen available, but selecting the
+// still-running session should open a new client instead of that dead pane.
+func (t *tab) attachable() bool {
+	if t.closing || t.reaped || t.p == nil || t.p.Closed() {
+		return false
+	}
+	_, _, exited := t.p.Exited()
+	return !exited
 }
 
 // focusedTab is the tab the main area shows, or nil when there are none.
@@ -402,6 +408,8 @@ func (m Model) dropTab(id int) Model {
 	case len(m.tabs) == 0:
 		m.focused = -1
 		m.focus = focusSidebar
+	case idx < m.focused:
+		m.focused--
 	case m.focused >= len(m.tabs):
 		m.focused = len(m.tabs) - 1
 	}

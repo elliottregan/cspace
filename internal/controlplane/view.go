@@ -9,13 +9,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// View lays out the design's fixed geometry: a 24-column sidebar on the left
-// carrying the row list and, beneath it, the detail band; on the right a
-// tabs row, the main area, and a one-line footer across the bottom.
-//
-// Rollout step 3 put the band in the main area and the selection's title in
-// the tabs row, because there were no panes to compete for either. This is
-// the move that comment promised.
+// View renders the navigation and active pane, then places dialogs above them.
 func (m Model) View() tea.View {
 	if m.width == 0 || m.height == 0 {
 		v := tea.NewView("starting cspace tui…")
@@ -23,54 +17,25 @@ func (m Model) View() tea.View {
 		v.MouseMode = tea.MouseModeCellMotion
 		return v
 	}
-
-	bodyHeight := m.height - 1 // the footer
-	if bodyHeight < 1 {
-		bodyHeight = 1
-	}
-	mainWidth := mainWidthFor(m.width)
-
-	side := styleSidebar.Height(bodyHeight).Render(m.sidebarColumn(bodyHeight))
-
-	// The main area's own size comes from paneSize, not from bodyHeight-1
-	// and mainWidth-2 recomputed here. They are the same arithmetic at any
-	// usable window — and at a tiny one they are not, because paneSize
-	// floors, so an emulator sized 2 rows would be rendered into 0. One
-	// source keeps the pane's geometry and the box it is drawn in equal,
-	// which is the property supervisor.view's read-only design rests on.
+	bodyHeight := max(1, m.height-1)
+	sw := sidebarWidthFor(m.width)
+	side := styleSidebar.Width(sw).MaxWidth(sw).Height(bodyHeight).Render(m.sidebarColumn(bodyHeight))
 	paneCols, paneRows := m.paneSize()
+	mainWidth := mainWidthFor(m.width)
 	main := lipgloss.NewStyle().Width(mainWidth).Height(bodyHeight).MaxHeight(bodyHeight).Render(
-		lipgloss.JoinVertical(lipgloss.Left,
-			m.tabsRow(mainWidth),
-			styleMain.Render(m.mainArea(paneCols, paneRows))))
-
-	v := tea.NewView(lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.JoinHorizontal(lipgloss.Top, side, main),
-		m.footer()))
+		lipgloss.JoinVertical(lipgloss.Left, styleMain.Render(m.planHeader(paneCols).text), styleMain.Render(m.paneArea(paneCols, paneRows))))
+	content := lipgloss.JoinVertical(lipgloss.Left, lipgloss.JoinHorizontal(lipgloss.Top, side, main), m.footer())
+	if m.hasModal() {
+		box, frame := m.modalView()
+		content = lipgloss.NewCompositor(lipgloss.NewLayer(content), lipgloss.NewLayer(box).X(frame.x).Y(frame.y).Z(1)).Render()
+	}
+	v := tea.NewView(content)
 	v.AltScreen = true
-
-	// Cell motion, not all motion: it reports clicks, releases, the wheel
-	// and drags, which is everything the design asks for, and it is the
-	// better supported of the two. In bubbletea v2 this is a property of
-	// the view — there is no program option and no command — so it is set
-	// on every frame, including the starting one above.
-	//
-	// The cost is the terminal's own selection: with mouse reporting on,
-	// a drag belongs to the program. Ghostty and friends still select on
-	// shift+drag, and the help overlay says so.
 	v.MouseMode = tea.MouseModeCellMotion
-
-	// The cursor belongs to the focused pane and only when the keyboard is
-	// pointed at it: a cursor blinking in a pane the keys do not reach is a
-	// lie about where typing goes. The help overlay and the modals
-	// (mainArea's first three cases) cover the pane while leaving the focus
-	// on it, so they have to be excluded too — otherwise the cursor sits on
-	// top of the help text at the position of a pane nobody can see.
-	if t := m.focusedTab(); t != nil && t.p != nil && m.focus == focusMain &&
-		!m.scrolling && !m.showHelp && m.mode == modeNormal {
+	if t := m.focusedTab(); t != nil && t.p != nil && m.focus == focusMain && !m.scrolling && !m.hasModal() && m.mode == modeNormal {
 		if _, _, exited := t.p.Exited(); !exited {
 			x, y := t.p.Cursor()
-			v.Cursor = tea.NewCursor(x+sidebarWidth+1, y+1)
+			v.Cursor = tea.NewCursor(x+sw+1, y+2)
 		}
 	}
 	return v
@@ -82,41 +47,7 @@ func (m Model) View() tea.View {
 // match the main area (the teardown confirmation) both go through this, so
 // they can never disagree about how wide "the main area" is.
 func mainWidthFor(width int) int {
-	return max(20, width-sidebarWidth)
-}
-
-// tabsRow is the row of pane tabs above the main area. With no panes open it
-// carries daemon health instead, so the line is never blank — an empty line
-// above the main area reads as a rendering bug rather than as a promise.
-func (m Model) tabsRow(width int) string {
-	health, style := "daemon unreachable", styleErr
-	if m.daemon.Reachable {
-		health, style = "daemon "+m.daemon.Version, styleDim
-	}
-	if len(m.tabs) == 0 {
-		gap := width - ansi.StringWidth(health) - 1
-		if gap < 1 {
-			gap = 1
-		}
-		return strings.Repeat(" ", gap) + style.Render(fit(health, width-gap))
-	}
-	// With tabs on the row, health moves to the footer's domain: the tabs
-	// are what the row is named for and they get all of it.
-	return renderTabs(m.tabs, m.focused, width, m.focus == focusMain)
-}
-
-// mainArea is what sits under the tabs row: the help overlay when it is
-// open, a prompt while it is unanswered, otherwise the focused pane.
-func (m Model) mainArea(width, height int) string {
-	switch {
-	case m.showHelp:
-		return fitLines(m.helpView(width), height)
-	case m.mode == modeConfirmDown && m.confirm != nil:
-		return fitLines(m.confirm.View(), height)
-	case m.mode == modePicker && m.picker != nil:
-		return fitLines(m.picker.View(), height)
-	}
-	return m.paneArea(width, height)
+	return max(20, width-sidebarWidthFor(width))
 }
 
 // leaderLabel is how the leader is spelled on screen. It comes from the
@@ -130,34 +61,32 @@ func (m Model) leaderLabel() string {
 	return strings.Join(m.keys.Leader.Keys(), "/")
 }
 
-// helpView is the full binding list, plus the notes the footer has no room
-// for. Rendering it in the main area keeps the sidebar visible, so a person
-// can read the keys against the row they were about to act on.
-//
-// m.help is sized to the whole terminal (Update's WindowSizeMsg case calls
-// SetWidth with msg.Width), which is wider than the area this renders into —
-// so FullHelpView is driven from a local copy sized to the width actually
-// passed in, not m.help itself.
+// helpView wraps the complete binding list and interaction notes. The dialog
+// supplies its own scrolling so no binding disappears at narrow widths.
 func (m Model) helpView(width int) string {
-	h := m.help
-	h.SetWidth(width)
-	lines := []string{
-		styleTabs.Render("keys"),
-		"",
-		h.FullHelpView(m.keys.FullHelp()),
-		"",
-		styleDim.Render(fit("panes", width)),
-		h.FullHelpView(m.keys.PaneFullHelp()),
-		"",
-		styleDim.Render(fit("every other key goes to the focused pane; "+m.leaderLabel()+" is the leader", width)),
-		styleDim.Render(fit("mouse: click a row, a tab or the pane; the wheel scrolls both", width)),
-		styleDim.Render(fit("hold shift for the terminal's own mouse: drag selects, click opens a link", width)),
-		styleDim.Render(fit("ctrl+c quits, except in a live pane where it goes to the program", width)),
-		styleDim.Render(fit("esc leaves a prompt", width)),
-		styleDim.Render(fit("keys the selected row cannot use are hidden from the footer", width)),
-		styleDim.Render(fit("bindings come from tui.keys in ~/.cspace/config.json", width)),
+	var lines []string
+	lines = append(lines, "Navigation", "")
+	for _, group := range m.keys.FullHelp() {
+		for _, b := range group {
+			if !b.Enabled() {
+				continue
+			}
+			h := b.Help()
+			lines = append(lines, h.Key+"  "+h.Desc)
+		}
 	}
-	return strings.Join(lines, "\n")
+	lines = append(lines, "", "Panes · leader "+m.leaderLabel()+" then a key", "")
+	for _, group := range m.keys.PaneFullHelp() {
+		for _, b := range group {
+			if !b.Enabled() {
+				continue
+			}
+			h := b.Help()
+			lines = append(lines, h.Key+"  "+h.Desc)
+		}
+	}
+	lines = append(lines, "", "Every other key goes to the focused pane.", "Mouse: click a session to attach, a container to collapse, or a header link to open it.", "Hold shift for the terminal's own mouse: drag selects, click opens a link.", "ctrl+c quits, except in a live pane where it goes to the program.", "Escape closes dialogs. Arrows and the wheel scroll; Tab selects dialog links and actions.", "Bindings come from tui.keys in ~/.cspace/config.json.")
+	return ansi.Hardwrap(strings.Join(lines, "\n"), max(1, width), true)
 }
 
 // sendBoxPrefix is the label the send box wears, and the thing that decides
@@ -178,8 +107,7 @@ const sendLabelMin = 3
 // The label is what gives, never the input. m.input.View() is already styled
 // ANSI, and fit() counts display cells while cutting runes — so fitting the
 // composed line could cut an escape sequence in half or drop the closing
-// reset and bleed the style into whatever the terminal draws next (the same
-// hazard tabsLine documents). sendInputWidth floors the input at eight
+// reset and bleed the style into whatever the terminal draws next . sendInputWidth floors the input at eight
 // columns, so on a window narrow enough for that floor to bite, the label
 // shrinks past what it would otherwise take, down to sendLabelMin; beyond
 // that the line is allowed to be as wide as the floor demands.
@@ -231,12 +159,15 @@ func (m Model) footer() string {
 		return line
 	case m.notice.text != "":
 		if m.notice.isErr {
-			return styleErr.Render(fit(m.notice.text, m.width))
+			return errorFooter(m.notice.text, m.width)
 		}
 		return styleOK.Render(fit(m.notice.text, m.width))
 	case m.snapErr != nil:
-		return styleErr.Render(fit(fmt.Sprintf("snapshot failed: %v — showing the last poll (%s); run cspace doctor",
-			m.snapErr, formatAge(m.lastSnap, m.now())), m.width))
+		text := fmt.Sprintf("snapshot failed: %v · last success %s", m.snapErr, formatAge(m.lastSnap, m.now()))
+		if strings.Contains(strings.ToLower(m.snapErr.Error()), "xpc connection") {
+			text = "Apple Container unavailable; check container system status"
+		}
+		return errorFooter(text, m.width)
 	}
 	// The footer names the keys that will actually work, which depends on
 	// where the keyboard is pointed: the sidebar's own keys, or — with a
@@ -250,8 +181,7 @@ func (m Model) footer() string {
 		// changing the model's.
 		//
 		// Not fit(): the composed line is already styled ANSI, and fit drops
-		// trailing *runes* — the hazard tabsLine and sendBoxLine both
-		// document, where an escape sequence is cut in half and its closing
+		// trailing *runes* — the hazard sendBoxLine documents, where an escape sequence is cut in half and its closing
 		// reset lost, so the style bleeds into whatever the terminal draws
 		// next. help counts cells and elides between bindings, which is what
 		// this line wants anyway: LeaderHelp is trimmed to what fits, and
@@ -265,8 +195,21 @@ func (m Model) footer() string {
 			// unstyled label, since the style adds no cells.
 			leadRendered = styleOK.Render(lead)
 		}
-		return leadRendered + " " + h.ShortHelpView(m.keys.LeaderHelp())
+		return ansi.Truncate(leadRendered+" "+h.ShortHelpView(m.keys.LeaderHelp()), m.width, "…")
 	}
 	row := m.selectedRow()
-	return m.help.ShortHelpView(m.keys.forRow(row, m.live[keyOf(row)]).ShortHelp())
+	h := m.help
+	h.SetWidth(m.width)
+	return ansi.Truncate(h.ShortHelpView(m.keys.forRow(row, m.live[keyOf(row)]).ShortHelp()), m.width, "…")
+}
+
+func errorFooter(text string, width int) string {
+	// Command errors may contain newlines; keep the footer one line and make
+	// the wrapped original available in Environment Details.
+	text = strings.Join(strings.Fields(text), " ")
+	hint := " · click for details"
+	if width <= ansi.StringWidth(hint) || (ansi.StringWidth(text) <= width && ansi.StringWidth(text+hint) > width) {
+		return styleErr.Render(fit(text, width))
+	}
+	return styleErr.Render(fit(text, width-ansi.StringWidth(hint)) + hint)
 }

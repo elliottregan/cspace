@@ -200,7 +200,7 @@ func TestThePickerOpensThePaneItPicks(t *testing.T) {
 func TestThePickerRefusesAStoppedSandbox(t *testing.T) {
 	h := &fakeHost{t: t}
 	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
-	m = step(t, m, "j") // issue-42, which testSnapshot has as StateStopped
+	m = selectContainerInTest(t, m, "alpha", "issue-42")
 	if got := m.selectedRow().Name; got != "issue-42" {
 		t.Fatalf("selection = %q, want issue-42", got)
 	}
@@ -442,24 +442,20 @@ func TestHelpMentionsTheLeader(t *testing.T) {
 	}
 }
 
-func TestAKeyDismissesTheHelpOverlayWithAPaneFocused(t *testing.T) {
+func TestHelpCapturesPaneKeysUntilEscape(t *testing.T) {
 	h := &fakeHost{t: t}
 	m := openOne(t, h)
 	m = leader(t, m, "?")
 	if !m.showHelp {
-		t.Fatal("leader ? did not open the help overlay")
+		t.Fatal("leader ? did not open help")
 	}
-	// `x` with a pane focused would otherwise go to the child, leaving the
-	// overlay up and the keyboard pointed at something the overlay covers.
 	m = step(t, m, "x")
-	if m.showHelp {
-		t.Error("an ordinary key did not dismiss the overlay")
+	if !m.showHelp || m.leaderArmed || m.mode != modeNormal || len(m.tabs) != 1 {
+		t.Errorf("help did not capture x: help=%v armed=%v mode=%v panes=%d", m.showHelp, m.leaderArmed, m.mode, len(m.tabs))
 	}
-	// ...and it was consumed doing so: the leader is not armed, no mode
-	// opened, and the tab is still there.
-	if m.leaderArmed || m.mode != modeNormal || len(m.tabs) != 1 {
-		t.Errorf("the dismissing key did something else: armed=%v mode=%v tabs=%d",
-			m.leaderArmed, m.mode, len(m.tabs))
+	m = step(t, m, "esc")
+	if m.showHelp || m.focus != focusMain || m.focusedTab() == nil {
+		t.Error("Escape did not return to focused pane")
 	}
 }
 
@@ -622,23 +618,17 @@ func TestLeaderGatesNewPaneAndClosePaneWhileAnActionIsInFlight(t *testing.T) {
 	}
 }
 
-// TestLeaderDismissesHelpInsteadOfArming is the spec's "any key closes help"
-// rule applied to the leader itself: arming behind an overlay it cannot then
-// be used to read would mean the very next key has to be blindly the
-// leader's second key.
-func TestLeaderDismissesHelpInsteadOfArming(t *testing.T) {
-	h := &fakeHost{t: t}
-	m := openOne(t, h)
+// A leader pressed while help is open must not arm behind the dialog.
+func TestHelpConsumesTheLeaderWithoutArming(t *testing.T) {
+	m := openOne(t, &fakeHost{t: t})
 	m = leader(t, m, "?")
-	if !m.showHelp {
-		t.Fatal("leader ? did not open the help overlay")
-	}
 	m = step(t, m, "ctrl+space")
-	if m.showHelp {
-		t.Error("the leader did not dismiss the help overlay")
+	if !m.showHelp || m.leaderArmed {
+		t.Errorf("help lost input capture: open=%v armed=%v", m.showHelp, m.leaderArmed)
 	}
-	if m.leaderArmed {
-		t.Error("the leader armed instead of being consumed dismissing the help overlay")
+	m = step(t, m, "esc")
+	if m.showHelp {
+		t.Error("Escape failed to close help")
 	}
 }
 

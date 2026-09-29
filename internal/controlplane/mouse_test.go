@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -79,134 +80,212 @@ func TestClickOnASidebarRowSelectsIt(t *testing.T) {
 	}
 }
 
-func TestClickOnAPortLineSelectsItsSandbox(t *testing.T) {
-	snap := testSnapshot()
-	m := newTestModel(&fakeData{snap: snap}, &recordingActor{})
-	// A port line under mercury (rows[1]) belongs to mercury.
-	key := sandboxKey{Project: "alpha", Name: "mercury"}
-	mm, _ := m.Update(slowMsg{snap: snap, ports: map[sandboxKey][]control.Port{
-		key: {{Port: 5173, Label: "web", URL: "http://mercury.alpha.cspace.test:5173/"}},
-	}, portsErr: map[sandboxKey]error{}})
-	m = mm.(Model)
-	// Move off mercury through Update, not by assignment: the geometry is
-	// rebuilt after every message, and a selection set behind its back
-	// would be hit-tested against a layout that never existed.
-	m = step(t, m, "down") // issue-42
+func navigationLineOf(t *testing.T, m Model, id string) int {
+	t.Helper()
+	for y, item := range m.geom.navItems {
+		if item.id == id {
+			return m.geom.list.y + y
+		}
+	}
+	t.Fatalf("navigation item %q is not visible: %+v", id, m.geom.navItems)
+	return -1
+}
 
-	// The line after mercury's own is its port line, and both map to row 1.
-	mercury := listLineOf(t, m, 1)
-	got := click(t, m, 6, mercury+1)
-	if got.selected != 1 {
-		t.Errorf("selected = %d, want mercury (1): a port line belongs to its sandbox", got.selected)
+type mouseSessionHost struct {
+	*fakeHost
+	requests []control.AttachRequest
+}
+
+func (h *mouseSessionHost) OpenSession(ctx context.Context, row control.Row, req control.AttachRequest, cols, rows int) (Opened, error) {
+	h.requests = append(h.requests, req)
+	opened, err := h.Open(ctx, KindClaude, row, cols, rows)
+	opened.Session = control.Session{Name: req.Session, ID: req.ExpectedID}
+	return opened, err
+}
+
+type mouseLinkOpener struct {
+	urls []string
+	err  error
+}
+
+func (o *mouseLinkOpener) OpenURL(_ context.Context, url string) error {
+	o.urls = append(o.urls, url)
+	return o.err
+}
+
+func TestClickOnAContainerCollapsesItsSessions(t *testing.T) {
+	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
+	row := m.rows[1]
+	session := control.Session{Name: "cspace-claude-2", ID: "generation-2"}
+	m.sessions[keyOf(row)] = []control.Session{session}
+	m.geom = m.computeGeometry()
+	id := containerNavID(row)
+	before := len(m.navigation())
+	m = click(t, m, 4, navigationLineOf(t, m, id))
+	if !m.collapsed[id] || len(m.navigation()) >= before || m.navID != id {
+		t.Fatalf("container click did not collapse and select its group: %+v", m.navigation())
+	}
+	for _, item := range m.navigation() {
+		if item.id == sessionNavID(row, session) {
+			t.Fatal("collapsed session is still visible")
+		}
+	}
+	m = click(t, m, 4, navigationLineOf(t, m, id))
+	if m.collapsed[id] || len(m.navigation()) != before {
+		t.Fatal("second click did not expand the container")
 	}
 }
 
-func TestClickOnANonSelectableRowOnlyMovesFocus(t *testing.T) {
+func TestClickOnAProjectCollapsesItsContainers(t *testing.T) {
 	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
 	m.focus = focusMain
-	before := m.selected
-
-	header := listLineOf(t, m, 0) // the project header
-	got := click(t, m, 4, header)
-	if got.selected != before {
-		t.Errorf("selected moved to %d; a project header cannot be selected", got.selected)
+	before := len(m.navigation())
+	m = click(t, m, 4, navigationLineOf(t, m, "project:alpha"))
+	if !m.collapsed["project:alpha"] || len(m.navigation()) != 1 || m.focus != focusSidebar {
+		t.Fatalf("project click did not collapse its children: %+v", m.navigation())
 	}
-	if got.focus != focusSidebar {
-		t.Error("the click should still point the keyboard at the sidebar")
+	m = click(t, m, 4, navigationLineOf(t, m, "project:alpha"))
+	if m.collapsed["project:alpha"] || len(m.navigation()) != before {
+		t.Fatal("second project click did not restore its children")
 	}
 }
 
-func TestClickOnATabFocusesIt(t *testing.T) {
+func TestClickOnASessionAttachesAndThenFocusesExistingPane(t *testing.T) {
+	h := &mouseSessionHost{fakeHost: &fakeHost{t: t}}
+	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
+	row := m.rows[1]
+	session := control.Session{Name: "cspace-claude-2", ID: "generation-2"}
+	m.sessions[keyOf(row)] = []control.Session{session}
+	m.geom = m.computeGeometry()
+	id := sessionNavID(row, session)
+	m, cmd := clickCmd(t, m, 6, navigationLineOf(t, m, id))
+	m = pump(t, m, cmd)
+	mustTabs(t, m, 1)
+	if len(h.requests) != 1 || h.requests[0].Session != session.Name || h.requests[0].ExpectedID != session.ID || h.requests[0].New {
+		t.Fatalf("clicked session requested the wrong attach: %+v", h.requests)
+	}
+	if m.focus != focusMain || m.focusedTab().session.ID != session.ID {
+		t.Fatalf("session pane did not receive focus: %+v", m.focusedTab())
+	}
+	m.focus = focusSidebar
+	m, cmd = clickCmd(t, m, 6, navigationLineOf(t, m, id))
+	if cmd != nil || len(h.requests) != 1 || m.focus != focusMain {
+		t.Fatal("clicking an attached session must focus it without another attach")
+	}
+}
+
+func TestClickOnASidebarPaneFocusesIt(t *testing.T) {
 	h := &fakeHost{t: t}
 	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
-	m = stepPump(t, m, "enter")
-	m.focus = focusSidebar
-	m = stepPump(t, m, "s")
+	mm, cmd := m.openOrFocus(KindClaude, m.selectedRow())
+	m = pump(t, mm.(Model), cmd)
+	mm, cmd = m.openOrFocus(KindShell, m.selectedRow())
+	m = pump(t, mm.(Model), cmd)
 	mustTabs(t, m, 2)
-	m.focused = 1
-
-	first := m.geom.tabs[0]
-	got := click(t, m, first.from+1, m.geom.tabsY)
-	if got.focused != 0 {
-		t.Errorf("focused = %d, want the clicked tab (0)", got.focused)
-	}
-	if got.focus != focusMain {
-		t.Error("clicking a tab did not point the keyboard at the main area")
-	}
-
-	// The span is half-open, so both of its own edges belong to it and the
-	// column after it belongs to the next tab. An interior click cannot
-	// tell those apart, and lighting the tab next door is exactly what two
-	// copies of the elision arithmetic would produce.
-	if edge := click(t, m, first.from, m.geom.tabsY); edge.focused != 0 {
-		t.Errorf("focused = %d after a click on the span's first column, want 0", edge.focused)
-	}
-	if edge := click(t, m, first.to-1, m.geom.tabsY); edge.focused != 0 {
-		t.Errorf("focused = %d after a click on the span's last column, want 0", edge.focused)
-	}
-	if len(got.geom.tabs) != 2 {
-		t.Fatalf("tab spans = %+v, want one per tab", got.geom.tabs)
-	}
-	second := got.geom.tabs[1]
-	if got.geom.tabs[0].to != second.from {
-		t.Fatalf("the spans are not adjacent: %+v", got.geom.tabs)
-	}
-	if edge := click(t, got, second.from, got.geom.tabsY); edge.focused != 1 {
-		t.Errorf("focused = %d after a click on the second span's first column, want 1", edge.focused)
+	m.focus = focusSidebar
+	m.geom = m.computeGeometry()
+	for _, want := range []int{0, 1} {
+		id := paneNavID(m.tabs[want].id)
+		m, cmd = clickCmd(t, m, 6, navigationLineOf(t, m, id))
+		if cmd != nil || m.focused != want || m.focus != focusMain {
+			t.Fatalf("clicking pane %s focused %d with command=%v", id, m.focused, cmd != nil)
+		}
 	}
 }
 
-// TestClickOnAnElisionMarkerDoesNothing pins that the "+N" head of an
-// elided tabs row belongs to no tab.
-//
-// The setup is built so a hit test that DID claim the marker's columns
-// would be visible twice over: three tabs narrowed until exactly one is
-// dropped, so the span nearest the marker is a tab that is not the focused
-// one (a claim would move `focused`), and the keyboard pointed at the
-// sidebar (a claim would also move `focus`). Asserting on `focused` alone
-// against a row where the only surviving span IS the focused tab — which
-// is what two tabs narrowed to one gives — cannot tell a no-op from a
-// wrong hit, which is how the first version of this test passed either way.
-func TestClickOnAnElisionMarkerDoesNothing(t *testing.T) {
-	h := &fakeHost{t: t}
-	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
-	m = stepPump(t, m, "enter")
-	m.focus = focusSidebar
-	m = stepPump(t, m, "s")
-	m.focus = focusSidebar
-	m = stepPump(t, m, "a")
-	mustTabs(t, m, 3)
-	// Set before the resize, so the geometry the click is tested against is
-	// the one this state renders.
-	m.focus = focusSidebar
-	// Narrow enough to drop one tab and keep two.
-	mm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+func TestOrdinaryHeaderClickOpensOnlyItsURL(t *testing.T) {
+	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
+	k := keyOf(m.selectedRow())
+	m.headers[k] = headerSample{status: control.HeaderStatus{Branch: "feature", PR: &control.PullRequestStatus{Number: 42, URL: "https://github.com/owner/repo/pull/42"}}}
+	m.services[k] = []control.ServiceStatus{{Port: 3000, Label: "dev", URL: "http://mercury.alpha.cspace.test:3000/", State: control.ServiceRunning}}
+	m.geom = m.computeGeometry()
+	links := m.geom.headerLinks
+	opened := 0
+	for _, link := range links {
+		if link.details {
+			continue
+		}
+		for _, edge := range []int{0, link.width - 1} {
+			opener := &mouseLinkOpener{}
+			base := m.WithLinkOpener(opener)
+			got, cmd := clickCmd(t, base, base.geom.header.x+link.x+edge, base.geom.header.y+link.y)
+			if len(opener.urls) != 0 || cmd == nil {
+				t.Fatal("header URL opening must be deferred to a command")
+			}
+			got = pump(t, got, cmd)
+			if len(opener.urls) != 1 || opener.urls[0] != link.url || got.focus != m.focus || got.selected != m.selected {
+				t.Fatalf("click opened %v, want only %q without changing selection", opener.urls, link.url)
+			}
+			_, outside := clickCmd(t, got, got.geom.header.x+link.x+link.width, got.geom.header.y+link.y)
+			if outside != nil {
+				t.Fatal("link claimed the column outside its right edge")
+			}
+		}
+		opened++
+	}
+	if opened != 2 {
+		t.Fatalf("tested %d web links, want PR and dev", opened)
+	}
+}
+
+func TestEnvironmentClickOpensDetailsForTheActiveProject(t *testing.T) {
+	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
+	m.tabs = []*tab{{id: 1, kind: KindClaude, project: "alpha", sandbox: "mercury"}}
+	m.focused, m.focus = 0, focusMain
+	m.geom = m.computeGeometry()
+	got := click(t, m, 4, m.geom.environment.y+1)
+	if got.mode != modeDetails || got.dialog == nil || !got.dialog.environment || got.dialog.project != "alpha" {
+		t.Fatalf("environment click opened the wrong dialog: %+v", got.dialog)
+	}
+	if got.focus != focusMain || got.focused != 0 {
+		t.Fatal("opening environment details changed the active pane")
+	}
+}
+
+func TestDetailsDialogClickRetainsTheNamedContainerAcrossSnapshotChanges(t *testing.T) {
+	a := &recordingActor{}
+	m := newTestModel(&fakeData{snap: testSnapshot()}, a)
+	m.tabs = []*tab{{id: 1, kind: KindClaude, project: "alpha", sandbox: "mercury"}}
+	m.focused, m.focus = 0, focusMain
+	m.selected = 3 // Browsing issue-42 must not retarget the pane's Details link.
+	m.geom = m.computeGeometry()
+	var details headerLink
+	for _, link := range m.geom.headerLinks {
+		if link.details {
+			details = link
+		}
+	}
+	if !details.details {
+		t.Fatal("header has no Details target")
+	}
+	m = click(t, m, m.geom.header.x+details.x, m.geom.header.y+details.y)
+	if m.dialog == nil || m.dialog.row.Name != "mercury" {
+		t.Fatalf("Details opened for sidebar selection instead of active pane: %+v", m.dialog)
+	}
+	// A reorder changes all numeric row positions while the dialog is open.
+	snap := testSnapshot()
+	snap.Rows[1], snap.Rows[3] = snap.Rows[3], snap.Rows[1]
+	mm, _ := m.Update(snapshotMsg{snap: snap})
 	m = mm.(Model)
-
-	if len(m.geom.tabs) != 2 {
-		t.Fatalf("tab spans = %+v, want two: one tab elided and two kept", m.geom.tabs)
+	frame, width, height := m.modalFrame()
+	lines := m.detailsLines(width)
+	actionLine := -1
+	for i, line := range lines {
+		if line.action != nil && line.action.id == "down" {
+			actionLine = i
+			break
+		}
 	}
-	if m.geom.tabs[0].index == m.focused {
-		t.Fatalf("the span next to the marker is the focused tab (%d); this setup cannot tell a wrong hit from a no-op",
-			m.focused)
+	if actionLine < 0 {
+		t.Fatal("container details has no teardown action")
 	}
-	if !strings.Contains(plain(m.tabsRow(mainWidthFor(m.width))), "+") {
-		t.Fatal("expected an elision marker")
+	m.modalScroll = max(0, actionLine-height+1)
+	m, _ = clickCmd(t, m, frame.x+3, frame.y+3+actionLine-m.modalScroll)
+	if m.mode != modeConfirmDown || m.pending.Name != "mercury" || m.pending.Project != "alpha" {
+		t.Fatalf("dialog action drifted to another row: mode=%v pending=%+v", m.mode, m.pending)
 	}
-	// The marker sits at the head of the row, in the columns before the
-	// first surviving span. The row starts where the sidebar ends.
-	marker := sidebarWidth
-	if marker >= m.geom.tabs[0].from {
-		t.Fatalf("no columns before the first span for a marker: %+v", m.geom.tabs)
-	}
-
-	beforeFocused, beforeFocus := m.focused, m.focus
-	got := click(t, m, marker, m.geom.tabsY)
-	if got.focused != beforeFocused {
-		t.Errorf("focused moved to %d; a marker is not a tab", got.focused)
-	}
-	if got.focus != beforeFocus {
-		t.Error("clicking a marker pointed the keyboard at the main area; a marker is not a tab")
+	if len(a.down) != 0 {
+		t.Fatal("click bypassed the separate teardown confirmation")
 	}
 }
 
@@ -248,7 +327,7 @@ func TestClickDisarmsTheLeaderAndIsSwallowed(t *testing.T) {
 	}
 }
 
-func TestClickDismissesTheHelpOverlayAndIsSwallowed(t *testing.T) {
+func TestClickUnderHelpIsSwallowedUntilEscape(t *testing.T) {
 	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
 	m = step(t, m, "?")
 	if !m.showHelp {
@@ -257,11 +336,14 @@ func TestClickDismissesTheHelpOverlayAndIsSwallowed(t *testing.T) {
 	before := m.selected
 	other := listLineOf(t, m, 3)
 	got := click(t, m, 4, other)
-	if got.showHelp {
-		t.Error("the click did not dismiss the overlay")
+	if !got.showHelp {
+		t.Error("only Escape should dismiss the help overlay")
 	}
 	if got.selected != before {
-		t.Error("the click that dismissed the overlay also selected a row")
+		t.Error("a click under help selected a row")
+	}
+	if dismissed := step(t, got, "esc"); dismissed.showHelp {
+		t.Error("Escape did not dismiss help")
 	}
 }
 
@@ -375,56 +457,31 @@ func TestMotionAndReleaseNeverReachTheWidgets(t *testing.T) {
 	}
 }
 
-// TestClickOnTheSidebarBandAndRule covers the arm that catches everything
-// in the sidebar that is not a row: the vertical rule, the detail band
-// below it, and a list line that belongs to no row. All three point the
-// keyboard at the sidebar — the person did ask for that by clicking in it
-// — and none of them moves the selection or re-reads any events.
-func TestClickOnTheSidebarBandAndRule(t *testing.T) {
+func TestClickOnSidebarPaddingAndRuleOnlyMovesFocus(t *testing.T) {
 	base := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
 	g := base.geom
-
-	// A list line inside the row list that maps to no row: the fixture has
-	// five rows and a taller column than that.
-	padding := -1
-	for y, idx := range g.listRows {
-		if idx < 0 {
-			padding = y
-			break
+	padding := len(g.navItems)
+	if padding >= g.list.h {
+		t.Fatal("fixture leaves no empty navigation line")
+	}
+	for _, point := range []struct{ x, y int }{
+		{g.sidebar.w - 1, 1},
+		{4, g.list.y + padding},
+	} {
+		m := base
+		m.focus = focusMain
+		got, cmd := clickCmd(t, m, point.x, point.y)
+		if got.selected != m.selected || got.navID != m.navID || cmd != nil {
+			t.Fatalf("empty sidebar cell (%d,%d) acted", point.x, point.y)
 		}
-	}
-	if padding < 0 {
-		t.Fatalf("the fixture fills the list; no empty line to click: %v", g.listRows)
-	}
-
-	cases := []struct {
-		name string
-		x, y int
-	}{
-		{"the detail band", 4, g.list.y + g.list.h + 2},
-		{"the vertical rule", sidebarWidth - 1, 1},
-		{"a list line belonging to no row", 4, g.list.y + padding},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if !g.sidebar.contains(tc.x, tc.y) {
-				t.Fatalf("(%d,%d) is not in the sidebar %+v", tc.x, tc.y, g.sidebar)
-			}
-			m := base
-			m.focus = focusMain
-			before := m.selected
-
-			got, cmd := clickCmd(t, m, tc.x, tc.y)
-			if got.focus != focusSidebar {
-				t.Error("a click in the sidebar did not point the keyboard at it")
-			}
-			if got.selected != before {
-				t.Errorf("selected moved to %d; there is no row under the pointer", got.selected)
-			}
-			if cmd != nil {
-				t.Error("nothing was selected, so there is nothing to re-read")
-			}
-		})
+		// Padding in the list is inert; the rule explicitly gives focus to
+		// the sidebar. Neither can activate a session or open a dialog.
+		if point.x == g.sidebar.w-1 && got.focus != focusSidebar {
+			t.Fatal("the sidebar rule did not move keyboard focus")
+		}
+		if got.mode != modeNormal {
+			t.Fatal("empty sidebar cell opened a dialog")
+		}
 	}
 }
 
@@ -458,21 +515,21 @@ func wheel(t *testing.T, m Model, x, y int, up bool) Model {
 	return mm.(Model)
 }
 
-func TestWheelOverTheSidebarMovesTheSelection(t *testing.T) {
+func TestWheelOverTheSidebarMovesNavigationWithoutChangingPaneFocus(t *testing.T) {
 	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
-	m.selected = 1 // mercury
-	m.focus = focusMain
-
+	m.tabs = []*tab{{id: 1, kind: KindClaude, project: "alpha", sandbox: "mercury"}}
+	m.focused, m.focus = 0, focusMain
+	m.geom = m.computeGeometry()
+	items := m.navigation()
+	m.selectNavigation(items[0])
+	m.geom = m.computeGeometry()
 	down := wheel(t, m, 4, 3, false)
-	if down.selected != 3 {
-		t.Errorf("selected = %d, want the next selectable row (3)", down.selected)
-	}
-	if down.focus != focusMain {
-		t.Error("the wheel moved the focus; it is a look, not a commitment")
+	if down.navID != items[1].id || down.focus != focusMain || down.focused != 0 {
+		t.Fatalf("wheel navigation changed the pane or picked wrong row: id=%q focus=%v pane=%d", down.navID, down.focus, down.focused)
 	}
 	up := wheel(t, down, 4, 3, true)
-	if up.selected != 1 {
-		t.Errorf("selected = %d, want back at mercury (1)", up.selected)
+	if up.navID != items[0].id || up.focus != focusMain || up.focused != 0 {
+		t.Fatalf("wheel back did not retain pane focus: id=%q focus=%v pane=%d", up.navID, up.focus, up.focused)
 	}
 }
 
@@ -647,29 +704,18 @@ func TestWheelDisarmsTheLeaderAndIsSwallowed(t *testing.T) {
 	}
 }
 
-// TestWheelOverTheSidebarAtTheEndsFiresNoEventsRead pins review-task3.md's
-// Minor 3: the click path already returns nil when the selection could not
-// move (selectListRow, mouse.go); the wheel must match it. A trackpad emits
-// notches an order of magnitude faster than key repeat, so an unconditional
-// events read at a boundary is wasted work the click path already avoids.
 func TestWheelOverTheSidebarAtTheEndsFiresNoEventsRead(t *testing.T) {
 	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
-
-	// mercury (1) is the first selectable row.
-	m.selected = 1
-	if got := m.rows[m.selected].Name; got != "mercury" {
-		t.Fatalf("fixture moved: rows[%d] = %q, want mercury", m.selected, got)
-	}
-	if _, cmd := m.Update(tea.MouseWheelMsg{X: 4, Y: 3, Button: tea.MouseWheelUp}); cmd != nil {
-		t.Error("wheeling up past the first selectable row fired an events read")
-	}
-
-	// "browser (shared)" (4) is the last selectable row.
-	m.selected = 4
-	if got := m.rows[m.selected].Name; got != "browser (shared)" {
-		t.Fatalf("fixture moved: rows[%d] = %q, want browser (shared)", m.selected, got)
-	}
-	if _, cmd := m.Update(tea.MouseWheelMsg{X: 4, Y: 3, Button: tea.MouseWheelDown}); cmd != nil {
-		t.Error("wheeling down past the last selectable row fired an events read")
+	items := m.navigation()
+	for _, tc := range []struct {
+		item   navigationItem
+		button tea.MouseButton
+	}{{items[0], tea.MouseWheelUp}, {items[len(items)-1], tea.MouseWheelDown}} {
+		m.selectNavigation(tc.item)
+		m.geom = m.computeGeometry()
+		got, cmd := m.Update(tea.MouseWheelMsg{X: 4, Y: 3, Button: tc.button})
+		if cmd != nil || got.(Model).navID != tc.item.id {
+			t.Fatalf("wheel past %q moved navigation or issued an events read", tc.item.id)
+		}
 	}
 }

@@ -2,7 +2,7 @@
 title: Two more copies of the tab-focus bookkeeping `focusTab` centralises
 date: 2026-09-19
 kind: finding
-status: open
+status: resolved
 category: observation
 tags: control-plane, dashboard, panes, mouse, altitude
 ---
@@ -50,3 +50,6 @@ step-5 scope."
 ## Updates
 - 2026-09-19: filed from the plan 5 whole-branch review's adjudication of a
   parked Task 2 observation, during the fix wave (Important 1, Minor 1).
+
+### 2026-09-29 — status: resolved
+Both existing-pane activation and addTab now use focusTab, including sidebar selection and expansion of the owning groups.

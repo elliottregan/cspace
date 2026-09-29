@@ -519,7 +519,7 @@ func TestADroppedPasteReleasesTheOneActionGate(t *testing.T) {
 	}
 	// And the gate is open in the way that matters: a sidebar key it would
 	// have swallowed opens a pane again.
-	m = stepPump(t, m, "enter")
+	m = stepPump(t, m, "s")
 	mustTabs(t, m, 1)
 }
 

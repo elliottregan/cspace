@@ -2,7 +2,7 @@
 title: The help overlay truncates its prose instead of wrapping
 date: 2026-09-19
 kind: finding
-status: open
+status: resolved
 category: observation
 tags: control-plane, dashboard, help, footer, layout
 ---
@@ -63,3 +63,6 @@ too.").
 ## Updates
 - 2026-09-19: filed from the plan 5 whole-branch review, during the fix
   wave (Important 1, Minor 1).
+
+### 2026-09-29 — status: resolved
+Help now wraps all bindings and prose in a centered, scrollable dialog. Escape closes it; ordinary keys and pastes stay isolated from the pane. Layout and scrolling tests cover narrow and short terminals.

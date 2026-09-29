@@ -113,9 +113,13 @@ func TestCorrelateBootingFromRegistryState(t *testing.T) {
 
 func TestCorrelateCarriesListErr(t *testing.T) {
 	e := errors.New("apiserver down")
-	snap := Correlate(time.Unix(0, 0), nil, nil, map[string]AgentStatus{}, nil, nil, DaemonHealth{}, e)
-	if snap.Err == nil || snap.Err.Error() != "apiserver down" {
+	daemon := DaemonHealth{Reachable: true, Version: "1.0.0-rc.49"}
+	snap := Correlate(time.Unix(0, 0), nil, nil, map[string]AgentStatus{}, nil, nil, daemon, e)
+	if !errors.Is(snap.Err, e) {
 		t.Errorf("Err = %v, want carried", snap.Err)
+	}
+	if snap.Daemon != daemon {
+		t.Errorf("daemon = %+v, want independently probed health %+v", snap.Daemon, daemon)
 	}
 }
 

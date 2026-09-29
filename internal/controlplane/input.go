@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"fmt"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -17,6 +18,17 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.notice.isErr {
 		m.notice = notice{}
 	}
+	if m.mode == modeDetails || m.showHelp {
+		return m.handleDetailsKey(msg)
+	}
+	if m.hasModal() && (msg.String() == "pgup" || msg.String() == "pgdown") {
+		_, _, height := m.modalFrame()
+		if msg.String() == "pgup" {
+			height = -height
+		}
+		m.scrollModal(height)
+		return m, nil
+	}
 	switch m.mode {
 	case modeConfirmDown:
 		return m.updateConfirm(msg)
@@ -24,24 +36,12 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleInputKey(msg)
 	case modePicker:
 		return m.updatePicker(msg)
+	case modeCreate:
+		return m.updateCreate(msg)
 	}
 	if m.leaderArmed {
 		m.leaderArmed = false
 		return m.handleLeaderKey(msg)
-	}
-	if m.showHelp {
-		// The overlay swallows the very next key, whatever it is — including
-		// the leader itself, which must not arm behind an overlay it cannot
-		// then be used to read: the very next key would need to be blindly
-		// the leader's second key. That check has to sit HERE rather than at
-		// the top of handleNormalKey where step 3 left it, and above the
-		// leader-arm check below it. With a pane focused the route further
-		// down never reaches handleNormalKey, so without both of those the
-		// overlay would be dismissible only by a second leader `?` while
-		// every other key went to a child the overlay is covering — typing
-		// blind into Claude while reading help.
-		m.showHelp = false
-		return m, nil
 	}
 	if key.Matches(msg, m.keys.Leader) {
 		m.leaderArmed = true
@@ -62,6 +62,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // offering it.
 func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
+	case key.Matches(msg, m.keys.Details):
+		row := m.selectedRow()
+		return m.openDetails(row, row.Kind != control.RowSandbox)
 	case key.Matches(msg, m.keys.Help):
 		m.showHelp = !m.showHelp
 		return m, nil
@@ -69,17 +72,30 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, m.quitCmd()
 	case key.Matches(msg, m.keys.MoveUp):
-		m.moveSelection(-1)
+		m.moveNavigation(-1)
 		return m, m.eventsCmd()
 	case key.Matches(msg, m.keys.MoveDown):
-		m.moveSelection(1)
+		m.moveNavigation(1)
 		return m, m.eventsCmd()
 	case key.Matches(msg, m.keys.Refresh):
-		if m.pollingMedium {
-			return m, nil
+		var cmds []tea.Cmd
+		if !m.pollingMedium {
+			m.pollingMedium = true
+			cmds = append(cmds, m.snapshotCmd())
 		}
-		m.pollingMedium = true
-		return m, m.snapshotCmd()
+		if m.readingHeader {
+			m.refreshHeader = true
+		} else {
+			if hc := m.headerCmd(true); hc != nil {
+				m.readingHeader = true
+				cmds = append(cmds, hc)
+			}
+		}
+		if !m.pollingSlow {
+			m.pollingSlow = true
+			cmds = append(cmds, m.slowCmd())
+		}
+		return m, tea.Batch(cmds...)
 	case key.Matches(msg, m.keys.FocusMain):
 		if len(m.tabs) == 0 {
 			return m, nil
@@ -96,11 +112,35 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if key.Matches(msg, m.keys.Attach) {
+		if n, ok := m.selectedNavigation(); ok {
+			// Enter on a container preserves the original default-attach
+			// shortcut. Left/right and a heading click expand its children.
+			if n.kind == navContainer {
+				if canAttach(n.row) {
+					return m.openOrFocus(KindClaude, n.row)
+				}
+				m.notice = notice{
+					text:  fmt.Sprintf("%s is stopped; press %s to boot before opening a session", n.row.Name, m.keys.Boot.Help().Key),
+					isErr: true,
+				}
+				return m, nil
+			}
+			return m.activateNavigation(n)
+		}
+	}
+	if msg.String() == "left" || msg.String() == "right" {
+		if n, ok := m.selectedNavigation(); ok && (n.kind == navContainer || n.kind == navProject || n.kind == navHost) {
+			want := msg.String() == "left"
+			if m.collapsed[n.id] != want {
+				m.toggleNavigation(n.id)
+			}
+			return m, nil
+		}
+	}
 	row := m.selectedRow()
 	keys := m.keys.forRow(row, m.live[keyOf(row)])
 	switch {
-	case key.Matches(msg, keys.Attach):
-		return m.openOrFocus(KindClaude, row)
 	case key.Matches(msg, keys.Shell):
 		return m.openOrFocus(KindShell, row)
 	case key.Matches(msg, keys.Supervisor):
@@ -117,7 +157,8 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// padding on each side (the same width View() itself uses). huh
 		// ignores a non-positive width, which is what a model that has not
 		// been sized yet would pass.
-		m.confirm = newDownConfirm(row.Name, mainWidthFor(m.width)-2)
+		_, width, _ := m.modalFrame()
+		m.confirm = newDownConfirm(row.Name, width)
 		return m, m.confirm.Init()
 	case key.Matches(msg, keys.Send):
 		m.mode = modeInput
@@ -130,6 +171,7 @@ func (m Model) handleNormalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.BrowserRestart):
 		return m.startAction(LabelBrowserRestart, m.actor.RestartBrowser(row))
 	case key.Matches(msg, keys.Boot):
+		m.actionTarget = row
 		return m.startAction(LabelUp, m.actor.Up(row))
 	}
 	return m, nil

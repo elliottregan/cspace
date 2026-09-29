@@ -36,6 +36,8 @@ cspace self-update                  Update to latest version
 
 Run `cspace <command> --help` for the full reference on any command.
 
+See [Dashboard and interactive sessions](docs/tui.md) for TUI navigation, details dialogs, and `cspace attach --new` / `--session`.
+
 ## How It Works
 
 ```

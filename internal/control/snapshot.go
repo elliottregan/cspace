@@ -32,11 +32,13 @@ func (c *Client) Snapshot(ctx context.Context) Snapshot {
 
 // SnapshotWith is Snapshot with the options above.
 func (c *Client) SnapshotWith(ctx context.Context, opts SnapshotOpts) Snapshot {
+	// The cspace daemon is independent of Apple Container. Even a failed
+	// snapshot must carry its own health probe, not an unprobed zero value.
 	if c.containers == nil {
-		return Snapshot{Err: ErrNoContainerCLI, TakenAt: c.now()}
+		return Snapshot{Daemon: c.fetchDaemon(ctx), Err: ErrNoContainerCLI, TakenAt: c.now()}
 	}
 	if c.entries == nil {
-		return Snapshot{Err: ErrNoEntryStore, TakenAt: c.now()}
+		return Snapshot{Daemon: c.fetchDaemon(ctx), Err: ErrNoEntryStore, TakenAt: c.now()}
 	}
 	containers, listErr := c.containers.List(ctx)
 	entries, _ := c.entries.List() // missing file => empty slice, nil

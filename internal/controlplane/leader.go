@@ -61,6 +61,9 @@ func (m Model) handleLeaderKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch {
+	case key.Matches(msg, m.keys.Details):
+		row := m.activeRow()
+		return m.openDetails(row, row.Kind != control.RowSandbox)
 	case key.Matches(msg, m.keys.FocusSidebar):
 		m.focus = focusSidebar
 		m.scrolling, m.scroll = false, 0
@@ -78,8 +81,9 @@ func (m Model) handleLeaderKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.mode = modePicker
-		m.pending = m.selectedRow()
-		m.picker = newPanePicker(mainWidthFor(m.width) - 2)
+		m.pending = m.activeRow()
+		_, width, _ := m.modalFrame()
+		m.picker = newPanePicker(width)
 		return m, m.picker.Init()
 
 	case key.Matches(msg, m.keys.ClosePane):

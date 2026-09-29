@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/elliottregan/cspace/internal/devcontainer"
+	"github.com/elliottregan/cspace/internal/registry"
 	"github.com/elliottregan/cspace/internal/substrate"
 )
 
@@ -20,6 +21,25 @@ type Port struct {
 	Port  int
 	Label string
 	URL   string
+}
+
+type ServiceState string
+
+const (
+	ServiceRunning ServiceState = "running"
+	ServiceStopped ServiceState = "stopped"
+	ServiceUnknown ServiceState = "unknown"
+)
+
+// ServiceStatus includes declared services even when they are not listening.
+// Unknown means the probe failed, not that the server is stopped. A running
+// state describes a TCP listener, not an application-level health check.
+type ServiceStatus struct {
+	Port     int
+	Label    string
+	URL      string
+	State    ServiceState
+	Declared bool
 }
 
 // internalPorts are cspace's own plumbing and never show: 6201 is the
@@ -38,27 +58,81 @@ func (c *Client) Ports(ctx context.Context, project, sandbox string) ([]Port, er
 	if c.containers == nil {
 		return nil, ErrNoContainerCLI
 	}
-	entry, err := c.lookup(project, sandbox)
+	services, err := c.Services(ctx, project, sandbox)
 	if err != nil {
 		return nil, err
+	}
+	ports := make([]Port, 0, len(services))
+	for _, service := range services {
+		if service.State == ServiceRunning {
+			ports = append(ports, Port{Port: service.Port, Label: service.Label, URL: service.URL})
+		}
+	}
+	return ports, nil
+}
+
+// Services uses the same labels and curation as Ports but preserves declared
+// stopped/unknown rows for the header and service dialog. On a probe failure
+// callers receive declared services as Unknown alongside the error.
+func (c *Client) Services(ctx context.Context, project, sandbox string) ([]ServiceStatus, error) {
+	if c.home == "" {
+		return nil, ErrNoHome
+	}
+	labels := portLabelsFrom(CloneDir(c.home, project, sandbox))
+	entry, err := c.lookup(project, sandbox)
+	resolver := c.resolverInstalled()
+	statuses := func(listening []int, state ServiceState) []ServiceStatus {
+		services := serviceStatuses(listening, labels, state, entry.BrowserContainer != "")
+		for i := range services {
+			if resolver || entry.IP != "" {
+				services[i].URL = portURL(project, sandbox, entry.IP, services[i].Port, resolver)
+			}
+		}
+		return services
+	}
+	if err != nil {
+		return statuses(nil, ServiceUnknown), err
+	}
+	if entry.State == registry.StateStopped {
+		return statuses(nil, ServiceStopped), nil
+	}
+	if c.containers == nil {
+		return statuses(nil, ServiceUnknown), ErrNoContainerCLI
 	}
 	res, err := c.containers.Exec(ctx, containerName(project, sandbox),
 		[]string{"ss", "-tln"}, substrate.ExecOpts{})
 	if err != nil {
-		return nil, fmt.Errorf("exec in %s failed: %w", sandbox, err)
+		return statuses(nil, ServiceUnknown), fmt.Errorf("exec in %s failed: %w", sandbox, err)
 	}
 	if res.ExitCode != 0 {
-		return nil, fmt.Errorf("list listeners in %s: ss exited %d: %s",
+		return statuses(nil, ServiceUnknown), fmt.Errorf("list listeners in %s: ss exited %d: %s",
 			sandbox, res.ExitCode, strings.TrimSpace(res.Stderr))
 	}
+	return statuses(parseListeningPorts(res.Stdout), ServiceStopped), nil
+}
 
-	labels := portLabelsFrom(CloneDir(c.home, project, sandbox))
-	ports := curatePorts(parseListeningPorts(res.Stdout), labels)
-	resolver := c.resolverInstalled()
-	for i := range ports {
-		ports[i].URL = portURL(project, sandbox, entry.IP, ports[i].Port, resolver)
+func serviceStatuses(listening []int, labels map[int]string, missingState ServiceState, browserRelay bool) []ServiceStatus {
+	byPort := make(map[int]ServiceStatus, len(labels)+len(listening))
+	for port, label := range labels {
+		if internalPorts[port] || (browserRelay && port == BrowserCDPPort) {
+			continue
+		}
+		byPort[port] = ServiceStatus{Port: port, Label: label, State: missingState, Declared: true}
 	}
-	return ports, nil
+	for _, port := range curatePorts(listening, labels) {
+		// The loopback relay owns this port only when this sandbox was wired
+		// to a browser. A project without that relay may use 9222 itself.
+		if browserRelay && port.Port == BrowserCDPPort {
+			continue
+		}
+		byPort[port.Port] = ServiceStatus{Port: port.Port, Label: port.Label, State: ServiceRunning, Declared: labels[port.Port] != ""}
+	}
+	services := make([]ServiceStatus, 0, len(byPort))
+	for _, service := range byPort {
+		services = append(services, service)
+	}
+	sort.Slice(services, func(i, j int) bool { return services[i].Port < services[j].Port })
+	return services
 }
 
 // parseListeningPorts extracts the listening TCP ports from `ss -tln` output:

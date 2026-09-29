@@ -1250,6 +1250,8 @@ func isStdoutTTY() bool {
 // pickPlanetName returns the first planet not currently registered for this
 // project. Errors if all eight are taken — at that point the user should be
 // using descriptive names anyway.
+var errPlanetNamesExhausted = errors.New("all 8 planet names are in use")
+
 func pickPlanetName(project string) (string, error) {
 	path, err := registry.DefaultPath()
 	if err != nil {
@@ -1271,7 +1273,7 @@ func pickPlanetName(project string) (string, error) {
 			return name, nil
 		}
 	}
-	return "", fmt.Errorf("all 8 planet names are in use for project %q; pass an explicit name (e.g. `cspace up issue-42`)", project)
+	return "", fmt.Errorf("%w for project %q; pass an explicit name (e.g. `cspace up issue-42`)", errPlanetNamesExhausted, project)
 }
 
 // sandboxNamePattern is the shape a sandbox name must have: one label of

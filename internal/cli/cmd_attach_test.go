@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -105,6 +106,50 @@ func TestAttachHasNoTmuxEscapeHatch(t *testing.T) {
 	}
 	if !flag.Hidden {
 		t.Error("--no-tmux is documented; the design says keep it undocumented")
+	}
+}
+
+func TestAttachSessionFlagsAreExplicitAndMutuallyExclusive(t *testing.T) {
+	for _, args := range [][]string{
+		{"--new", "--session", "cspace-claude-2"},
+		{"--new", "--no-tmux"},
+		{"--session", "cspace-claude-2", "--no-tmux"},
+	} {
+		cmd := newAttachCmd()
+		if err := cmd.ParseFlags(args); err != nil {
+			t.Fatal(err)
+		}
+		if err := cmd.ValidateFlagGroups(); err == nil {
+			t.Errorf("accepted incompatible flags %v", args)
+		}
+	}
+	for _, args := range [][]string{nil, {"--new"}, {"--session", "cspace-claude-2"}} {
+		cmd := newAttachCmd()
+		if err := cmd.ParseFlags(args); err != nil {
+			t.Fatal(err)
+		}
+		if err := cmd.ValidateFlagGroups(); err != nil {
+			t.Errorf("valid flags %v: %v", args, err)
+		}
+	}
+	cmd := newAttachCmd()
+	if cmd.Flags().Lookup("new").DefValue != "false" || cmd.Flags().Lookup("session").DefValue != "" {
+		t.Fatal("session flags changed the default attach request")
+	}
+}
+
+func TestExplicitClaudeSessionsDoNotFallBackToDirectExec(t *testing.T) {
+	withFakeExec(t, fakeExecer{stdout: "no\n"})
+	for i, req := range []control.AttachRequest{{New: true}, {Session: "cspace-claude-2"}} {
+		var warning bytes.Buffer
+		err := attachInteractiveRequest(context.Background(), &warning, "proj", "missing-tmux",
+			fmt.Sprintf("explicit-no-tmux-%d", i), true, req)
+		if !errors.Is(err, control.ErrTmuxRequired) {
+			t.Fatalf("request %+v: error = %v, want tmux-required refusal", req, err)
+		}
+		if warning.Len() != 0 {
+			t.Fatalf("explicit session misleadingly advertised direct fallback: %s", warning.String())
+		}
 	}
 }
 

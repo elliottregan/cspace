@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	tea "charm.land/bubbletea/v2"
+	"github.com/elliottregan/cspace/internal/control"
 )
 
 // The mouse, hit-tested against Model.geom.
@@ -15,113 +16,74 @@ import (
 // handleClick routes a left-button press. Every branch either acts on the
 // dashboard or does nothing; the release that follows is dropped in Update.
 func (m Model) handleClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
-	// An error notice stays until the next input, and a click is input —
-	// the same rule handleKey applies to a keypress. Above the button
-	// guard, because dismissing what the footer is saying is the one thing
-	// a click means whichever button made it: handleKey clears on EVERY
-	// key, and a right-click that left a stale error in the footer would be
-	// the only input in the dashboard that cannot dismiss one.
+	var clickedError string
 	if m.notice.isErr {
+		clickedError = m.notice.text
 		m.notice = notice{}
 	}
 	if msg.Button != tea.MouseLeft {
-		// Beyond that, middle and right have no meaning here, and
-		// inventing one for them is how a stray thumb button tears a
-		// sandbox down.
 		return m, nil
 	}
-
 	if m.leaderArmed {
-		// A half-typed chord. The click is not its second key, and leaving
-		// it armed would send the *next* ordinary key somewhere the person
-		// did not ask for. Disarm and swallow.
 		m.leaderArmed = false
 		return m, nil
 	}
-	if m.showHelp {
-		// The overlay swallows the very next input whatever it is, which
-		// is exactly what handleKey does with a key. Dismiss and swallow.
-		m.showHelp = false
+	if m.hasModal() {
+		if m.mode == modeDetails && m.dialog != nil {
+			frame, w, h := m.modalFrame()
+			lines := m.detailsLines(w)
+			from := min(m.modalScroll, max(0, len(lines)-h))
+			body := rect{frame.x + 2, frame.y + 3, w, h}
+			if body.contains(msg.X, msg.Y) {
+				i := from + msg.Y - body.y
+				if i < len(lines) && lines[i].action != nil {
+					return m.runDialogAction(*lines[i].action)
+				}
+			}
+		}
 		return m, nil
 	}
 	if m.mode != modeNormal {
-		// The send box, the teardown confirmation and the new-pane picker
-		// are unanswered questions holding state. A click is not an answer
-		// and must not throw one away, so it is swallowed WITHOUT
-		// dismissing: esc still cancels, and the form keeps what was typed.
 		return m, nil
 	}
-
+	if msg.Y == m.height-1 && msg.X >= 0 && msg.X < m.width && m.action == "" && (clickedError != "" || m.snapErr != nil) {
+		next, cmd := m.openDetails(m.activeRow(), true)
+		m = next.(Model)
+		m.dialog.message = clickedError
+		return m, cmd
+	}
 	g := m.geom
-	x, y := msg.X, msg.Y
 	switch {
-	case g.list.contains(x, y):
-		return m.selectListRow(y - g.list.y)
-
-	case g.sidebar.contains(x, y):
-		// The vertical rule, the detail band, the padding under a short
-		// list: still the sidebar, so point the keyboard at it — but there
-		// is no row under the pointer to select.
+	case g.list.contains(msg.X, msg.Y):
+		at := msg.Y - g.list.y
+		if at >= 0 && at < len(g.navItems) {
+			m.focus = focusSidebar
+			return m.activateNavigation(g.navItems[at])
+		}
+		return m, nil
+	case g.environment.contains(msg.X, msg.Y):
+		return m.openDetails(m.activeRow(), true)
+	case g.sidebar.contains(msg.X, msg.Y):
 		m.focus = focusSidebar
 		m.scrolling, m.scroll = false, 0
 		return m, nil
-
-	case y == g.tabsY && x >= g.main.x:
-		// Bounded on x as well as y. The sidebar arms above already claim
-		// every column left of the main area on this row, so today the
-		// bound changes nothing — but tabsY is 0 only because the tabs row
-		// happens to be the top line, and a future layout that moves it,
-		// or gives the sidebar a header, would otherwise have this arm
-		// silently claiming the whole screen row.
-		for _, s := range g.tabs {
-			if x >= s.from && x < s.to {
-				return m.focusTab(s.index), nil
+	case g.header.contains(msg.X, msg.Y):
+		x, y := msg.X-g.header.x, msg.Y-g.header.y
+		for _, l := range g.headerLinks {
+			if l.y == y && x >= l.x && x < l.x+l.width {
+				if l.details {
+					return m.openDetails(m.activeRow(), false)
+				}
+				return m.openURL(l.url)
 			}
 		}
-		// An elision marker, the empty end of the row, or the daemon
-		// health line that stands in for the tabs while none are open.
-		// None of them is a tab, so none of them does anything.
-		return m, nil
-
-	case g.main.contains(x, y):
-		if len(m.tabs) == 0 {
-			// The same refusal the focusMain binding makes: there is
-			// nothing to point the keyboard at, and a focus that renders
-			// no cursor and takes no keys is a focus nobody can see.
-			return m, nil
+	case g.main.contains(msg.X, msg.Y):
+		if len(m.tabs) > 0 {
+			m.focus = focusMain
+			m.scrolling, m.scroll = false, 0
 		}
-		m.focus = focusMain
-		return m, nil
 	}
-	// The footer, and anything a future layout leaves uncovered.
 	return m, nil
-}
-
-// selectListRow moves the selection to whatever the clicked line of the row
-// list belongs to.
-//
-// A line that belongs to no row (the "— system —" divider, the padding
-// below the last one) and a row that cannot be selected (a project header,
-// a sidecar) leave the selection where it was. The click still points the
-// keyboard at the sidebar: that much the person did ask for by clicking in
-// it.
-//
-// A sandbox's port lines carry their sandbox's index, so clicking a URL
-// selects the sandbox it belongs to rather than nothing.
-func (m Model) selectListRow(line int) (tea.Model, tea.Cmd) {
-	m.focus = focusSidebar
-	m.scrolling, m.scroll = false, 0
-	if line < 0 || line >= len(m.geom.listRows) {
-		return m, nil
-	}
-	idx := m.geom.listRows[line]
-	if idx < 0 || idx >= len(m.rows) || !m.rows[idx].Selectable || idx == m.selected {
-		return m, nil
-	}
-	m.selected = idx
-	// The same re-read j/k do: the detail band's event tail belongs to the
-	// selection, and without this it would keep showing the old row's.
-	return m, m.eventsCmd()
 }
 
 // focusTab points the keyboard at one tab by index. It is what the leader's
@@ -134,6 +96,30 @@ func (m Model) focusTab(i int) Model {
 	m.focused = i
 	m.focus = focusMain
 	m.scrolling, m.scroll = false, 0
+	t := m.tabs[i]
+	if t.kind == KindHostShell && m.collapsed["host"] {
+		m.toggleNavigation("host")
+	}
+	for _, n := range m.navigation() {
+		if n.tabID == t.id {
+			m.selectNavigation(n)
+			return m
+		}
+	}
+	if t.project != "" {
+		row := control.Row{Project: t.project, Name: t.sandbox}
+		for _, id := range []string{"project:" + t.project, containerNavID(row)} {
+			if m.collapsed[id] {
+				m.toggleNavigation(id)
+			}
+		}
+		for _, n := range m.navigation() {
+			if n.tabID == t.id {
+				m.selectNavigation(n)
+				break
+			}
+		}
+	}
 	return m
 }
 
@@ -146,6 +132,9 @@ const wheelLines = 3
 // look, not a commitment, and a person reading the sidebar while typing
 // into a pane should stay typing into the pane.
 func (m Model) handleWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	if m.notice.isErr {
+		m.notice = notice{}
+	}
 	var dir int
 	switch msg.Button {
 	case tea.MouseWheelUp:
@@ -165,7 +154,11 @@ func (m Model) handleWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 		m.leaderArmed = false
 		return m, nil
 	}
-	if m.mode != modeNormal || m.showHelp {
+	if m.hasModal() {
+		m.scrollModal(-dir * wheelLines)
+		return m, nil
+	}
+	if m.mode != modeNormal {
 		// A modal or the overlay owns the screen; there is nothing behind
 		// it the person can see to scroll.
 		return m, nil
@@ -174,14 +167,14 @@ func (m Model) handleWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	g := m.geom
 	switch {
 	case g.sidebar.contains(msg.X, msg.Y):
-		// The list is windowed on the selection (sidebarWindow), so moving
+		// The list is windowed on the selection (navigationWindow), so moving
 		// the selection IS scrolling the sidebar — and it is the move the
 		// person can act on afterwards, which a detached scroll offset
 		// would not be.
-		before := m.selected
-		m.moveSelection(-dir)
-		if m.selected == before {
-			// At either end there is nothing new for the detail band to
+		before := m.navID
+		m.moveNavigation(-dir)
+		if m.navID == before {
+			// At either end there is nothing new for the selection to
 			// follow, and a trackpad fires notches far faster than key
 			// repeat — the click path (selectListRow) already skips the
 			// read for the same reason.

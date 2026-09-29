@@ -2,7 +2,7 @@
 title: A click in the pane area is the only input that cannot leave scroll mode
 date: 2026-09-19
 kind: finding
-status: open
+status: resolved
 category: observation
 tags: control-plane, dashboard, mouse, scroll-mode
 ---
@@ -53,3 +53,6 @@ mode") and adjudication row T2-b, ruled **FILE**.
 ## Updates
 - 2026-09-19: filed from the plan 5 whole-branch review, during the fix
   wave (Important 1, Minor 1).
+
+### 2026-09-29 — status: resolved
+Clicking the pane now restores main focus and clears scroll mode and its offset. Mouse regression coverage preserves the behavior.

@@ -82,19 +82,71 @@ func answer(t *testing.T, m Model, k string) Model {
 	return m
 }
 
+func selectContainerInTest(t *testing.T, m Model, project, name string) Model {
+	t.Helper()
+	for _, n := range m.navigation() {
+		if n.kind == navContainer && n.row.Project == project && n.row.Name == name {
+			m.selectNavigation(n)
+			m.geom = m.computeGeometry()
+			return m
+		}
+	}
+	t.Fatalf("container %s/%s missing from navigation", project, name)
+	return m
+}
+
 func TestMoveKeysChangeTheSelection(t *testing.T) {
 	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
 	m = step(t, m, "j")
-	if got := m.selectedRow().Name; got != "issue-42" {
-		t.Errorf("after j, selection = %q, want issue-42", got)
+	if n, _ := m.selectedNavigation(); n.kind != navNewSession || n.row.Name != "mercury" {
+		t.Fatalf("after j selection=%+v, want mercury New session", n)
 	}
 	m = step(t, m, "k")
-	if got := m.selectedRow().Name; got != "mercury" {
-		t.Errorf("after k, selection = %q, want mercury", got)
+	if n, _ := m.selectedNavigation(); n.kind != navContainer || n.row.Name != "mercury" {
+		t.Fatalf("after k selection=%+v, want mercury", n)
+	}
+	m = step(t, m, "down")
+	if n, _ := m.selectedNavigation(); n.kind != navNewSession {
+		t.Fatalf("after down selection=%+v, want New session", n)
 	}
 	m = step(t, m, "down")
 	if got := m.selectedRow().Name; got != "issue-42" {
-		t.Errorf("after ↓, selection = %q, want issue-42", got)
+		t.Errorf("after second down selection=%q, want issue-42", got)
+	}
+}
+
+func TestEnterOnStoppedContainerExplainsWhySessionCannotOpen(t *testing.T) {
+	for _, bootKey := range []string{"u", "v"} {
+		t.Run(bootKey, func(t *testing.T) {
+			a := &recordingActor{}
+			m := newTestModel(&fakeData{snap: testSnapshot()}, a)
+			m.keys = NewKeyMap(map[string][]string{ActionBoot: {bootKey}})
+			m = selectContainerInTest(t, m, "alpha", "issue-42")
+			before := m.collapsed[m.navID]
+			mm, cmd := m.Update(press("enter"))
+			m = mm.(Model)
+			if cmd != nil || m.action != "" || m.collapsed[m.navID] != before {
+				t.Fatal("Enter on a stopped container must explain the state without booting or collapsing")
+			}
+			if !m.notice.isErr || !strings.Contains(m.notice.text, "issue-42 is stopped") || !strings.Contains(m.notice.text, "press "+bootKey+" to boot") {
+				t.Fatalf("missing stopped-container feedback with configured boot key: %+v", m.notice)
+			}
+		})
+	}
+}
+
+func TestEnterOnNewSessionCreatesIndependentSession(t *testing.T) {
+	h := &mouseSessionHost{fakeHost: &fakeHost{t: t}}
+	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
+	m = step(t, m, "down")
+	item, _ := m.selectedNavigation()
+	if item.kind != navNewSession {
+		t.Fatalf("expected New session selection, got %+v", item)
+	}
+	mm, cmd := m.Update(press("enter"))
+	m = pump(t, mm.(Model), cmd)
+	if len(h.requests) != 1 || !h.requests[0].New || len(m.tabs) != 1 || m.focus != focusMain {
+		t.Fatalf("Enter did not create and focus an independent session: requests=%+v tabs=%d focus=%v", h.requests, len(m.tabs), m.focus)
 	}
 }
 
@@ -159,7 +211,7 @@ func TestBootOnlyOffersAStoppedSandbox(t *testing.T) {
 	if len(a.up) != 0 {
 		t.Errorf("boot fired on a running sandbox: %+v", a.up)
 	}
-	m = step(t, m, "j") // issue-42 is stopped
+	m = selectContainerInTest(t, m, "alpha", "issue-42")
 	step(t, m, "u")
 	if len(a.up) != 1 || a.up[0].Name != "issue-42" {
 		t.Errorf("boot calls = %+v, want one for issue-42", a.up)
@@ -376,63 +428,59 @@ func TestTeardownActsOnTheRowThePromptNamed(t *testing.T) {
 	}
 }
 
-func TestHelpOverlayToggles(t *testing.T) {
+func TestHelpOverlayOpensScrollsAndCloses(t *testing.T) {
 	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
 	m = step(t, m, "?")
-	out := plain(m.View().Content)
-	if !strings.Contains(out, "restart browser") || !strings.Contains(out, "tear down") {
-		t.Errorf("the help overlay should list every binding:\n%s", out)
+	if !m.showHelp {
+		t.Fatal("help did not open")
 	}
-	if !strings.Contains(out, "~/.cspace/config.json") {
-		t.Errorf("the help overlay should say where bindings come from:\n%s", out)
-	}
-	if !strings.Contains(out, "shell pane") {
-		t.Errorf("the help overlay should list the pane bindings too:\n%s", out)
-	}
-	if !strings.Contains(out, "mercury") {
-		t.Error("the sidebar stays visible behind the help overlay")
-	}
-	// m.help is sized to the whole 100-column window; the overlay renders
-	// into the narrower main area, so every line must still fit inside the
-	// window it is actually drawn in.
-	for i, l := range strings.Split(out, "\n") {
-		if w := len([]rune(l)); w > 100 {
-			t.Errorf("help overlay line %d is wider than the window (%d): %q", i, w, l)
+	_, width, _ := m.modalFrame()
+	full := plain(m.helpView(width))
+	for _, want := range []string{"restart browser", "tear down", "~/.cspace/config.json", "shell pane", "leader"} {
+		if !strings.Contains(full, want) {
+			t.Errorf("help missing %q:\n%s", want, full)
 		}
 	}
-	m = step(t, m, "?")
-	if strings.Contains(plain(m.View().Content), "~/.cspace/config.json") {
-		t.Error("the help overlay should toggle off")
+	initial := plain(m.View().Content)
+	if !strings.Contains(initial, "mercury") {
+		t.Error("sidebar absent behind help")
+	}
+	for i, l := range strings.Split(initial, "\n") {
+		if w := lipgloss.Width(l); w > 100 {
+			t.Errorf("help overlay row %d has width %d: %q", i, w, l)
+		}
+	}
+	m = step(t, m, "down")
+	if m.modalScroll != 1 || !m.showHelp {
+		t.Fatalf("down did not scroll help: scroll=%d open=%v", m.modalScroll, m.showHelp)
+	}
+	for i := 0; i < 60; i++ {
+		m = step(t, m, "down")
+	}
+	if !strings.Contains(plain(m.View().Content), "~/.cspace/config.json") {
+		t.Error("scrolling help cannot reach its final documentation")
+	}
+	m = step(t, m, "esc")
+	if m.showHelp || m.modalScroll != 0 {
+		t.Error("Escape did not close/reset help")
 	}
 }
 
-// The overlay must close on any key, not just `?` — otherwise a key that
-// also dispatches an action (d, for the teardown confirm) would both close
-// help and fire that action against a main area the overlay had been
-// covering, with no confirmation ever drawn.
-func TestAnyKeyClosesTheHelpOverlayWithoutDispatching(t *testing.T) {
+func TestHelpCapturesKeysWithoutDispatching(t *testing.T) {
 	a := &recordingActor{}
 	m := newTestModel(&fakeData{snap: testSnapshot()}, a)
-
 	m = step(t, m, "?")
-	if !m.showHelp {
-		t.Fatal("test setup: ? should open the help overlay")
-	}
-
 	m = step(t, m, "d")
-	if m.showHelp {
-		t.Error("d should have closed the help overlay")
+	if !m.showHelp {
+		t.Error("an action key unexpectedly closed help")
 	}
-	if m.mode != modeNormal || m.confirm != nil {
-		t.Errorf("d should not have been dispatched: mode=%v confirm=%v", m.mode, m.confirm)
+	if m.mode != modeNormal || m.confirm != nil || len(a.down) != 0 {
+		t.Errorf("covered teardown dispatched: mode=%v confirm=%v calls=%v", m.mode, m.confirm, a.down)
 	}
-	if len(a.down) != 0 {
-		t.Errorf("d should not have been dispatched: down calls = %+v", a.down)
-	}
-
+	m = step(t, m, "esc")
 	m = step(t, m, "?")
 	if !m.showHelp {
-		t.Error("? should still open the help overlay from normal mode")
+		t.Error("help did not reopen after Escape")
 	}
 }
 
@@ -490,8 +538,8 @@ func TestMainWidthForFloorsANarrowWindow(t *testing.T) {
 	if got := mainWidthFor(30) - 2; got != 18 {
 		t.Errorf("the width the teardown confirm would be built with at 30 columns = %d, want 18", got)
 	}
-	if got := mainWidthFor(100); got != 76 {
-		t.Errorf("mainWidthFor(100) = %d, want 76", got)
+	if got := mainWidthFor(100); got != 72 {
+		t.Errorf("mainWidthFor(100) = %d, want 72", got)
 	}
 }
 
@@ -604,5 +652,15 @@ func TestHelpOverlayNamesTheMouseAndTheSelectionEscapeHatch(t *testing.T) {
 		if w := len([]rune(l)); w > cols {
 			t.Errorf("help line %d is %d cells, wider than the %d the overlay is drawn in: %q", i, w, cols, l)
 		}
+	}
+}
+
+func TestExistingAttachOverrideKeepsItsKeyWhenDetailsIsAdded(t *testing.T) {
+	h := &fakeHost{t: t}
+	m := newTestModelWithHost(&fakeData{snap: testSnapshot()}, &recordingActor{}, h)
+	m.keys = NewKeyMap(map[string][]string{ActionAttach: {"o"}, ActionDetails: {"o"}})
+	m = stepPump(t, m, "o")
+	if len(m.tabs) != 1 || m.mode != modeNormal {
+		t.Fatal("the new default Details binding stole a custom attach key")
 	}
 }

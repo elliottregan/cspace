@@ -148,17 +148,23 @@ func BeginAttach(ctx context.Context, tm *Tmux, container, dir, session string) 
 		return nil, err
 	}
 	a.lock = lock
+	return beginAttachLocked(ctx, a)
+}
 
-	before, err := tm.ListClients(ctx, container, session)
+// beginAttachLocked transfers a held attach lock to the client tracker. Session
+// creation uses the same lock so allocating a name and discovering its client
+// cannot interleave with another cspace process.
+func beginAttachLocked(ctx context.Context, a *Attachment) (*Attachment, error) {
+	before, err := a.tmux.ListClients(ctx, a.container, a.session)
 	if err != nil {
 		a.releaseLock()
-		return nil, fmt.Errorf("snapshot tmux clients for %s: %w", container, err)
+		return nil, fmt.Errorf("snapshot tmux clients for %s: %w", a.container, err)
 	}
 
 	// Tracking outlives the caller's ctx on purpose: the attach child runs
 	// for as long as the user keeps the window, and cancelling the snapshot
 	// context must not stop us identifying the client we have to detach.
-	trackCtx, stop := context.WithTimeout(context.Background(), tm.PollFor)
+	trackCtx, stop := context.WithTimeout(context.Background(), a.tmux.PollFor)
 	a.trackStop = stop
 	go a.track(trackCtx, before)
 	return a, nil

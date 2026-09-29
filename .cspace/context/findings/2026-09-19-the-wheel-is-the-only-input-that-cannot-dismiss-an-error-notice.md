@@ -2,7 +2,7 @@
 title: The wheel is the only input that cannot dismiss an error notice
 date: 2026-09-19
 kind: finding
-status: open
+status: acknowledged
 category: observation
 tags: control-plane, dashboard, mouse, notice, footer
 ---
@@ -53,3 +53,6 @@ adjudication row T3-a, ruled **FILE**.
 ## Updates
 - 2026-09-19: filed from the plan 5 whole-branch review, during the fix
   wave (Important 1, Minor 1).
+
+### 2026-09-29 — status: acknowledged
+Wheel input now dismisses sticky errors, matching keys and clicks. The secondary observation about notices produced while an action is in flight remains outside this change.

@@ -21,6 +21,7 @@ var defaultTmux = control.NewTmux()
 
 func newAttachCmd() *cobra.Command {
 	var noTmux bool
+	var request control.AttachRequest
 
 	cmd := &cobra.Command{
 		Use:   "attach <name>",
@@ -33,6 +34,10 @@ The session runs inside a tmux session in the sandbox, so closing this
 window leaves it running and the next ` + "`cspace attach`" + ` rejoins it
 with its screen intact.
 
+Use --new to create another independent Claude session in this sandbox.
+Use --session cspace-claude-2 to join that session; an existing session
+must still be running. The default session is named cspace-claude.
+
 This is independent of the supervisor's autonomous session — they
 share the same /workspace but are separate Claude Code sessions
 with separate context. Use ` + "`cspace send`" + ` to inject turns into the
@@ -40,6 +45,12 @@ supervisor's session non-interactively; use ` + "`cspace attach`" + ` for
 hands-on work.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := request.Validate(); err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("session") && request.Session == "" {
+				return fmt.Errorf("--session requires a session name")
+			}
 			if err := ensureRegistryDaemon(); err != nil {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: cspace daemon not reachable: %v\n", err)
 			}
@@ -47,7 +58,7 @@ hands-on work.`,
 			name := args[0]
 			project := projectName()
 			containerName := fmt.Sprintf("cspace-%s-%s", project, name)
-			return attachInteractive(cmd.Context(), cmd.ErrOrStderr(), project, name, containerName, !noTmux)
+			return attachInteractiveRequest(cmd.Context(), cmd.ErrOrStderr(), project, name, containerName, !noTmux, request)
 		},
 	}
 
@@ -56,6 +67,11 @@ hands-on work.`,
 	cmd.Flags().BoolVar(&noTmux, "no-tmux", false,
 		"attach without tmux; the session does not survive this window closing")
 	_ = cmd.Flags().MarkHidden("no-tmux")
+	cmd.Flags().BoolVar(&request.New, "new", false, "create a new independent Claude session")
+	cmd.Flags().StringVar(&request.Session, "session", "", "join an existing Claude session by name")
+	cmd.MarkFlagsMutuallyExclusive("new", "session")
+	cmd.MarkFlagsMutuallyExclusive("new", "no-tmux")
+	cmd.MarkFlagsMutuallyExclusive("session", "no-tmux")
 	return cmd
 }
 
@@ -70,6 +86,17 @@ hands-on work.`,
 // signals, and exits with the child's status.
 // (cs-finding:2026-09-17-attach-orphans-claude-when-the-host-terminal-closes)
 func attachInteractive(ctx context.Context, warn io.Writer, project, sandbox, containerName string, wantTmux bool) error {
+	return attachInteractiveRequest(ctx, warn, project, sandbox, containerName, wantTmux, control.AttachRequest{})
+}
+
+func attachInteractiveRequest(ctx context.Context, warn io.Writer, project, sandbox, containerName string, wantTmux bool, request control.AttachRequest) error {
+	if err := request.Validate(); err != nil {
+		return err
+	}
+	managed := request.New || request.Session != ""
+	if managed && !wantTmux {
+		return control.ErrTmuxRequired
+	}
 	useTmux := false
 	warned := false
 	if wantTmux {
@@ -84,6 +111,9 @@ func attachInteractive(ctx context.Context, warn io.Writer, project, sandbox, co
 			return fmt.Errorf("cannot reach sandbox %s to probe for tmux: %w", sandbox, presentErr)
 		}
 		useTmux = present
+		if managed && !useTmux {
+			return control.ErrTmuxRequired
+		}
 		if !useTmux {
 			_, _ = fmt.Fprintf(warn,
 				"warning: this sandbox has no tmux, so the session will not survive this window closing — and `claude` will keep running inside the sandbox when it does. Rebuild the image with `cspace image build`, then `cspace down %s && cspace up %s`.\n",
@@ -99,11 +129,31 @@ func attachInteractive(ctx context.Context, warn io.Writer, project, sandbox, co
 	}
 
 	home, homeErr := os.UserHomeDir()
-	att, bookkeepingWarned, err := beginAttachOrWarn(ctx, warn, defaultTmux, home, homeErr, project, sandbox, containerName, spec.Session)
-	if err != nil {
-		return err
+	var att *control.Attachment
+	if managed {
+		if homeErr != nil {
+			return fmt.Errorf("resolve home directory: %w", homeErr)
+		}
+		prepareCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		prepared, prepareErr := control.PrepareClaudeAttach(prepareCtx, defaultTmux, home, project, sandbox, containerName, request)
+		cancel()
+		if prepareErr != nil {
+			return prepareErr
+		}
+		att = prepared.Attachment
+		bin, argv, err = control.AttachArgv(prepared.Spec)
+		if err != nil {
+			_ = att.Close(ctx)
+			return err
+		}
+	} else {
+		var bookkeepingWarned bool
+		att, bookkeepingWarned, err = beginAttachOrWarn(ctx, warn, defaultTmux, home, homeErr, project, sandbox, containerName, spec.Session)
+		if err != nil {
+			return err
+		}
+		warned = warned || bookkeepingWarned
 	}
-	warned = warned || bookkeepingWarned
 
 	// Skip the reset whenever this attach has already printed a warning to
 	// `warn` (the no-tmux fallback above, or beginAttachOrWarn's bookkeeping

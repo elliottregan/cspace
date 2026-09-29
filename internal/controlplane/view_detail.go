@@ -2,127 +2,13 @@ package controlplane
 
 import (
 	"fmt"
-	"strings"
 	"time"
-
-	"github.com/charmbracelet/x/ansi"
 
 	"github.com/elliottregan/cspace/internal/control"
 )
 
-// detailEvents is how many event-log lines the band shows.
+// detailEvents bounds the recent events included in container Details.
 const detailEvents = 8
-
-// renderDetail renders the selected row's detail band: uptime, memory, agent
-// session and last event, the labeled URLs, and the tail of the supervisor's
-// event log — everything the 24-column sidebar has no room for.
-//
-// It takes an explicit width so one renderer serves both placements: the
-// main area now, and the narrow strip under the sidebar once panes take the
-// main area over in rollout step 4.
-func renderDetail(row control.Row, live liveState, ports []control.Port, portsErr error, events []control.EventLine, eventsErr error, memoryUsedB int64, width int) string {
-	var lines []string
-	add := func(style lipglossStyle, format string, args ...any) {
-		lines = append(lines, style.Render(fit(fmt.Sprintf(format, args...), width)))
-	}
-
-	switch row.Kind {
-	case control.RowSandbox:
-		// Under the sidebar `width` is sidebarInner — 23 columns, one less
-		// than sidebarWidth's 24 — and these four fields do not fit on one
-		// line; `fit` would cut the memory figure off the end, which is the
-		// number the band is there for. Fold rather than lose it. In the
-		// main area, where the band was until rollout step 4, the header
-		// still fits and still renders as one line.
-		head := fmt.Sprintf("%s · %s · %s · %s", row.Name, stateLabel(row),
-			formatUptime(row.Uptime), formatMemUsage(memoryUsedB, row.MemoryB))
-		if ansi.StringWidth(head) > width {
-			add(lipglossStyle{}, "%s · %s", row.Name, stateLabel(row))
-			add(lipglossStyle{}, "%s", strings.TrimPrefix(
-				formatUptime(row.Uptime)+" · "+formatMemUsage(memoryUsedB, row.MemoryB), " · "))
-		} else {
-			add(lipglossStyle{}, "%s", head)
-		}
-		if row.State == control.StateStopped {
-			add(styleDim, "not running — press u to boot it, or select another sandbox")
-			return strings.Join(lines, "\n")
-		}
-		if row.IP != "" {
-			add(styleDim, "%s · %s", row.Container, row.IP)
-		}
-
-		if a := agentOf(row, live); a.Reachable {
-			add(lipglossStyle{}, "agent: %s · session %s · queue %d · last event %s",
-				a.State, sessionOr(a.Session), a.QueueDepth, lastEventLabel(a))
-		} else {
-			add(styleErr, "agent: supervisor unreachable — send and interrupt are off")
-		}
-		if is := live.Interactive; is.Known() {
-			add(lipglossStyle{}, "claude: %s · %s · %s", is.State, is.Event, shortTs(is.At))
-		}
-
-		lines = append(lines, "")
-		switch {
-		case portsErr != nil:
-			add(styleDim, "ports unavailable: %v", portsErr)
-		case len(ports) == 0:
-			add(styleDim, "no listening ports")
-		default:
-			for _, p := range ports {
-				add(stylePort.Hyperlink(p.URL), "  %-6d %-12s %s", p.Port, p.Label, p.URL)
-			}
-		}
-
-		lines = append(lines, "")
-		switch {
-		case eventsErr != nil:
-			// Degrade the same way a failed ports probe does: an unreadable
-			// log is not an empty one, and saying "no events yet" for a
-			// sandbox whose events.ndjson could not be opened hides the
-			// only clue there is.
-			add(styleDim, "events unavailable: %v", eventsErr)
-		case len(events) == 0:
-			add(styleDim, "no agent events yet")
-		default:
-			add(styleDim, "recent events")
-			for _, e := range tailEvents(events, detailEvents) {
-				add(styleDim, "  %s %-16s %s", shortTs(e.Ts), eventKind(e), eventDetail(e))
-			}
-		}
-
-	case control.RowBrowser:
-		add(lipglossStyle{}, "%s · %s", row.Name, stateLabel(row))
-		if row.Browser.Reachable {
-			version := row.Browser.Version
-			if version == "" {
-				version = "reachable"
-			}
-			add(styleOK, "CDP :%d · %s", control.BrowserCDPPort, version)
-		} else {
-			add(styleErr, "CDP :%d unreachable — press b to restart the sidecar",
-				control.BrowserCDPPort)
-		}
-		if row.IP != "" {
-			add(styleDim, "%s · %s", row.Container, row.IP)
-		}
-
-	case control.RowSidecar, control.RowSystem:
-		add(lipglossStyle{}, "%s · %s", row.Name, stateLabel(row))
-		// A stopped sidecar has no address. Drop the segment rather than
-		// print an empty one between two separators, the way the sandbox and
-		// browser branches above do.
-		if row.IP != "" {
-			add(styleDim, "%s · %s · %s", row.Container, row.IP,
-				formatMemUsage(memoryUsedB, row.MemoryB))
-		} else {
-			add(styleDim, "%s · %s", row.Container, formatMemUsage(memoryUsedB, row.MemoryB))
-		}
-
-	default:
-		add(styleDim, "select a sandbox")
-	}
-	return strings.Join(lines, "\n")
-}
 
 // eventKind names one event-log record. Every line the supervisor writes
 // carries a kind — supervisor-start, supervisor-resume, agent-role,
@@ -155,7 +41,7 @@ func eventDetail(e control.EventLine) string {
 }
 
 // tailEvents keeps the last n of what the reader returned. control.Events
-// already bounds its read; this bounds what a narrow band shows.
+// already bounds its read; this bounds the dialog's recent-event section.
 func tailEvents(events []control.EventLine, n int) []control.EventLine {
 	if len(events) <= n {
 		return events
@@ -242,16 +128,6 @@ func formatAge(t, now time.Time) string {
 		return fmt.Sprintf("%ds ago", int(d.Seconds()))
 	}
 	return fmt.Sprintf("%dm ago", int(d.Minutes()))
-}
-
-func lastEventLabel(a control.AgentStatus) string {
-	if a.LastEventType == "" {
-		return "-"
-	}
-	if a.LastEventSubtype != "" {
-		return a.LastEventType + "/" + a.LastEventSubtype
-	}
-	return a.LastEventType
 }
 
 // shortTs is HH:MM:SS out of an ISO 8601 timestamp, passed through

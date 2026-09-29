@@ -26,7 +26,7 @@ const (
 	mediumTimeout = 5 * time.Second
 	slowTimeout   = 45 * time.Second
 
-	// eventTail is how many events.ndjson lines the detail band reads.
+	// eventTail is how many events.ndjson lines container Details reads.
 	eventTail = 8
 
 	// liveConcurrency bounds the fast ticker's fan-out, matching the bound
@@ -59,7 +59,10 @@ type (
 // liveMsg carries the whole fast sample. The model replaces its map wholesale
 // rather than merging into it: a sandbox that went away must lose its state,
 // and a Model is copied on every Update, so nothing mutates a shared map.
-type liveMsg struct{ states map[sandboxKey]liveState }
+type liveMsg struct {
+	states   map[sandboxKey]liveState
+	sessions map[sandboxKey][]control.Session
+}
 
 type snapshotMsg struct{ snap control.Snapshot }
 
@@ -69,6 +72,7 @@ type snapshotMsg struct{ snap control.Snapshot }
 // the port list of every healthy one on the host until the next slow tick.
 type slowMsg struct {
 	snap     control.Snapshot
+	services map[sandboxKey][]control.ServiceStatus
 	ports    map[sandboxKey][]control.Port
 	portsErr map[sandboxKey]error
 }
@@ -104,6 +108,7 @@ func sandboxTargets(rows []control.Row) []sandboxKey {
 // session's hook-written state for every running sandbox, concurrently.
 func (m Model) liveCmd() tea.Cmd {
 	data, targets := m.data, sandboxTargets(m.rows)
+	sessions := m.sessions
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), fastTimeout)
 		defer cancel()
@@ -129,7 +134,17 @@ func (m Model) liveCmd() tea.Cmd {
 			}(k)
 		}
 		wg.Wait()
-		return liveMsg{states: states}
+		var updated map[sandboxKey][]control.Session
+		if sd, ok := data.(sessionData); ok {
+			updated = make(map[sandboxKey][]control.Session, len(sessions))
+			for k, ss := range sessions {
+				for _, s := range ss {
+					s.State = sd.SessionState(k.Project, k.Name, s)
+					updated[k] = append(updated[k], s)
+				}
+			}
+		}
+		return liveMsg{states: states, sessions: updated}
 	}
 }
 
@@ -157,7 +172,30 @@ func (m Model) slowCmd() tea.Cmd {
 		snap := data.SnapshotWith(ctx, control.SnapshotOpts{})
 		ports := make(map[sandboxKey][]control.Port, len(targets))
 		errs := make(map[sandboxKey]error)
+		services := make(map[sandboxKey][]control.ServiceStatus)
+		for _, r := range snap.Rows {
+			if r.Kind != control.RowSandbox {
+				continue
+			}
+			k := keyOf(r)
+			if sd, ok := data.(serviceData); ok {
+				svcs, err := sd.Services(ctx, k.Project, k.Name)
+				services[k] = svcs
+				if err != nil {
+					errs[k] = err
+				}
+				for _, s := range svcs {
+					if s.State == control.ServiceRunning {
+						ports[k] = append(ports[k], control.Port{Port: s.Port, Label: s.Label, URL: s.URL})
+					}
+				}
+				continue
+			}
+		}
 		for _, k := range targets {
+			if _, ok := data.(serviceData); ok {
+				continue
+			}
 			p, err := data.Ports(ctx, k.Project, k.Name)
 			if err != nil {
 				errs[k] = err
@@ -165,7 +203,7 @@ func (m Model) slowCmd() tea.Cmd {
 			}
 			ports[k] = p
 		}
-		return slowMsg{snap: snap, ports: ports, portsErr: errs}
+		return slowMsg{snap: snap, ports: ports, portsErr: errs, services: services}
 	}
 }
 
@@ -174,6 +212,9 @@ func (m Model) slowCmd() tea.Cmd {
 // new name.
 func (m Model) eventsCmd() tea.Cmd {
 	row := m.selectedRow()
+	if m.dialog != nil && !m.dialog.environment {
+		row = m.dialog.row
+	}
 	key := keyOf(row)
 	if row.Kind != control.RowSandbox {
 		return func() tea.Msg { return eventsMsg{key: key} }

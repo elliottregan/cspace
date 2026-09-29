@@ -21,6 +21,9 @@ type AttachSpec struct {
 	Command   []string // what the session runs when it is created
 	TERM      string   // the host terminal's TERM
 	COLORTERM string   // the host terminal's COLORTERM
+	// ExistingSession selects attach-only with an in-server generation guard.
+	// It comes from PrepareClaudeAttach; the zero value retains -A behavior.
+	ExistingSession *Session
 }
 
 // ClaudeAttach returns the spec for an interactive Claude session, reading
@@ -86,6 +89,21 @@ func AttachArgv(spec AttachSpec) (bin string, argv []string, err error) {
 	argv = []string{"container", "exec", "-it"}
 	argv = append(argv, TerminalEnvArgs(spec.TERM, spec.COLORTERM)...)
 	argv = append(argv, spec.Container)
+	if s := spec.ExistingSession; s != nil {
+		if s.Name != spec.Session || sessionNumber(s.Name) == 0 ||
+			!tmuxSessionID.MatchString(s.target) || !sessionGenerationPattern.MatchString(s.generation) || s.ID != s.generation {
+			return "", nil, errors.New("attach: invalid existing session identity")
+		}
+		// Resolve and compare inside the same tmux server command queue that
+		// performs attach, rather than trusting an earlier host-side probe. A
+		// restarted server can reuse $0; its generation and random token cannot
+		// satisfy the old comparison. Missing targets fail without creating.
+		return bin, append(argv, "tmux", "-u", "-f", TmuxConf,
+			"if-shell", "-F", "-t", s.target,
+			"#{==:"+sessionGenerationFormat+","+s.generation+"}",
+			"attach-session -t '"+s.target+"'",
+			"display-message -p 'Claude session changed; reopen it' ; run-shell 'exit 1'"), nil
+	}
 	if spec.Session != "" {
 		// -u: write UTF-8 to the client no matter what its locale says.
 		// `container exec` starts the client with no LANG at all, so

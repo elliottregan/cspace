@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 
@@ -22,22 +23,40 @@ import (
 type paneHost struct {
 	ctrl *control.Client
 	home string
+	// The real pane engine by default; tests can observe the command without
+	// starting Apple Container or requiring a terminal.
+	openPane func(pane.Command, int, int, ...pane.Option) (*pane.Pane, error)
 }
 
 var _ controlplane.PaneHost = (*paneHost)(nil)
+var _ controlplane.SessionPaneHost = (*paneHost)(nil)
 
 func newPaneHost(ctrl *control.Client, home string) *paneHost {
-	return &paneHost{ctrl: ctrl, home: home}
+	return &paneHost{ctrl: ctrl, home: home, openPane: pane.Open}
 }
 
 // Open starts one pane's child. It runs inside a tea.Cmd, never on the UI
 // goroutine: the tmux probe is an exec into the container and BeginAttach
 // may wait out another attach's lock.
 func (h *paneHost) Open(ctx context.Context, kind controlplane.Kind, row control.Row, cols, rows int) (controlplane.Opened, error) {
+	return h.open(ctx, kind, row, control.AttachRequest{}, cols, rows)
+}
+
+// OpenSession creates or reconnects to the explicitly requested Claude session.
+// The shared preparation routine owns name allocation and attach tracking for
+// both the CLI and this dashboard; a named request never falls back to default.
+func (h *paneHost) OpenSession(ctx context.Context, row control.Row, req control.AttachRequest, cols, rows int) (controlplane.Opened, error) {
+	return h.open(ctx, controlplane.KindClaude, row, req, cols, rows)
+}
+
+func (h *paneHost) open(ctx context.Context, kind controlplane.Kind, row control.Row, req control.AttachRequest, cols, rows int) (controlplane.Opened, error) {
+	if err := req.Validate(); err != nil {
+		return controlplane.Opened{}, err
+	}
 	if kind == controlplane.KindHostShell {
 		// No container, no tmux, no bookkeeping: this is the operator's own
 		// shell, and it belongs to no sandbox.
-		p, err := pane.Open(pane.HostShell(), cols, rows)
+		p, err := h.openPane(pane.HostShell(), cols, rows)
 		if err != nil {
 			return controlplane.Opened{}, err
 		}
@@ -66,12 +85,12 @@ func (h *paneHost) Open(ctx context.Context, kind controlplane.Kind, row control
 	}
 
 	spec := control.ShellAttach(row.Container, present)
+	var session control.Session
 	if kind == controlplane.KindClaude {
 		spec = control.ClaudeAttach(row.Container, present)
-	}
-	bin, argv, err := control.AttachArgv(spec)
-	if err != nil {
-		return controlplane.Opened{}, err
+		if present {
+			session = control.Session{Name: control.SessionClaude}
+		}
 	}
 
 	// io.Discard: the warning's TEXT has nowhere to be read here — the
@@ -83,9 +102,35 @@ func (h *paneHost) Open(ctx context.Context, kind controlplane.Kind, row control
 	// tab closes AND the startup sweep has no record to find it by. That is
 	// not something to swallow. home was resolved and hard-failed on at
 	// `cspace tui` startup, so it is passed with a nil homeErr.
-	att, degraded, err := beginAttachOrWarn(ctx, io.Discard, h.ctrl.Tmux(), h.home, nil,
-		row.Project, row.Name, row.Container, spec.Session)
+	var att *control.Attachment
+	degraded := false
+	if kind == controlplane.KindClaude && (present || req.New || req.Session != "") {
+		if !present {
+			return controlplane.Opened{}, control.ErrTmuxRequired
+		}
+		prepared, prepareErr := control.PrepareClaudeAttach(ctx, h.ctrl.Tmux(), h.home,
+			row.Project, row.Name, row.Container, req)
+		if prepareErr != nil {
+			if req.New || req.Session != "" || !errors.Is(prepareErr, control.ErrBookkeepingUnavailable) {
+				return controlplane.Opened{}, prepareErr
+			}
+			// Preserve the default attach's warning fallback when the local
+			// bookkeeping directory is unavailable. Its identity stays unknown.
+			att, degraded, err = beginAttachOrWarn(ctx, io.Discard, h.ctrl.Tmux(), h.home, nil,
+				row.Project, row.Name, row.Container, spec.Session)
+		} else {
+			spec, att, session = prepared.Spec, prepared.Attachment, prepared.Session
+		}
+	} else {
+		att, degraded, err = beginAttachOrWarn(ctx, io.Discard, h.ctrl.Tmux(), h.home, nil,
+			row.Project, row.Name, row.Container, spec.Session)
+	}
 	if err != nil {
+		return controlplane.Opened{}, err
+	}
+	bin, argv, err := control.AttachArgv(spec)
+	if err != nil {
+		_ = att.Close(ctx)
 		return controlplane.Opened{}, err
 	}
 
@@ -93,7 +138,7 @@ func (h *paneHost) Open(ctx context.Context, kind controlplane.Kind, row control
 	if forcesExtendedKeys(kind, spec.Session) {
 		opts = append(opts, pane.ExtendedKeys())
 	}
-	p, err := pane.Open(pane.Command{Path: bin, Args: argv}, cols, rows, opts...)
+	p, err := h.openPane(pane.Command{Path: bin, Args: argv}, cols, rows, opts...)
 	if err != nil {
 		// The bookkeeping is already open; close it rather than strand a
 		// lock and a record for a client that never appeared.
@@ -101,7 +146,7 @@ func (h *paneHost) Open(ctx context.Context, kind controlplane.Kind, row control
 		return controlplane.Opened{}, err
 	}
 
-	return controlplane.Opened{Pane: p, Detach: att, Warning: openWarning(present, degraded)}, nil
+	return controlplane.Opened{Pane: p, Detach: att, Warning: openWarning(present, degraded), Session: session}, nil
 }
 
 // forcesExtendedKeys reports whether this pane has to encode its own CSI-u

@@ -373,8 +373,9 @@ func TestMemoryUsageSurvivesAStatsFreeSnapshot(t *testing.T) {
 	if got := m.memory["cspace-alpha-mercury"]; got != 1717986918 {
 		t.Errorf("memory = %d after a stats-free snapshot, want it carried forward", got)
 	}
-	if !strings.Contains(plain(m.View().Content), "1.6G/16G") {
-		t.Error("the detail band should still show usage against the cap")
+	m.dialog = &detailsDialog{row: m.selectedRow()}
+	if !strings.Contains(dialogText(m.detailsLines(76)), "1.6G/16G") {
+		t.Error("container details should show usage against the cap")
 	}
 
 	// A sandbox that stopped drops its remembered usage rather than
@@ -454,32 +455,17 @@ func TestAPortsFailureIsScopedToItsOwnSandbox(t *testing.T) {
 	if got := m.selectedRow().Name; got != "mercury" {
 		t.Fatalf("test setup: selected %q, want mercury", got)
 	}
-	// Rollout step 4 moved the band under the sidebar, 24 columns wide,
-	// where a full URL does not fit (view_pane.go's sidebarColumn doc). The
-	// port number does — both in the band's own (now-folded) ports line and
-	// in the row list's port sub-line, which is what carries the address
-	// itself now, as an OSC 8 hyperlink on "5173 web" rather than as text.
-	out := plain(m.View().Content)
-	if !strings.Contains(out, "5173") {
-		t.Errorf("mercury's ports should still be listed; got:\n%s", out)
+	m.dialog = &detailsDialog{row: m.selectedRow()}
+	out := dialogText(m.detailsLines(76))
+	if !strings.Contains(out, "5173") || strings.Contains(out, "unavailable") {
+		t.Errorf("mercury's details should carry its successful service sample: %s", out)
 	}
-	if strings.Contains(out, "ports unavailable") {
-		t.Errorf("another sandbox's Ports failure blanked mercury's ports; got:\n%s", out)
+	m.moveSelection(1)
+	m.dialog = &detailsDialog{row: m.selectedRow()}
+	out = dialogText(m.detailsLines(76))
+	if !strings.Contains(out, "Services unavailable: container exec: no such process") {
+		t.Errorf("the failed probe belongs in issue-42 details: %s", out)
 	}
-
-	m.moveSelection(1) // issue-42, the one that failed
-	if got := m.selectedRow().Name; got != "issue-42" {
-		t.Fatalf("test setup: selected %q, want issue-42", got)
-	}
-	out = plain(m.View().Content)
-	if !strings.Contains(out, "ports unavailable") {
-		t.Errorf("the sandbox whose probe failed should say so; got:\n%s", out)
-	}
-	// The error's own text ("container exec: no such process") no longer
-	// fits the 23-column band alongside "ports unavailable: " — that specific
-	// degradation is TestRenderDetailPortsError's job, at a width where it
-	// survives. What this test still owns is the scoping: each sandbox's
-	// band reflects only its own probe, never its neighbour's.
 }
 
 // Ports arrive on the slow cadence alone, so a sandbox that stops must lose
@@ -518,16 +504,16 @@ func TestSnapshotErrorKeepsTheLastKnownRows(t *testing.T) {
 	m := newTestModel(d, &recordingActor{})
 	before := len(m.rows)
 
-	mm, _ := m.Update(snapshotMsg{snap: control.Snapshot{Err: errors.New("apiserver down")}})
+	mm, _ := m.Update(snapshotMsg{snap: control.Snapshot{
+		Err: errors.New("apiserver down"), Daemon: control.DaemonHealth{Reachable: true, Version: "rc.49"},
+	}})
 	m = mm.(Model)
 	if len(m.rows) != before {
 		t.Errorf("rows = %d after a failed poll, want the last-known %d", len(m.rows), before)
 	}
-	// control leaves Daemon zeroed on its own error paths, so a failed poll
-	// must not be allowed to flip the tabs line from healthy to
-	// unreachable — the daemon itself did not go anywhere.
-	if !m.daemon.Reachable {
-		t.Errorf("daemon = %+v, want the last-known health preserved", m.daemon)
+	// Daemon health is independently probed even when container listing fails.
+	if !m.daemon.Reachable || m.daemon.Version != "rc.49" {
+		t.Errorf("daemon = %+v, want the fresh independent health result", m.daemon)
 	}
 	out := plain(m.View().Content)
 	if !strings.Contains(out, "mercury") {
@@ -542,8 +528,31 @@ func TestSnapshotErrorKeepsTheLastKnownRows(t *testing.T) {
 	if !strings.Contains(out, "ago") {
 		t.Errorf("the footer should mark how stale the rows are; got:\n%s", out)
 	}
-	if !strings.Contains(out, "daemon 1.0.0-rc.48") {
-		t.Errorf("the tabs line should still show the last-known daemon health; got:\n%s", out)
+	if !strings.Contains(out, "✓ Daemon") {
+		t.Errorf("the environment indicators should show current daemon health; got:\n%s", out)
+	}
+}
+
+func TestFirstFailedSnapshotStillUpdatesDaemonHealth(t *testing.T) {
+	m := New(&fakeData{}, &recordingActor{}, nopPaneHost{}, nopClipboard{}, NewKeyMap(nil))
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	m = mm.(Model)
+	snap := control.Snapshot{Err: errors.New("XPC connection error"), Daemon: control.DaemonHealth{Reachable: true}}
+	mm, _ = m.Update(snapshotMsg{snap: snap})
+	m = mm.(Model)
+	if !m.daemon.Reachable {
+		t.Fatal("first failed container snapshot discarded reachable daemon health")
+	}
+	out := plain(m.View().Content)
+	for _, want := range []string{"✓ Daemon", "? Browser", "? BuildKit"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in failed snapshot view:\n%s", want, out)
+		}
+	}
+	snap.Daemon = control.DaemonHealth{}
+	mm, _ = m.Update(snapshotMsg{snap: snap})
+	if mm.(Model).daemon.Reachable {
+		t.Fatal("later failed daemon probe retained stale healthy indicator")
 	}
 }
 
@@ -651,13 +660,14 @@ func TestSelectionFallsBackToASelectableRowWhenRowsShrinkPastTheOldIndex(t *test
 func TestLiveStateDrivesTheGlyph(t *testing.T) {
 	d := &fakeData{snap: testSnapshot()}
 	m := newTestModel(d, &recordingActor{})
+	m = m.addTab(&tab{kind: KindClaude, project: "alpha", sandbox: "mercury"})
 	mm, _ := m.Update(liveMsg{states: map[sandboxKey]liveState{
 		{Project: "alpha", Name: "mercury"}: {
 			Interactive: control.InteractiveState{State: "needs-input", Event: "PermissionRequest"},
 		},
 	}})
 	m = mm.(Model)
-	if !strings.Contains(plain(m.View().Content), glyphNeedsInput+" mercury") {
+	if !strings.Contains(plain(m.View().Content), glyphNeedsInput+" Claude") {
 		t.Errorf("sidebar should show the needs-input glyph; got:\n%s", plain(m.View().Content))
 	}
 }
@@ -755,16 +765,16 @@ func TestViewGeometry(t *testing.T) {
 		t.Fatalf("rendered %d lines, want the window's 24:\n%s", len(lines), out)
 	}
 	for i, l := range lines {
-		if len([]rune(l)) > 100 {
-			t.Errorf("line %d is wider than the window: %q", i, l)
+		if ansi.StringWidth(l) > 100 {
+			t.Errorf("line %d is wider than the window (width=%d, model=%d, pane=%d): %q", i, ansi.StringWidth(l), m.width, m.paneWidth(), l)
 		}
 	}
 	// Sidebar on the left, detail on the right, footer at the bottom.
 	if !strings.Contains(lines[0], "alpha") {
 		t.Errorf("first line should start the sidebar; got %q", lines[0])
 	}
-	if !strings.Contains(out, "5173") {
-		t.Error("the ports the slow poll found should be on screen")
+	if strings.Contains(out, "5173") {
+		t.Error("service port numbers belong in Details")
 	}
 	if !strings.Contains(lines[len(lines)-1], "claude pane") {
 		t.Errorf("the last line should be the footer's short help; got %q", lines[len(lines)-1])
@@ -789,20 +799,13 @@ func TestPreSizeViewRunsInTheAlternateScreen(t *testing.T) {
 	}
 }
 
-// With no panes open the row carries daemon health, right-aligned, and it
-// has to fit a narrow window — the design's own example: W=57 -> mainWidth
-// 33, where the old selection title and "daemon 1.0.0-rc.48" together did
-// not fit even with a one-cell gap.
-func TestTabsRowFitsANarrowWindow(t *testing.T) {
+func TestHeaderFitsANarrowWindow(t *testing.T) {
 	m := newTestModel(&fakeData{snap: testSnapshot()}, &recordingActor{})
-	const mainWidth = 57 - sidebarWidth // 33
-
-	line := plain(m.tabsRow(mainWidth))
-	if w := ansi.StringWidth(line); w > mainWidth {
-		t.Errorf("tabs row width = %d, want <= %d: %q", w, mainWidth, line)
-	}
-	if !strings.Contains(line, "daemon") {
-		t.Errorf("with no tabs the row should still show daemon health; got %q", line)
+	const width = 57
+	for _, line := range strings.Split(plain(m.planHeader(mainWidthFor(width)).text), "\n") {
+		if w := ansi.StringWidth(line); w > mainWidthFor(width) {
+			t.Errorf("header width = %d, want <= %d: %q", w, mainWidthFor(width), line)
+		}
 	}
 }
 
@@ -857,4 +860,12 @@ func TestNewSubstitutesAFailClosedClipboard(t *testing.T) {
 	if err == nil {
 		t.Errorf("Text returned %q and no error; the stand-in must explain itself", text)
 	}
+}
+
+func dialogText(lines []dialogLine) string {
+	var text []string
+	for _, line := range lines {
+		text = append(text, line.text)
+	}
+	return strings.Join(text, "\n")
 }

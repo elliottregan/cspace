@@ -22,6 +22,7 @@ const (
 	ActionBrowserRestart = "browserRestart"
 	ActionBoot           = "boot"
 	ActionRefresh        = "refresh"
+	ActionDetails        = "details"
 	ActionHelp           = "help"
 	ActionQuit           = "quit"
 	ActionLeader         = "leader"
@@ -65,6 +66,7 @@ var defaultKeys = map[string][]string{
 	ActionBrowserRestart: {"b"},
 	ActionBoot:           {"u"},
 	ActionRefresh:        {"r"},
+	ActionDetails:        {"o"},
 	ActionHelp:           {"?"},
 	ActionQuit:           {"q"},
 	ActionLeader:         {"ctrl+space"},
@@ -95,6 +97,7 @@ var actionHelp = map[string][2]string{
 	ActionBrowserRestart: {"b", "restart browser"},
 	ActionBoot:           {"u", "boot"},
 	ActionRefresh:        {"r", "refresh"},
+	ActionDetails:        {"o", "details"},
 	ActionHelp:           {"?", "help"},
 	ActionQuit:           {"q", "quit"},
 	ActionLeader:         {"⌃Space", "leader"},
@@ -102,8 +105,8 @@ var actionHelp = map[string][2]string{
 	ActionSupervisor:     {"a", "supervisor"},
 	ActionFocusMain:      {"tab", "focus pane"},
 	ActionFocusSidebar:   {"h", "sidebar"},
-	ActionNextTab:        {"n", "next tab"},
-	ActionPrevTab:        {"p", "prev tab"},
+	ActionNextTab:        {"n", "next pane"},
+	ActionPrevTab:        {"p", "prev pane"},
 	ActionNewPane:        {"t", "new"},
 	ActionClosePane:      {"x", "close"},
 	ActionScroll:         {"[", "scroll"},
@@ -131,6 +134,7 @@ type KeyMap struct {
 	BrowserRestart key.Binding
 	Boot           key.Binding
 	Refresh        key.Binding
+	Details        key.Binding
 	Help           key.Binding
 	Quit           key.Binding
 
@@ -161,6 +165,14 @@ type KeyMap struct {
 func NewKeyMap(overrides map[string][]string) KeyMap {
 	binding := func(action string) key.Binding {
 		keys := defaultKeys[action]
+		if action == ActionDetails && (len(overrides[ActionDetails]) == 0 || slices.Equal(overrides[ActionDetails], defaultKeys[ActionDetails])) {
+			// Adding a default must not steal an existing customized key.
+			for other, custom := range overrides {
+				if _, known := defaultKeys[other]; known && other != ActionDetails && slices.Contains(custom, "o") {
+					return key.NewBinding(key.WithDisabled())
+				}
+			}
+		}
 		if over, ok := overrides[action]; ok && len(over) > 0 {
 			keys = over
 		}
@@ -180,6 +192,7 @@ func NewKeyMap(overrides map[string][]string) KeyMap {
 		BrowserRestart: binding(ActionBrowserRestart),
 		Boot:           binding(ActionBoot),
 		Refresh:        binding(ActionRefresh),
+		Details:        binding(ActionDetails),
 		Help:           binding(ActionHelp),
 		Quit:           binding(ActionQuit),
 		Leader:         binding(ActionLeader),
@@ -214,7 +227,7 @@ func helpLabel(action string, keys []string, fallback string) string {
 
 // ShortHelp is the footer's one line, in the order a person reads it.
 func (k KeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.MoveUp, k.MoveDown, k.Attach, k.Send, k.Interrupt,
+	return []key.Binding{k.MoveUp, k.MoveDown, k.Attach, k.Details, k.Send, k.Interrupt,
 		k.Teardown, k.BrowserRestart, k.Boot, k.Help, k.Quit}
 }
 
@@ -225,7 +238,7 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 		{k.MoveUp, k.MoveDown},
 		{k.Attach, k.Send, k.Interrupt},
 		{k.Teardown, k.Boot, k.BrowserRestart},
-		{k.Refresh, k.Help, k.Quit},
+		{k.Refresh, k.Details, k.Help, k.Quit},
 	}
 }
 
@@ -242,7 +255,7 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 // PaneFullHelp below, and Help is in FullHelp, which the overlay renders
 // first.
 func (k KeyMap) LeaderHelp() []key.Binding {
-	return []key.Binding{k.FocusSidebar, k.NextTab, k.NewPane,
+	return []key.Binding{k.FocusSidebar, k.NextTab, k.Details, k.NewPane,
 		k.ClosePane, k.Scroll, k.PasteImage, k.Quit}
 }
 
