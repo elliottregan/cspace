@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode"
 )
 
 // sessionExec simulates a tmux server, including client discovery after attach.
@@ -53,6 +54,13 @@ func (f *sessionExec) Exec(_ context.Context, _ string, cmd []string) (string, i
 		return "", 0, nil
 	}
 	if strings.Contains(strings.Join(cmd, " "), "new-session") {
+		// Real tmux rejects '=name' for set-option and produces an empty
+		// context for display-message; accepting it here hid a live failure.
+		for i, arg := range cmd {
+			if arg == "-t" && strings.HasPrefix(cmd[i+1], "=") {
+				return "no such session: " + cmd[i+1], 1, nil
+			}
+		}
 		if f.createErr {
 			return "create failed", 1, nil
 		}
@@ -71,7 +79,7 @@ func (f *sessionExec) Exec(_ context.Context, _ string, cmd []string) (string, i
 		if f.rows == nil {
 			f.rows = map[string]string{}
 		}
-		row := fmt.Sprintf("%s\t$%d\t1720000000\t100\t1719999999\t%s", name, len(f.rows), token)
+		row := fmt.Sprintf("%s:$%d:1720000000:100:1719999999:%s", name, len(f.rows), token)
 		f.rows[name] = row
 		return row + "\n", 0, nil
 	}
@@ -82,6 +90,37 @@ func sessionTmux(f Execer) *Tmux {
 	tm := NewTmux()
 	tm.Exec, tm.PollEvery, tm.PollFor = f, time.Millisecond, time.Second
 	return tm
+}
+
+func TestSessionFormatsSurviveTmuxWithoutUTF8Mode(t *testing.T) {
+	// A live tmux query without -u turned a literal-tab record into
+	// cspace-claude_$0_1790712000_408_1790712000_. Container exec itself
+	// preserved tabs; the replacement happens in tmux's format output.
+	if strings.IndexFunc(sessionListFormat, unicode.IsControl) >= 0 {
+		t.Fatalf("machine format contains a control-character separator: %q", sessionListFormat)
+	}
+	f := &fakeExec{reply: func(_ int, cmd []string) (string, int, error) {
+		if cmd[0] == "sh" {
+			return "yes", 0, nil
+		}
+		format := cmd[len(cmd)-1]
+		if format != sessionListFormat {
+			t.Fatalf("unexpected discovery format: %q", format)
+		}
+		record := strings.NewReplacer("#{session_name}", SessionClaude, "#{session_id}", "$0",
+			"#{session_created}", "1790712000", "#{pid}", "408", "#{start_time}", "1790712000", "#{@cspace_id}", "").Replace(format)
+		record = strings.Map(func(r rune) rune {
+			if unicode.IsControl(r) {
+				return '_'
+			}
+			return r
+		}, record)
+		return record + "\n", 0, nil
+	}}
+	got, err := sessionTmux(f).Sessions(context.Background(), "ct")
+	if err != nil || len(got) != 1 || got[0].Name != SessionClaude || got[0].ID != "408/1790712000/$0/1790712000/" || got[0].stateID != "" {
+		t.Fatalf("legacy record with empty token was lost: sessions=%+v err=%v", got, err)
+	}
 }
 
 func TestPrepareDefaultClaudeCreatesOnceAndPinsEveryClient(t *testing.T) {
@@ -169,6 +208,9 @@ func TestPrepareNewClaudeSessionsAllocatesUnderTheAttachLock(t *testing.T) {
 			continue
 		}
 		for _, arg := range cmd {
+			if strings.Contains(arg, "#{session_name}") && (arg != sessionListFormat || strings.IndexFunc(arg, unicode.IsControl) >= 0) {
+				t.Fatalf("creation uses a different or nonprintable record format: %q", arg)
+			}
 			if arg == "-A" {
 				t.Fatal("new session used attach-or-create")
 			}
@@ -186,11 +228,12 @@ func TestSessionsListsOnlyManagedClaudeSessionsAndReadsSeparateStates(t *testing
 	const id2 = "11111111111111111111111111111111"
 	const id3 = "22222222222222222222222222222222"
 	f := &sessionExec{rows: map[string]string{
-		"default": "cspace-claude\t$0\t1720000000\t100\t1719999999\t",
-		"third":   "cspace-claude-3\t$3\t1720000001\t100\t1719999999\t" + id3,
-		"second":  "cspace-claude-2\t$2\t1720000001\t100\t1719999999\t" + id2,
-		"shell":   "cspace-shell\t$1\t1720000000\t100\t1719999999\t",
-		"user":    "my-claude\t$4\t1720000000\t100\t1719999999\t",
+		"default": "cspace-claude:$0:1720000000:100:1719999999:",
+		"third":   "cspace-claude-3:$3:1720000001:100:1719999999:" + id3,
+		"second":  "cspace-claude-2:$2:1720000001:100:1719999999:" + id2,
+		"shell":   "cspace-shell:$1:1720000000:100:1719999999:",
+		"user":    "my-claude:$4:1720000000:100:1719999999:",
+		"pipe":    "cspace-claude|custom:$5:1720000000:100:1719999999:",
 	}}
 	home := t.TempDir()
 	dir := filepath.Join(SessionDir(home, "alpha", "mercury"), "interactive")
@@ -232,8 +275,8 @@ func TestSessionsListsOnlyManagedClaudeSessionsAndReadsSeparateStates(t *testing
 func TestPrepareExistingSessionNeverRecreatesADisappearedOrReplacedSession(t *testing.T) {
 	for _, tc := range []struct{ name, row, expected string }{
 		{"disappeared", "", "100/1719999999/$0/1720000000/"},
-		{"new server", "cspace-claude\t$0\t1720000000\t200\t1720000000\t", "100/1719999999/$0/1720000000/"},
-		{"new session", "cspace-claude\t$9\t1720000002\t100\t1719999999\t", "100/1719999999/$0/1720000000/"},
+		{"new server", "cspace-claude:$0:1720000000:200:1720000000:", "100/1719999999/$0/1720000000/"},
+		{"new session", "cspace-claude:$9:1720000002:100:1719999999:", "100/1719999999/$0/1720000000/"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &sessionExec{rows: map[string]string{"row": tc.row}}
@@ -284,7 +327,7 @@ func TestExistingAttachArgvPinsTheSessionInsideTmux(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir)
 
-	sessions, err := parseSessions("cspace-claude-2\t$5\t1720000000\t100\t1719999999\t11111111111111111111111111111111")
+	sessions, err := parseSessions("cspace-claude-2:$5:1720000000:100:1719999999:11111111111111111111111111111111")
 	if err != nil {
 		t.Fatal(err)
 	}

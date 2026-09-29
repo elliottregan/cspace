@@ -1,0 +1,17 @@
+[
+  {
+    "id": "buildkit",
+    "configuration": {
+      "id": "buildkit"
+    },
+    "status": {
+      "state": "running",
+      "networks": [
+        {
+          "ipv4Address": "192.168.64.4/24",
+          "network": "default"
+        }
+      ]
+    }
+  }
+]

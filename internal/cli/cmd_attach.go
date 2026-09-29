@@ -263,10 +263,10 @@ func beginAttachOrWarn(ctx context.Context, warn io.Writer, tm *control.Tmux, ho
 // cspace outright — doesn't fire before the child exits and Close can run;
 // once received it is otherwise ignored. SIGTERM is forwarded because it
 // arrives by pid, so only cspace gets it and the child would never see it
-// otherwise. SIGHUP means the terminal itself is gone: the child is signalled
+// otherwise. Both SIGTERM and SIGHUP request shutdown: the child is signalled
 // and, after a grace period, killed, so Wait returns and the caller's detach
 // of the tmux client it left behind still runs while the container is
-// reachable.
+// reachable. Apple Container's exec transport can ignore host SIGTERM.
 func runAttachChild(bin string, argv []string) (int, error) {
 	// `container exec -it` leaves O_NONBLOCK on the descriptors it was given,
 	// and they are the shell's as much as ours — hand them back blocking so
@@ -287,27 +287,39 @@ func runAttachChild(bin string, argv []string) (int, error) {
 	}
 
 	done := make(chan struct{})
+	signalsDone := make(chan struct{})
 	go func() {
+		defer close(signalsDone)
+		var deadline *time.Timer
+		var forceKill <-chan time.Time
+		defer func() {
+			if deadline != nil {
+				deadline.Stop()
+			}
+		}()
 		for {
 			select {
 			case <-done:
 				return
+			case <-forceKill:
+				_ = child.Process.Kill()
+				forceKill = nil
 			case sig := <-sigs:
 				switch sig {
-				case syscall.SIGHUP:
-					// Nothing can be typed into the child any more. Ask it to
-					// go, then insist, so Wait returns and the detach runs
-					// while the container is still reachable.
-					_ = child.Process.Signal(syscall.SIGHUP)
-					time.AfterFunc(2*time.Second, func() { _ = child.Process.Kill() })
+				case syscall.SIGHUP, syscall.SIGTERM:
+					// Bound host transport shutdown so its guest tmux client
+					// can be detached. Repeated signals must not extend the
+					// deadline or start additional timers.
+					_ = child.Process.Signal(sig)
+					if deadline == nil {
+						deadline = time.NewTimer(2 * time.Second)
+						forceKill = deadline.C
+					}
 				case syscall.SIGINT:
 					// The kernel already delivered this to the child
 					// directly (same process group, same controlling tty).
 					// Nothing to relay — this case exists only to keep
 					// receiving it above from killing cspace.
-				default:
-					// SIGTERM: arrives by pid, so cspace has to pass it on.
-					_ = child.Process.Signal(sig)
 				}
 			}
 		}
@@ -315,6 +327,7 @@ func runAttachChild(bin string, argv []string) (int, error) {
 
 	err := child.Wait()
 	close(done)
+	<-signalsDone
 
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {

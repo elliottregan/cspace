@@ -80,7 +80,11 @@ func sessionNumber(name string) int {
 // prevent a reused $0 after a server restart from looking like the same session.
 // New sessions additionally carry a random token, also used for their state file.
 const sessionGenerationFormat = "#{pid}/#{start_time}/#{session_id}/#{session_created}/#{@cspace_id}"
-const sessionListFormat = "#{session_name}\t#{session_id}\t#{session_created}\t#{pid}\t#{start_time}\t#{@cspace_id}"
+
+// Use a printable delimiter: without -u, tmux replaces literal tabs in format
+// output with underscores when container exec supplies no UTF-8 locale. Colons
+// cannot collide with names because tmux replaces colons in names with '_'.
+const sessionListFormat = "#{session_name}:#{session_id}:#{session_created}:#{pid}:#{start_time}:#{@cspace_id}"
 
 func parseSessions(out string) ([]Session, error) {
 	var sessions []Session
@@ -88,7 +92,7 @@ func parseSessions(out string) ([]Session, error) {
 		if line == "" {
 			continue
 		}
-		fields := strings.Split(line, "\t")
+		fields := strings.Split(line, ":")
 		if sessionNumber(fields[0]) == 0 {
 			continue // other tmux sessions, including cspace-shell, are not Claude
 		}
@@ -242,9 +246,12 @@ func PrepareClaudeAttach(ctx context.Context, tm *Tmux, home, project, sandbox, 
 		if value := TerminalEnv(os.Getenv("TERM"), os.Getenv("COLORTERM"))["COLORTERM"]; value != "" {
 			cmd = append(cmd, "COLORTERM="+value)
 		}
+		// set-option's session target does not accept the '=' prefix used
+		// by some other tmux commands. The generated name is validated and
+		// was just created in this command chain; its exact match wins.
 		cmd = append(cmd, "claude", "--dangerously-skip-permissions",
-			";", "set-option", "-t", "="+name, "@cspace_id", id,
-			";", "display-message", "-p", "-t", "="+name, sessionListFormat)
+			";", "set-option", "-t", name, "@cspace_id", id,
+			";", "display-message", "-p", "-t", name, sessionListFormat)
 		out, code, err := tm.Exec.Exec(ctx, container, cmd)
 		if err != nil {
 			return PreparedAttach{}, err
@@ -279,7 +286,7 @@ func PrepareClaudeAttach(ctx context.Context, tm *Tmux, home, project, sandbox, 
 			if value := TerminalEnv(os.Getenv("TERM"), os.Getenv("COLORTERM"))["COLORTERM"]; value != "" {
 				cmd = append(cmd, "COLORTERM="+value)
 			}
-			cmd = append(cmd, "claude", "--dangerously-skip-permissions", ";", "display-message", "-p", "-t", "="+SessionClaude, sessionListFormat)
+			cmd = append(cmd, "claude", "--dangerously-skip-permissions", ";", "display-message", "-p", "-t", SessionClaude, sessionListFormat)
 			out, code, createErr := tm.Exec.Exec(ctx, container, cmd)
 			if createErr != nil {
 				return PreparedAttach{}, createErr

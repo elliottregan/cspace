@@ -1,0 +1,13 @@
+[
+  {
+    "id": "default",
+    "configuration": {
+      "mode": "nat",
+      "name": "default"
+    },
+    "status": {
+      "ipv4Gateway": "192.168.64.1",
+      "ipv4Subnet": "192.168.64.0/24"
+    }
+  }
+]

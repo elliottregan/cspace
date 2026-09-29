@@ -1,0 +1,24 @@
+[
+  {
+    "configuration": {
+      "id": "buildkit",
+      "image": {
+        "reference": "ghcr.io/apple/container-builder-shim/builder:0.13.1"
+      },
+      "resources": {
+        "cpus": 2,
+        "memoryInBytes": 2147483648
+      }
+    },
+    "status": {
+      "state": "running",
+      "startedDate": "2026-09-29T19:47:02Z",
+      "networks": [
+        {
+          "ipv4Address": "192.168.64.4/24",
+          "network": "default"
+        }
+      ]
+    }
+  }
+]

@@ -174,12 +174,12 @@ func (e *paneSessionExecer) Exec(_ context.Context, _ string, cmd []string) (str
 			token = cmd[tokenAt+1]
 		}
 		for _, session := range e.sessions {
-			if strings.HasPrefix(session, name+"\t") {
+			if strings.HasPrefix(session, name+":") {
 				return "duplicate session", 1, nil
 			}
 		}
 		e.creates++
-		record := fmt.Sprintf("%s\t$%d\t1700000000\t100\t1699999999\t%s", name, e.creates+1, token)
+		record := fmt.Sprintf("%s:$%d:1700000000:100:1699999999:%s", name, e.creates+1, token)
 		e.sessions = append(e.sessions, record)
 		return record + "\n", 0, nil
 	}
@@ -193,7 +193,7 @@ func paneSessionHost(t *testing.T, present bool) (*paneHost, *paneSessionExecer,
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir)
-	e := &paneSessionExecer{present: present, sessions: []string{"cspace-claude\t$1\t1700000000\t100\t1699999999\t"}}
+	e := &paneSessionExecer{present: present, sessions: []string{"cspace-claude:$1:1700000000:100:1699999999:"}}
 	tm := control.NewTmux()
 	tm.Exec, tm.PollEvery, tm.PollFor = e, time.Millisecond, 25*time.Millisecond
 	h := newPaneHost(control.New(control.Options{Tmux: tm}), t.TempDir())

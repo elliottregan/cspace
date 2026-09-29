@@ -39,11 +39,9 @@ func withFakeExec(t *testing.T, e control.Execer) {
 	t.Cleanup(func() { defaultTmux.Exec = orig })
 }
 
-// Signal delivery (SIGINT/SIGTERM/SIGWINCH reaching the child, absorbing
-// SIGINT here) and the SIGHUP signal-then-kill escalation are not
-// unit-tested: they depend on a controlling terminal and process-group
-// semantics that a `go test` process doesn't have. They are covered by Task
-// 9's manual verification instead.
+// Controlling-terminal SIGINT/SIGWINCH delivery is covered by live tests.
+// PID-directed TERM/HUP shutdown is covered by subprocess regressions in
+// cmd_attach_signal_test.go, without signaling the go test process itself.
 
 // TestRunAttachChildPropagatesExitStatus — attach stopped being a
 // syscall.Exec, so the child's status has to travel back out by hand or an

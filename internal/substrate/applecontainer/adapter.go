@@ -1,16 +1,15 @@
 // Package applecontainer implements substrate.Substrate against Apple's
 // `container` CLI (github.com/apple/container).
 //
-// VERSION COUPLING: tested against 1.3.x. The JSON shape changed at the 1.0
+// VERSION COUPLING: tested against 1.5.x. The JSON shape changed at the 1.0
 // boundary — runtime state (state word, startedDate, networks) that 0.12.x
 // emitted flat now nests under a `status` object in both `container inspect`
 // and `container ls --format json` (see inspectRecord / listRecord). That
-// shape is unchanged through 1.3.x; the 1.2 -> 1.3 bump was verified by hand
-// against a live 1.3.0 install (inspect's status.networks[].ipv4Address,
-// network inspect's status.ipv4Gateway, ls's nested status, and system
-// status's FIELD/VALUE table all still parse). 1.3.0's one breaking CLI
-// change — `--scheme auto` removed for image operations, default now https
-// — does not reach cspace, which never passes --scheme. Known quirks:
+// shape is unchanged through 1.5.x. Live 1.5.0 validation covered image
+// builds, lifecycle, mounts, DNS, browser/compose connectivity and interactive
+// sessions; sanitized command fixtures and results live in testdata/1.5.0.
+// The richer system-status FIELD/VALUE table still exposes a status row.
+// Known quirks:
 //
 //   - `container inspect` does NOT support a --format flag. We parse JSON.
 //   - `container inspect` of a missing container exits non-zero on 1.x
@@ -20,14 +19,14 @@
 //     daemon binds on 5354 (see internal/cli/cmd_daemon.go).
 //   - `container system kernel set --recommended` must be run by hand on
 //     fresh installs (the apiserver's first start tries to read stdin).
-//   - 1.2.x and 1.3.x mount /proc/sys READ-ONLY inside containers, so
+//   - 1.2.x through 1.5.x mount /proc/sys READ-ONLY inside containers, so
 //     in-sandbox `sysctl -w` fails while netlink-based iptables still works.
 //     The entrypoint's inbound DNAT depends on a sysctl and is gated on it
 //     (cs-finding 2026-08-06-apple-container-1-2-mounts-proc-sys-read-only-
 //     breaking-inbound-dnat). 1.3.0 relaxed maskedPaths/readonlyPaths for
-//     container *machines* only (apple/container#2137); a plain
-//     `container run` still gets `proc /proc/sys proc ro,relatime`, so the
-//     userspace-relay fallback stays load-bearing.
+//     container *machines* only (apple/container#2137). Run sets
+//     route_localnet through --kernel-arg; keep this and the entrypoint's
+//     readback guard, since a live 1.5.0 sandbox still has /proc/sys read-only.
 //   - The vmnet gateway is NOT a fixed per-version address. A fresh 1.2.0
 //     install allocates 192.168.64.1 — the value the code once called the
 //     "pre-1.0 default" — while this 1.3.0 install allocates 192.168.65.1.
@@ -60,7 +59,7 @@ import (
 // (non-fatal) at cspace up time. Bumping this is a deliberate act: verify
 // the JSON shape of `container inspect` and the other quirks listed in the
 // package doc still hold.
-const supportedMinorVersion = "1.3"
+const supportedMinorVersion = "1.5"
 
 // SupportedMinorVersion returns the Apple Container CLI MAJOR.MINOR version
 // cspace has been tested against. Exposed as a function (rather than the raw
