@@ -49,3 +49,12 @@ probe → attach → child → close path can run hermetically in `go test`.
 Filed from the control-plane-3-dashboard final review's parked-findings
 adjudication (Task 7: attach's happy path is untested; a lookPath seam would
 make it hermetic).
+
+### 2026-09-29 — status: open
+The new `TestExistingAttachArgvPinsTheSessionInsideTmux` failed on Linux CI
+because `AttachArgv` could not resolve the Apple Container CLI (run
+36620593619). The argv-only test now provides an executable fixture in a
+temporary directory, replaces `PATH` with that directory, and verifies the
+resolved path. Its session-generation assertions therefore run without an
+installed CLI. This fixes that test's platform dependency; the broader
+end-to-end attach happy-path coverage described above remains open.

@@ -276,6 +276,14 @@ func TestPrepareSessionRequiresTmuxAndReleasesLockAfterCreationFailure(t *testin
 }
 
 func TestExistingAttachArgvPinsTheSessionInsideTmux(t *testing.T) {
+	// Only binary resolution is needed; the argv test never executes it.
+	binDir := t.TempDir()
+	containerBin := filepath.Join(binDir, "container")
+	if err := os.WriteFile(containerBin, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+
 	sessions, err := parseSessions("cspace-claude-2\t$5\t1720000000\t100\t1719999999\t11111111111111111111111111111111")
 	if err != nil {
 		t.Fatal(err)
@@ -283,9 +291,12 @@ func TestExistingAttachArgvPinsTheSessionInsideTmux(t *testing.T) {
 	s := sessions[0]
 	spec := ClaudeAttach("ct", true)
 	spec.Session, spec.ExistingSession = s.Name, &s
-	_, argv, err := AttachArgv(spec)
+	bin, argv, err := AttachArgv(spec)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if bin != containerBin {
+		t.Fatalf("bin = %q, want test executable %q", bin, containerBin)
 	}
 	joined := strings.Join(argv, " ")
 	for _, want := range []string{"if-shell -F -t $5", s.ID, "attach-session -t '$5'", "run-shell 'exit 1'"} {
